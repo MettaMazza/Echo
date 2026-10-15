@@ -1,0 +1,211 @@
+define echo_audio_note with text:
+    set output to document.getElementById("audio-status")
+    if output:
+        set output.textContent to text
+    return 0
+
+define echo_audio_controls_refresh:
+    set start_button to document.getElementById("audio-record")
+    if not start_button:
+        return 0
+    set busy to window.echoBusy || window.echoUploading || window.echoReadOnly || not window.echoToken || not (not window.localStorage.getItem("echo.pending"))
+    set start_button.disabled to busy
+    set recovery_button to document.getElementById("audio-recovery")
+    set recovery_button.disabled to busy
+    set stop_button to document.getElementById("audio-stop")
+    set stop_button.disabled to not window.echoRecording
+    return 0
+
+define echo_audio_unlock:
+    set window.echoRecording to false
+    set window.echoUploading to false
+    echo_busy(window.echoBusy)
+    return 0
+
+define echo_audio_attach with database and record and owner:
+    if not navigator.locks:
+        return Promise.reject("Safe recording upload ownership is unavailable")
+    return navigator.locks.request("echo-audio-upload:" + record.identity and given lock:
+        return echo_audio_read(database and record.identity and owner and null).then(given current:
+            return echo_audio_attach_owned(database and current.record and owner)
+        )
+    )
+
+define echo_audio_attach_owned with database and record and owner:
+    if window.echoSession != record.session:
+        return Promise.reject("Open the recording's original conversation before saving it")
+    if record.saved_attachment:
+        return Promise.reject("Recording already has a confirmed saved attachment")
+    return echo_audio_upload_reconcile(database and record and owner).then(given receipt:
+        return echo_audio_confirm(database and record.identity and owner and receipt.attachment)
+    ).then(given attachment:
+        echo_attachments()
+        echo_audio_note("Original recording saved as an attachment. Select it and ask Echo to transcribe it. Local recovery copy retained.")
+        return attachment
+    )
+
+define echo_audio_upload_body with database and record and owner and upload:
+    set options to Object()
+    set options.type to "audio/wav"
+    return echo_audio_saved_wave(database and record.identity and owner).then(given wave:
+        if window.echoSession != record.session:
+            return Promise.reject("Conversation changed before upload")
+        set file to Reflect.construct(File and [[wave], "Recording " + record.identity + ".wav", options])
+        return echo_upload_prepared(file and upload)
+    )
+
+# Persist the server upload identity before sending audio. On retry, reconcile
+# that identity first so a lost completion response cannot duplicate the file.
+define echo_audio_upload_prepare with database and record and owner:
+    set payload to Object()
+    set payload.session to record.session
+    set payload.name to "Recording " + record.identity + ".wav"
+    set payload.media_type to "audio/wav"
+    return echo_api("/api/upload-prepare" and payload).then(given prepared:
+        if prepared.status != "prepared":
+            return Promise.reject(prepared.status)
+        return echo_audio_bind_upload(database and record.identity and owner and (record.pending_upload || "") and prepared.upload)
+    ).then(given upload:
+        return echo_audio_upload_body(database and record and owner and upload)
+    )
+
+define echo_audio_upload_reconcile with database and record and owner:
+    if not record.pending_upload:
+        return echo_audio_upload_prepare(database and record and owner)
+    set query to Object()
+    set query.upload to record.pending_upload
+    return echo_api("/api/upload-status" and query).then(given status:
+        if status.status == "complete":
+            set status.attachment to record.pending_upload
+            return status
+        if status.status == "prepared":
+            return echo_audio_upload_body(database and record and owner and record.pending_upload)
+        if status.status == "failed":
+            return echo_audio_upload_prepare(database and record and owner)
+        return Promise.reject("Previous audio upload is still unresolved: " + status.status)
+    )
+
+define echo_audio_start with event:
+    if window.echoBusy || window.echoUploading || window.echoReadOnly || not window.echoToken:
+        return 0
+    set owner to window.localStorage.getItem("echo.device")
+    if not owner:
+        echo_audio_note("Pair this browser before recording.")
+        return 0
+    set window.echoUploading to true
+    set window.echoRecording to true
+    set window.echoCaptureCancelled to false
+    set window.echoRecorder to null
+    echo_busy(window.echoBusy)
+    echo_audio_note("Preparing microphone. Audio stays local.")
+    set started to echo_ensure_session().then(given session:
+        if window.echoCaptureCancelled:
+            return Promise.reject("Recording cancelled")
+        set window.echoRecorder to echo_recorder_create(owner and session and false and echo_audio_note)
+        return window.echoRecorder.done
+    ).then(given identity:
+        set window.echoRecording to false
+        echo_audio_controls_refresh()
+        return echo_audio_read(window.echoRecorder.database and identity and owner and null)
+    ).then(given saved:
+        return echo_audio_attach(window.echoRecorder.database and saved.record and owner)
+    ).then(given attachment:
+        window.echoRecorder.database.close()
+        echo_audio_unlock()
+    )
+    set catcher to get_list(started and "catch")
+    catcher.call(started and given error:
+        echo_audio_note("Recording/upload did not confirm completion: " + error + ". Saved chunks remain in Recover recordings; an interrupted upload may already exist in conversation files.")
+        echo_audio_unlock()
+    )
+    return 0
+
+define echo_audio_recovery_save with record and owner:
+    if window.echoBusy || window.echoUploading || window.echoReadOnly || not window.echoToken || window.echoSession != record.session:
+        echo_audio_note("Open this recording's conversation and finish current work before recovery.")
+        return 0
+    set window.echoUploading to true
+    echo_busy(window.echoBusy)
+    set database to null
+    set recovered to echo_audio_store_open().then(given opened:
+        set database to opened
+        return echo_audio_recover(database and record.identity and owner)
+    ).then(given identity:
+        return echo_audio_read(database and identity and owner and null)
+    ).then(given saved:
+        return echo_audio_attach(database and saved.record and owner)
+    ).then(given attachment:
+        database.close()
+        echo_audio_unlock()
+        echo_audio_recovery_list(null)
+    )
+    set catcher to get_list(recovered and "catch")
+    catcher.call(recovered and given error:
+        if database:
+            database.close()
+        echo_audio_note("Recovery did not confirm completion: " + error + ". Local recording retained.")
+        echo_audio_unlock()
+    )
+    return 0
+
+define echo_audio_recovery_item with record and owner and list:
+    set item to document.createElement("li")
+    set label to "Recording " + record.identity + " · " + record.state + " · " + record.frames + " samples"
+    if record.saved_attachment:
+        set item.textContent to label + " · saved attachment " + record.saved_attachment
+    else:
+        set button to document.createElement("button")
+        set button.type to "button"
+        set button.textContent to "Recover and save " + label
+        set button.disabled to record.session != window.echoSession
+        button.addEventListener("click" and given event:
+            echo_audio_recovery_save(record and owner)
+        )
+        item.appendChild(button)
+        if record.session != window.echoSession:
+            item.appendChild(document.createTextNode(" · open original conversation " + record.session))
+    list.appendChild(item)
+    return 0
+
+define echo_audio_recovery_list with event:
+    set owner to window.localStorage.getItem("echo.device")
+    if not owner || not window.echoToken || window.echoUploading:
+        return 0
+    set database to null
+    set list to document.getElementById("audio-recordings")
+    set list.textContent to "Loading local recordings…"
+    set loaded to echo_audio_store_open().then(given opened:
+        set database to opened
+        return echo_audio_list(database and owner)
+    ).then(given records:
+        database.close()
+        set list.textContent to ""
+        for each record in records:
+            echo_audio_recovery_item(record and owner and list)
+        if records.length == 0:
+            set list.textContent to "No saved recordings in this browser."
+    )
+    set catcher to get_list(loaded and "catch")
+    catcher.call(loaded and given error:
+        if database:
+            database.close()
+        set list.textContent to "Recording storage unavailable: " + error
+    )
+    return 0
+
+define echo_audio_controls_setup:
+    set panel to document.createElement("section")
+    set panel.id to "audio-panel"
+    set panel.innerHTML to "<button id='audio-record' type='button'>Record microphone</button> <button id='audio-stop' type='button' disabled>Stop recording</button> <button id='audio-recovery' type='button'>Recover recordings</button><p id='audio-status' role='status'>Recordings are mono at the browser's sample rate. Browser audio processing may apply. Saved local chunks can be recovered here; clearing browser storage removes them.</p><ul id='audio-recordings'></ul>"
+    set form to document.getElementById("composer")
+    form.parentNode.insertBefore(panel and form)
+    document.getElementById("audio-record").addEventListener("click" and echo_audio_start)
+    document.getElementById("audio-recovery").addEventListener("click" and echo_audio_recovery_list)
+    document.getElementById("audio-stop").addEventListener("click" and given event:
+        set window.echoCaptureCancelled to true
+        if window.echoRecorder:
+            echo_recorder_stop(window.echoRecorder)
+        echo_audio_note("Stopping recording and saving received chunks…")
+    )
+    echo_audio_controls_refresh()
+    return 0

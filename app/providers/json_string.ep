@@ -1,0 +1,100 @@
+# Derived from pinned Ernos stdlib/json.ep. Bounds are retained; byte access
+# avoids repeated strlen scans for large already-validated JSON strings.
+import "json"
+external define peek_byte with pointer as Int and offset as Int returning Int
+
+define provider_hex4 with s and p and len:
+    if p + 3 >= len:
+        return -1
+    set h0 to json_hex_val(peek_byte(str_to_ptr(s) and p))
+    set h1 to json_hex_val(peek_byte(str_to_ptr(s) and p + 1))
+    set h2 to json_hex_val(peek_byte(str_to_ptr(s) and p + 2))
+    set h3 to json_hex_val(peek_byte(str_to_ptr(s) and p + 3))
+    if h0 < 0 or else h1 < 0 or else h2 < 0 or else h3 < 0:
+        return -1
+    return ((h0 * 4096) + (h1 * 256)) + ((h2 * 16) + h3)
+
+# Append a Unicode code point to the byte list as UTF-8 (1..4 bytes). Uses integer
+# division for the shifts/masks (no % operator in EP).
+define provider_append_utf8 with lst and cp:
+    if cp < 128:
+        set ok to append_list(lst and cp)
+    else if cp < 2048:
+        set ok to append_list(lst and (192 + (cp / 64)))
+        set ok to append_list(lst and (128 + (cp - ((cp / 64) * 64))))
+    else if cp < 65536:
+        set ok to append_list(lst and (224 + (cp / 4096)))
+        set r2 to cp - ((cp / 4096) * 4096)
+        set ok to append_list(lst and (128 + (r2 / 64)))
+        set ok to append_list(lst and (128 + (r2 - ((r2 / 64) * 64))))
+    else:
+        set ok to append_list(lst and (240 + (cp / 262144)))
+        set r3 to cp - ((cp / 262144) * 262144)
+        set ok to append_list(lst and (128 + (r3 / 4096)))
+        set r3 to r3 - ((r3 / 4096) * 4096)
+        set ok to append_list(lst and (128 + (r3 / 64)))
+        set ok to append_list(lst and (128 + (r3 - ((r3 / 64) * 64))))
+    return 0
+
+define provider_decode_string with state:
+    set s to get_list(state and 0)
+    set len to get_list(state and 1)
+    set pos to get_list(state and 2)
+    set pos to pos + 1
+    set lst to create_list()
+    set loop to 1
+    repeat while pos is less than len && loop == 1:
+        set ch to peek_byte(str_to_ptr(s) and pos)
+        if ch == 34:
+            set pos to pos + 1
+            set loop to 0
+        else:
+            if ch == 92:
+                set pos to pos + 1
+                if pos is less than len:
+                    set esc to peek_byte(str_to_ptr(s) and pos)
+                    if esc == 110:
+                        set ok to append_list(lst and 10)
+                        set pos to pos + 1
+                    else if esc == 116:
+                        set ok to append_list(lst and 9)
+                        set pos to pos + 1
+                    else if esc == 114:
+                        set ok to append_list(lst and 13)
+                        set pos to pos + 1
+                    else if esc == 98:
+                        set ok to append_list(lst and 8)
+                        set pos to pos + 1
+                    else if esc == 102:
+                        set ok to append_list(lst and 12)
+                        set pos to pos + 1
+                    else if esc == 117:
+                        # \uXXXX — decode the 4 hex digits to a code point. Without
+                        # this, e.g. "&" (&) and ">" (>) leak through as the
+                        # literal text "u0026"/"u003e", corrupting any decoded command.
+                        set cp to provider_hex4(s and pos + 1 and len)
+                        if cp < 0:
+                            # Malformed escape — keep the 'u' literally, lose nothing.
+                            set ok to append_list(lst and esc)
+                            set pos to pos + 1
+                        else:
+                            set pos to pos + 5
+                            # UTF-16 surrogate pair: high (D800..DBFF) + low (DC00..DFFF).
+                            if cp >= 55296 and also cp <= 56319:
+                                if pos + 1 < len:
+                                    if peek_byte(str_to_ptr(s) and pos) == 92 and also peek_byte(str_to_ptr(s) and pos + 1) == 117:
+                                        set lo to provider_hex4(s and pos + 2 and len)
+                                        if lo >= 56320 and also lo <= 57343:
+                                            set cp to 65536 + (((cp - 55296) * 1024) + (lo - 56320))
+                                            set pos to pos + 6
+                            set ok to provider_append_utf8(lst and cp)
+                    else:
+                        set ok to append_list(lst and esc)
+                        set pos to pos + 1
+            else:
+                set ok to append_list(lst and ch)
+                set pos to pos + 1
+    set ok to set_list(state and 2 and pos)
+    set val to string_from_list(lst)
+    return create_json_string(val)
+

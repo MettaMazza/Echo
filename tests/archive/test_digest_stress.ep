@@ -1,0 +1,68 @@
+import "../../app/archive/event_store"
+import "../../app/providers/json_access"
+
+define digest_parser_worker with rounds as Int and completed as Int returning Int:
+    set index to 0
+    repeat while index is less than rounds:
+        set tokens to provider_json_tokens("{\"state\":\"generating\",\"events\":[{\"kind\":\"provider_event\",\"text\":\"Unicode café and nested values\"}],\"sequence\":123}")
+        if tokens equals 0:
+            send 1 to completed
+            return 1
+        set index to index + 1
+    send 0 to completed
+    return 0
+
+define digest_stress_worker with row as List and expected as Str and rounds as Int and completed as Int returning Int:
+    set session to ptr_to_str(get_list(row and 0))
+    set event to ptr_to_str(get_list(row and 1))
+    set kind to ptr_to_str(get_list(row and 2))
+    set payload to ptr_to_str(get_list(row and 3))
+    set occurred to ptr_to_str(get_list(row and 4))
+    set previous to ptr_to_str(get_list(row and 5))
+    set index to 0
+    repeat while index is less than rounds:
+        set actual to archive_digest(session and event and kind and payload and occurred and previous)
+        if not (actual equals expected):
+            display concat("Unexpected digest: " and actual)
+            send 1 to completed
+            return 1
+        set index to index + 1
+    send 0 to completed
+    return 0
+
+# Read-only diagnostic: compare repeated native hashes to an independently
+# calculated expected value, including overlapping native worker allocations.
+define main returning Int:
+    if get_argument_count() is not equal to 6:
+        return 1
+    set database to sql_open(get_argument(1))
+    if database equals 0:
+        return 1
+    set row to archive_read_event(database and get_argument(2))
+    if row equals 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set rounds to string_to_int(get_argument(4))
+    set workers to string_to_int(get_argument(5))
+    if rounds is less than 1 or else workers is less than 1:
+        return 1
+    set completed to channel
+    spawn digest_parser_worker(rounds and completed)
+    set index to 0
+    repeat while index is less than workers:
+        set copy to create_list()
+        set field to 0
+        repeat while field is less than 7:
+            set added to append_list(copy and concat(ptr_to_str(get_list(row and field)) and ""))
+            set field to field + 1
+        spawn digest_stress_worker(copy and get_argument(3) and rounds and completed)
+        set index to index + 1
+    set failures to 0
+    set index to 0
+    repeat while index is less than workers + 1:
+        set status to receive from completed
+        set failures to failures + status
+        set index to index + 1
+    if failures is not equal to 0:
+        return 1
+    display "PASS: all native repeated hashes match the independently supplied digest."
+    return 0

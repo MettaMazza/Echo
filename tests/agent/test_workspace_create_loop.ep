@@ -1,0 +1,77 @@
+import "../../app/web/attachments"
+import "../../app/agent/run_messages"
+import "../../app/archive/history"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is not equal to 2:
+        return 1
+    set database_path to get_argument(1)
+    set database to archive_open(database_path)
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture" and "secret") is not equal to 0:
+        return 1
+    set submitted to web_submit_owned(database and "owner" and "request" and "" and "Create a project folder, write English source, and read it back.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set replies to create_list()
+    set added to append_list(replies and "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"make\",\"function\":{\"name\":\"workspace_make_directory\",\"arguments\":\"{\\\"path\\\":\\\"project/source\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}")
+    set added to append_list(replies and "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"write\",\"function\":{\"name\":\"workspace_create_text\",\"arguments\":\"{\\\"path\\\":\\\"project/source/main.ep\\\",\\\"text\\\":\\\"display \\\\\\\"Hello café\\\\\\\"\\\\n\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}")
+    set added to append_list(replies and "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"read\",\"function\":{\"name\":\"workspace_read_text\",\"arguments\":\"{\\\"path\\\":\\\"project/source/main.ep\\\",\\\"offset\\\":0,\\\"characters\\\":100}\"}}]},\"finish_reason\":\"tool_calls\"}]}")
+    set added to append_list(replies and "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Created and read back the English source.\"},\"finish_reason\":\"stop\"}]}")
+    set index to 0
+    repeat while index is less than length_list(replies):
+        set completed to channel
+        spawn generation_fixture(listener and ptr_to_str(get_list(replies and index)) and completed)
+        set messages to agent_run_messages(database and run)
+        set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(messages and concat(",\"tools\":" and concat(session_tool_schemas() and "}"))))
+        set event to concat("generation:" and int_to_string(index))
+        set generated to agent_generate_local(database and run and event and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+        set served to receive from completed
+        if generated is not equal to 0 or else served is not equal to 0:
+            return 1
+        repeat while 1 equals 1:
+            set row to agent_run_read(database and run)
+            if row equals 0:
+                return 1
+            if not (ptr_to_str(get_list(row and 2)) equals "tools"):
+                break
+            if agent_tool_step(database and run) is not equal to 0:
+                return 1
+        # Every subsequent request is constructed after reopening the archive.
+        if sql_close(database) is not equal to 0:
+            return 1
+        set database to archive_open(database_path)
+        if database equals 0:
+            return 1
+        set messages to agent_run_messages(database and run)
+        if index is less than 3:
+            set tokens to provider_json_tokens(messages)
+            set items to provider_items(tokens and 0)
+            set last to get_list(items and length_list(items) - 1)
+            set observation to provider_json_tokens(provider_value(tokens and provider_member(tokens and last and "content")))
+            set status to provider_value(observation and provider_member(observation and 0 and "status"))
+            if (index equals 0 and not (status equals "available")) or else (index equals 1 and not (status equals "created")) or else (index equals 2 and not (status equals "found")):
+                display concat("FAIL: operation status " and status)
+                return 1
+            if index is greater than 0:
+                if not (provider_value(observation and provider_member(observation and 0 and "sha256")) equals ep_sha256("display \"Hello café\"\n")):
+                    return 1
+            if index equals 2:
+                if not (provider_value(observation and provider_member(observation and 0 and "text")) equals "display \"Hello café\"\n"):
+                    return 1
+        set index to index + 1
+    set row to agent_run_read(database and run)
+    if not (ptr_to_str(get_list(row and 2)) equals "completed"):
+        return 1
+    set count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls WHERE state='observed';"))
+    if not (ptr_to_str(get_list(count and 1)) equals "3") or else archive_verify(database and session) is not equal to 0:
+        return 1
+    set closed to local_socket_close(listener)
+    set closed to sql_close(database)
+    display "PASS: four scripted HTTP turns create directory, publish English source, read identical text/hash and complete; archive reopened between every turn, three observed calls and hash chain verified."
+    return 0

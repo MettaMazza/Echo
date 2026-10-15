@@ -1,0 +1,82 @@
+import "tool_ledger"
+
+define agent_run_schema with database as Int returning Int:
+    if tool_ledger_schema(database) is not equal to 0:
+        return 1
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_runs (run TEXT PRIMARY KEY, session TEXT NOT NULL, objective_event TEXT NOT NULL REFERENCES echo_events(event), state TEXT NOT NULL CHECK(state IN ('ready','generating','tools','waiting','failed','cancelled','completed')), last_event TEXT NOT NULL REFERENCES echo_events(event)); CREATE TRIGGER IF NOT EXISTS echo_run_identity_immutable BEFORE UPDATE OF run,session,objective_event ON echo_runs BEGIN SELECT RAISE(ABORT,'Run identity is immutable'); END;")
+
+define agent_run_create with database as Int and run as Str and session as Str and objective_event as Str returning Int:
+    if string_length(run) equals 0:
+        return 1
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and session)
+    set added to append_list(values and objective_event)
+    return tool_ledger_change(database and "INSERT INTO echo_runs(run,session,objective_event,state,last_event) SELECT ?,e.session,e.event,'ready',e.event FROM echo_events e WHERE e.session=? AND e.event=? AND e.kind='user' RETURNING run;" and values)
+
+# The event kind records why the state changes. The dispatcher validates the
+# actual model/tool outcome before writing that event; storage never invents it.
+define agent_transition_kind with previous as Str and next_state as Str returning Str:
+    if previous equals "completed" or else previous equals "cancelled":
+        return ""
+    if next_state equals "cancelled":
+        return "agent_cancelled"
+    if next_state equals "failed":
+        return "agent_failure"
+    if next_state equals "waiting":
+        return "agent_waiting"
+    if previous equals "ready" and next_state equals "generating":
+        return "model_request"
+    if previous equals "generating" and next_state equals "tools":
+        return "assistant_tool_calls"
+    if previous equals "tools" and next_state equals "ready":
+        return "agent_observation"
+    if previous equals "generating" and next_state equals "completed":
+        return "assistant_final"
+    if (previous equals "waiting" or else previous equals "failed") and next_state equals "ready":
+        return "agent_resume"
+    if previous equals "generating" and next_state equals "ready":
+        return "agent_recovered"
+    return ""
+
+# Compare the exact last event, not merely the state name. This rejects a late
+# response from an earlier generation even after the run cycles to generating.
+# Context compaction does not change run identity or reset pending tool work.
+define agent_run_transition with database as Int and run as Str and previous as Str and expected_event as Str and next_state as Str and evidence_event as Str returning Int:
+    set kind to agent_transition_kind(previous and next_state)
+    if string_length(kind) equals 0:
+        return 1
+    set values to create_list()
+    set added to append_list(values and next_state)
+    set added to append_list(values and evidence_event)
+    set added to append_list(values and run)
+    set added to append_list(values and previous)
+    set added to append_list(values and expected_event)
+    set added to append_list(values and kind)
+    set query to "UPDATE echo_runs SET state=?,last_event=? WHERE run=? AND state=? AND last_event=? AND EXISTS (SELECT 1 FROM echo_events e WHERE e.event=?2 AND e.session=echo_runs.session AND e.kind=?6 AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.run_id') END=echo_runs.run AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.parent_event') END=?5) AND (?1 NOT IN ('ready','generating','completed') OR NOT EXISTS (SELECT 1 FROM echo_tool_calls t WHERE t.run=echo_runs.run AND t.state<>'observed')) AND (?1<>'completed' OR NOT EXISTS (SELECT 1 FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event WHERE t.run=echo_runs.run AND q.sequence>(SELECT sequence FROM echo_events WHERE event=?5))) RETURNING run;"
+    return tool_ledger_change(database and query and values)
+
+define agent_run_read with database as Int and run as Str returning List:
+    set values to create_list()
+    set added to append_list(values and run)
+    set statement to checkpoint_prepare(database and "SELECT session,objective_event,state,last_event FROM echo_runs WHERE run=?;" and values)
+    if statement equals 0:
+        return 0
+    if ep_sqlite3_step(statement) is not equal to 100:
+        set finished to ep_sqlite3_finalize(statement)
+        return 0
+    set row to create_list()
+    set position to 0
+    repeat while position is less than 4:
+        set value to ptr_to_str(ep_sqlite3_column_text(statement and position))
+        set added to append_list(row and concat(value and ""))
+        set position to position + 1
+    if archive_finish(statement and 101) is not equal to 0:
+        return 0
+    return row
+
+# The dispatcher uses this claim so cancellation and tool execution cannot race
+# into a new action after a run has left its tools phase.
+define agent_run_claim_tool with database as Int and run as Str and call_id as Str returning Int:
+    set values to tool_ledger_identity(run and call_id)
+    return tool_ledger_change(database and "UPDATE echo_tool_calls SET state='running' WHERE run=? AND call_id=? AND state='queued' AND EXISTS (SELECT 1 FROM echo_runs r WHERE r.run=echo_tool_calls.run AND r.session=echo_tool_calls.session AND r.state='tools') RETURNING call_id;" and values)

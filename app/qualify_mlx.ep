@@ -1,0 +1,63 @@
+import "providers/mlx_discovery"
+import "providers/local_chat"
+import "fs"
+
+# Real streaming inference with exact tokenizer/provider-usage reconciliation.
+define main returning Int:
+    if get_argument_count() is not equal to 9 or else file_exists(get_argument(1)):
+        display "Supply fresh archive, private spool, tokenizer helper, interpreter library, environment executable, model directory, request file and local port."
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0:
+        return 3
+    set original to ptr_to_str(read_file(get_argument(7)))
+    set prepared to mlx_preflight(database and "mlx-probe" and "preparation" and original and http_decimal(get_argument(8)) and get_argument(3) and get_argument(4) and get_argument(5) and get_argument(6) and get_argument(2) and 1 and -1 and 65536)
+    if not (ptr_to_str(get_list(prepared and 0)) equals "ready"):
+        display ptr_to_str(get_list(prepared and 0))
+        return 2
+    set body to ptr_to_str(get_list(prepared and 1))
+    set payload to concat("{\"request_body\":" and concat(provider_quote(body) and "}"))
+    if archive_append(database and "mlx-probe" and "request" and "model_request" and payload and "live") is not equal to 0:
+        return 4
+    set started to ep_time_now_ms()
+    set result to local_chat_generate(database and "mlx-probe" and "request" and http_decimal(get_argument(8)) and "/v1/chat/completions" and body and -1 and 65536)
+    display concat("Elapsed milliseconds: " and int_to_string(ep_time_now_ms() - started))
+    if not (ptr_to_str(get_list(result and 0)) equals "complete"):
+        display ptr_to_str(get_list(result and 0))
+        return 5
+    set state to get_list(result and 1)
+    set choice to chat_find(get_list(state and 0) and "0")
+    if choice equals 0 or else not (ptr_to_str(get_list(choice and 4)) equals "stop"):
+        return 6
+    display ptr_to_str(get_list(choice and 1))
+    set sequence to 0
+    set prompt_tokens to -1
+    repeat while 1 equals 1:
+        set row to archive_read_event(database and concat("request:provider:" and int_to_string(sequence)))
+        if row equals 0:
+            break
+        if ptr_to_str(get_list(row and 2)) equals "provider_event":
+            set envelope to provider_json_tokens(ptr_to_str(get_list(row and 3)))
+            set data to provider_value(envelope and provider_member(envelope and 0 and "data"))
+            if not (data equals "[DONE]"):
+                set tokens to provider_json_tokens(data)
+                if tokens equals 0:
+                    return 7
+                set usage to provider_member(tokens and 0 and "usage")
+                if provider_kind(tokens and usage) equals "{":
+                    set observed to http_decimal(provider_index(tokens and provider_member(tokens and usage and "prompt_tokens")))
+                    if observed is less than 0:
+                        return 7
+                    if prompt_tokens >= 0 and prompt_tokens is not equal to observed:
+                        return 7
+                    set prompt_tokens to observed
+        set sequence to sequence + 1
+    if prompt_tokens is not equal to get_list(prepared and 3):
+        display concat("Provider input tokens: " and int_to_string(prompt_tokens))
+        display concat("Expected input tokens: " and int_to_string(get_list(prepared and 3)))
+        return 8
+    if archive_verify(database and "mlx-probe") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 9
+    display concat("Verified input tokens: " and int_to_string(prompt_tokens))
+    display "PASS: real MLX streaming response, natural stop, exact token-count agreement and immutable archive verification."
+    return 0

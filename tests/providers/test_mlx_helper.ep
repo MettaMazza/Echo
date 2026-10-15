@@ -1,0 +1,92 @@
+import "../../app/providers/helper_process"
+import "../../app/providers/mlx_request"
+import "../../app/workspace/files"
+import "fs"
+
+define helper_test_cancel with writer as Int and completed as Int returning Int:
+    set idle to channel
+    set waits to [idle]
+    set yielded to select(waits and 100)
+    set closed to net_close(writer)
+    send closed to completed
+    return 0
+
+define main returning Int:
+    if get_argument_count() equals 2 and get_argument(1) equals "exit":
+        return 0
+    if get_argument_count() equals 2 and get_argument(1) equals "wait":
+        set idle to channel
+        set waits to [idle]
+        repeat while 1 equals 1:
+            set yielded to select(waits and 100)
+    if get_argument_count() is not equal to 8:
+        return 1
+    set database to archive_open(get_argument(1))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and get_argument(2))
+    set output to workspace_file_open(library and directory and "count.json" and 1)
+    set errors to workspace_file_open(library and directory and "errors.txt" and 1)
+    if database equals 0 or else directory is less than 3 or else output is less than 3 or else errors is less than 3:
+        return 2
+    set arguments to [get_argument(4), get_argument(5), get_argument(6), get_argument(7)]
+    set environment to ["HF_HUB_OFFLINE=1", "TRANSFORMERS_OFFLINE=1", "PYTHONNOUSERSITE=1", "TOKENIZERS_PARALLELISM=false"]
+    set result to provider_helper_run(database and "helper" and "count" and get_argument(3) and arguments and environment and directory and output and errors and -1)
+    set closed to net_close(output)
+    set closed to net_close(errors)
+    if not (ptr_to_str(get_list(result and 0)) equals "complete") or else get_list(result and 1) is not equal to 0:
+        display ptr_to_str(get_list(result and 0))
+        return 3
+    set counted to ptr_to_str(read_file(concat(get_argument(2) and "/count.json")))
+    set config to ptr_to_str(read_file(concat(get_argument(6) and "/config.json")))
+    set body to ptr_to_str(read_file(get_argument(7)))
+    set prepared to mlx_prepare_request(body and config and counted and get_argument(6) and 1)
+    if not (ptr_to_str(get_list(prepared and 0)) equals "ready"):
+        display ptr_to_str(get_list(prepared and 0))
+        return 4
+    if archive_append(database and "helper" and "count:receipt" and "provider_token_count" and counted and "test") is not equal to 0:
+        return 5
+    set output to workspace_file_open(library and directory and "cancel-output.txt" and 1)
+    set errors to workspace_file_open(library and directory and "cancel-errors.txt" and 1)
+    set cancellation to socket_cancellation_create(library)
+    set completed to channel
+    spawn helper_test_cancel(get_list(cancellation and 1) and completed)
+    set args to ["wait"]
+    set cancelled to provider_helper_run(database and "helper" and "cancel" and get_argument(0) and args and environment and directory and output and errors and get_list(cancellation and 0))
+    set monitor to receive from completed
+    set changed to set_list(cancellation and 1 and -1)
+    set closed to socket_cancellation_close(cancellation)
+    if monitor is not equal to 0 or else not (ptr_to_str(get_list(cancelled and 0)) equals "cancelled") or else get_list(cancelled and 1) modulo 128 is not equal to 9 or else get_list(cancelled and 2) is not equal to 0:
+        display ptr_to_str(get_list(cancelled and 0))
+        return 6
+    set cancelled_before to socket_cancellation_create(library)
+    set closed to socket_cancel(cancelled_before)
+    set result to provider_helper_run(database and "helper" and "never-launched" and get_argument(0) and args and environment and directory and output and errors and get_list(cancelled_before and 0))
+    if not (ptr_to_str(get_list(result and 0)) equals "cancelled-before-launch") or else archive_read_event(database and "never-launched") is not equal to 0:
+        return 7
+    set closed to socket_cancellation_close(cancelled_before)
+    # Another waiter consumed the exit status. Do not infer success, signal a
+    # recycled PID, or leak the retained library handle on the ECHILD path.
+    set exit_arguments to ["exit"]
+    set consumed to workspace_process_start(get_argument(0) and exit_arguments and environment and directory and output and errors)
+    if consumed equals 0:
+        return 9
+    set idle to channel
+    set waits to [idle]
+    set polled to workspace_process_poll(consumed)
+    repeat while polled equals 0:
+        set yielded to select(waits and 10)
+        set polled to workspace_process_poll(consumed)
+    if polled is not equal to 1:
+        return 9
+    set lost to provider_helper_wait_owned(database and "helper" and "consumed-wait" and consumed and -1)
+    if not (ptr_to_str(get_list(lost and 0)) equals "helper-wait-ownership-lost") or else get_list(lost and 2) is not equal to 0 or else get_list(consumed and 0) is not equal to 0:
+        return 10
+    set closed to net_close(output)
+    set closed to net_close(errors)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    if archive_verify(database and "helper") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 8
+    display counted
+    display "PASS: real offline MLX tokenizer, bound receipt, archived lifecycle, cancellation with reaping, no launch after cancellation, and consumed-wait ownership loss without false success or leaked handle."
+    return 0

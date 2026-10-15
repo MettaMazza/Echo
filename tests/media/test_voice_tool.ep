@@ -1,0 +1,66 @@
+import "../../app/agent/runner"
+import "../fixtures/generation_fixture"
+
+# Script only the model request. Both synthesis and recognition are real.
+define voice_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
+    set listener to local_socket_listen(0)
+    set data to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":" and provider_quote(call_id))
+    set data to concat(data and concat(",\"function\":{\"name\":" and provider_quote(name)))
+    set data to concat(data and concat(",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}")))
+    set completed to channel
+    spawn generation_fixture(listener and data and completed)
+    set generated to agent_generate_local(database and run and request and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    set closed to local_socket_close(listener)
+    if generated is not equal to 0 or else served is not equal to 0:
+        return 1
+    if agent_tool_step(database and run) is not equal to 0 or else agent_tool_step(database and run) is not equal to 0:
+        return 1
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 5 or else file_exists(get_argument(1)):
+        return 1
+    set configured to set_env("ECHO_VOICE_PROFILE" and get_argument(2))
+    set configured to set_env("ECHO_SPEECH_PROFILE" and get_argument(3))
+    set configured to set_env("ECHO_SPEECH_ROOT" and get_argument(4))
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 2
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Voice integration" and "fixture-secret") is not equal to 0:
+        return 3
+    set submitted to web_submit_owned(database and "owner" and "voice-request" and "" and "Create a spoken reply and check it using local recognition.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    if string_length(voice_request_text("{\"text\":\"hello\",\"executable\":\"/bin/sh\"}")) > 0 or else string_length(voice_request_text("{\"text\":\"first\",\"text\":\"second\"}")) > 0:
+        return 4
+    set spoken to "The silver lighthouse has nine windows. Preserve this spoken reply with its source text."
+    set arguments to concat("{\"text\":" and concat(provider_quote(spoken) and "}"))
+    if voice_fixture_call(database and run and "voice-generation" and "speak" and "speech_synthesize" and arguments) is not equal to 0:
+        return 5
+    set row to history_collect_one(archive_prepare(database and "SELECT json_extract(payload,'$.result.status'),json_extract(payload,'$.result.attachment'),json_extract(payload,'$.result.text_sha256') FROM echo_events WHERE kind='tool_result' AND json_extract(payload,'$.call_id')='speak';"))
+    if not (ptr_to_str(get_list(row and 0)) equals "found") or else not (ptr_to_str(get_list(row and 1)) equals "complete") or else not (ptr_to_str(get_list(row and 3)) equals ep_sha256(spoken)):
+        display "FAIL: synthesis receipt"
+        return 6
+    set audio to ptr_to_str(get_list(row and 2))
+    set owned to web_attachment_owned(database and "owner" and audio)
+    if not (ptr_to_str(get_list(owned and 0)) equals "found") or else not (ptr_to_str(get_list(owned and 3)) equals "audio/wav") or else not (ptr_to_str(get_list(web_attachment_owned(database and "foreign" and audio) and 0)) equals "end"):
+        return 7
+    set arguments to concat("{\"attachment\":" and concat(provider_quote(audio) and ",\"language\":\"en\"}"))
+    if voice_fixture_call(database and run and "recognition-generation" and "listen" and "attachment_transcribe" and arguments) is not equal to 0:
+        return 8
+    set row to history_collect_one(archive_prepare(database and "SELECT json_extract(payload,'$.result.status'),json_extract(payload,'$.result.attachment') FROM echo_events WHERE kind='tool_result' AND json_extract(payload,'$.call_id')='listen';"))
+    if not (ptr_to_str(get_list(row and 0)) equals "found") or else not (ptr_to_str(get_list(row and 1)) equals "complete"):
+        return 9
+    set transcript to web_attachment_owned(database and "owner" and ptr_to_str(get_list(row and 2)))
+    set text to ptr_to_str(read_file(ptr_to_str(get_list(transcript and 1))))
+    display text
+    if string_contains(text and "silver lighthouse") equals 0 or else string_contains(text and "nine windows") equals 0:
+        return 10
+    if not (speech_tool_execute(database and run and "speak" and -1) equals "{\"status\":\"not-authorized\"}"):
+        return 11
+    set count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='provider_helper_dispatch';"))
+    if not (ptr_to_str(get_list(count and 1)) equals "2") or else archive_verify(database and session) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 12
+    display "PASS: actual local synthesis produced owned WAV, source-text hash retained, actual recognition recovered spoken facts, foreign access and redispatch rejected, archive verified. Scripted model requests; browser voice roundtrip is separate."
+    return 0

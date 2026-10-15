@@ -1,0 +1,162 @@
+# Actual browser acceptance harness. Synthetic input is explicitly labelled;
+# microphone is a separate user-initiated path, never silently substituted.
+define capture_test_note with text:
+    set status_element to document.getElementById("capture-status")
+    set status_element.textContent to text
+    return 0
+
+define capture_test_controls with busy:
+    set synthetic_button to document.getElementById("capture-synthetic")
+    set microphone_button to document.getElementById("capture-microphone")
+    set synthetic_button.disabled to busy
+    set microphone_button.disabled to busy
+    set window.captureBusy to busy
+    return 0
+
+define capture_test_cleanup:
+    if window.captureStream:
+        for each track in window.captureStream.getTracks():
+            track.stop()
+    if window.captureSource:
+        window.captureSource.disconnect()
+    if window.captureNode:
+        window.captureNode.disconnect()
+    if window.captureContext && window.captureContext.state != "closed":
+        window.captureContext.close()
+    set stop_button to document.getElementById("capture-stop")
+    set stop_button.disabled to true
+    capture_test_controls(false)
+    return 0
+
+define capture_test_finish:
+    for each track in window.captureStream.getTracks():
+        track.stop()
+    window.captureSource.disconnect()
+    window.captureNode.disconnect()
+    set frames to 0
+    set nonzero to 0
+    set other to 0
+    for each chunk in window.captureChunks:
+        set frames to frames + chunk.length
+        for each sample in chunk:
+            if sample != 0:
+                set nonzero to nonzero + 1
+            if window.captureSynthetic && sample != 0 && sample != 0.25:
+                set other to other + 1
+    set wave to echo_wave_blob(window.captureChunks and window.captureContext.sampleRate)
+    set url to URL.createObjectURL(wave)
+    set download to document.getElementById("capture-download")
+    set download.href to url
+    set download.download to "Echo capture test.wav"
+    set download.hidden to false
+    set player to document.getElementById("capture-player")
+    set player.src to url
+    set summary to "Captured " + frames + " frames in " + window.captureChunks.length + " batches at " + window.captureContext.sampleRate + " Hz; nonzero " + nonzero + "; unexpected synthetic samples " + other + "."
+    set header to null
+    set large to null
+    set decoded_samples to null
+    set decoded_offset to 0
+    set decoded to wave.arrayBuffer().then(given bytes:
+        set header to Reflect.construct(DataView and [bytes])
+        if header.getUint32(44 and true) != frames || header.getUint32(52 and true) != frames * 4 || bytes.byteLength != frames * 4 + 56:
+            return Promise.reject("WAV header/data length mismatch")
+        set large to Reflect.construct(DataView and [echo_wave_header(1073741824 and window.captureContext.sampleRate)])
+        if large.getUint32(4 and true) != 4294967295 || large.getBigUint64(28 and true) != BigInt(4294967296):
+            return Promise.reject("RF64 size failed")
+        return window.captureContext.decodeAudioData(bytes)
+    ).then(given decoded:
+        if decoded.length != frames || decoded.sampleRate != window.captureContext.sampleRate || other != 0:
+            return Promise.reject("Decoded sample/frame mismatch")
+        set decoded_samples to decoded.getChannelData(0)
+        for each chunk in window.captureChunks:
+            for each sample in chunk:
+                if sample != get_list(decoded_samples and decoded_offset):
+                    return Promise.reject("Decoded sample value changed")
+                set decoded_offset to decoded_offset + 1
+        capture_test_note("PASS: " + summary + " WAV decoded; RF64 header size verified. " + window.captureMode)
+        capture_test_cleanup()
+    )
+    set catcher to get_list(decoded and "catch")
+    catcher.call(decoded and given error:
+        capture_test_note("FAIL: " + error + ". Captured original remains downloadable.")
+        capture_test_cleanup()
+    )
+    return 0
+
+define capture_test_start with synthetic:
+    if window.captureBusy:
+        return 0
+    capture_test_controls(true)
+    set window.captureSource to null
+    set window.captureNode to null
+    capture_test_note("Requesting capture. If microphone permission is pending, no recording has been verified.")
+    set stop_button to document.getElementById("capture-stop")
+    set window.captureSynthetic to synthetic
+    set window.captureMode to "Actual microphone capture; this does not prove speech recognition."
+    if synthetic:
+        set window.captureMode to "Synthetic constant signal; this is not microphone acceptance."
+    set window.captureChunks to Array()
+    set window.captureStream to Reflect.construct(MediaStream and Array())
+    set window.captureContext to Reflect.construct(AudioContext and Array())
+    set options to null
+    set loaded to window.captureContext.audioWorklet.addModule("/assets/audio-capture.js").then(given ignored:
+        set options to Object()
+        set options.channelCount to 1
+        set options.channelCountMode to "explicit"
+        set window.captureNode to Reflect.construct(AudioWorkletNode and [window.captureContext, "echo-capture", options])
+        set window.captureNode.port.onmessage to given event:
+            if event.data == "ended":
+                capture_test_finish()
+            else:
+                window.captureChunks.push(event.data)
+                capture_test_note("Recording " + window.captureChunks.length + " received batches. " + window.captureMode)
+        set window.captureNode.onprocessorerror to given event:
+            capture_test_note("FAIL: capture processor error")
+            capture_test_cleanup()
+        window.captureNode.connect(window.captureContext.destination)
+        if synthetic:
+            set window.captureSource to window.captureContext.createConstantSource()
+            set window.captureSource.offset.value to 0.25
+            window.captureSource.connect(window.captureNode)
+            window.captureSource.start()
+            return window.captureContext.resume()
+        set options to Object()
+        set options.audio to true
+        return navigator.mediaDevices.getUserMedia(options).then(given stream:
+            set window.captureStream to stream
+            set window.captureSource to window.captureContext.createMediaStreamSource(stream)
+            window.captureSource.connect(window.captureNode)
+            return window.captureContext.resume()
+        )
+    ).then(given ignored:
+        set stop_button.disabled to false
+        capture_test_note("Recording. " + window.captureMode)
+    )
+    set catcher to get_list(loaded and "catch")
+    catcher.call(loaded and given error:
+        capture_test_cleanup()
+        capture_test_note("Capture unavailable: " + error)
+    )
+    return 0
+
+define capture_test_setup with ignored:
+    set document.body.innerHTML to "<main><h1>Echo audio capture acceptance</h1><p>Separate synthetic and actual microphone tests. Audio stays local. Stop flushes the final partial batch.</p><button id='capture-synthetic'>Start synthetic signal</button><button id='capture-microphone'>Start microphone</button><button id='capture-stop' disabled>Stop and verify</button><p id='capture-status' role='status'>Ready</p><audio id='capture-player' controls></audio><p><a id='capture-download' hidden>Download captured WAV</a></p></main>"
+    document.getElementById("capture-synthetic").addEventListener("click" and given event:
+        capture_test_start(true)
+    )
+    document.getElementById("capture-microphone").addEventListener("click" and given event:
+        capture_test_start(false)
+    )
+    set stop_button to document.getElementById("capture-stop")
+    stop_button.addEventListener("click" and given event:
+        set stop_button.disabled to true
+        window.captureNode.port.postMessage("stop")
+    )
+    return 0
+
+define main:
+    set script to document.createElement("script")
+    set script.src to "/assets/audio-wave.js"
+    set script.onload to capture_test_setup
+    document.head.appendChild(script)
+    return 0

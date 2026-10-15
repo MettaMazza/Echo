@@ -1,0 +1,64 @@
+import "../retained_text"
+import "recap_fragment"
+
+# Result: status, next offset, note event. Notes are immutable intermediate
+# evidence, not active memory. Every note is tied to a completed provider stream
+# and exact original-event character range; coverage/semantic review follow.
+define recap_note_result with status as Str and next_offset as Int and event as Str returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and next_offset)
+    set added to append_list(result and event)
+    return result
+
+define recap_note_generate_provider with database as Int and session as Str and endpoint as Str and job as Str and source as Str and offset as Int and request as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    if string_length(job) equals 0:
+        return recap_note_result("invalid-job" and offset and "")
+    set fitted to recap_fit_fragment_provider(database and session and endpoint and source and offset and request and profile and reserve and cancellation_reader and read_size)
+    set status to archive_list_text(fitted and 0)
+    if not (status equals "ready"):
+        return recap_note_result(status and offset and "")
+    set body to archive_list_text(fitted and 1)
+    set next_offset to get_list(fitted and 2)
+    set original to archive_read_event(database and source)
+    if original equals 0:
+        return recap_note_result("invalid-source" and offset and "")
+    set payload to concat("{\"purpose\":\"recap-fragment-notes\",\"job\":" and provider_quote(job))
+    set payload to concat(payload and concat(",\"source_end\":" and provider_quote(endpoint)))
+    set payload to concat(payload and concat(",\"request_body\":" and concat(provider_quote(body) and "}")))
+    if archive_append(database and session and request and "model_request" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return recap_note_result("archive-error" and offset and "")
+    set response to local_chat_generate(database and session and request and port and "/v1/chat/completions" and body and cancellation_reader and read_size)
+    if not (archive_list_text(response and 0) equals "complete"):
+        return recap_note_result(archive_list_text(response and 0) and offset and "")
+    set state to get_list(response and 1)
+    if get_list(state and 2) is not equal to 2:
+        return recap_note_result("incomplete-response" and offset and "")
+    set choice to chat_find(get_list(state and 0) and "0")
+    if choice equals 0:
+        return recap_note_result("missing-choice" and offset and "")
+    if length_list(get_list(choice and 3)) is not equal to 0:
+        return recap_note_result("unexpected-tool-call" and offset and "")
+    set notes to archive_list_text(choice and 1)
+    if string_length(notes) equals 0:
+        return recap_note_result("empty-notes" and offset and "")
+    set event to concat(request and ":notes")
+    set payload to concat("{\"job\":" and provider_quote(job))
+    set payload to concat(payload and concat(",\"request_event\":" and provider_quote(request)))
+    set payload to concat(payload and concat(",\"source_end\":" and provider_quote(endpoint)))
+    set payload to concat(payload and concat(",\"source_event\":" and provider_quote(source)))
+    set payload to concat(payload and concat(",\"source_digest\":" and provider_quote(archive_list_text(original and 6))))
+    set payload to concat(payload and concat(",\"offset\":" and int_to_string(offset)))
+    set payload to concat(payload and concat(",\"next_offset\":" and int_to_string(next_offset)))
+    set payload to concat(payload and concat(",\"notes\":" and concat(provider_quote(notes) and "}")))
+    if archive_append(database and session and event and "recap_fragment_notes" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return recap_note_result("archive-error" and offset and "")
+    return recap_note_result("notes-saved" and next_offset and event)
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define recap_note_generate with database as Int and session as Str and endpoint as Str and job as Str and source as Str and offset as Int and request as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set profile to provider_llama_profile(model and port)
+    return recap_note_generate_provider(database and session and endpoint and job and source and offset and request and profile and reserve and cancellation_reader and read_size)

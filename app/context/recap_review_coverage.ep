@@ -1,0 +1,115 @@
+import "../retained_text"
+import "recap_fragment_review"
+import "recap_jobs"
+import "../agent/control"
+
+# Return status, contiguous Unicode cursor, source. A covered prefix is evidence
+# accounting only; repair findings remain separate from missing coverage.
+define recap_review_cursor with database as Int and session as Str and endpoint as Str and job as Str and source as Str and digest as Str and total as Int and candidate as Str returning List:
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and job)
+    set added to append_list(values and source)
+    set added to append_list(values and ep_sha256(candidate))
+    set statement to checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE session=? AND kind='recap_fragment_review' AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.job') END=? AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.source_event') END=? AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.candidate_digest') END=? ORDER BY sequence;" and values)
+    if statement equals 0:
+        return recap_note_result("coverage-conflict" and 0 and source)
+    set cursor to 0
+    set status to "fragment-reviews-covered"
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return recap_note_result("coverage-conflict" and 0 and source)
+        set tokens to provider_json_tokens(ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        if tokens equals 0:
+            set closed to ep_sqlite3_finalize(statement)
+            return recap_note_result("coverage-conflict" and 0 and source)
+        set start to history_tool_integer(tokens and "offset")
+        set next_offset to history_tool_integer(tokens and "next_offset")
+        if provider_unique_objects(tokens) equals 0 or else start is not equal to cursor or else next_offset <= start or else next_offset is greater than total or else not (provider_value(tokens and provider_member(tokens and 0 and "source_end")) equals endpoint) or else not (provider_value(tokens and provider_member(tokens and 0 and "source_digest")) equals digest):
+            set closed to ep_sqlite3_finalize(statement)
+            return recap_note_result("coverage-conflict" and 0 and source)
+        set report to provider_value(tokens and provider_member(tokens and 0 and "report"))
+        set verdict to recap_fragment_review_validate(candidate and endpoint and source and digest and start and next_offset and report)
+        if verdict equals "invalid-review":
+            set closed to ep_sqlite3_finalize(statement)
+            return recap_note_result("coverage-conflict" and 0 and source)
+        if verdict equals "fragment-review-repair":
+            set status to "fragment-reviews-repair"
+        set cursor to next_offset
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return recap_note_result("coverage-conflict" and 0 and source)
+    return recap_note_result(status and cursor and source)
+
+# Walk only the immutable accepted-source manifest. A different candidate starts
+# at zero; its predecessor's review ranges cannot count toward its coverage.
+define recap_review_progress with database as Int and session as Str and job as Str and candidate as Str returning List:
+    set manifest to archive_read_event(database and job)
+    if manifest equals 0:
+        return recap_note_result("invalid-job" and 0 and "")
+    if not (archive_list_text(manifest and 0) equals session) or else not (archive_list_text(manifest and 2) equals "recap_job"):
+        return recap_note_result("invalid-job" and 0 and "")
+    set tokens to provider_json_tokens(archive_list_text(manifest and 3))
+    if tokens equals 0:
+        return recap_note_result("invalid-job" and 0 and "")
+    set endpoint to provider_value(tokens and provider_member(tokens and 0 and "source_end"))
+    if recap_validate_structure(database and session and endpoint and candidate) is not equal to 0:
+        return recap_note_result("structure-invalid" and 0 and "")
+    set records to provider_items(tokens and provider_member(tokens and 0 and "records"))
+    if records equals 0:
+        return recap_note_result("invalid-job" and 0 and "")
+    set status to "fragment-reviews-covered"
+    set index to 0
+    repeat while index is less than length_list(records):
+        set record to get_list(records and index)
+        set source to provider_value(tokens and provider_member(tokens and record and "event"))
+        set digest to provider_value(tokens and provider_member(tokens and record and "digest"))
+        set original to history_read_piece(database and session and source and 0 and 1)
+        if not (archive_list_text(original and 0) equals "found") or else not (archive_list_text(original and 5) equals digest):
+            return recap_note_result("invalid-source" and 0 and source)
+        set total to http_decimal(archive_list_text(original and 4))
+        set progress to recap_review_cursor(database and session and endpoint and job and source and digest and total and candidate)
+        set current to archive_list_text(progress and 0)
+        if current equals "coverage-conflict":
+            return progress
+        if get_list(progress and 1) is less than total:
+            return recap_note_result("fragment-reviews-required" and get_list(progress and 1) and source)
+        if current equals "fragment-reviews-repair":
+            set status to current
+        set index to index + 1
+    return recap_note_result(status and 0 and "")
+
+# Caller owns the session compaction lock. Each iteration advances a durable
+# cursor; completion does not authorize activation or certify global claims.
+define recap_review_collect_provider with database as Int and session as Str and endpoint as Str and job as Str and candidate as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    repeat while 1 equals 1:
+        set cancellation to agent_cancellation_pending(library and cancellation_reader)
+        if cancellation is less than 0:
+            return "cancellation-error"
+        if cancellation equals 1:
+            return "cancelled"
+        set progress to recap_review_progress(database and session and job and candidate)
+        set status to archive_list_text(progress and 0)
+        if not (status equals "fragment-reviews-required"):
+            return status
+        set offset to get_list(progress and 1)
+        set source to archive_list_text(progress and 2)
+        set request to concat(job and concat(":fragment-review:" and agent_identity()))
+        set reviewed to recap_fragment_review_generate_provider(database and session and endpoint and job and source and offset and candidate and request and profile and reserve and cancellation_reader and read_size)
+        set status to archive_list_text(reviewed and 0)
+        if not (status equals "fragment-review-pass" or else status equals "fragment-review-repair"):
+            return status
+        if get_list(reviewed and 1) <= offset:
+            return "no-progress"
+    return "error"
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define recap_review_collect with database as Int and session as Str and endpoint as Str and job as Str and candidate as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    set profile to provider_llama_profile(model and port)
+    return recap_review_collect_provider(database and session and endpoint and job and candidate and profile and reserve and cancellation_reader and read_size and library)

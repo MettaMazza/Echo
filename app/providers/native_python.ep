@@ -1,0 +1,127 @@
+# Native dependency bridge for an isolated provider helper process. All Echo
+# logic remains Ernos. Calls invoke installed upstream functions, never source
+# snippets. Use on the initializing thread; do not share with web workers.
+# Keep the dependency library loaded until process exit.
+define native_python_open with library_path as Str and program as Str returning Int:
+    set library to ep_dlopen(library_path)
+    if library equals 0:
+        return 0
+    set decode to ep_dlsym(library and "Py_DecodeLocale")
+    set name to ep_dlsym(library and "Py_SetProgramName")
+    set initialize to ep_dlsym(library and "Py_InitializeEx")
+    set initialized to ep_dlsym(library and "Py_IsInitialized")
+    if decode equals 0 or else name equals 0 or else initialize equals 0 or else initialized equals 0:
+        return 0
+    if ep_dlcall0(initialized) is not equal to 0:
+        return 0
+    set wide to ep_dlcall2(decode and str_to_ptr(program) and 0)
+    if wide equals 0:
+        return 0
+    set ignored to ep_dlcall1(name and wide)
+    set ignored to ep_dlcall1(initialize and 0)
+    if ep_dlcall0(initialized) equals 0:
+        return 0
+    # Py_SetProgramName retains this storage for the interpreter lifetime.
+    return library
+
+define native_python_import with library as Int and name as Str returning Int:
+    set function to ep_dlsym(library and "PyImport_ImportModule")
+    if function equals 0:
+        return 0
+    return ep_dlcall1(function and str_to_ptr(name))
+
+define native_python_attribute with library as Int and object as Int and name as Str returning Int:
+    if object equals 0:
+        return 0
+    set function to ep_dlsym(library and "PyObject_GetAttrString")
+    if function equals 0:
+        return 0
+    return ep_dlcall2(function and object and str_to_ptr(name))
+
+define native_python_release with library as Int and object as Int returning Int:
+    if object equals 0:
+        return 0
+    set function to ep_dlsym(library and "Py_DecRef")
+    if function equals 0:
+        return 1
+    set ignored to ep_dlcall1(function and object)
+    return 0
+
+define native_python_text with library as Int and object as Int returning Str:
+    if object equals 0:
+        return ""
+    set function to ep_dlsym(library and "PyUnicode_AsUTF8")
+    if function equals 0:
+        return ""
+    set text to ep_dlcall1(function and object)
+    if text equals 0:
+        return ""
+    return ptr_to_str(text)
+
+# Arguments are existing owned or borrowed references. The temporary tuple owns
+# additional references so calling never consumes the caller's objects.
+define native_python_call with library as Int and function as Int and arguments as List and keywords as Int returning Int:
+    if function equals 0:
+        return 0
+    set tuple_new to ep_dlsym(library and "PyTuple_New")
+    set tuple_set to ep_dlsym(library and "PyTuple_SetItem")
+    set retain to ep_dlsym(library and "Py_IncRef")
+    set invoke to ep_dlsym(library and "PyObject_Call")
+    set tuple to ep_dlcall1(tuple_new and length_list(arguments))
+    if tuple equals 0:
+        return 0
+    set index to 0
+    repeat while index is less than length_list(arguments):
+        set object to get_list(arguments and index)
+        if object equals 0:
+            set released to native_python_release(library and tuple)
+            return 0
+        set ignored to ep_dlcall1(retain and object)
+        if ep_dlcall3(tuple_set and tuple and index and object) is not equal to 0:
+            set released to native_python_release(library and tuple)
+            return 0
+        set index to index + 1
+    set result to ep_dlcall3(invoke and function and tuple and keywords)
+    set released to native_python_release(library and tuple)
+    return result
+
+define native_python_string with library as Int and text as Str returning Int:
+    set function to ep_dlsym(library and "PyUnicode_FromStringAndSize")
+    return ep_dlcall2(function and str_to_ptr(text) and string_length(text))
+
+define native_python_json with library as Int and text as Str returning Int:
+    set module to native_python_import(library and "json")
+    set loads to native_python_attribute(library and module and "loads")
+    set value to native_python_string(library and text)
+    set arguments to [value]
+    set result to native_python_call(library and loads and arguments and 0)
+    set released to native_python_release(library and value)
+    set released to native_python_release(library and loads)
+    set released to native_python_release(library and module)
+    return result
+
+define native_python_member with library as Int and object as Int and name as Str returning Int:
+    if object equals 0:
+        return 0
+    set key to native_python_string(library and name)
+    set function to ep_dlsym(library and "PyObject_GetItem")
+    set result to ep_dlcall2(function and object and key)
+    set released to native_python_release(library and key)
+    return result
+
+define native_python_set with library as Int and object as Int and name as Str and value as Int returning Int:
+    if object equals 0 or else value equals 0:
+        return 1
+    set function to ep_dlsym(library and "PyObject_SetAttrString")
+    return ep_dlcall3(function and object and str_to_ptr(name) and value)
+
+define native_python_namespace with library as Int and keywords as Int returning Int:
+    if keywords equals 0:
+        return 0
+    set module to native_python_import(library and "types")
+    set constructor to native_python_attribute(library and module and "SimpleNamespace")
+    set arguments to create_list()
+    set result to native_python_call(library and constructor and arguments and keywords)
+    set released to native_python_release(library and constructor)
+    set released to native_python_release(library and module)
+    return result

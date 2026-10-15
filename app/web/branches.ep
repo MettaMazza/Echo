@@ -1,0 +1,112 @@
+import "../retained_text"
+import "run_store"
+
+# Branch creation never copies, rewrites or deletes original events. The saved
+# endpoint and digest identify the immutable source prefix for later reads.
+# Only accepted completed answers are boundaries in this operation; edit and
+# regenerate use their own boundary selection before launching a new run.
+define web_branch_at with database as Int and device as Str and source as Str and endpoint as Str and identity as Str and mode as Str and replacement as Str returning List:
+    return web_branch_at_provider(database and device and source and endpoint and identity and mode and replacement and "")
+
+define web_branch_at_provider with database as Int and device as Str and source as Str and endpoint as Str and identity as Str and mode as Str and replacement as Str and provider_identity as Str returning List:
+    if string_length(identity) equals 0 or else not (mode equals "continue" or else mode equals "edit" or else mode equals "regenerate"):
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return web_submit_result("database-busy" and "" and "" and 0)
+    if web_device_session_allowed(database and device and source) equals 0:
+        return web_submit_abort(database and "not-found")
+    if string_length(provider_identity) is greater than 0:
+        set registered to provider_registry_read(database and provider_identity)
+        if not (archive_list_text(registered and 0) equals "found"):
+            return web_submit_abort(database and "unknown-provider")
+    set session to concat("branch:" and identity)
+    set event to concat(session and ":origin")
+    set existing to archive_read_event(database and event)
+    if existing is not equal to 0:
+        if web_device_session_allowed(database and device and session) equals 0:
+            return web_submit_abort(database and "not-found")
+        set tokens to provider_json_tokens(archive_list_text(existing and 3))
+        if tokens equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "source")) equals source) or else not (provider_value(tokens and provider_member(tokens and 0 and "endpoint")) equals endpoint):
+            return web_submit_abort(database and "identity-conflict")
+        set stored_mode to provider_value(tokens and provider_member(tokens and 0 and "mode"))
+        if string_length(stored_mode) equals 0:
+            set stored_mode to "continue"
+        if not (stored_mode equals mode) or else not (provider_value(tokens and provider_member(tokens and 0 and "replacement")) equals replacement):
+            return web_submit_abort(database and "identity-conflict")
+        if not (provider_value(tokens and provider_member(tokens and 0 and "provider")) equals provider_identity):
+            return web_submit_abort(database and "identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return web_submit_abort(database and "database-error")
+        return web_submit_result("accepted" and session and "" and 0)
+    set values to create_list()
+    set added to append_list(values and source)
+    set added to append_list(values and endpoint)
+    set added to append_list(values and mode)
+    set accepted to history_collect_one(checkpoint_prepare(database and "SELECT e.sequence,e.digest,s.title FROM echo_events e JOIN echo_runs r ON r.session=e.session JOIN echo_sessions s ON s.session=e.session WHERE e.session=?1 AND e.event=?2 AND ((?3='continue' AND e.kind='assistant_final' AND r.last_event=e.event AND r.state='completed') OR (?3 IN ('edit','regenerate') AND e.kind='user' AND r.objective_event=e.event AND r.state IN ('completed','failed','cancelled')));" and values))
+    if not (archive_list_text(accepted and 0) equals "found"):
+        return web_submit_abort(database and "invalid-boundary")
+    if archive_verify(database and source) is not equal to 0:
+        return web_submit_abort(database and "archive-error")
+    set occurred to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and concat(archive_list_text(accepted and 3) and " — branch"))
+    set added to append_list(values and occurred)
+    if web_device_write(database and "INSERT INTO echo_sessions(session,title,created) VALUES(?,?,?);" and values) is not equal to 0 or else web_device_own_pending(database and device and session) is not equal to 0:
+        return web_submit_abort(database and "database-error")
+    set payload to concat("{\"source\":" and provider_quote(source))
+    set payload to concat(payload and concat(",\"endpoint\":" and provider_quote(endpoint)))
+    set payload to concat(payload and concat(",\"sequence\":" and provider_quote(archive_list_text(accepted and 1))))
+    set payload to concat(payload and concat(",\"digest\":" and provider_quote(archive_list_text(accepted and 2))))
+    set payload to concat(payload and concat(",\"mode\":" and provider_quote(mode)))
+    set payload to concat(payload and concat(",\"provider\":" and provider_quote(provider_identity)))
+    set payload to concat(payload and concat(",\"replacement\":" and concat(provider_quote(replacement) and "}")))
+    if archive_append_pending(database and session and event and "session_branch" and payload and occurred) is not equal to 0:
+        return web_submit_abort(database and "database-error")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return web_submit_abort(database and "database-error")
+    return web_submit_result("accepted" and session and "" and 1)
+
+define web_branch_session with database as Int and device as Str and source as Str and endpoint as Str and identity as Str returning List:
+    return web_branch_at(database and device and source and endpoint and identity and "continue" and "")
+
+# Creation and submission are separately durable, using the same retry identity.
+# A disconnect between them leaves a recoverable branch, never a duplicate turn.
+define web_revision with database as Int and device as Str and source as Str and user_event as Str and identity as Str and mode as Str and text as Str returning List:
+    return web_revision_provider(database and device and source and user_event and identity and mode and text and "")
+
+define web_revision_provider with database as Int and device as Str and source as Str and user_event as Str and identity as Str and mode as Str and text as Str and provider_identity as Str returning List:
+    if not (mode equals "edit" or else mode equals "regenerate"):
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    if web_device_session_allowed(database and device and source) equals 0:
+        return web_submit_result("not-found" and "" and "" and 0)
+    set original to archive_read_event(database and user_event)
+    if original equals 0:
+        return web_submit_result("invalid-boundary" and "" and "" and 0)
+    if not (archive_list_text(original and 0) equals source) or else not (archive_list_text(original and 2) equals "user"):
+        return web_submit_result("invalid-boundary" and "" and "" and 0)
+    set message to text
+    if mode equals "regenerate":
+        set message to archive_list_text(original and 3)
+    if string_length(message) equals 0:
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    set files to create_list()
+    set binding to turn_attachment_read(database and source and user_event)
+    if archive_list_text(binding and 0) equals "error":
+        return web_submit_result("database-error" and "" and "" and 0)
+    if archive_list_text(binding and 0) equals "found":
+        set tokens to provider_json_tokens(archive_list_text(binding and 1))
+        if tokens equals 0:
+            return web_submit_result("archive-error" and "" and "" and 0)
+        set items to provider_items(tokens and provider_member(tokens and 0 and "attachments"))
+        if items equals 0:
+            return web_submit_result("archive-error" and "" and "" and 0)
+        set index to 0
+        repeat while index is less than length_list(items):
+            set attachment to provider_value(tokens and provider_member(tokens and get_list(items and index) and "attachment"))
+            set added to append_list(files and attachment)
+            set index to index + 1
+    set branch to web_branch_at_provider(database and device and source and user_event and identity and mode and message and provider_identity)
+    if not (archive_list_text(branch and 0) equals "accepted"):
+        return branch
+    return web_submit_owned_provider(database and device and concat("revision:" and identity) and archive_list_text(branch and 1) and message and files and provider_identity)

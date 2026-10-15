@@ -1,0 +1,90 @@
+import "../../app/web/run_store"
+import "../../app/agent/run_messages"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is not equal to 4 or else file_exists(get_argument(1)):
+        return 1
+    set configured to set_env("ECHO_WORKSPACE_ROOT" and get_argument(2))
+    set configured to set_env("ECHO_EXECUTION_RUNTIME" and get_argument(3))
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Execution fixture" and "fixture-secret") is not equal to 0:
+        return 1
+    set submitted to web_submit_owned(database and "owner" and "request" and "" and "Execute echo in the owned workspace.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    if provider_json_tokens(session_tool_schemas()) equals 0 or else string_contains(session_tool_schemas() and "workspace_execute") equals 0:
+        return 1
+    set replies to create_list()
+    set arguments to "{\"program\":\"/bin/echo\",\"arguments\":[\"Hello Echo\"]}"
+    set added to append_list(replies and concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"execute\",\"function\":{\"name\":\"workspace_execute\",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}")))
+    set added to append_list(replies and "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Execution receipt received.\"},\"finish_reason\":\"stop\"}]}")
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set index to 0
+    repeat while index is less than length_list(replies):
+        set completed to channel
+        spawn generation_fixture(listener and ptr_to_str(get_list(replies and index)) and completed)
+        set messages to agent_run_messages(database and run)
+        set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(messages and concat(",\"tools\":" and concat(session_tool_schemas() and "}"))))
+        set generated to agent_generate_local(database and run and concat("generation:" and int_to_string(index)) and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+        set served to receive from completed
+        if generated is not equal to 0 or else served is not equal to 0:
+            return 1
+        repeat while 1 equals 1:
+            set row to agent_run_read(database and run)
+            if row equals 0:
+                return 1
+            if not (ptr_to_str(get_list(row and 2)) equals "tools"):
+                break
+            if agent_tool_step(database and run) is not equal to 0:
+                display "FAIL: execution dispatch"
+                return 1
+        if sql_close(database) is not equal to 0:
+            return 1
+        set database to archive_open(get_argument(1))
+        set index to index + 1
+    set output to history_collect_one(archive_prepare(database and "SELECT group_concat(data,'') FROM (SELECT json_extract(payload,'$.data') AS data FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.stream')='stdout' ORDER BY sequence);"))
+    if not (ptr_to_str(get_list(output and 0)) equals "found") or else not (ptr_to_str(get_list(output and 1)) equals "48656c6c6f204563686f0a"):
+        display "FAIL: archived execution bytes"
+        return 1
+    set observed to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='tool_result' AND json_extract(payload,'$.result.status')='complete' AND json_extract(payload,'$.result.wait_status')='0';"))
+    if not (ptr_to_str(get_list(observed and 0)) equals "found") or else not (ptr_to_str(get_list(observed and 1)) equals "1"):
+        return 1
+    set source to history_collect_one(archive_prepare(database and "SELECT json_extract(payload,'$.result.stdout_event') FROM echo_events WHERE kind='tool_result';"))
+    if not (ptr_to_str(get_list(source and 0)) equals "found"):
+        return 1
+    set read_arguments to concat("{\"event\":" and concat(provider_quote(ptr_to_str(get_list(source and 1))) and ",\"offset\":0,\"characters\":2000}"))
+    set reread to history_tool_execute(database and session and "history_read" and read_arguments)
+    if string_contains(reread and "48656c6c6f204563686f0a") equals 0:
+        return 1
+    set cursor to 0
+    set eof_seen to 0
+    repeat while 1 equals 1:
+        set lookup to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"call_id\":\"execute\",\"stream\":\"stdout\",\"after\":" and concat(int_to_string(cursor) and "}"))))
+        set next to session_tool_execute(database and session and "workspace_output_next" and lookup)
+        set tokens to provider_json_tokens(next)
+        set next_status to provider_value(tokens and provider_member(tokens and 0 and "status"))
+        if next_status equals "end":
+            break
+        if not (next_status equals "found"):
+            return 1
+        set cursor to string_to_int(provider_value(tokens and provider_member(tokens and 0 and "sequence")))
+        if provider_value(tokens and provider_member(tokens and 0 and "eof")) equals "1":
+            set eof_seen to eof_seen + 1
+        set forbidden to session_tool_execute(database and "other-session" and "workspace_output_next" and lookup)
+        if not (forbidden equals "{\"status\":\"not-authorized\"}"):
+            return 1
+    if eof_seen is not equal to 1:
+        return 1
+    set row to agent_run_read(database and run)
+    if not (ptr_to_str(get_list(row and 2)) equals "completed") or else archive_verify(database and session) is not equal to 0:
+        return 1
+    set closed to local_socket_close(listener)
+    if sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: generated tool call dispatched an owned sandboxed command, archived exact stdout/exit, reopened and continued to final turn."
+    return 0

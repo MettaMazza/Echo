@@ -1,0 +1,92 @@
+import "../retained_text"
+import "native_process"
+import "process_output"
+import "output_archive"
+import "../agent/control"
+
+# Takes ownership of the two output readers, not the cancellation reader or
+# process handle. Caller retains the handle until it is reaped and closed.
+# Result: status, raw wait status, persisted stdout bytes, persisted stderr bytes.
+# Persistence failure terminates the group immediately and never claims complete
+# output. Cancellation terminates the group then archives bytes still in pipes.
+define workspace_process_capture with database as Int and run as Str and call_id as Str and handle as List and output as Int and errors as Int and cancellation as Int returning List:
+    set library to get_list(handle and 0)
+    set status to "complete"
+    set totals to create_list()
+    set added to append_list(totals and 0)
+    set added to append_list(totals and 0)
+    set preferred to 1
+    set reader to cancellation
+    repeat while output >= 0 or else errors >= 0:
+        set chunk to workspace_output_next(library and output and errors and reader and preferred)
+        set kind to archive_list_text(chunk and 0)
+        set stream to get_list(chunk and 1)
+        if kind equals "cancelled":
+            set status to "cancelled"
+            set reader to -1
+            if workspace_process_signal(handle and 9) is not equal to 0 and socket_errno(library) is not equal to 3:
+                set status to "cleanup-failed"
+                break
+            continue
+        if kind equals "data" or else kind equals "eof":
+            set name to "stdout"
+            if stream equals 2:
+                set name to "stderr"
+            set ended to 0
+            if kind equals "eof":
+                set ended to 1
+            set recorded to workspace_output_record(database and run and call_id and agent_identity() and name and get_list(chunk and 2) and get_list(chunk and 3) and ended)
+            if kind equals "data":
+                set released to socket_release_buffer(library and get_list(chunk and 2))
+                set preferred to 3 - stream
+            if recorded is not equal to 0:
+                set status to "persistence-failed"
+                break
+            set changed to set_list(totals and stream - 1 and get_list(totals and stream - 1) + get_list(chunk and 3))
+            if kind equals "eof":
+                if stream equals 1:
+                    set closed to net_close(output)
+                    set output to -1
+                else:
+                    set closed to net_close(errors)
+                    set errors to -1
+                if closed is not equal to 0:
+                    set status to "cleanup-failed"
+                    break
+        else:
+            set status to "read-failed"
+            break
+    if not (status equals "complete" or else status equals "cancelled"):
+        if workspace_process_signal(handle and 9) is not equal to 0 and socket_errno(library) is not equal to 3:
+            set status to "cleanup-failed"
+    if output >= 0:
+        set closed to net_close(output)
+        if closed is not equal to 0:
+            set status to "cleanup-failed"
+    if errors >= 0:
+        set closed to net_close(errors)
+        if closed is not equal to 0:
+            set status to "cleanup-failed"
+    set state to workspace_process_poll(handle)
+    repeat while state equals 0:
+        if status equals "cleanup-failed":
+            break
+        if status equals "complete":
+            set pending to agent_cancellation_pending(library and cancellation)
+            if pending is not equal to 0:
+                set status to "cancelled"
+                if pending is less than 0:
+                    set status to "read-failed"
+                if workspace_process_signal(handle and 9) is not equal to 0 and socket_errno(library) is not equal to 3:
+                    set status to "cleanup-failed"
+                    break
+        set slept to sleep_ms(10)
+        set state to workspace_process_poll(handle)
+    if state is not equal to 1:
+        set status to "cleanup-failed"
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and get_list(handle and 3))
+    set added to append_list(result and get_list(totals and 0))
+    set added to append_list(result and get_list(totals and 1))
+    return result

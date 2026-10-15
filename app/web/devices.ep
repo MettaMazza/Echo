@@ -1,0 +1,89 @@
+import "../retained_text"
+import "../agent/runner"
+
+# Credentials are random bearer secrets supplied by the host pairing flow.
+# Only their digests are retained. Invitations are consumed in the same
+# transaction that creates the device, so concurrent redemption cannot share it.
+define web_device_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_devices(device TEXT PRIMARY KEY,name TEXT NOT NULL,credential_hash TEXT NOT NULL UNIQUE,revoked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS echo_pairing(invitation_hash TEXT PRIMARY KEY,consumed INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS echo_session_owners(session TEXT PRIMARY KEY REFERENCES echo_sessions(session),device TEXT NOT NULL REFERENCES echo_devices(device));")
+
+define web_device_write with database as Int and query as Str and values as List returning Int:
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return 1
+    return archive_finish(statement and 101)
+
+define web_pairing_invite with database as Int and invitation as Str returning Int:
+    if string_length(invitation) equals 0:
+        return 1
+    set values to create_list()
+    set added to append_list(values and ep_sha256(invitation))
+    return web_device_write(database and "INSERT INTO echo_pairing(invitation_hash) VALUES(?);" and values)
+
+define web_device_pair with database as Int and invitation as Str and device as Str and name as Str and credential as Str returning Int:
+    if string_length(invitation) equals 0 or else string_length(device) equals 0 or else string_length(credential) equals 0:
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set values to create_list()
+    set added to append_list(values and ep_sha256(invitation))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT invitation_hash FROM echo_pairing WHERE invitation_hash=? AND consumed=0;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return 1
+    if web_device_write(database and "UPDATE echo_pairing SET consumed=1 WHERE invitation_hash=?;" and values) is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return 1
+    set values to create_list()
+    set added to append_list(values and device)
+    set added to append_list(values and name)
+    set added to append_list(values and ep_sha256(credential))
+    if web_device_write(database and "INSERT INTO echo_devices(device,name,credential_hash) VALUES(?,?,?);" and values) is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return 1
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return 1
+    return 0
+
+# An empty principal always means unauthenticated, including database failure.
+define web_device_authenticate with database as Int and credential as Str returning Str:
+    if string_length(credential) equals 0:
+        return ""
+    set values to create_list()
+    set added to append_list(values and ep_sha256(credential))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT device FROM echo_devices WHERE credential_hash=? AND revoked=0;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+define web_device_revoke with database as Int and device as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and device)
+    return web_device_write(database and "UPDATE echo_devices SET revoked=1 WHERE device=?;" and values)
+
+# Call inside the same transaction that creates the session. This never
+# silently adopts legacy records; only an explicit host migration may do so.
+define web_device_own_pending with database as Int and device as Str and session as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and device)
+    return web_device_write(database and "INSERT INTO echo_session_owners(session,device) VALUES(?,?);" and values)
+
+define web_device_session_allowed with database as Int and device as Str and session as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and device)
+    set added to append_list(values and session)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT o.session FROM echo_session_owners o JOIN echo_devices d ON d.device=o.device WHERE d.device=? AND o.session=? AND d.revoked=0;" and values))
+    if archive_list_text(row and 0) equals "found":
+        return 1
+    return 0
+
+define web_device_run_allowed with database as Int and device as Str and run as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and device)
+    set added to append_list(values and run)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.run FROM echo_runs r JOIN echo_session_owners o ON o.session=r.session JOIN echo_devices d ON d.device=o.device WHERE d.device=? AND r.run=? AND d.revoked=0;" and values))
+    if archive_list_text(row and 0) equals "found":
+        return 1
+    return 0

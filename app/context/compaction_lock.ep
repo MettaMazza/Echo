@@ -1,0 +1,38 @@
+import "../transport/native_open"
+import "../agent/control"
+
+# A host-local advisory lock prevents simultaneous compaction of one archive
+# session. The kernel releases it on process death; it has no timeout or lease
+# expiry that could grant ownership while an earlier worker is still running.
+# Lock files must not be deleted during normal operation (inode identity matters).
+define compaction_lock_acquire with database as Int and session as Str and library as Int returning Int:
+    set statement to archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';")
+    if statement equals 0:
+        return -1
+    if ep_sqlite3_step(statement) is not equal to 100:
+        set closed to ep_sqlite3_finalize(statement)
+        return -1
+    set path to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+    if archive_finish(statement and 101) is not equal to 0 or else string_length(path) equals 0:
+        return -1
+    set resolve to ep_dlsym(library and "realpath")
+    set release to ep_dlsym(library and "free")
+    set open_function to ep_dlsym(library and "open")
+    set lock_function to ep_dlsym(library and "flock")
+    if resolve equals 0 or else release equals 0 or else open_function equals 0 or else lock_function equals 0:
+        return -1
+    set resolved to ep_dlcall2(resolve and str_to_ptr(path) and 0)
+    if resolved equals 0:
+        return -1
+    set canonical to concat(ptr_to_str(resolved) and "")
+    set freed to ep_dlcall1(release and resolved)
+    set lock_path to concat(canonical and concat(".compaction-" and concat(ep_sha256(session) and ".lock")))
+    # Darwin flags from the installed SDK: O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC;
+    # permission 0600, LOCK_EX|LOCK_NB. These are ABI constants, not work limits.
+    set descriptor to native_open_mode(library and lock_path and 16777986 and 384)
+    if descriptor is less than 0:
+        return -1
+    if socket_signed_result(ep_dlcall2(lock_function and descriptor and 6)) is not equal to 0:
+        set closed to net_close(descriptor)
+        return -1
+    return descriptor

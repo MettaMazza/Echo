@@ -1,0 +1,60 @@
+import "../../app/web/attachments"
+import "fs"
+import "../../app/agent/tool_recovery"
+import "../../app/agent/run_messages"
+import "../../app/archive/history"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture" and "secret") is not equal to 0:
+        return 1
+    set submitted to web_submit_owned(database and "owner" and "request" and "" and "Create source.ep in this session workspace.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"create-file\",\"function\":{\"name\":\"workspace_create_text\",\"arguments\":\"{\\\"path\\\":\\\"source.ep\\\",\\\"text\\\":\\\"display \\\\\\\"Hello\\\\\\\"\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}"
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set messages to agent_run_messages(database and run)
+    set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(messages and concat(",\"tools\":" and concat(session_tool_schemas() and "}"))))
+    set generated to agent_generate_local(database and run and "first-request" and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 1
+    if sql_execute(database and "CREATE TRIGGER reject_result BEFORE INSERT ON echo_events WHEN NEW.kind='tool_result' BEGIN SELECT RAISE(ABORT,'fixture observation failure'); END;") is not equal to 0 or else agent_tool_step(database and run) equals 0:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_session_open(database and library and "owner" and session and get_argument(2))
+    set read to workspace_read_text(library and root and "source.ep" and 1 and 0 and 999)
+    if root is less than 0 or else not (ptr_to_str(get_list(read and 0)) equals "read") or else not (ptr_to_str(get_list(read and 1)) equals "display \"Hello\""):
+        display "FAIL: file publication did not precede failed observation"
+        return 1
+    set closed to net_close(root)
+    set closed to ep_dlclose(library)
+    set count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='tool_result';"))
+    if not (ptr_to_str(get_list(count and 1)) equals "0"):
+        return 1
+    if sql_execute(database and "DROP TRIGGER reject_result;") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(path)
+    # This isolated fixture has no worker; recovery owns the sole connection.
+    if agent_recover_tools_owned(database and run) is not equal to 0:
+        return 1
+    set state to history_collect_one(archive_prepare(database and "SELECT state FROM echo_tool_calls WHERE call_id='create-file';"))
+    if not (ptr_to_str(get_list(state and 1)) equals "uncertain") or else agent_tool_step(database and run) equals 0:
+        return 1
+    set count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='tool_result';"))
+    if not (ptr_to_str(get_list(count and 1)) equals "0") or else archive_verify(database and session) is not equal to 0:
+        return 1
+    set closed to local_socket_close(listener)
+    set closed to sql_close(database)
+    display "PASS: file publication survives failed observation; reopen recovery marks uncertain and refuses automatic replay or invented result."
+    return 0

@@ -1,0 +1,91 @@
+import "../retained_text"
+import "socket_read"
+import "http_head"
+
+# Reader owns its current native buffer. Slices are borrowed until the next take.
+# Fields: library, socket, cancellation reader, buffer, buffer length, cursor.
+define http_stream_create with library as Int and descriptor as Int and cancellation_reader as Int returning List:
+    set reader to create_list()
+    set added to append_list(reader and library)
+    set added to append_list(reader and descriptor)
+    set added to append_list(reader and cancellation_reader)
+    set added to append_list(reader and 0)
+    set added to append_list(reader and 0)
+    set added to append_list(reader and 0)
+    return reader
+
+define http_stream_release with reader as List returning Int:
+    set released to socket_release_buffer(get_list(reader and 0) and get_list(reader and 3))
+    set changed to set_list(reader and 3 and 0)
+    set changed to set_list(reader and 4 and 0)
+    set changed to set_list(reader and 5 and 0)
+    return released
+
+# Return up to the requested number of bytes without consuming later messages.
+# Call repeatedly to complete an exact body length. An early EOF is incomplete.
+define http_stream_take with reader as List and wanted as Int returning List:
+    if wanted is less than 1:
+        return socket_read_result("error" and 0 and 0)
+    set remaining to get_list(reader and 4) - get_list(reader and 5)
+    if remaining equals 0:
+        if http_stream_release(reader) is not equal to 0:
+            return socket_read_result("error" and 0 and 0)
+        set chunk to socket_read_chunk(get_list(reader and 0) and get_list(reader and 1) and get_list(reader and 2))
+        if not (archive_list_text(chunk and 0) equals "data"):
+            return chunk
+        set changed to set_list(reader and 3 and get_list(chunk and 1))
+        set changed to set_list(reader and 4 and get_list(chunk and 2))
+        set remaining to get_list(chunk and 2)
+    set count to wanted
+    if count is greater than remaining:
+        set count to remaining
+    set pointer to get_list(reader and 3) + get_list(reader and 5)
+    set changed to set_list(reader and 5 and get_list(reader and 5) + count)
+    return socket_read_result("data" and pointer and count)
+
+# A delimiter may straddle any TCP read. Body bytes stay in the reader, including
+# embedded zero bytes. Header NUL is rejected before conversion into a string.
+# The builder grows with received headers; it has no fixed header-size ceiling.
+define http_stream_head with reader as List returning List:
+    set copy_function to ep_dlsym(get_list(reader and 0) and "memcpy")
+    if copy_function equals 0:
+        return http_failure("error")
+    set builder to create_builder()
+    set byte to create_list()
+    set added to append_list(byte and 0)
+    set state to 0
+    repeat while state is not equal to 4:
+        set piece to http_stream_take(reader and 1)
+        set status to archive_list_text(piece and 0)
+        if not (status equals "data"):
+            if status equals "eof" and builder_length(builder) is greater than 0:
+                return http_failure("incomplete")
+            return http_failure(status)
+        set cleared to set_list(byte and 0 and 0)
+        set copied to ep_dlcall3(copy_function and get_list_data_ptr(byte) and get_list(piece and 1) and 1)
+        set code to get_list(byte and 0)
+        if code equals 0:
+            return http_failure("bad-request")
+        set appended to builder_append(builder and ptr_to_str(get_list_data_ptr(byte)))
+        if state equals 0:
+            if code equals 13:
+                set state to 1
+        else if state equals 1:
+            if code equals 10:
+                set state to 2
+            else if code is not equal to 13:
+                set state to 0
+        else if state equals 2:
+            if code equals 13:
+                set state to 3
+            else:
+                set state to 0
+        else if state equals 3:
+            if code equals 10:
+                set state to 4
+            else if code equals 13:
+                set state to 1
+            else:
+                set state to 0
+    set head to ptr_to_str(builder_to_string(builder))
+    return http_parse_head(head)

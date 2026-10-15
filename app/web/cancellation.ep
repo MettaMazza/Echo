@@ -1,0 +1,53 @@
+import "../retained_text"
+import "http_api"
+import "select"
+
+define web_cancel_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_cancel_requests(run TEXT PRIMARY KEY REFERENCES echo_runs(run),device TEXT NOT NULL REFERENCES echo_devices(device));")
+
+# A durable request is distinct from completion. Only the owning active device
+# may request it; the worker records the actual terminal transition.
+define web_cancel_request with database as Int and device as Str and run as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and device)
+    return tool_ledger_change(database and "INSERT INTO echo_cancel_requests(run,device) SELECT r.run,d.device FROM echo_runs r JOIN echo_session_owners o ON o.session=r.session JOIN echo_devices d ON d.device=o.device WHERE r.run=?1 AND d.device=?2 AND d.revoked=0 ON CONFLICT(run) DO UPDATE SET device=excluded.device RETURNING run;" and values)
+
+# The monitor owns the cancellation writer. Closing it wakes a blocked native
+# provider read/write/connect. A separate stop pipe ends the monitor when normal
+# work finishes. Database failure also wakes the worker rather than leaving an
+# uncancellable inference request running indefinitely.
+define web_cancel_monitor with database_path as Str and run as Str and stop_reader as Int and cancellation_writer as Int and completed as Int returning Int:
+    set database to archive_open(database_path)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set status to 0
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    if database equals 0 or else library equals 0:
+        set status to 1
+    else:
+        repeat while 1 equals 1:
+            if agent_cancellation_pending(library and stop_reader) is not equal to 0:
+                break
+            set values to create_list()
+            set added to append_list(values and run)
+            set row to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run=?;" and values))
+            set found to archive_list_text(row and 0)
+            if found equals "found":
+                break
+            if found equals "error":
+                set status to 1
+                break
+            # Responsiveness cadence, not an inference deadline or token cap.
+            # Use the existing channel wait so this idle monitor cooperates
+            # with allocation on the active inference worker.
+            set waited to select(waits and 100)
+    if database is not equal to 0:
+        set status to status + sql_close(database)
+    if library is not equal to 0:
+        set status to status + ep_dlclose(library)
+    set status to status + net_close(cancellation_writer)
+    set status to status + net_close(stop_reader)
+    send status to completed
+    return status

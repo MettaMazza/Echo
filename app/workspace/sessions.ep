@@ -1,0 +1,67 @@
+import "../retained_text"
+import "files"
+import "../archive/runtime_lock"
+import "../tools/history_tools"
+
+# Bind an owned session to one host-configured root. A changed root is an
+# explicit migration, not an implicit new empty workspace. Reservation survives
+# interruption before mkdir and keeps independent databases in separate names.
+define workspace_session_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_workspaces(session TEXT PRIMARY KEY REFERENCES echo_sessions(session),device TEXT NOT NULL REFERENCES echo_devices(device),root TEXT NOT NULL,directory TEXT NOT NULL UNIQUE); CREATE TRIGGER IF NOT EXISTS echo_workspace_no_update BEFORE UPDATE ON echo_workspaces BEGIN SELECT RAISE(ABORT,'Workspace identity is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_workspace_no_delete BEFORE DELETE ON echo_workspaces BEGIN SELECT RAISE(ABORT,'Workspace identity is immutable'); END;")
+
+define workspace_session_allowed with database as Int and device as Str and session as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and device)
+    set added to append_list(values and session)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT o.session FROM echo_session_owners o JOIN echo_devices d ON d.device=o.device WHERE d.device=?1 AND d.revoked=0 AND o.session=?2;" and values))
+    return archive_list_text(row and 0) equals "found"
+
+# device and session are supplied by the authenticated host/run, never accepted
+# as filesystem-tool arguments. Root is host configuration, never model input.
+define workspace_session_open with database as Int and library as Int and device as Str and session as Str and root_path as Str returning Int:
+    if workspace_session_allowed(database and device and session) is not equal to 1:
+        return -1
+    set root to workspace_root_open(library and root_path)
+    if root is less than 0:
+        return -1
+    set anchor to archive_runtime_anchor(database and library)
+    if string_length(anchor) equals 0 or else workspace_session_schema(database) is not equal to 0:
+        set closed to net_close(root)
+        return -1
+    set directory to concat(ep_sha256(anchor) and concat("-" and ep_sha256(session)))
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and device)
+    set added to append_list(values and root_path)
+    set added to append_list(values and directory)
+    set statement to checkpoint_prepare(database and "INSERT OR IGNORE INTO echo_workspaces(session,device,root,directory) SELECT ?1,?2,?3,?4 FROM echo_session_owners o JOIN echo_devices d ON d.device=o.device WHERE o.session=?1 AND d.device=?2 AND d.revoked=0;" and values)
+    if statement equals 0:
+        set closed to net_close(root)
+        return -1
+    if archive_finish(statement and 101) is not equal to 0:
+        set closed to net_close(root)
+        return -1
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT directory FROM echo_workspaces WHERE session=?1 AND device=?2 AND root=?3 AND directory=?4;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        set closed to net_close(root)
+        return -1
+    set create_directory to ep_dlsym(library and "mkdirat")
+    set open_directory to ep_dlsym(library and "openat")
+    set flush to ep_dlsym(library and "fsync")
+    if create_directory equals 0 or else open_directory equals 0 or else flush equals 0:
+        set closed to net_close(root)
+        return -1
+    set created to socket_signed_result(ep_dlcall3(create_directory and root and str_to_ptr(directory) and 448))
+    if created is not equal to 0 and socket_errno(library) is not equal to 17:
+        set closed to net_close(root)
+        return -1
+    set child to socket_signed_result(ep_dlcall3(open_directory and root and str_to_ptr(directory) and 17826048))
+    if child is less than 0:
+        set closed to net_close(root)
+        return -1
+    if ep_dlcall1(flush and root) is not equal to 0 or else workspace_session_allowed(database and device and session) is not equal to 1:
+        set closed to net_close(child)
+        set closed to net_close(root)
+        return -1
+    set closed to net_close(root)
+    return child

@@ -1,0 +1,78 @@
+import "../../app/context/recap_collect"
+import "../../app/context/recap_merge"
+import "../fixtures/json_fixture"
+import "../fixtures/generation_fixture"
+
+define collect_reply with listener as List and method as Str and path as Str and body as Str and response as Str returning Int:
+    set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " and int_to_string(string_length(response)))
+    set wire to concat(wire and concat("\r\n\r\n" and response))
+    set completed to channel
+    spawn json_fixture(listener and method and path and body and wire and completed)
+    return receive from completed
+
+define collect_provider with listener as List and bodies as List and completed as Int returning Int:
+    set failed to 0
+    set index to 0
+    repeat while index is less than length_list(bodies):
+        set failed to failed + collect_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
+        set failed to failed + collect_reply(listener and "GET" and "/props" and "" and "{\"default_generation_settings\":{\"n_ctx\":262144,\"params\":{\"n_predict\":-1}}}")
+        set failed to failed + collect_reply(listener and "POST" and "/v1/chat/completions/input_tokens" and ptr_to_str(get_list(bodies and index)) and "{\"input_tokens\":1000}")
+        set generated to channel
+        spawn generation_fixture(listener and "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Fixture notes, requiring semantic review.\"},\"finish_reason\":\"stop\"}]}" and generated)
+        set result to receive from generated
+        set failed to failed + result
+        set index to index + 1
+    send failed to completed
+    return 0
+
+define main returning Int:
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else agent_run_schema(database) is not equal to 0 or else checkpoint_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "session" and "first" and "user" and "café" and "fixture") is not equal to 0 or else agent_run_create(database and "first-run" and "session" and "first") is not equal to 0:
+        return 1
+    if archive_append(database and "session" and "second" and "user" and "🌍" and "fixture") is not equal to 0 or else agent_run_create(database and "second-run" and "session" and "second") is not equal to 0:
+        return 1
+    if recap_job_create(database and "session" and "second" and "job") is not equal to 0:
+        return 1
+    if not (recap_merge_sources(database and "session" and "job") equals ""):
+        return 1
+    set bodies to create_list()
+    set added to append_list(bodies and recap_fragment_body("fixture" and "second" and history_read_piece(database and "session" and "first" and 0 and 4) and 0 and 4))
+    set added to append_list(bodies and recap_fragment_body("fixture" and "second" and history_read_piece(database and "session" and "second" and 0 and 1) and 0 and 1))
+    set listener to local_socket_listen(0)
+    set completed to channel
+    spawn collect_provider(listener and bodies and completed)
+    set status to recap_collect(database and "session" and "job" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set failed to receive from completed
+    if failed is not equal to 0 or else not (status equals "source-ranges-covered"):
+        return 1
+    set merge_packet to recap_merge_sources(database and "session" and "job")
+    set merge_tokens to provider_json_tokens(merge_packet)
+    if merge_tokens equals 0:
+        return 1
+    set merge_sources to provider_items(merge_tokens and provider_member(merge_tokens and 0 and "sources"))
+    if length_list(merge_sources) is not equal to 2:
+        return 1
+    set merge_bodies to create_list()
+    set added to append_list(merge_bodies and recap_request_body("fixture" and merge_packet))
+    set merged to channel
+    # The scripted answer is plain notes, not the recap contract. It must be
+    # archived as invalid and must not replace active memory.
+    spawn collect_provider(listener and merge_bodies and merged)
+    set candidate to recap_merge(database and "session" and "job" and "merge-request" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set merge_failed to receive from merged
+    if merge_failed is not equal to 0 or else not (ptr_to_str(get_list(candidate and 0)) equals "structure-invalid"):
+        return 1
+    if archive_read_event(database and "merge-request:candidate") equals 0:
+        return 1
+    if checkpoint_read_active(database and "session") is not equal to 0 or else sql_close(database) is not equal to 0 or else local_socket_close(listener) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    # No provider is available. A covered job must return without another call.
+    if not (recap_collect(database and "session" and "job" and "fixture" and 1 and 100 and -1 and 4096) equals "source-ranges-covered"):
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: automatic multi-source notes collection, exact request preflights, durable coverage and no provider replay after reopen; active memory unchanged."
+    return 0

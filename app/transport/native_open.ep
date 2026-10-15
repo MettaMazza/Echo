@@ -1,0 +1,54 @@
+import "socket_read"
+
+# Apple arm64 passes variadic arguments differently from fixed arguments.
+# openat has three fixed arguments followed by the promoted mode integer.
+# Use the installed libffi ABI rather than the generic fixed dlcall wrapper.
+define native_open_at with library as Int and parent as Int and path as Str and flags as Int and mode as Int returning Int:
+    if not (ptr_to_str(arch_name()) equals "arm64"):
+        return -1
+    set ffi to ep_dlopen("/usr/lib/libffi.dylib")
+    if ffi equals 0:
+        return -1
+    set prepare to ep_dlsym(ffi and "ffi_prep_cif_var")
+    set invoke to ep_dlsym(ffi and "ffi_call")
+    set integer_type to ep_dlsym(ffi and "ffi_type_sint32")
+    set pointer_type to ep_dlsym(ffi and "ffi_type_pointer")
+    set open_function to ep_dlsym(library and "openat")
+    if prepare equals 0 or else invoke equals 0 or else integer_type equals 0 or else pointer_type equals 0 or else open_function equals 0:
+        set closed to ep_dlclose(ffi)
+        return -1
+    # Installed arm64 ffi_cif is40 bytes including aarch64_nfixedargs.
+    set interface to create_list()
+    set index to 0
+    repeat while index is less than 5:
+        set added to append_list(interface and 0)
+        set index to index + 1
+    set types to create_list()
+    set added to append_list(types and integer_type)
+    set added to append_list(types and pointer_type)
+    set added to append_list(types and integer_type)
+    set added to append_list(types and integer_type)
+    set values to create_list()
+    set added to append_list(values and parent)
+    set added to append_list(values and str_to_ptr(path))
+    set added to append_list(values and flags)
+    set added to append_list(values and mode)
+    set pointers to create_list()
+    set index to 0
+    repeat while index is less than 4:
+        set added to append_list(pointers and get_list_data_ptr(values) + index * 8)
+        set index to index + 1
+    set result to create_list()
+    set added to append_list(result and -1)
+    # FFI_SYSV=1, three fixed arguments and four total arguments.
+    if ep_dlcall6(prepare and get_list_data_ptr(interface) and 1 and 3 and 4 and integer_type and get_list_data_ptr(types)) is not equal to 0:
+        set closed to ep_dlclose(ffi)
+        return -1
+    set called to ep_dlcall4(invoke and get_list_data_ptr(interface) and open_function and get_list_data_ptr(result) and get_list_data_ptr(pointers))
+    set descriptor to socket_signed_result(get_list(result and 0))
+    set closed to ep_dlclose(ffi)
+    return descriptor
+
+# Darwin AT_FDCWD=-2. This preserves existing absolute-path host callers.
+define native_open_mode with library as Int and path as Str and flags as Int and mode as Int returning Int:
+    return native_open_at(library and -2 and path and flags and mode)

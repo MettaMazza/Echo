@@ -1,0 +1,87 @@
+import "intervention"
+import "../providers/json_access"
+
+# Accept JSON-number spelling only; preserve signed strengths without a chosen
+# application ceiling. Reject nonfinite float32 conversion and trailing data.
+define research_scale with ffi as Int and system as Int and text as Str returning List:
+    set parsed to provider_json_tokens(text)
+    if parsed equals 0 or else not (provider_kind(parsed and 0) equals "number"):
+        return 0
+    set pointer to research_ffi_type(ffi and "pointer")
+    set ending to [0]
+    set arguments to [str_to_ptr(text), get_list_data_ptr(ending)]
+    set error_pointer to ep_dlcall0(ep_dlsym(system and "__error"))
+    set ignored to research_native_write(system and error_pointer and 0 and 4)
+    set result to research_ffi_invoke(ffi and ep_dlsym(system and "strtof") and research_ffi_type(ffi and "float") and [pointer, pointer] and [get_list_data_ptr(arguments), get_list_data_ptr(arguments) + 8])
+    if socket_errno(system) is not equal to 0 or else result equals 0 or else get_list(ending and 0) is not equal to str_to_ptr(text) + string_length(text):
+        return 0
+    if research_f32_finite(system and get_list_data_ptr(result) and 1) is not equal to 1:
+        return 0
+    return result
+
+# Hash the exact in-memory snapshot which will be applied, not a separate file
+# read. The batch is native hash-call granularity, never a vector-size cap.
+define research_memory_digest with system as Int and pointer as Int and bytes as Int returning Str:
+    set context to research_native_words(13)
+    set output to research_native_words(4)
+    if ep_dlcall1(ep_dlsym(system and "CC_SHA256_Init") and get_list_data_ptr(context)) is not equal to 1:
+        return ""
+    set offset to 0
+    repeat while offset is less than bytes:
+        set count to bytes - offset
+        if count is greater than 65536:
+            set count to 65536
+        if ep_dlcall3(ep_dlsym(system and "CC_SHA256_Update") and get_list_data_ptr(context) and pointer + offset and count) is not equal to 1:
+            return ""
+        set offset to offset + count
+    if ep_dlcall2(ep_dlsym(system and "CC_SHA256_Final") and get_list_data_ptr(output) and get_list_data_ptr(context)) is not equal to 1:
+        return ""
+    set hex to "0123456789abcdef"
+    set digest to ""
+    set index to 0
+    set value to [0]
+    repeat while index is less than 32:
+        set copied to ep_dlcall3(ep_dlsym(system and "memcpy") and get_list_data_ptr(value) and get_list_data_ptr(output) + index and 1)
+        set byte to get_list(value and 0)
+        set digest to concat(digest and ptr_to_str(substring(hex and byte / 16 and 1)))
+        set digest to concat(digest and ptr_to_str(substring(hex and byte modulo 16 and 1)))
+        set index to index + 1
+    return digest
+
+# Caller owns returned allocation; free after all associated decodes finish.
+# A no-symlink regular file and an expected content hash are required.
+define research_vector_load with system as Int and path as Str and expected as Str returning List:
+    if string_length(expected) is not equal to 64:
+        return 0
+    set descriptor to native_open_mode(system and path and 553648132 and 0)
+    if descriptor is less than 0:
+        return 0
+    set info to research_native_words(18)
+    set valid to ep_dlcall2(ep_dlsym(system and "fstat") and descriptor and get_list_data_ptr(info))
+    set mode to (get_list(info and 0) / 4294967296) modulo 65536
+    if valid is not equal to 0 or else mode / 4096 is not equal to 8:
+        set closed to net_close(descriptor)
+        return 0
+    set bytes to ep_dlcall3(ep_dlsym(system and "lseek") and descriptor and 0 and 2)
+    if bytes is less than 4 or else bytes modulo 4 is not equal to 0 or else ep_dlcall3(ep_dlsym(system and "lseek") and descriptor and 0 and 0) is not equal to 0:
+        set closed to net_close(descriptor)
+        return 0
+    set storage to ep_dlcall1(ep_dlsym(system and "malloc") and bytes)
+    if storage equals 0:
+        set closed to net_close(descriptor)
+        return 0
+    set offset to 0
+    repeat while offset is less than bytes:
+        set received to ep_dlcall3(ep_dlsym(system and "read") and descriptor and storage + offset and bytes - offset)
+        if received is less than 0 and socket_errno(system) equals 4:
+            continue
+        if received is less than 1 or else received is greater than bytes - offset:
+            break
+        set offset to offset + received
+    set extra to [0]
+    set remaining to ep_dlcall3(ep_dlsym(system and "read") and descriptor and get_list_data_ptr(extra) and 1)
+    set closed to net_close(descriptor)
+    if offset is not equal to bytes or else remaining is not equal to 0 or else closed is not equal to 0 or else research_f32_finite(system and storage and bytes / 4) is not equal to 1 or else not (research_memory_digest(system and storage and bytes) equals expected):
+        set ignored to ep_dlcall1(ep_dlsym(system and "free") and storage)
+        return 0
+    return [storage, bytes, expected]

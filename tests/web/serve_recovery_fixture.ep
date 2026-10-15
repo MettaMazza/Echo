@@ -1,0 +1,57 @@
+import "../../app/web/recovery"
+import "../fixtures/runner_provider"
+import "fs"
+
+# The separate server executable must discover and resume the interrupted run.
+# This process only serves scripted provider responses and verifies the result.
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0:
+        return 1
+    set saved_job to history_collect_one(archive_prepare(database and "SELECT json_extract(payload,'$.job') FROM echo_events WHERE session='session' AND kind='compaction_binding' ORDER BY sequence DESC LIMIT 1;"))
+    if not (ptr_to_str(get_list(saved_job and 0)) equals "found"):
+        return 1
+    set job to ptr_to_str(get_list(saved_job and 1))
+    set manifest to archive_read_event(database and job)
+    if manifest equals 0:
+        return 1
+    set tokens to provider_json_tokens(ptr_to_str(get_list(manifest and 3)))
+    set endpoint to provider_value(tokens and provider_member(tokens and 0 and "source_end"))
+    set candidate to compaction_saved_candidate(database and "session" and endpoint and job)
+    if not (ptr_to_str(get_list(candidate and 0)) equals "structure-valid"):
+        return 1
+    set review to compaction_saved_review(database and "session" and endpoint and job and ptr_to_str(get_list(candidate and 1)))
+    if not (ptr_to_str(get_list(review and 0)) equals "review-pass"):
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0 or else write_file(get_argument(2) and int_to_string(get_list(listener and 2))) is not equal to 1:
+        return 1
+    set completed to channel
+    set candidate_copy to concat(ptr_to_str(get_list(candidate and 1)) and "")
+    spawn compaction_recovery_fixture(listener and candidate_copy and endpoint and 1 and completed)
+    set failed to receive from completed
+    if failed is not equal to 0:
+        return 1
+    repeat while 1 equals 1:
+        set status to provider_json_tokens(web_worker_status(database and "run"))
+        set worker to provider_value(status and provider_member(status and 0 and "worker_status"))
+        if not (worker equals "running"):
+            if not (worker equals "completed") or else not (provider_value(status and provider_member(status and 0 and "state")) equals "completed"):
+                display concat("FAIL: server recovery ended as " and worker)
+                return 1
+            break
+        set waited to sleep_ms(10)
+    set counts to history_collect_one(archive_prepare(database and "SELECT (SELECT COUNT(*) FROM echo_events WHERE kind='worker_recovery'),(SELECT COUNT(*) FROM echo_events WHERE kind='recap_candidate'),(SELECT COUNT(*) FROM echo_events WHERE kind='recap_review'),(SELECT COUNT(*) FROM echo_events WHERE kind='assistant_final');"))
+    if not (ptr_to_str(get_list(counts and 0)) equals "found"):
+        return 1
+    set index to 1
+    repeat while index is less than 5:
+        if not (ptr_to_str(get_list(counts and index)) equals "1"):
+            return 1
+        set index to index + 1
+    if checkpoint_read_active(database and "session") equals 0 or else archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: HTTP server startup recovered the interrupted ready worker, reused candidate/review, rechecked capacity and completed exactly once."
+    return 0

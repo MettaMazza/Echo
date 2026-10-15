@@ -1,0 +1,91 @@
+import "../../app/agent/run_messages"
+import "../../app/archive/history"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is less than 2:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0 or else agent_run_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "session" and "objective" and "user" and "Recall this exact word: café" and "fixture") is not equal to 0 or else agent_run_create(database and "run" and "session" and "objective") is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"read-original\",\"function\":{\"name\":\"history_read\",\"arguments\":\"{\\\"event\\\":\\\"objective\\\",\\\"offset\\\":0,\\\"characters\\\":100}\"}}]},\"finish_reason\":\"tool_calls\"}]}"
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set messages to agent_run_messages(database and "run")
+    set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(messages and concat(",\"tools\":" and concat(history_tool_schemas() and "}"))))
+    set generated to agent_generate_local(database and "run" and "first-request" and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 1
+    if get_argument_count() equals 3:
+        if sql_execute(database and "CREATE TRIGGER reject_observed BEFORE UPDATE OF state ON echo_tool_calls WHEN NEW.state='observed' BEGIN SELECT RAISE(ABORT,'fixture ledger failure'); END;") is not equal to 0 or else agent_tool_step(database and "run") equals 0:
+            return 1
+        set count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='tool_result';"))
+        set ledger to tool_ledger_read(database and "run" and "read-original")
+        if not (ptr_to_str(get_list(count and 1)) equals "0") or else not (ptr_to_str(get_list(ledger and 1)) equals "running"):
+            return 1
+        if sql_execute(database and "DROP TRIGGER reject_observed;") is not equal to 0 or else agent_tool_step(database and "run") equals 0:
+            display "FAIL: interrupted tool was replayed."
+            return 1
+        if archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+            return 1
+        display "PASS: failed ledger publication rolled back the result and left the tool unreplayed."
+        return 0
+    if agent_tool_step(database and "run") is not equal to 0:
+        return 1
+    if sql_execute(database and "CREATE TRIGGER reject_ready BEFORE UPDATE OF state ON echo_runs WHEN NEW.state='ready' BEGIN SELECT RAISE(ABORT,'fixture transition failure'); END;") is not equal to 0 or else agent_tool_step(database and "run") equals 0:
+        return 1
+    set count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='agent_observation';"))
+    if not (ptr_to_str(get_list(count and 1)) equals "0") or else sql_execute(database and "DROP TRIGGER reject_ready;") is not equal to 0:
+        display "FAIL: failed transition left an orphan observation."
+        return 1
+    repeat while 1 equals 1:
+        set row to agent_run_read(database and "run")
+        if row equals 0:
+            return 1
+        if ptr_to_str(get_list(row and 2)) equals "ready":
+            break
+        if agent_tool_step(database and "run") is not equal to 0:
+            return 1
+    # Restart the database connection before constructing the next request.
+    if sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(path)
+    set messages to agent_run_messages(database and "run")
+    set tokens to provider_json_tokens(messages)
+    if tokens equals 0:
+        return 1
+    set items to provider_items(tokens and 0)
+    if length_list(items) is not equal to 3:
+        return 1
+    set observation to provider_value(tokens and provider_member(tokens and get_list(items and 2) and "content"))
+    set observation_tokens to provider_json_tokens(observation)
+    if observation_tokens equals 0:
+        return 1
+    if not (provider_value(observation_tokens and provider_member(observation_tokens and 0 and "text")) equals "Recall this exact word: café"):
+        return 1
+    set delta to "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"The original word is café.\"},\"finish_reason\":\"stop\"}]}"
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(messages and concat(",\"tools\":" and concat(history_tool_schemas() and "}"))))
+    set generated to agent_generate_local(database and "run" and "second-request" and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 1
+    set row to agent_run_read(database and "run")
+    if not (ptr_to_str(get_list(row and 2)) equals "completed"):
+        return 1
+    set request to archive_read_event(database and "second-request")
+    set tokens to provider_json_tokens(ptr_to_str(get_list(request and 3)))
+    if not (provider_value(tokens and provider_member(tokens and 0 and "request_body")) equals body):
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: two live HTTP generation turns around a real archive tool; observations reconstructed after reopen and sent in the saved next request; same run completes with verified history."
+    return 0

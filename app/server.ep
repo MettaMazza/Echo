@@ -1,0 +1,309 @@
+import "transport/isolated_process"
+import "retained_text"
+import "transport/cooperative_accept"
+import "transport/http_stream"
+import "transport/socket_write"
+import "transport/file_response"
+import "ui/page"
+import "ui/assets"
+import "fs"
+import "web/routes"
+import "web/recovery"
+import "archive/runtime_lock"
+import "archive/attachment_restore"
+
+define echo_send_response with library as Int and descriptor as Int and status as Str and content_type as Str and body as Str returning Int:
+    if get_character(status and 0) >= 52:
+        set recorded to echo_diagnostic("http-error" and status and descriptor)
+    set head to concat("HTTP/1.1 " and status)
+    set content_header to concat("\r\nContent-Type: " and content_type)
+    set head to concat(head and content_header)
+    set body_length to int_to_string(string_length(body))
+    set length_header to concat("\r\nContent-Length: " and body_length)
+    set head to concat(head and length_header)
+    if status equals "405 Method Not Allowed":
+        set head to concat(head and "\r\nAllow: GET, POST")
+    set head to concat(head and "\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:; frame-ancestors 'none'\r\n\r\n")
+    set written to socket_write_all(library and descriptor and -1 and str_to_ptr(head) and string_length(head))
+    if not (archive_list_text(written and 0) equals "sent"):
+        return 1
+    set written to socket_write_all(library and descriptor and -1 and str_to_ptr(body) and string_length(body))
+    if not (archive_list_text(written and 0) equals "sent"):
+        return 1
+    return 0
+
+define echo_serve_connection with library as Int and descriptor as Int and port as Int and javascript as Str and config as List returning Int:
+    set recorded to echo_diagnostic("request-start" and "http" and descriptor)
+    set reader to http_stream_create(library and descriptor and -1)
+    set request to http_stream_head(reader)
+    set response to 0
+    if not (archive_list_text(request and 0) equals "ready"):
+        set response to echo_send_response(library and descriptor and "400 Bad Request" and "text/plain; charset=utf-8" and "Malformed or unsupported request.")
+    else:
+        set allowed_host to web_local_host(request and port)
+        if allowed_host equals 0:
+            set response to echo_send_response(library and descriptor and "400 Bad Request" and "text/plain; charset=utf-8" and "Use this service's local address.")
+        else if length_list(config) is greater than 0 and archive_list_text(request and 2) equals "/api/providers":
+            set reply to web_route(reader and request and port and config)
+            set reply_status to archive_list_text(reply and 0)
+            set reply_body to archive_list_text(reply and 1)
+            set response to echo_send_response(library and descriptor and reply_status and "application/json; charset=utf-8" and reply_body)
+        else if length_list(config) is greater than 0 and (archive_list_text(request and 2) equals "/api/session-revise" or else archive_list_text(request and 2) equals "/api/session-branch" or else archive_list_text(request and 2) equals "/api/session-rename" or else archive_list_text(request and 2) equals "/api/session-create" or else archive_list_text(request and 2) equals "/api/bootstrap" or else archive_list_text(request and 2) equals "/api/runs" or else archive_list_text(request and 2) equals "/api/run" or else archive_list_text(request and 2) equals "/api/compaction" or else archive_list_text(request and 2) equals "/api/session" or else archive_list_text(request and 2) equals "/api/pair" or else archive_list_text(request and 2) equals "/api/sessions" or else archive_list_text(request and 2) equals "/api/cancel" or else archive_list_text(request and 2) equals "/api/progress" or else archive_list_text(request and 2) equals "/api/trace" or else archive_list_text(request and 2) equals "/api/speak" or else archive_list_text(request and 2) equals "/api/retry" or else archive_list_text(request and 2) equals "/api/export" or else archive_list_text(request and 2) equals "/api/upload-prepare" or else archive_list_text(request and 2) equals "/api/upload-status" or else archive_list_text(request and 2) equals "/api/upload-body" or else archive_list_text(request and 2) equals "/api/attachments" or else archive_list_text(request and 2) equals "/api/attachment-download" or else archive_list_text(request and 2) equals "/api/attachment-text"):
+            set reply to web_route(reader and request and port and config)
+            if length_list(reply) equals 4:
+                set response to file_response(library and descriptor and archive_list_text(reply and 2) and get_list(reply and 3) and get_list(config and 4))
+            else:
+                set reply_status to archive_list_text(reply and 0)
+                set reply_body to archive_list_text(reply and 1)
+                set response to echo_send_response(library and descriptor and reply_status and "application/json; charset=utf-8" and reply_body)
+        else if not (archive_list_text(request and 1) equals "GET"):
+            set response to echo_send_response(library and descriptor and "405 Method Not Allowed" and "text/plain; charset=utf-8" and "This route currently accepts GET only.")
+        else:
+            set target to archive_list_text(request and 2)
+            set asset to echo_asset(target)
+            if asset is not equal to 0:
+                set response to file_response_typed(library and descriptor and archive_list_text(asset and 0) and get_list(asset and 2) and 65536 and archive_list_text(asset and 1) and 0)
+            else if target equals "/":
+                set response to echo_send_response(library and descriptor and "200 OK" and "text/html; charset=utf-8" and echo_page())
+            else if target equals "/app.js":
+                set response to echo_send_response(library and descriptor and "200 OK" and "application/javascript; charset=utf-8" and javascript)
+            else if target equals "/api/status":
+                set response to echo_send_response(library and descriptor and "200 OK" and "application/json" and "{\"service\":\"running\",\"local\":true,\"phase\":\"building\",\"qualification\":\"See the Phase 1 evidence audit; service availability does not establish acceptance completion.\"}")
+            else:
+                set response to echo_send_response(library and descriptor and "404 Not Found" and "text/plain; charset=utf-8" and "Route not found.")
+    set recorded to echo_diagnostic("request-finished" and "http" and response)
+    set released to http_stream_release(reader)
+    set closed to net_close(descriptor)
+    return response
+
+define echo_worker_owner returning Int:
+    set arguments to create_list()
+    set added to append_list(arguments and "--worker")
+    set index to 2
+    repeat while index < get_argument_count():
+        set added to append_list(arguments and get_argument(index))
+        set index to index + 1
+    set child to echo_process_start(arguments and -1)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set wait_function to ep_dlsym(library and "waitpid")
+    set status to create_list()
+    set added to append_list(status and 0)
+    set result to -1
+    if child > 0:
+        repeat while 1 equals 1:
+            set observed to socket_signed_result(ep_dlcall3(wait_function and child and get_list_data_ptr(status) and 0))
+            if observed equals child:
+                set result to get_list(status and 0)
+                break
+            if socket_errno(library) is not equal to 4:
+                break
+    set recorded to echo_diagnostic("worker-exit" and get_argument(3) and result)
+    if result is not equal to 0:
+        set database to archive_open(get_argument(2))
+        if database is not equal to 0:
+            set replacement to agent_identity()
+            set recovered to web_worker_recover_ready(database and get_argument(3) and get_argument(4) and replacement and library)
+            set values to create_list()
+            set added to append_list(values and get_argument(3))
+            set resolution to "reconciliation-required"
+            if recovered equals 0:
+                set resolution to "interrupted-retry-available"
+            set added to append_list(values and resolution)
+            set changed to tool_ledger_change(database and "UPDATE echo_web_workers SET status=?2 WHERE run=?1 AND status='running' RETURNING run;" and values)
+            set recorded to echo_diagnostic(resolution and get_argument(3) and recovered)
+            set closed to sql_close(database)
+    set closed to ep_dlclose(library)
+    return result
+
+define echo_service_owner returning Int:
+    set arguments to create_list()
+    set index to 1
+    repeat while index < get_argument_count() - 1:
+        set added to append_list(arguments and get_argument(index))
+        set index to index + 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set wait_function to ep_dlsym(library and "waitpid")
+    set status to create_list()
+    set added to append_list(status and 0)
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    repeat while 1 equals 1:
+        set child to echo_process_start(arguments and -1)
+        set result to -1
+        if child > 0:
+            repeat while 1 equals 1:
+                set observed to socket_signed_result(ep_dlcall3(wait_function and child and get_list_data_ptr(status) and 0))
+                if observed equals child:
+                    set result to get_list(status and 0)
+                    break
+                if socket_errno(library) is not equal to 4:
+                    break
+        set recorded to echo_diagnostic("service-exit" and int_to_string(child) and result)
+        if result equals 0 or else result equals 15:
+            return 0
+        set recorded to echo_diagnostic("service-restarting" and "saved-state-recovery" and result)
+        set waited to select(waits and 1000)
+    return 0
+
+define main returning Int:
+    # Let macOS retain native fault stacks for every role, including workers.
+    set diagnostic_library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set diagnostic_signal to ep_dlsym(diagnostic_library and "signal")
+    set restored to ep_dlcall2(diagnostic_signal and 6 and 0)
+    set restored to ep_dlcall2(diagnostic_signal and 11 and 0)
+    if get_argument(get_argument_count() - 1) equals "--supervise":
+        return echo_service_owner()
+    if get_argument_count() equals 8 and get_argument(1) equals "--worker-owner":
+        return echo_worker_owner()
+    if get_argument_count() equals 8 and get_argument(1) equals "--worker":
+        return web_worker_run_provider(get_argument(2) and get_argument(3) and get_argument(4) and get_argument(5) and http_decimal(get_argument(6)) and http_decimal(get_argument(7)))
+    set connection_mode to 0
+    set argument_count to get_argument_count()
+    if get_argument(argument_count - 1) equals "--connection":
+        set connection_mode to 1
+        set argument_count to argument_count - 1
+    # Opt-in native crash reports preserve the OS stack instead of replacing
+    # a fatal signal with a message-only exit. No compiler/runtime edits.
+    if ptr_to_str(get_env("ECHO_NATIVE_CRASH_REPORTS")) equals "1":
+        set diagnostic_library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        set diagnostic_signal to ep_dlsym(diagnostic_library and "signal")
+        if diagnostic_signal is not equal to 0:
+            set restored to ep_dlcall2(diagnostic_signal and 6 and 0)
+            set restored to ep_dlcall2(diagnostic_signal and 11 and 0)
+    if argument_count is not equal to 4 and argument_count is not equal to 9 and argument_count is not equal to 10:
+        display "Supply port, browser program and port record; optionally database, model, provider port, workload reserve and read batch, followed by the public HTTPS origin when using the gateway."
+        return 1
+    set port to http_decimal(get_argument(1))
+    if port is less than 0 or else port is greater than 65535:
+        return 1
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to "ECHO_SYSTEM_PROFILE"
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    set retained_item_1_1 to "ECHO_IDENTITY_FILE"
+    set retained_added to append_list(retained_list_1 and retained_item_1_1)
+    set prompt_paths to retained_list_1
+    set prompt_index to 0
+    repeat while prompt_index < length_list(prompt_paths):
+        set prompt_path to ptr_to_str(get_env(archive_list_text(prompt_paths and prompt_index)))
+        if string_length(prompt_path) > 0:
+            if not file_exists(prompt_path):
+                display "Configured system prompt file is missing."
+                return 1
+            if string_length(ptr_to_str(read_file(prompt_path))) equals 0:
+                display "Configured system prompt file is empty."
+                return 1
+        set prompt_index to prompt_index + 1
+    set script_path to get_argument(2)
+    if not file_exists(script_path):
+        return 1
+    set javascript to ptr_to_str(read_file(script_path))
+    set config to create_list()
+    if argument_count is greater than 8:
+        set public_origin to ""
+        if argument_count equals 10:
+            set public_origin to get_argument(9)
+            if web_https_origin_valid(public_origin) equals 0:
+                return 1
+        set provider_port to http_decimal(get_argument(6))
+        set reserve to http_decimal(get_argument(7))
+        set batch to http_decimal(get_argument(8))
+        if provider_port is less than 1 or else provider_port is greater than 65535 or else reserve is less than 1 or else batch is less than 1:
+            return 1
+        set profile to provider_llama_profile(get_argument(5) and provider_port)
+        set profile_path to get_env("ECHO_PROVIDER_PROFILE")
+        if string_length(ptr_to_str(profile_path)) is greater than 0:
+            set profile to ptr_to_str(read_file(ptr_to_str(profile_path)))
+            set profile_tokens to provider_json_tokens(profile)
+            if not (provider_profile_status(profile) equals "ready"):
+                display "Invalid host provider profile."
+                return 1
+            if not (provider_value(profile_tokens and provider_member(profile_tokens and 0 and "model")) equals get_argument(5)) or else http_decimal(provider_index(profile_tokens and provider_member(profile_tokens and 0 and "port"))) is not equal to provider_port:
+                display "Provider profile must match the host model and endpoint arguments."
+                return 1
+        set database to archive_open(get_argument(4))
+        if database equals 0:
+            return 1
+        set read_only to 0
+        if attachment_restore_start_allowed(database) equals 0:
+            set read_only to 1
+            display "Restored archive is available for reading; execution awaits historical-action reconciliation."
+        if web_run_schema(database) is not equal to 0 or else web_worker_schema(database) is not equal to 0 or else web_upload_schema(database) is not equal to 0:
+            set closed to sql_close(database)
+            return 1
+        set runtime_library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        if runtime_library equals 0:
+            set closed to sql_close(database)
+            return 1
+        # Held for this server process's lifetime, across all worker threads.
+        set runtime_owner to 0
+        if connection_mode equals 0:
+            set runtime_owner to archive_runtime_lock(database and runtime_library)
+        set closed to ep_dlclose(runtime_library)
+        if runtime_owner is less than 0:
+            display "This archive or one of its copies is already running, or its shared runtime lock is unavailable."
+            set closed to sql_close(database)
+            return 1
+        if connection_mode equals 0 and read_only equals 0 and provider_registry_initialize(database and profile) is not equal to 0:
+            set closed to sql_close(database)
+            return 1
+        if connection_mode equals 0 and read_only equals 0 and web_upload_recover(database) is not equal to 0:
+            set closed to sql_close(database)
+            return 1
+        if connection_mode equals 0 and read_only equals 0 and web_recover_ready_workers_provider(database and get_argument(4) and profile and reserve and batch) is not equal to 0:
+            set closed to sql_close(database)
+            return 1
+        if sql_close(database) is not equal to 0:
+            return 1
+        set added to append_list(config and get_argument(4))
+        set added to append_list(config and get_argument(5))
+        set added to append_list(config and provider_port)
+        set added to append_list(config and reserve)
+        set added to append_list(config and batch)
+        set added to append_list(config and public_origin)
+        set attachment_root to get_env("ECHO_ATTACHMENT_ROOT")
+        set root_path to ""
+        if attachment_root is not equal to 0:
+            set root_path to ptr_to_str(attachment_root)
+        set added to append_list(config and root_path)
+        set added to append_list(config and read_only)
+        set added to append_list(config and profile)
+    if connection_mode equals 1:
+        set connection_library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        return echo_serve_connection(connection_library and 3 and port and javascript and config)
+    set listener to local_socket_listen(port)
+    if listener equals 0:
+        return 1
+    set port to get_list(listener and 2)
+    set saved to write_file(get_argument(3) and int_to_string(port))
+    display concat("Echo local service: http://127.0.0.1:" and int_to_string(port))
+    set configured to socket_make_nonblocking(get_list(listener and 0) and get_list(listener and 1))
+    if configured is not equal to 0:
+        return 1
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    repeat while 1 equals 1:
+        set reaped to echo_reap_requests()
+        set descriptor to local_socket_accept(listener)
+        if descriptor < 0 and (socket_errno(get_list(listener and 0)) equals 35 or else socket_errno(get_list(listener and 0)) equals 4):
+            set yielded to select(waits and 10)
+            continue
+        if descriptor is less than 0:
+            set closed to local_socket_close(listener)
+            return 1
+        set arguments to create_list()
+        set argument_index to 1
+        repeat while argument_index < get_argument_count():
+            if argument_index equals 1:
+                set bound_port to int_to_string(port)
+                set added to append_list(arguments and bound_port)
+            else:
+                set added to append_list(arguments and get_argument(argument_index))
+            set argument_index to argument_index + 1
+        set added to append_list(arguments and "--connection")
+        set child to echo_process_start(arguments and descriptor)
+        if child < 0:
+            set response to echo_send_response(get_list(listener and 0) and descriptor and "503 Service Unavailable" and "application/json" and "{\"status\":\"request-process-unavailable\"}")
+        set closed to net_close(descriptor)
+    return 0

@@ -1,0 +1,64 @@
+import "../../app/agent/checked_generation"
+import "../fixtures/json_fixture"
+import "../fixtures/generation_fixture"
+
+define checked_reply with listener as List and method as Str and path as Str and request as Str and response as Str returning Int:
+    set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " and int_to_string(string_length(response)))
+    set wire to concat(wire and concat("\r\n\r\n" and response))
+    set completed to channel
+    spawn json_fixture(listener and method and path and request and wire and completed)
+    return receive from completed
+
+define checked_server with listener as List and body as Str and completed as Int returning Int:
+    set failure to checked_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":4096,\"n_ctx_train\":4096}}]}")
+    set failure to failure + checked_reply(listener and "GET" and "/props" and "" and "{\"default_generation_settings\":{\"n_ctx\":4096,\"params\":{\"n_predict\":-1}}}")
+    set failure to failure + checked_reply(listener and "POST" and "/v1/chat/completions/input_tokens" and body and "{\"input_tokens\":42}")
+    set generation_done to channel
+    spawn generation_fixture(listener and "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"checked answer\"},\"finish_reason\":\"stop\"}]}" and generation_done)
+    set generated to receive from generation_done
+    send failure + generated to completed
+    return 0
+
+define main returning Int:
+    if get_argument_count() is less than 2:
+        return 1
+    set models to "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":4096,\"n_ctx_train\":4096}}]}"
+    set props to "{\"default_generation_settings\":{\"n_ctx\":4096,\"params\":{\"n_predict\":-1}}}"
+    set compact to llama_preflight_evaluate(models and props and "{\"input_tokens\":4090}" and "fixture" and 7)
+    if not (ptr_to_str(get_list(compact and 0)) equals "compaction-required"):
+        return 1
+    set capped to llama_preflight_evaluate(models and "{\"default_generation_settings\":{\"n_ctx\":4096,\"params\":{\"n_predict\":100}}}" and "{\"input_tokens\":42}" and "fixture" and 20)
+    if not (ptr_to_str(get_list(capped and 0)) equals "output-configuration-required"):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else agent_run_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "session" and "objective" and "user" and "fixture objective" and "fixture") is not equal to 0 or else agent_run_create(database and "run" and "session" and "objective") is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set body to "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture objective\"}],\"stream\":true}"
+    set body_copy to concat(body and "")
+    set completed to channel
+    spawn checked_server(listener and body_copy and completed)
+    set decision to agent_generate_checked(database and "run" and "request" and body and get_list(listener and 2) and 20 and -1 and 65536 and "0")
+    set server_result to receive from completed
+    if server_result is not equal to 0 or else not (ptr_to_str(get_list(decision and 0)) equals "advanced"):
+        display "FAIL: checked generation."
+        return 1
+    set receipt to archive_read_event(database and "request:preflight")
+    if receipt equals 0:
+        return 1
+    set tokens to provider_json_tokens(ptr_to_str(get_list(receipt and 3)))
+    if tokens equals 0:
+        return 1
+    if not (provider_value(tokens and provider_member(tokens and 0 and "request_body")) equals body):
+        return 1
+    set row to agent_run_read(database and "run")
+    if not (ptr_to_str(get_list(row and 2)) equals "completed") or else get_list(decision and 3) is not equal to 42 or else get_list(decision and 4) is not equal to 4054:
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: live metadata discovery and exact-body token-count preflight precede generation; evidence archives; output caps and insufficient room produce explicit decisions."
+    return 0

@@ -1,0 +1,65 @@
+import "../workspace/files"
+
+# macOS tar merges AppleDouble entries when the corresponding file exists,
+# even with metadata translation disabled. Preserve original sidecar bytes
+# through the native reader, without using its disk writer or copyfile.
+# Paths remain relative to an opened restore directory; existing files are
+# not replaced. The complete mtree verification follows this recovery pass.
+define tree_sidecar_entries with system as Int and archive_library as Int and reader as Int and root as Int returning Int:
+    set entry to create_list()
+    set added to append_list(entry and 0)
+    repeat while 1 equals 1:
+        set status to socket_signed_result(ep_dlcall2(ep_dlsym(archive_library and "archive_read_next_header") and reader and get_list_data_ptr(entry)))
+        if status equals 1:
+            return 0
+        if status is not equal to 0:
+            return 1
+        set item to get_list(entry and 0)
+        set path to ptr_to_str(ep_dlcall1(ep_dlsym(archive_library and "archive_entry_pathname") and item))
+        if string_length(path) >= 2 and ptr_to_str(substring(path and 0 and 2)) equals "./":
+            set path to ptr_to_str(substring(path and 2 and string_length(path) - 2))
+        set parts to workspace_path_parts(path)
+        if parts is not equal to 0 and ep_dlcall1(ep_dlsym(archive_library and "archive_entry_filetype") and item) equals 32768:
+            set name to ptr_to_str(get_list(parts and length_list(parts) - 1))
+            if string_length(name) >= 2 and ptr_to_str(substring(name and 0 and 2)) equals "._":
+                set existing to workspace_file_open(system and root and path and 0)
+                if existing >= 0:
+                    set closed to net_close(existing)
+                else:
+                    set output to workspace_file_open(system and root and path and 1)
+                    if output is less than 0:
+                        return 1
+                    set copied to socket_signed_result(ep_dlcall2(ep_dlsym(archive_library and "archive_read_data_into_fd") and reader and output))
+                    set mode to ep_dlcall1(ep_dlsym(archive_library and "archive_entry_perm") and item)
+                    set permissions to socket_signed_result(ep_dlcall2(ep_dlsym(system and "fchmod") and output and mode))
+                    set flushed to file_stage_finish(system and output)
+                    if copied is not equal to 0 or else permissions is not equal to 0 or else flushed is not equal to 0:
+                        return 1
+        if socket_signed_result(ep_dlcall1(ep_dlsym(archive_library and "archive_read_data_skip") and reader)) is not equal to 0:
+            return 1
+    return 1
+
+define tree_restore_sidecars with system as Int and archive_path as Str and root as Int returning Int:
+    set library to ep_dlopen("/usr/lib/libarchive.2.dylib")
+    if library equals 0:
+        return 1
+    set required to string_split("archive_read_new archive_read_support_format_tar archive_read_set_options archive_read_open_filename archive_read_next_header archive_entry_pathname archive_entry_filetype archive_entry_perm archive_read_data_into_fd archive_read_data_skip archive_read_free" and " ")
+    set index to 0
+    repeat while index is less than length_list(required):
+        if ep_dlsym(library and ptr_to_str(get_list(required and index))) equals 0:
+            set closed to ep_dlclose(library)
+            return 1
+        set index to index + 1
+    set reader to ep_dlcall0(ep_dlsym(library and "archive_read_new"))
+    if reader equals 0:
+        set closed to ep_dlclose(library)
+        return 1
+    set result to 1
+    if ep_dlcall1(ep_dlsym(library and "archive_read_support_format_tar") and reader) equals 0 and ep_dlcall2(ep_dlsym(library and "archive_read_set_options") and reader and str_to_ptr("!mac-ext")) equals 0:
+        if ep_dlcall3(ep_dlsym(library and "archive_read_open_filename") and reader and str_to_ptr(archive_path) and 65536) equals 0:
+            set result to tree_sidecar_entries(system and library and reader and root)
+    set freed to ep_dlcall1(ep_dlsym(library and "archive_read_free") and reader)
+    set closed to ep_dlclose(library)
+    if freed is not equal to 0:
+        return 1
+    return result

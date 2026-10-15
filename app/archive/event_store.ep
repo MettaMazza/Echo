@@ -1,0 +1,220 @@
+import "../retained_text"
+# Echo owns its original history independently of prompts, summaries and caches.
+# SQLite constants below are protocol result codes, not application limits.
+import "sql"
+import "string"
+
+external define sqlite3_extended_errcode with database as Int returning Int
+
+# Report the failed operation without exposing archived message contents.
+define archive_failure_detail with database as Int and operation as Str returning Int:
+    set code to sqlite3_extended_errcode(database)
+    display concat("Archive failure at " and operation)
+    display code
+    return code
+
+# These wrappers preserve database errors; an empty query is not an error signal.
+define archive_prepare with database as Int and query as Str returning Int:
+    set statement to ep_sqlite3_prepare_v2(database and str_to_ptr(query))
+    if statement equals 0:
+        display "Archive could not prepare its database operation."
+    return statement
+
+define archive_bind with statement as Int and position as Int and value as Str returning Int:
+    set result to ep_sqlite3_bind_text(statement and position and str_to_ptr(value))
+    if result is not equal to 0:
+        display "Archive could not bind a database value."
+    return result
+
+define archive_finish with statement as Int and expected as Int returning Int:
+    set result to ep_sqlite3_step(statement)
+    set finalized to ep_sqlite3_finalize(statement)
+    if result is not equal to expected or else finalized is not equal to 0:
+        display "Archive database operation failed."
+        display result
+        display finalized
+        return 1
+    return 0
+
+define archive_open with path as Str returning Int:
+    set database to sql_open(path)
+    if database equals 0:
+        display "Archive database could not be opened."
+        return 0
+    # Native workers, status readers and cancellation monitors use separate
+    # connections. Give short write locks time to clear instead of failing on
+    # the first SQLITE_BUSY. This is a database lock wait, not a model deadline.
+    if sql_execute(database and "PRAGMA busy_timeout=5000;") is not equal to 0:
+        set closed to sql_close(database)
+        return 0
+    # Rollback journals avoid assuming shared-memory/WAL support on the drive.
+    set schema to "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS echo_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL, event TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, payload TEXT NOT NULL, occurred TEXT NOT NULL, previous TEXT NOT NULL, digest TEXT NOT NULL); CREATE INDEX IF NOT EXISTS echo_events_session ON echo_events(session,sequence); CREATE TRIGGER IF NOT EXISTS echo_events_no_update BEFORE UPDATE ON echo_events BEGIN SELECT RAISE(ABORT,'Original events are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_events_no_delete BEFORE DELETE ON echo_events BEGIN SELECT RAISE(ABORT,'Original events are immutable'); END;"
+    set result to sql_execute(database and schema)
+    if result is not equal to 0:
+        display "Archive schema or durability configuration failed."
+        set closed to sql_close(database)
+        return 0
+    return database
+
+# Length-prefix every field so embedded separators cannot change hash boundaries.
+define archive_hash_field with value as Str returning Str:
+    # Named strings remain explicit compiler GC roots while another worker
+    # allocates. Nested temporary arguments can be missed by minor collection.
+    set size_text to int_to_string(string_length(value))
+    set separated to concat(":" and value)
+    return concat(size_text and separated)
+
+define archive_digest with session as Str and event as Str and kind as Str and payload as Str and occurred as Str and previous as Str returning Str:
+    set field to archive_hash_field(session)
+    set text to concat("echo-event-v1:" and field)
+    set field to archive_hash_field(event)
+    set text to concat(text and field)
+    set field to archive_hash_field(kind)
+    set text to concat(text and field)
+    set field to archive_hash_field(payload)
+    set text to concat(text and field)
+    set field to archive_hash_field(occurred)
+    set text to concat(text and field)
+    set field to archive_hash_field(previous)
+    set text to concat(text and field)
+    return ep_sha256(text)
+
+define archive_rollback with database as Int returning Int:
+    set result to sql_execute(database and "ROLLBACK;")
+    if result is not equal to 0:
+        display "Archive rollback failed; close this connection before retrying."
+    return 1
+
+# Internal transaction participant. Caller holds BEGIN IMMEDIATE and owns commit
+# or rollback, allowing a message and its run to become durable together.
+define archive_append_pending with database as Int and session as Str and event as Str and kind as Str and payload as Str and occurred as Str returning Int:
+    if string_length(session) equals 0 or else string_length(event) equals 0 or else string_length(kind) equals 0 or else string_length(occurred) equals 0:
+        display "Archive requires session, event, kind and occurrence identifiers."
+        return 1
+    set statement to archive_prepare(database and "SELECT digest FROM echo_events WHERE session=? ORDER BY sequence DESC LIMIT 1;")
+    if statement equals 0:
+        return 1
+    if archive_bind(statement and 1 and session) is not equal to 0:
+        set finished to ep_sqlite3_finalize(statement)
+        return 1
+    set result to ep_sqlite3_step(statement)
+    set previous to ""
+    if result equals 100:
+        set previous to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+    else if result is not equal to 101:
+        set finished to ep_sqlite3_finalize(statement)
+        return 1
+    # Keep an owned chain value across later query steps.
+    set previous to concat(previous and "")
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return 1
+    set digest to archive_digest(session and event and kind and payload and occurred and previous)
+    set statement to archive_prepare(database and "INSERT INTO echo_events(session,event,kind,payload,occurred,previous,digest) VALUES(?,?,?,?,?,?,?);")
+    if statement equals 0:
+        return 1
+    set bound to archive_bind(statement and 1 and session)
+    set bound to bound + archive_bind(statement and 2 and event)
+    set bound to bound + archive_bind(statement and 3 and kind)
+    set bound to bound + archive_bind(statement and 4 and payload)
+    set bound to bound + archive_bind(statement and 5 and occurred)
+    set bound to bound + archive_bind(statement and 6 and previous)
+    set bound to bound + archive_bind(statement and 7 and digest)
+    if bound is not equal to 0:
+        set finished to ep_sqlite3_finalize(statement)
+        return 1
+    if archive_finish(statement and 101) is not equal to 0:
+        return 1
+    # Read the inserted bytes back before the caller commits. A mismatch must
+    # abort the transaction, rather than becoming an apparently saved event.
+    set saved to archive_read_event(database and event)
+    if saved equals 0:
+        return 1
+    if not (archive_list_text(saved and 0) equals session) or else not (archive_list_text(saved and 1) equals event) or else not (archive_list_text(saved and 2) equals kind) or else not (archive_list_text(saved and 3) equals payload) or else not (archive_list_text(saved and 4) equals occurred) or else not (archive_list_text(saved and 5) equals previous):
+        display "Archive write readback differs from the original event."
+        return 1
+    set saved_session to archive_list_text(saved and 0)
+    set saved_event to archive_list_text(saved and 1)
+    set saved_kind to archive_list_text(saved and 2)
+    set saved_payload to archive_list_text(saved and 3)
+    set saved_occurred to archive_list_text(saved and 4)
+    set saved_previous to archive_list_text(saved and 5)
+    set checked_digest to archive_digest(saved_session and saved_event and saved_kind and saved_payload and saved_occurred and saved_previous)
+    if not (archive_list_text(saved and 6) equals checked_digest):
+        display "Archive write readback failed its digest check."
+        return 1
+    return 0
+
+# Caller supplies a stable event ID; a retry must never silently duplicate it.
+# The transaction serializes chain construction across concurrent connections.
+define archive_append with database as Int and session as Str and event as Str and kind as Str and payload as Str and occurred as Str returning Int:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        display "Archive writer is unavailable; the event remains uncommitted."
+        return 1
+    if archive_append_pending(database and session and event and kind and payload and occurred) is not equal to 0:
+        set reported to archive_failure_detail(database and "append/readback")
+        return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set reported to archive_failure_detail(database and "commit")
+        return archive_rollback(database)
+    return 0
+
+# Read one event by its exact stable identity without a prompt-size restriction.
+# A zero result means missing/error; the caller must not invent replacement text.
+define archive_read_event with database as Int and event as Str returning List:
+    set statement to archive_prepare(database and "SELECT session,event,kind,payload,occurred,previous,digest,sequence FROM echo_events WHERE event=?;")
+    if statement equals 0:
+        return 0
+    if archive_bind(statement and 1 and event) is not equal to 0:
+        set finished to ep_sqlite3_finalize(statement)
+        return 0
+    set result to ep_sqlite3_step(statement)
+    if result is not equal to 100:
+        set finished to ep_sqlite3_finalize(statement)
+        if result equals 101:
+            display "Archive event was not found."
+        else:
+            display "Archive event read failed."
+        return 0
+    set row to create_list()
+    set position to 0
+    repeat while position is less than 8:
+        set cell to ptr_to_str(ep_sqlite3_column_text(statement and position))
+        set copied to concat(cell and "")
+        set added to append_list(row and copied)
+        set position to position + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        display "Archive event read could not be finalized."
+        return 0
+    return row
+
+# Stream verification one row at a time; no growing whole-session buffer.
+define archive_verify with database as Int and session as Str returning Int:
+    set statement to archive_prepare(database and "SELECT session,event,kind,payload,occurred,previous,digest FROM echo_events WHERE session=? ORDER BY sequence;")
+    if statement equals 0:
+        return 1
+    if archive_bind(statement and 1 and session) is not equal to 0:
+        set finished to ep_sqlite3_finalize(statement)
+        return 1
+    set previous to ""
+    set result to ep_sqlite3_step(statement)
+    repeat while result equals 100:
+        set stored_session to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set event to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set kind to ptr_to_str(ep_sqlite3_column_text(statement and 2))
+        set payload to ptr_to_str(ep_sqlite3_column_text(statement and 3))
+        set occurred to ptr_to_str(ep_sqlite3_column_text(statement and 4))
+        set stored_previous to ptr_to_str(ep_sqlite3_column_text(statement and 5))
+        set stored_digest to ptr_to_str(ep_sqlite3_column_text(statement and 6))
+        set expected to archive_digest(stored_session and event and kind and payload and occurred and previous)
+        if not (stored_previous equals previous) or else not (stored_digest equals expected):
+            display "Archive integrity verification failed at event:"
+            display event
+            set finished to ep_sqlite3_finalize(statement)
+            return 1
+        set previous to concat(stored_digest and "")
+        set result to ep_sqlite3_step(statement)
+    set finalized to ep_sqlite3_finalize(statement)
+    if result is not equal to 101 or else finalized is not equal to 0:
+        display "Archive integrity scan failed."
+        return 1
+    return 0

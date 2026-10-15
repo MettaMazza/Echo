@@ -1,0 +1,114 @@
+import "../retained_text"
+import "recap_jobs"
+
+define recap_merge_resume_result with status as Str returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and 0)
+    set added to append_list(result and 0)
+    set added to append_list(result and "")
+    return result
+
+# Bind the ordered notes, including exact immutable contents, to this merge.
+define recap_merge_notes_digest with database as Int and notes as List returning Str:
+    set builder to create_builder()
+    set index to 0
+    repeat while index is less than length_list(notes):
+        set identity to archive_list_text(notes and index)
+        set row to archive_read_event(database and identity)
+        if row equals 0:
+            return ""
+        set added to builder_append(builder and archive_hash_field(identity))
+        set added to builder_append(builder and archive_hash_field(archive_list_text(row and 6)))
+        set index to index + 1
+    return ep_sha256(ptr_to_str(builder_to_string(builder)))
+
+# Reconstruct every committed step, checking contiguous Unicode ranges and the
+# actual archived model input/output. A cursor alone never proves coverage.
+# Result: status, next note index, character offset, cumulative candidate.
+define recap_merge_resume with database as Int and session as Str and job as Str and endpoint as Str and notes as List and digest as Str returning List:
+    set result to recap_merge_resume_result("ready")
+    if archive_verify(database and session) is not equal to 0:
+        return recap_merge_resume_result("invalid-source")
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to session
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    set retained_item_1_1 to job
+    set retained_added to append_list(retained_list_1 and retained_item_1_1)
+    set values to retained_list_1
+    set statement to checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE session=? AND kind='recap_merge_progress' AND json_extract(payload,'$.job')=? ORDER BY sequence;" and values)
+    if statement equals 0:
+        return recap_merge_resume_result("archive-error")
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set changed to set_list(result and 0 and "archive-error")
+            break
+        set saved to provider_json_tokens(ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        set note_index to get_list(result and 1)
+        if saved equals 0 or else not (provider_value(saved and provider_member(saved and 0 and "notes_digest")) equals digest) or else note_index >= length_list(notes):
+            set changed to set_list(result and 0 and "invalid-merge-progress")
+            break
+        set request to provider_value(saved and provider_member(saved and 0 and "request"))
+        set input to archive_read_event(database and request)
+        set output to archive_read_event(database and concat(request and ":candidate"))
+        if input equals 0 or else output equals 0:
+            set changed to set_list(result and 0 and "invalid-merge-progress")
+            break
+        if not (archive_list_text(input and 0) equals session) or else not (archive_list_text(output and 0) equals session) or else not (archive_list_text(input and 2) equals "model_request") or else not (archive_list_text(output and 2) equals "recap_candidate"):
+            set changed to set_list(result and 0 and "invalid-merge-progress")
+            break
+        set envelope to provider_json_tokens(archive_list_text(input and 3))
+        set body to provider_json_tokens(provider_value(envelope and provider_member(envelope and 0 and "request_body")))
+        set messages to provider_items(body and provider_member(body and 0 and "messages"))
+        if messages equals 0 or else length_list(messages) is not equal to 2:
+            set changed to set_list(result and 0 and "invalid-merge-progress")
+            break
+        set package to provider_json_tokens(provider_value(body and provider_member(body and get_list(messages and 1) and "content")))
+        set note_event to archive_list_text(notes and note_index)
+        set note_row to archive_read_event(database and note_event)
+        set note to provider_json_tokens(archive_list_text(note_row and 3))
+        set text to provider_value(note and provider_member(note and 0 and "notes"))
+        set offset to get_list(result and 2)
+        set next_offset to http_decimal(provider_index(package and provider_member(package and 0 and "note_next_offset")))
+        set retained_list_2 to create_list()
+        set retained_item_2_0 to text
+        set retained_added to append_list(retained_list_2 and retained_item_2_0)
+        set retained_item_2_1 to int_to_string(offset)
+        set retained_added to append_list(retained_list_2 and retained_item_2_1)
+        set retained_item_2_2 to int_to_string(next_offset - offset)
+        set retained_added to append_list(retained_list_2 and retained_item_2_2)
+        set values to retained_list_2
+        set piece to history_collect_one(checkpoint_prepare(database and "SELECT length(?1),substr(?1,CAST(?2 AS INTEGER)+1,CAST(?3 AS INTEGER));" and values))
+        if not (archive_list_text(piece and 0) equals "found"):
+            set changed to set_list(result and 0 and "archive-error")
+            break
+        set total to http_decimal(archive_list_text(piece and 1))
+        if package equals 0 or else next_offset <= offset or else next_offset > total or else not (provider_value(package and provider_member(package and 0 and "source_end")) equals endpoint) or else not (provider_value(package and provider_member(package and 0 and "note_event")) equals note_event) or else http_decimal(provider_index(package and provider_member(package and 0 and "note_offset"))) is not equal to offset or else http_decimal(provider_index(package and provider_member(package and 0 and "note_total_characters"))) is not equal to total:
+            set changed to set_list(result and 0 and "invalid-merge-progress")
+            break
+        if not (provider_value(package and provider_member(package and 0 and "previous_candidate")) equals archive_list_text(result and 3)) or else not (provider_value(package and provider_member(package and 0 and "next_fragment")) equals archive_list_text(piece and 2)) or else not (provider_value(package and provider_member(package and 0 and "original_event")) equals provider_value(note and provider_member(note and 0 and "source_event"))) or else not (provider_value(package and provider_member(package and 0 and "original_digest")) equals provider_value(note and provider_member(note and 0 and "source_digest"))):
+            set changed to set_list(result and 0 and "invalid-merge-progress")
+            break
+        set receipt to provider_json_tokens(archive_list_text(output and 3))
+        set candidate to provider_value(receipt and provider_member(receipt and 0 and "candidate"))
+        if not (provider_value(receipt and provider_member(receipt and 0 and "source_end")) equals endpoint) or else recap_validate_structure(database and session and endpoint and candidate) is not equal to 0:
+            set changed to set_list(result and 0 and "invalid-merge-progress")
+            break
+        set changed to set_list(result and 3 and candidate)
+        if next_offset equals total:
+            set changed to set_list(result and 1 and note_index + 1)
+            set changed to set_list(result and 2 and 0)
+        else:
+            set changed to set_list(result and 2 and next_offset)
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        set changed to set_list(result and 0 and "archive-error")
+    return result
+
+define recap_merge_progress_save with database as Int and session as Str and job as Str and digest as Str and request as Str returning Int:
+    set payload to concat("{\"job\":" and provider_quote(job))
+    set payload to concat(payload and concat(",\"notes_digest\":" and provider_quote(digest)))
+    set payload to concat(payload and concat(",\"request\":" and concat(provider_quote(request) and "}")))
+    return archive_append(database and session and concat(request and ":merge-progress") and "recap_merge_progress" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))

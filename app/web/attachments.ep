@@ -1,0 +1,79 @@
+import "../retained_text"
+import "run_store"
+import "../archive/file_digest"
+
+define web_attachment_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_attachments(attachment TEXT PRIMARY KEY,session TEXT NOT NULL REFERENCES echo_sessions(session),path TEXT NOT NULL UNIQUE,name TEXT NOT NULL,media_type TEXT NOT NULL,digest TEXT NOT NULL,bytes INTEGER NOT NULL CHECK(bytes>=0),event TEXT NOT NULL UNIQUE REFERENCES echo_events(event)); CREATE TRIGGER IF NOT EXISTS echo_attachment_no_update BEFORE UPDATE ON echo_attachments BEGIN SELECT RAISE(ABORT,'Attachment originals are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_attachment_no_delete BEFORE DELETE ON echo_attachments BEGIN SELECT RAISE(ABORT,'Attachment originals are immutable'); END;")
+
+# Host-only storage primitive. Path must be a closed, exclusively owned staging
+# file; browser names are metadata, never filesystem paths. Publication and
+# ownership recheck commit with the original attachment event.
+define web_attachment_register with database as Int and device as Str and session as Str and attachment as Str and path as Str and name as Str and media_type as Str returning Int:
+    if string_length(attachment) equals 0 or else string_length(name) equals 0 or else string_length(path) equals 0:
+        return 1
+    if get_character(path and 0) is not equal to 47 or else web_device_session_allowed(database and device and session) is not equal to 1:
+        return 1
+    set verified to file_digest(path and 65536)
+    if not (archive_list_text(verified and 0) equals "verified"):
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if web_device_session_allowed(database and device and session) is not equal to 1:
+        return archive_rollback(database)
+    set event to concat(attachment and ":attachment")
+    set digest to archive_list_text(verified and 1)
+    set bytes to int_to_string(get_list(verified and 2))
+    set payload to concat("{\"attachment\":" and provider_quote(attachment))
+    set payload to concat(payload and concat(",\"name\":" and provider_quote(name)))
+    set payload to concat(payload and concat(",\"media_type\":" and provider_quote(media_type)))
+    set payload to concat(payload and concat(",\"sha256\":" and provider_quote(digest)))
+    set payload to concat(payload and concat(",\"bytes\":" and concat(provider_quote(bytes) and "}")))
+    if archive_append_pending(database and session and event and "attachment" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return archive_rollback(database)
+    set values to create_list()
+    set added to append_list(values and attachment)
+    set added to append_list(values and session)
+    set added to append_list(values and path)
+    set added to append_list(values and name)
+    set added to append_list(values and media_type)
+    set added to append_list(values and digest)
+    set added to append_list(values and bytes)
+    set added to append_list(values and event)
+    if web_device_write(database and "INSERT INTO echo_attachments(attachment,session,path,name,media_type,digest,bytes,event) VALUES(?,?,?,?,?,?,?,?);" and values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# Resolve only through ownership joins; never expose host paths over HTTP.
+define web_attachment_owned with database as Int and device as Str and attachment as Str returning List:
+    set values to create_list()
+    set added to append_list(values and device)
+    set added to append_list(values and attachment)
+    return history_collect_one(checkpoint_prepare(database and "SELECT a.path,a.name,a.media_type,a.digest,CAST(a.bytes AS TEXT),a.session,a.event FROM echo_attachments a JOIN echo_session_owners o ON o.session=a.session JOIN echo_devices d ON d.device=o.device WHERE d.device=?1 AND d.revoked=0 AND a.attachment=?2;" and values))
+
+define web_attachment_list with database as Int and device as Str and session as Str returning Str:
+    if web_device_session_allowed(database and device and session) is not equal to 1:
+        return "{\"status\":\"not-found\"}"
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and device)
+    set statement to checkpoint_prepare(database and concat(session_scope_sql() and "SELECT json_object('attachment',a.attachment,'name',a.name,'media_type',a.media_type,'bytes',CAST(a.bytes AS TEXT),'sha256',a.digest,'event',a.event) FROM scopes s JOIN echo_attachments a ON a.session=s.session JOIN echo_session_owners o ON o.session=a.session JOIN echo_devices d ON d.device=o.device JOIN echo_events e ON e.event=a.event AND e.sequence<=s.boundary WHERE d.device=?2 AND d.revoked=0 ORDER BY e.sequence;") and values)
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set builder to create_builder()
+    set added to builder_append(builder and "{\"status\":\"found\",\"attachments\":[")
+    set count to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"database-error\"}"
+        if count is greater than 0:
+            set added to builder_append(builder and ",")
+        set added to builder_append(builder and ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        set count to count + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    set added to builder_append(builder and "]}")
+    return ptr_to_str(builder_to_string(builder))

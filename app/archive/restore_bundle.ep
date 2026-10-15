@@ -1,0 +1,137 @@
+import "backup_bundle"
+
+# A retained top-level manifest hash is the recovery trust input. Paths from
+# the original profile are documentary only; recovery reads exclusively from
+# the chosen bundle and writes beneath a new host-chosen destination.
+define restore_bundle_content_valid with tokens as List and object as Int and path as Str returning Int:
+    set hash_field to provider_member(tokens and object and "sha256")
+    set bytes_field to provider_member(tokens and object and "bytes")
+    set expected to provider_value(tokens and hash_field)
+    set size_text to provider_value(tokens and bytes_field)
+    set size to string_to_int(size_text)
+    if not (provider_kind(tokens and hash_field) equals "string") or else string_length(expected) is not equal to 64 or else not (provider_kind(tokens and bytes_field) equals "number") or else size is less than 0 or else not (int_to_string(size) equals size_text):
+        return 0
+    set actual to file_digest(path and 65536)
+    if not (ptr_to_str(get_list(actual and 0)) equals "verified") or else not (ptr_to_str(get_list(actual and 1)) equals expected) or else get_list(actual and 2) is not equal to size:
+        return 0
+    return 1
+
+define restore_bundle_components_valid with tokens as List and bundle as Str returning Int:
+    if restore_bundle_content_valid(tokens and provider_member(tokens and 0 and "database") and concat(bundle and "/archive.sqlite")) equals 0:
+        return 0
+    set collections to ["trees", "files"]
+    set collection to 0
+    repeat while collection is less than length_list(collections):
+        set kind to ptr_to_str(get_list(collections and collection))
+        set items to provider_items(tokens and provider_member(tokens and 0 and kind))
+        if items equals 0:
+            return 0
+        set names to create_list()
+        set index to 0
+        repeat while index is less than length_list(items):
+            set item to get_list(items and index)
+            set field to provider_member(tokens and item and "name")
+            set name to provider_value(tokens and field)
+            set parts to workspace_path_parts(name)
+            if not (provider_kind(tokens and field) equals "string") or else service_native_text(name) equals 0 or else parts equals 0 or else length_list(parts) is not equal to 1:
+                return 0
+            set prior to 0
+            repeat while prior is less than length_list(names):
+                if ptr_to_str(get_list(names and prior)) equals name:
+                    return 0
+                set prior to prior + 1
+            set added to append_list(names and name)
+            if kind equals "trees":
+                set root to concat(bundle and concat("/tree-" and name))
+                if restore_bundle_content_valid(tokens and provider_member(tokens and item and "archive") and concat(root and "/files.tar")) equals 0 or else restore_bundle_content_valid(tokens and provider_member(tokens and item and "inventory") and concat(root and "/contents.mtree")) equals 0:
+                    return 0
+            else:
+                if restore_bundle_content_valid(tokens and provider_member(tokens and item and "content") and concat(bundle and concat("/file-" and name))) equals 0:
+                    return 0
+            set index to index + 1
+        set collection to collection + 1
+    set database to sql_open(concat(bundle and "/archive.sqlite"))
+    if database equals 0:
+        return 0
+    set verified to archive_verify_all(database)
+    if verified equals 0:
+        set verified to attachment_snapshot_verify(database and concat(bundle and "/registered-attachments"))
+    set closed to sql_close(database)
+    if verified is not equal to 0 or else closed is not equal to 0:
+        return 0
+    return 1
+
+define restore_bundle_copy with library as Int and tokens as List and bundle as Str and destination as Str and expected as Str returning Int:
+    if ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(destination) and 448) is not equal to 0:
+        return 1
+    set attachment_root to concat(destination and "/registered-attachments")
+    if ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(attachment_root) and 448) is not equal to 0:
+        return 1
+    if attachment_restore(concat(bundle and "/archive.sqlite") and concat(bundle and "/registered-attachments") and concat(destination and "/archive.sqlite") and attachment_root) is not equal to 0:
+        return 1
+    set items to provider_items(tokens and provider_member(tokens and 0 and "trees"))
+    set index to 0
+    repeat while index is less than length_list(items):
+        set item to get_list(items and index)
+        set name to provider_value(tokens and provider_member(tokens and item and "name"))
+        set archive_hash to provider_value(tokens and provider_member(tokens and provider_member(tokens and item and "archive") and "sha256"))
+        set inventory_hash to provider_value(tokens and provider_member(tokens and provider_member(tokens and item and "inventory") and "sha256"))
+        if tree_restore_bundle(concat(bundle and concat("/tree-" and name)) and archive_hash and inventory_hash and concat(destination and concat("/tree-" and name))) is not equal to 0:
+            display concat("Restore failed for tree: " and name)
+            return 1
+        set index to index + 1
+    set items to provider_items(tokens and provider_member(tokens and 0 and "files"))
+    set index to 0
+    repeat while index is less than length_list(items):
+        set item to get_list(items and index)
+        set name to provider_value(tokens and provider_member(tokens and item and "name"))
+        set content to provider_member(tokens and item and "content")
+        set digest to provider_value(tokens and provider_member(tokens and content and "sha256"))
+        set bytes to string_to_int(provider_value(tokens and provider_member(tokens and content and "bytes")))
+        if file_copy_verified(concat(bundle and concat("/file-" and name)) and concat(destination and concat("/file-" and name)) and digest and bytes and 65536) is not equal to 0:
+            return 1
+        set index to index + 1
+    if restore_bundle_components_valid(tokens and bundle) equals 0:
+        return 1
+    set manifest to file_digest(concat(bundle and "/manifest.json") and 65536)
+    if not (ptr_to_str(get_list(manifest and 0)) equals "verified") or else not (ptr_to_str(get_list(manifest and 1)) equals expected):
+        return 1
+    set database to sql_open(concat(destination and "/archive.sqlite"))
+    if database equals 0:
+        return 1
+    set held to attachment_restore_start_allowed(database)
+    set verified to archive_verify_all(database)
+    set closed to sql_close(database)
+    if held is not equal to 0 or else verified is not equal to 0 or else closed is not equal to 0:
+        return 1
+    set receipt to concat("{\"manifest_sha256\":" and concat(provider_quote(expected) and ",\"restored_execution\":\"held-for-reconciliation\",\"configuration_relocation\":\"pending-host-review\",\"result\":\"verified-byte-and-tree-recovery\"}"))
+    set path to concat(destination and "/recovery.json")
+    if file_publication_reserve(library and path) is not equal to 0:
+        return 1
+    set temporary to concat(path and ".partial")
+    set descriptor to file_stage_open(library and temporary)
+    if descriptor is less than 0:
+        return 1
+    if file_stage_write(library and descriptor and str_to_ptr(receipt) and string_length(receipt)) is not equal to 0 or else file_stage_finish(library and descriptor) is not equal to 0:
+        return 1
+    return file_publication_finish(library and temporary and path)
+
+define restore_bundle_run with bundle as Str and expected as Str and destination as Str returning Int:
+    if backup_bundle_absolute(bundle) equals 0 or else backup_bundle_absolute(destination) equals 0 or else string_length(expected) is not equal to 64:
+        return 1
+    set manifest to ptr_to_str(read_file(concat(bundle and "/manifest.json")))
+    if not (ep_sha256(manifest) equals expected):
+        display "Top-level manifest hash mismatch; destination was not created."
+        return 1
+    set tokens to provider_json_tokens(manifest)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "format")) equals "echo-offline-bundle-v1"):
+        return 1
+    if restore_bundle_components_valid(tokens and bundle) equals 0:
+        display "A bundle component failed verification; destination was not created."
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 1
+    set result to restore_bundle_copy(library and tokens and bundle and destination and expected)
+    set closed to ep_dlclose(library)
+    return result

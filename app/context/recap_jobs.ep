@@ -1,0 +1,78 @@
+import "../retained_text"
+import "recap_notes"
+
+# Immutable manifest: later messages or run transitions do not redefine a job.
+define recap_job_create with database as Int and session as Str and endpoint as Str and job as Str returning Int:
+    set sources to recap_sources(database and session and endpoint)
+    if string_length(sources) equals 0:
+        return 1
+    return archive_append(database and session and job and "recap_job" and sources and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+
+# Return the contiguous covered Unicode prefix, or -1 for inconsistent notes.
+# Gaps/overlaps fail explicitly rather than treating the largest offset as proof.
+define recap_note_cursor with database as Int and session as Str and endpoint as Str and job as Str and source as Str and digest as Str and total as Int returning Int:
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and job)
+    set added to append_list(values and source)
+    set statement to checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE session=? AND kind='recap_fragment_notes' AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.job') END=? AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.source_event') END=? ORDER BY sequence;" and values)
+    if statement equals 0:
+        return -1
+    set cursor to 0
+    set failed to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set failed to 1
+            break
+        set tokens to provider_json_tokens(ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        if tokens equals 0:
+            set failed to 1
+            break
+        set start to history_tool_integer(tokens and "offset")
+        set next_offset to history_tool_integer(tokens and "next_offset")
+        set notes to provider_member(tokens and 0 and "notes")
+        if provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "source_end")) equals endpoint) or else not (provider_value(tokens and provider_member(tokens and 0 and "source_digest")) equals digest) or else start is not equal to cursor or else next_offset <= start or else next_offset is greater than total or else not (provider_kind(tokens and notes) equals "string") or else string_length(provider_value(tokens and notes)) equals 0:
+            set failed to 1
+            break
+        set cursor to next_offset
+    if ep_sqlite3_finalize(statement) is not equal to 0 or else failed is not equal to 0:
+        return -1
+    return cursor
+
+# Result: status, next offset, original event. A completed manifest means only
+# that all source ranges have notes, not that those notes preserve all meaning.
+define recap_job_progress with database as Int and session as Str and job as Str returning List:
+    set result to recap_note_result("invalid-job" and 0 and "")
+    set manifest to archive_read_event(database and job)
+    if manifest equals 0:
+        return result
+    if not (archive_list_text(manifest and 0) equals session) or else not (archive_list_text(manifest and 2) equals "recap_job"):
+        return result
+    set tokens to provider_json_tokens(archive_list_text(manifest and 3))
+    if tokens equals 0:
+        return result
+    set endpoint to provider_value(tokens and provider_member(tokens and 0 and "source_end"))
+    set records to provider_items(tokens and provider_member(tokens and 0 and "records"))
+    if records equals 0:
+        return result
+    set index to 0
+    repeat while index is less than length_list(records):
+        set record to get_list(records and index)
+        set source to provider_value(tokens and provider_member(tokens and record and "event"))
+        set digest to provider_value(tokens and provider_member(tokens and record and "digest"))
+        set original to history_read_piece(database and session and source and 0 and 1)
+        if not (archive_list_text(original and 0) equals "found"):
+            return recap_note_result("invalid-source" and 0 and source)
+        if not (archive_list_text(original and 5) equals digest):
+            return recap_note_result("invalid-source" and 0 and source)
+        set total to http_decimal(archive_list_text(original and 4))
+        set cursor to recap_note_cursor(database and session and endpoint and job and source and digest and total)
+        if cursor is less than 0:
+            return recap_note_result("coverage-conflict" and 0 and source)
+        if cursor is less than total:
+            return recap_note_result("notes-required" and cursor and source)
+        set index to index + 1
+    return recap_note_result("source-ranges-covered" and 0 and "")

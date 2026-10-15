@@ -1,0 +1,88 @@
+import "providers/helper_process"
+import "providers/json_tokens"
+import "workspace/files"
+import "archive/file_digest"
+import "fs"
+
+# Host-only media runtime qualification. The host supplies native argv and an
+# existing private working directory, never a model-selected executable.
+# Native model parameters are preserved without geometry or step-count caps.
+define main returning Int:
+    if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)):
+        display "Supply fresh archive and host media job JSON."
+        return 1
+    set profile to ptr_to_str(read_file(get_argument(2)))
+    set tokens to provider_json_tokens(profile)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 2
+    set names to ["executable", "directory", "artifact"]
+    set index to 0
+    repeat while index is less than length_list(names):
+        set field to provider_member(tokens and 0 and ptr_to_str(get_list(names and index)))
+        if not (provider_kind(tokens and field) equals "string") or else string_length(provider_value(tokens and field)) equals 0:
+            return 2
+        set index to index + 1
+    set executable to provider_value(tokens and provider_member(tokens and 0 and "executable"))
+    set directory_path to provider_value(tokens and provider_member(tokens and 0 and "directory"))
+    set artifact to provider_value(tokens and provider_member(tokens and 0 and "artifact"))
+    if workspace_path_parts(artifact) equals 0 or else file_exists(concat(directory_path and concat("/" and artifact))):
+        return 2
+    set items to provider_items(tokens and provider_member(tokens and 0 and "arguments"))
+    if items equals 0:
+        return 2
+    set arguments to create_list()
+    set index to 0
+    repeat while index is less than length_list(items):
+        set field to get_list(items and index)
+        if not (provider_kind(tokens and field) equals "string"):
+            return 2
+        set added to append_list(arguments and provider_value(tokens and field))
+        set index to index + 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else archive_append(database and "media" and "profile" and "media_job_profile" and profile and "qualification") is not equal to 0:
+        return 3
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 4
+    set directory to workspace_root_open(library and directory_path)
+    set output to workspace_file_open(library and directory and "runtime.stdout" and 1)
+    set errors to workspace_file_open(library and directory and "runtime.stderr" and 1)
+    set status to "spool-failed"
+    if directory >= 3 and output >= 3 and errors >= 3:
+        set environment to ["LC_ALL=C", "PATH=/usr/bin:/bin"]
+        set result to provider_helper_run(database and "media" and "dispatch" and executable and arguments and environment and directory and output and errors and -1)
+        set status to ptr_to_str(get_list(result and 0))
+    set cleanup to 0
+    if output >= 3:
+        set cleanup to cleanup + net_close(output)
+    if errors >= 3:
+        set cleanup to cleanup + net_close(errors)
+    if directory >= 3:
+        set cleanup to cleanup + net_close(directory)
+    set cleanup to cleanup + ep_dlclose(library)
+    if cleanup is not equal to 0:
+        set status to "cleanup-error"
+    display concat("Runtime: " and status)
+    set names to ["runtime.stdout", "runtime.stderr", artifact]
+    set index to 0
+    set artifact_ok to 0
+    repeat while index is less than length_list(names):
+        set name to ptr_to_str(get_list(names and index))
+        set path to concat(directory_path and concat("/" and name))
+        set digest to file_digest(path and 65536)
+        set receipt to concat("{\"path\":" and provider_quote(path))
+        set receipt to concat(receipt and concat(",\"status\":" and provider_quote(ptr_to_str(get_list(digest and 0)))))
+        set receipt to concat(receipt and concat(",\"sha256\":" and provider_quote(ptr_to_str(get_list(digest and 1)))))
+        set receipt to concat(receipt and concat(",\"bytes\":" and concat(int_to_string(get_list(digest and 2)) and "}")))
+        if archive_append(database and "media" and concat("output:" and int_to_string(index)) and "media_file_receipt" and receipt and "qualification") is not equal to 0:
+            return 5
+        if index equals 2 and ptr_to_str(get_list(digest and 0)) equals "verified" and get_list(digest and 2) is greater than 0:
+            set artifact_ok to 1
+        set index to index + 1
+    if archive_verify(database and "media") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 6
+    if not (status equals "complete") or else artifact_ok equals 0:
+        display "FAIL: runtime or output artifact incomplete; receipts preserved."
+        return 7
+    display "Runtime completed and nonempty artifact hashed. Visual/audio quality still requires independent inspection."
+    return 0

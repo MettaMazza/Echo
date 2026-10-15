@@ -1,0 +1,110 @@
+import "../retained_text"
+import "chat_stream"
+import "../transport/event_stream"
+import "../archive/event_store"
+
+external define peek_byte with pointer as Int and offset as Int returning Int
+external define poke_byte with pointer as Int and offset as Int and value as Int returning Int
+
+# Two bounded scans over the actual string length. Size the output exactly,
+# then fill a native list buffer; no strlen or substring scans inside the loop.
+define provider_quote with value as Str returning Str:
+    set size to string_length(value)
+    set pointer to str_to_ptr(value)
+    set needed to 3
+    set index to 0
+    repeat while index is less than size:
+        set code to peek_byte(pointer and index)
+        if code is less than 32:
+            set needed to needed + 6
+        else if code equals 34 or else code equals 92:
+            set needed to needed + 2
+        else:
+            set needed to needed + 1
+        set index to index + 1
+    set buffer to create_list()
+    set cells to needed / 8 + 1
+    set index to 0
+    repeat while index is less than cells:
+        set added to append_list(buffer and 0)
+        set index to index + 1
+    set output to get_list_data_ptr(buffer)
+    set written to poke_byte(output and 0 and 34)
+    set digits to str_to_ptr("0123456789abcdef")
+    set position to 1
+    set index to 0
+    repeat while index is less than size:
+        set code to peek_byte(pointer and index)
+        if code is less than 32:
+            set written to poke_byte(output and position and 92)
+            set written to poke_byte(output and position + 1 and 117)
+            set written to poke_byte(output and position + 2 and 48)
+            set written to poke_byte(output and position + 3 and 48)
+            set written to poke_byte(output and position + 4 and peek_byte(digits and code / 16))
+            set written to poke_byte(output and position + 5 and peek_byte(digits and code modulo 16))
+            set position to position + 6
+        else:
+            if code equals 34 or else code equals 92:
+                set written to poke_byte(output and position and 92)
+                set position to position + 1
+            set written to poke_byte(output and position and code)
+            set position to position + 1
+        set index to index + 1
+    set written to poke_byte(output and position and 34)
+    set written to poke_byte(output and position + 1 and 0)
+    return ptr_to_str(output)
+
+# The request event is the stable identity of one generation attempt. Reusing it
+# cannot silently overwrite or replay a partially archived response.
+define provider_archive_piece with database as Int and session as Str and request as Str and sequence as Int and kind as Str and payload as Str returning Int:
+    set identity to concat(request and concat(":provider:" and int_to_string(sequence)))
+    set occurred to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+    return archive_append(database and session and identity and kind and payload and occurred)
+
+define provider_collected with status as Str and state as List returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and state)
+    return result
+
+# Reader is already positioned at the response body, after the caller validates
+# HTTP status and text/event-stream content type. Caller owns socket cleanup.
+# Every complete event is committed before assembly. Terminal evidence is also
+# committed before success, including transport errors and parser rejection.
+define provider_collect_events with reader as List and body as List and database as Int and session as Str and request as Str and read_size as Int returning List:
+    set state to chat_stream_create()
+    set original to archive_read_event(database and request)
+    if original equals 0:
+        return provider_collected("invalid-request" and state)
+    if not (archive_list_text(original and 0) equals session) or else not (archive_list_text(original and 2) equals "model_request"):
+        return provider_collected("invalid-request" and state)
+    set stream to event_stream_create(reader and body)
+    set sequence to 0
+    repeat while 1 equals 1:
+        set event to event_stream_next(stream and read_size)
+        set status to archive_list_text(event and 0)
+        set payload to concat("{\"request_event\":" and provider_quote(request))
+        if status equals "event":
+            set kind to archive_list_text(event and 1)
+            set data to archive_list_text(event and 2)
+            set payload to concat(payload and concat(",\"event_type\":" and provider_quote(kind)))
+            set payload to concat(payload and concat(",\"event_id\":" and provider_quote(archive_list_text(event and 3))))
+            set payload to concat(payload and concat(",\"data\":" and provider_quote(data)))
+            set payload to concat(payload and "}")
+            if provider_archive_piece(database and session and request and sequence and "provider_event" and payload) is not equal to 0:
+                return provider_collected("archive-error" and state)
+            set sequence to sequence + 1
+            if not (kind equals "message"):
+                set status to "unsupported-event"
+            else if chat_stream_accept(state and data) is not equal to 0:
+                set status to "invalid-provider-event"
+        if not (status equals "event"):
+            set payload to concat("{\"request_event\":" and provider_quote(request))
+            set payload to concat(payload and concat(",\"transport\":" and provider_quote(status)))
+            set payload to concat(payload and "}")
+            if provider_archive_piece(database and session and request and sequence and "provider_stream_end" and payload) is not equal to 0:
+                return provider_collected("archive-error" and state)
+            if chat_stream_finish(state and status) is not equal to 0:
+                return provider_collected("incomplete-response" and state)
+            return provider_collected("complete" and state)
+    return provider_collected("error" and state)

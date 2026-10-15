@@ -1,0 +1,133 @@
+import "../retained_text"
+import "../archive/event_store"
+
+# This module persists checkpoints. The caller must generate and validate recap
+# coverage before activation; a nonempty validation record is not that validator.
+define checkpoint_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_checkpoints (identity TEXT PRIMARY KEY, session TEXT NOT NULL, source_end TEXT NOT NULL REFERENCES echo_events(event), source_digest TEXT NOT NULL, previous TEXT NOT NULL, summary TEXT NOT NULL, structured_state TEXT NOT NULL, validation TEXT NOT NULL); CREATE TABLE IF NOT EXISTS echo_active_context (session TEXT PRIMARY KEY, checkpoint TEXT NOT NULL REFERENCES echo_checkpoints(identity)); CREATE TRIGGER IF NOT EXISTS echo_checkpoints_no_update BEFORE UPDATE ON echo_checkpoints BEGIN SELECT RAISE(ABORT,'Saved checkpoints are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_checkpoints_no_delete BEFORE DELETE ON echo_checkpoints BEGIN SELECT RAISE(ABORT,'Saved checkpoints are immutable'); END;")
+
+define checkpoint_prepare with database as Int and query as Str and values as List returning Int:
+    set statement to archive_prepare(database and query)
+    if statement equals 0:
+        return 0
+    set position to 0
+    repeat while position is less than length_list(values):
+        set value to archive_list_text(values and position)
+        if archive_bind(statement and position + 1 and value) is not equal to 0:
+            set finished to ep_sqlite3_finalize(statement)
+            return 0
+        set position to position + 1
+    return statement
+
+# Stage a frozen, verified source prefix while holding the writer lock. Recap
+# generation may append records after the captured endpoint; they remain suffix.
+# Repeated compaction must advance beyond the previous checkpoint's endpoint.
+define checkpoint_stage with database as Int and identity as Str and session as Str and source_end as Str and previous as Str and summary as Str and structured_state as Str and validation as Str returning Int:
+    if string_length(identity) equals 0 or else string_length(summary) equals 0 or else string_length(structured_state) equals 0 or else string_length(validation) equals 0:
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if archive_verify(database and session) is not equal to 0:
+        return archive_rollback(database)
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and previous)
+    set added to append_list(values and summary)
+    set added to append_list(values and structured_state)
+    set added to append_list(values and validation)
+    set added to append_list(values and source_end)
+    set added to append_list(values and session)
+    set added to append_list(values and previous)
+    set query to "INSERT INTO echo_checkpoints(identity,session,source_end,source_digest,previous,summary,structured_state,validation) SELECT ?,e.session,e.event,e.digest,?,?,?,? FROM echo_events e WHERE e.event=? AND e.session=? AND e.sequence>COALESCE((SELECT p.sequence FROM echo_active_context a JOIN echo_checkpoints c ON c.identity=a.checkpoint JOIN echo_events p ON p.event=c.source_end WHERE a.session=e.session),0) AND COALESCE((SELECT checkpoint FROM echo_active_context WHERE session=e.session),'')=? RETURNING identity;"
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return archive_rollback(database)
+    if ep_sqlite3_step(statement) is not equal to 100:
+        set finished to ep_sqlite3_finalize(statement)
+        return archive_rollback(database)
+    if archive_finish(statement and 101) is not equal to 0:
+        return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# Compare and switch is atomic. Two candidates based on the same old context
+# cannot overwrite one another. The prior checkpoint and all originals survive.
+define checkpoint_activate with database as Int and session as Str and identity as Str returning Int:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if checkpoint_activate_pending(database and session and identity) is not equal to 0:
+        return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# Caller owns the transaction so context rechecks and activation can commit
+# atomically. Failure must roll back that transaction.
+define checkpoint_activate_pending with database as Int and session as Str and identity as Str returning Int:
+    if archive_verify(database and session) is not equal to 0:
+        return 1
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and session)
+    set query to "INSERT INTO echo_active_context(session,checkpoint) SELECT c.session,c.identity FROM echo_checkpoints c JOIN echo_events e ON e.event=c.source_end AND e.session=c.session AND e.digest=c.source_digest WHERE c.identity=? AND c.session=? AND c.previous=COALESCE((SELECT checkpoint FROM echo_active_context WHERE session=c.session),'') ON CONFLICT(session) DO UPDATE SET checkpoint=excluded.checkpoint RETURNING checkpoint;"
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return 1
+    if ep_sqlite3_step(statement) is not equal to 100:
+        set finished to ep_sqlite3_finalize(statement)
+        return 1
+    if archive_finish(statement and 101) is not equal to 0:
+        return 1
+    return 0
+
+# Zero means no active checkpoint or a read error. Callers retain raw history.
+# Returned fields include the exact source endpoint for replaying the suffix.
+define checkpoint_read_active with database as Int and session as Str returning List:
+    set values to create_list()
+    set added to append_list(values and session)
+    set statement to checkpoint_prepare(database and "SELECT c.identity,c.source_end,c.source_digest,c.previous,c.summary,c.structured_state,c.validation FROM echo_active_context a JOIN echo_checkpoints c ON c.identity=a.checkpoint AND c.session=a.session WHERE a.session=?;" and values)
+    if statement equals 0:
+        return 0
+    if ep_sqlite3_step(statement) is not equal to 100:
+        set finished to ep_sqlite3_finalize(statement)
+        return 0
+    set row to create_list()
+    set position to 0
+    repeat while position is less than 7:
+        set value to ptr_to_str(ep_sqlite3_column_text(statement and position))
+        set added to append_list(row and concat(value and ""))
+        set position to position + 1
+    if archive_finish(statement and 101) is not equal to 0:
+        return 0
+    return row
+
+# Capture source identity and previous checkpoint in one read snapshot before
+# asking the model to summarise. Fields: endpoint, digest, sequence, previous.
+# Zero means no source or an error; callers must retain the current context.
+define checkpoint_capture with database as Int and session as Str returning List:
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return 0
+    if archive_verify(database and session) is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return 0
+    set values to create_list()
+    set added to append_list(values and session)
+    set statement to checkpoint_prepare(database and "SELECT e.event,e.digest,e.sequence,COALESCE((SELECT checkpoint FROM echo_active_context WHERE session=e.session),'') FROM echo_events e WHERE e.session=? ORDER BY e.sequence DESC LIMIT 1;" and values)
+    if statement equals 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return 0
+    if ep_sqlite3_step(statement) is not equal to 100:
+        set closed to ep_sqlite3_finalize(statement)
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return 0
+    set row to create_list()
+    set index to 0
+    repeat while index is less than 4:
+        set cell to ptr_to_str(ep_sqlite3_column_text(statement and index))
+        set added to append_list(row and concat(cell and ""))
+        set index to index + 1
+    if archive_finish(statement and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return 0
+    return row

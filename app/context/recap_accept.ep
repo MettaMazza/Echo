@@ -1,0 +1,105 @@
+import "../retained_text"
+import "recap_review_synthesis"
+import "session_messages"
+import "attachment_gate"
+
+# Consume archived candidate and review receipts, not a caller-supplied verdict.
+# A passing model review remains fallible evidence; this gate verifies its
+# binding and checks the exact resumed request without changing model limits.
+define recap_accept_provider with database as Int and session as Str and run as Str and candidate_event as Str and review_event as Str and identity as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning Str:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    set candidate_row to archive_read_event(database and candidate_event)
+    set review_row to archive_read_event(database and review_event)
+    if candidate_row equals 0 or else review_row equals 0:
+        return "invalid-receipt"
+    if not (archive_list_text(candidate_row and 0) equals session) or else not (archive_list_text(review_row and 0) equals session) or else not (archive_list_text(candidate_row and 2) equals "recap_candidate") or else not (archive_list_text(review_row and 2) equals "recap_review" or else archive_list_text(review_row and 2) equals "recap_review_synthesis"):
+        return "invalid-receipt"
+    set saved_candidate to provider_json_tokens(archive_list_text(candidate_row and 3))
+    set saved_review to provider_json_tokens(archive_list_text(review_row and 3))
+    if saved_candidate equals 0 or else saved_review equals 0:
+        return "invalid-receipt"
+    set candidate to provider_value(saved_candidate and provider_member(saved_candidate and 0 and "candidate"))
+    set endpoint to provider_value(saved_candidate and provider_member(saved_candidate and 0 and "source_end"))
+    if recap_validate_structure(database and session and endpoint and candidate) is not equal to 0:
+        return "structure-invalid"
+    if archive_list_text(review_row and 2) equals "recap_review_synthesis":
+        if not (recap_synthesis_validate(database and session and endpoint and candidate and archive_list_text(review_row and 3)) equals "review-pass"):
+            return "review-required"
+    else:
+        set sources to recap_sources(database and session and endpoint)
+        set report to provider_value(saved_review and provider_member(saved_review and 0 and "report"))
+        if not (provider_value(saved_review and provider_member(saved_review and 0 and "source_end")) equals endpoint) or else not (provider_value(saved_review and provider_member(saved_review and 0 and "candidate_digest")) equals ep_sha256(candidate)) or else not (recap_review_validate(sources and candidate and report) equals "review-pass"):
+            return "review-required"
+    set current to agent_run_read(database and run)
+    if current equals 0:
+        return "invalid-run"
+    if not (archive_list_text(current and 0) equals session) or else not (archive_list_text(current and 2) equals "ready"):
+        return "run-not-ready"
+    set parent to archive_list_text(current and 3)
+    set file_status to compaction_attachments_verify(database and session and endpoint)
+    if not (file_status equals "verified"):
+        return file_status
+    set previous to ""
+    set active to checkpoint_read_active(database and session)
+    if active is not equal to 0:
+        set previous to archive_list_text(active and 0)
+    set tokens to provider_json_tokens(candidate)
+    set summary to provider_value(tokens and provider_member(tokens and 0 and "summary"))
+    set structured to agent_json_source(candidate and tokens and provider_member(tokens and 0 and "state"))
+    set preflight to concat(identity and ":activation-preflight")
+    set validation to concat("{\"candidate_event\":" and provider_quote(candidate_event))
+    set validation to concat(validation and concat(",\"review_event\":" and provider_quote(review_event)))
+    set validation to concat(validation and concat(",\"candidate_digest\":" and provider_quote(ep_sha256(candidate))))
+    set validation to concat(validation and concat(",\"attachment_verification_event\":" and provider_quote(concat(identity and ":attachments"))))
+    set validation to concat(validation and concat(",\"preflight_event\":" and concat(provider_quote(preflight) and "}")))
+    if checkpoint_stage(database and identity and session and endpoint and previous and summary and structured and validation) is not equal to 0:
+        return "checkpoint-conflict"
+    set source to archive_read_event(database and endpoint)
+    if source equals 0:
+        return "invalid-source"
+    set checkpoint to create_list()
+    set added to append_list(checkpoint and identity)
+    set added to append_list(checkpoint and endpoint)
+    set added to append_list(checkpoint and archive_list_text(source and 6))
+    set added to append_list(checkpoint and previous)
+    set added to append_list(checkpoint and summary)
+    set added to append_list(checkpoint and structured)
+    set added to append_list(checkpoint and validation)
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return "archive-error"
+    set messages to session_messages_checkpoint(database and session and run and checkpoint)
+    if string_length(messages) equals 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "context-recovery-required"
+    set body to session_request_body(model and messages)
+    set decision to provider_prepare(database and session and preflight and profile and body and reserve and cancellation_reader and read_size)
+    if not (archive_list_text(decision and 0) equals "ready"):
+        return archive_list_text(decision and 0)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "archive-error"
+    set latest to agent_run_read(database and run)
+    set rebuilt to session_messages_checkpoint(database and session and run and checkpoint)
+    if latest equals 0 or else not (archive_list_text(latest and 2) equals "ready") or else not (archive_list_text(latest and 3) equals parent) or else not (rebuilt equals messages):
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "context-changed"
+    set file_status to compaction_attachments_verify(database and session and endpoint)
+    if not (file_status equals "verified"):
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return file_status
+    set file_receipt to concat("{\"checkpoint\":" and provider_quote(identity))
+    set file_receipt to concat(file_receipt and concat(",\"source_end\":" and provider_quote(endpoint)))
+    set file_receipt to concat(file_receipt and ",\"registered_attachment_originals\":\"flushed-and-hash-verified\"}")
+    if archive_append_pending(database and session and concat(identity and ":attachments") and "compaction_attachment_verification" and file_receipt and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "archive-error"
+    if checkpoint_activate_pending(database and session and identity) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "checkpoint-conflict"
+    return "activated"
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define recap_accept with database as Int and session as Str and run as Str and candidate_event as Str and review_event as Str and identity as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int returning Str:
+    set profile to provider_llama_profile(model and port)
+    return recap_accept_provider(database and session and run and candidate_event and review_event and identity and profile and reserve and cancellation_reader and read_size)

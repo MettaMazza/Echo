@@ -1,0 +1,59 @@
+import "../retained_text"
+import "file_stage"
+
+# Host-only exclusive copy. Success requires flushed destination bytes matching
+# the archive's recorded digest and length. Failure leaves an unpublished
+# candidate for inspection, never overwrites an existing backup file.
+define file_copy_verified with source as Str and destination as Str and digest as Str and bytes as Int and batch as Int returning Int:
+    if bytes is less than 0 or else batch is less than 1 or else batch is greater than 4294967295:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 1
+    set open_function to ep_dlsym(library and "open")
+    set read_function to ep_dlsym(library and "read")
+    set allocate to ep_dlsym(library and "malloc")
+    set release to ep_dlsym(library and "free")
+    if open_function equals 0 or else read_function equals 0 or else allocate equals 0 or else release equals 0:
+        set closed to ep_dlclose(library)
+        return 1
+    set input to socket_signed_result(ep_dlcall2(open_function and str_to_ptr(source) and 16777472))
+    if input is less than 0:
+        set closed to ep_dlclose(library)
+        return 1
+    set output to file_stage_open(library and destination)
+    if output is less than 0:
+        set closed to net_close(input)
+        set closed to ep_dlclose(library)
+        return 1
+    set buffer to ep_dlcall1(allocate and batch)
+    set result to 0
+    set total to 0
+    if buffer equals 0:
+        set result to 1
+    repeat while result equals 0:
+        set count to ep_dlcall3(read_function and input and buffer and batch)
+        if count equals 0:
+            break
+        if count is less than 0 or else count is greater than batch:
+            if socket_errno(library) equals 4:
+                continue
+            set result to 1
+            break
+        if count is greater than bytes - total or else file_stage_write(library and output and buffer and count) is not equal to 0:
+            set result to 1
+            break
+        set total to total + count
+    if buffer is not equal to 0:
+        set freed to ep_dlcall1(release and buffer)
+    if net_close(input) is not equal to 0:
+        set result to 1
+    if file_stage_finish(library and output) is not equal to 0:
+        set result to 1
+    set closed to ep_dlclose(library)
+    if result is not equal to 0 or else total is not equal to bytes:
+        return 1
+    set verified to file_digest(destination and batch)
+    if not (archive_list_text(verified and 0) equals "verified") or else not (archive_list_text(verified and 1) equals digest) or else get_list(verified and 2) is not equal to bytes:
+        return 1
+    return 0

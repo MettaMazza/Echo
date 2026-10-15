@@ -1,0 +1,43 @@
+import "archived_stream"
+import "../context/checkpoint"
+
+# Reassemble committed provider events without any network access. Missing
+# terminal evidence is incomplete, never an inferred successful response.
+define provider_restore_stream with database as Int and session as Str and request as Str returning List:
+    set state to chat_stream_create()
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and request)
+    set statement to checkpoint_prepare(database and "SELECT event,kind,payload FROM echo_events WHERE session=? AND kind IN ('provider_event','provider_stream_end') AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.request_event') END=? ORDER BY sequence;" and values)
+    if statement equals 0:
+        return provider_collected("archive-error" and state)
+    set index to 0
+    set ended to 0
+    set status to "incomplete-response"
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return provider_collected("archive-error" and state)
+        set event to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set kind to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set tokens to provider_json_tokens(ptr_to_str(ep_sqlite3_column_text(statement and 2)))
+        set expected to concat(request and concat(":provider:" and int_to_string(index)))
+        if tokens equals 0 or else ended equals 1 or else not (event equals expected) or else provider_unique_objects(tokens) equals 0:
+            set closed to ep_sqlite3_finalize(statement)
+            return provider_collected("invalid-archived-stream" and state)
+        if kind equals "provider_event":
+            set data to provider_member(tokens and 0 and "data")
+            if not (provider_kind(tokens and data) equals "string") or else not (provider_value(tokens and provider_member(tokens and 0 and "event_type")) equals "message") or else chat_stream_accept(state and provider_value(tokens and data)) is not equal to 0:
+                set closed to ep_sqlite3_finalize(statement)
+                return provider_collected("incomplete-response" and state)
+        else:
+            set ended to 1
+            if chat_stream_finish(state and provider_value(tokens and provider_member(tokens and 0 and "transport"))) equals 0:
+                set status to "complete"
+        set index to index + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return provider_collected("archive-error" and state)
+    return provider_collected(status and state)

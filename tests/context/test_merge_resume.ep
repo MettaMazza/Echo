@@ -1,0 +1,100 @@
+import "../fixtures/runner_provider"
+
+define merge_note_fixture with database as Int and identity as Str and start as Int and finish as Int and notes as Str returning Int:
+    set original to archive_read_event(database and "objective")
+    set payload to concat("{\"job\":\"job\",\"source_end\":\"objective\",\"source_event\":\"objective\",\"source_digest\":" and provider_quote(ptr_to_str(get_list(original and 6))))
+    set payload to concat(payload and concat(",\"offset\":" and int_to_string(start)))
+    set payload to concat(payload and concat(",\"next_offset\":" and int_to_string(finish)))
+    set payload to concat(payload and concat(",\"notes\":" and concat(provider_quote(notes) and "}")))
+    return archive_append(database and "session" and identity and "recap_fragment_notes" and payload and "fixture")
+
+define merge_provider_fixture with listener as List and completed as Int and start as Int and prior as Str and finish as Int returning Int:
+    set state to create_list()
+    set added to append_list(state and start)
+    set added to append_list(state and "")
+    set count to 0
+    if start equals 1:
+        set count to 3
+    set added to append_list(state and count)
+    set added to append_list(state and "objective")
+    set added to append_list(state and -10)
+    set added to append_list(state and prior)
+    set added to append_list(state and "objective")
+    set failures to 0
+    repeat while get_list(state and 0) is less than finish:
+        set failures to failures + runner_fixture_exchange(listener and state)
+    if finish equals 3 and get_list(state and 2) is not equal to 5:
+        set failures to failures + 1
+    send failures to completed
+    return 0
+
+define main returning Int:
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else agent_run_schema(database) is not equal to 0 or else checkpoint_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "session" and "objective" and "user" and "Aé🌍BXYZ" and "fixture") is not equal to 0 or else agent_run_create(database and "run" and "session" and "objective") is not equal to 0 or else recap_job_create(database and "session" and "objective" and "job") is not equal to 0:
+        return 1
+    if merge_note_fixture(database and "note-one" and 0 and 4 and "Aé🌍B") is not equal to 0 or else merge_note_fixture(database and "note-two" and 4 and 7 and "XYZ") is not equal to 0:
+        return 1
+    # This stray note is not a manifest member and must never be processed.
+    if archive_append(database and "session" and "stray" and "recap_fragment_notes" and "{\"job\":\"job\",\"source_event\":\"foreign\",\"notes\":\"DO NOT INCLUDE\"}" and "fixture") is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set completed to channel
+    if sql_execute(database and "CREATE TRIGGER interrupt_merge BEFORE INSERT ON echo_events WHEN NEW.kind='recap_merge_progress' AND (SELECT COUNT(*) FROM echo_events WHERE kind='recap_merge_progress')=1 BEGIN SELECT RAISE(ABORT,'Injected checkpoint persistence failure'); END;") is not equal to 0:
+        return 1
+    spawn merge_provider_fixture(listener and completed and 0 and "" and 2)
+    set result to recap_merge(database and "session" and "job" and "job:merge" and "fixture" and get_list(listener and 2) and 20 and -1 and 4096)
+    if not (ptr_to_str(get_list(result and 0)) equals "archive-error"):
+        display "FAIL: injected merge interruption did not stop publication"
+        return 1
+    set failures to receive from completed
+    if failures is not equal to 0:
+        return 1
+    set saved to compaction_saved_candidate(database and "session" and "objective" and "job")
+    if not (ptr_to_str(get_list(saved and 0)) equals "no-candidate"):
+        return 1
+    if sql_execute(database and "DROP TRIGGER interrupt_merge;") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    set notes to ["note-one", "note-two"]
+    set digest to recap_merge_notes_digest(database and notes)
+    set resumed to recap_merge_resume(database and "session" and "job" and "objective" and notes and digest)
+    if not (ptr_to_str(get_list(resumed and 0)) equals "ready") or else get_list(resumed and 1) is not equal to 0 or else get_list(resumed and 2) is not equal to 2:
+        display "FAIL: partial Unicode merge cursor did not survive reopen"
+        return 1
+    set altered to recap_merge_resume(database and "session" and "job" and "objective" and notes and "changed-note-set")
+    if not (ptr_to_str(get_list(altered and 0)) equals "invalid-merge-progress"):
+        return 1
+    set prior to ptr_to_str(get_list(resumed and 3))
+    set resumed_done to channel
+    spawn merge_provider_fixture(listener and resumed_done and 1 and prior and 3)
+    set profile to provider_llama_profile("fixture" and get_list(listener and 2))
+    set result to recap_merge_provider(database and "session" and "job" and "job:resumed" and profile and 20 and -1 and 4096)
+    if not (ptr_to_str(get_list(result and 0)) equals "structure-valid"):
+        display concat("FAIL: resumed merge returned " and ptr_to_str(get_list(result and 0)))
+        return 1
+    set failures to receive from resumed_done
+    if failures is not equal to 0:
+        display "FAIL: incorrect fragments, cumulative draft or preflight count."
+        return 1
+    set saved to compaction_saved_candidate(database and "session" and "objective" and "job")
+    if not (ptr_to_str(get_list(saved and 0)) equals "structure-valid") or else not (ptr_to_str(get_list(saved and 1)) equals ptr_to_str(get_list(result and 1))) or else length_list(get_list(saved and 3)) is not equal to 0:
+        display "FAIL: intermediate draft confused with final job candidate."
+        return 1
+    set candidate to provider_json_tokens(ptr_to_str(get_list(saved and 1)))
+    if not (provider_value(candidate and provider_member(candidate and 0 and "summary")) equals "Cumulative fixture stage 3") or else checkpoint_read_active(database and "session") is not equal to 0:
+        return 1
+    # A repeated first checkpoint cannot masquerade as additional coverage.
+    set first to history_collect_one(archive_prepare(database and "SELECT payload FROM echo_events WHERE kind='recap_merge_progress' ORDER BY sequence LIMIT 1;"))
+    if archive_append(database and "session" and "duplicate-progress" and "recap_merge_progress" and ptr_to_str(get_list(first and 1)) and "fixture") is not equal to 0:
+        return 1
+    set rejected to recap_merge_resume(database and "session" and "job" and "objective" and notes and digest)
+    if not (ptr_to_str(get_list(rejected and 0)) equals "invalid-merge-progress"):
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: interrupted partial Unicode merge resumes after reopen from verified saved draft; changed notes rejected, uncommitted generation repeated, committed fragment not regenerated, final candidate remains separate from partial progress. Synthetic judgments."
+    return 0

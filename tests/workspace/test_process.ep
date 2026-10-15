@@ -1,0 +1,94 @@
+import "../../app/workspace/native_process"
+import "../../app/workspace/files"
+import "fs"
+
+define main returning Int:
+    if get_argument_count() equals 3:
+        set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        if not (ptr_to_str(get_env("ECHO_PROCESS_TEST")) equals "explicit") or else string_length(get_env("ECHO_PROCESS_SECRET")) is not equal to 0:
+            return 21
+        # The deliberately inherited parent descriptor must be absent.
+        set descriptor to string_to_int(get_argument(2))
+        set byte to create_list()
+        set added to append_list(byte and 0)
+        set read_function to ep_dlsym(library and "read")
+        if socket_signed_result(ep_dlcall3(read_function and descriptor and get_list_data_ptr(byte) and 1)) is not equal to -1 or else socket_errno(library) is not equal to 9:
+            return 22
+        if get_argument(1) equals "wait":
+            repeat while 1 equals 1:
+                set slept to sleep_ms(100)
+        # 196608 output bytes exceed the unsafe upstream helper's 65536 buffer.
+        set block to "0123456789abcdef"
+        set index to 0
+        repeat while index is less than 12288:
+            if file_stage_write(library and 1 and str_to_ptr(block) and 16) is not equal to 0:
+                return 23
+            set index to index + 1
+        set message to "Separate stderr receipt."
+        if file_stage_write(library and 2 and str_to_ptr(message) and string_length(message)) is not equal to 0:
+            return 24
+        return 7
+    if get_argument_count() is not equal to 2:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and get_argument(1))
+    set output to workspace_file_open(library and directory and "stdout.bin" and 1)
+    set errors to workspace_file_open(library and directory and "stderr.txt" and 1)
+    # No CLOEXEC flag here: the adapter itself must prevent this descriptor leak.
+    set secret to native_open_mode(library and "/dev/urandom" and 0 and 0)
+    if directory is less than 3 or else output is less than 3 or else errors is less than 3 or else secret is less than 3:
+        return 1
+    set configured to set_env("ECHO_PROCESS_SECRET" and "must not reach child")
+    set environment to create_list()
+    set added to append_list(environment and "ECHO_PROCESS_TEST=explicit")
+    set arguments to create_list()
+    set added to append_list(arguments and "output")
+    set added to append_list(arguments and int_to_string(secret))
+    set handle to workspace_process_start(get_argument(0) and arguments and environment and directory and output and errors)
+    if handle equals 0:
+        display "FAIL: spawn"
+        return 1
+    set state to 0
+    repeat while state equals 0:
+        set state to workspace_process_poll(handle)
+        set slept to sleep_ms(10)
+    if state is not equal to 1 or else get_list(handle and 3) is not equal to 1792:
+        display concat("FAIL: child wait status " and int_to_string(get_list(handle and 3)))
+        return 1
+    if workspace_process_signal(handle and 9) is not equal to -1 or else workspace_process_close(handle) is not equal to 0:
+        return 1
+    set closed to net_close(output)
+    set closed to net_close(errors)
+    set expected to create_builder()
+    set index to 0
+    repeat while index is less than 12288:
+        set appended to builder_append(expected and "0123456789abcdef")
+        set index to index + 1
+    if not (ptr_to_str(read_file(concat(get_argument(1) and "/stdout.bin"))) equals ptr_to_str(builder_to_string(expected))):
+        display "FAIL: output integrity"
+        return 1
+    if not (ptr_to_str(read_file(concat(get_argument(1) and "/stderr.txt"))) equals "Separate stderr receipt."):
+        return 1
+    set output to workspace_file_open(library and directory and "cancel-output.bin" and 1)
+    set errors to workspace_file_open(library and directory and "cancel-error.txt" and 1)
+    set changed to set_list(arguments and 0 and str_to_ptr("wait"))
+    set handle to workspace_process_start(get_argument(0) and arguments and environment and directory and output and errors)
+    if handle equals 0:
+        return 1
+    set slept to sleep_ms(100)
+    if workspace_process_poll(handle) is not equal to 0 or else workspace_process_signal(handle and 9) is not equal to 0:
+        return 1
+    set state to 0
+    repeat while state equals 0:
+        set state to workspace_process_poll(handle)
+        set slept to sleep_ms(10)
+    if state is not equal to 1 or else get_list(handle and 3) modulo 128 is not equal to 9:
+        return 1
+    set closed to workspace_process_close(handle)
+    set closed to net_close(output)
+    set closed to net_close(errors)
+    set closed to net_close(secret)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    display "PASS: large separate output, exact exit status, explicit environment, closed inherited descriptor, process-group cancellation and reaping."
+    return 0

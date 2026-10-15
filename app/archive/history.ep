@@ -1,0 +1,83 @@
+import "session_scope"
+import "event_store"
+
+# Every result explicitly distinguishes exhaustion from a database failure.
+# Returned historical content is data with its original role, not instructions.
+define history_status with status as Str returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    return result
+
+define history_collect_one with statement as Int returning List:
+    if statement equals 0:
+        return history_status("error")
+    set result to ep_sqlite3_step(statement)
+    if result equals 101:
+        if ep_sqlite3_finalize(statement) is not equal to 0:
+            return history_status("error")
+        return history_status("end")
+    if result is not equal to 100:
+        set finished to ep_sqlite3_finalize(statement)
+        return history_status("error")
+    set row to history_status("found")
+    set position to 0
+    repeat while position is less than ep_sqlite3_column_count(statement):
+        set cell to ptr_to_str(ep_sqlite3_column_text(statement and position))
+        set added to append_list(row and concat(cell and ""))
+        set position to position + 1
+    if archive_finish(statement and 101) is not equal to 0:
+        return history_status("error")
+    return row
+
+# Capture a finite source boundary for a scan. Later events remain retrievable
+# in the next scan; appending messages cannot keep this scan running forever.
+define history_boundary with database as Int and session as Str returning List:
+    set statement to archive_prepare(database and "SELECT COALESCE(MAX(sequence),0) FROM echo_events WHERE session=?;")
+    if statement equals 0:
+        return history_status("error")
+    if archive_bind(statement and 1 and session) is not equal to 0:
+        set finished to ep_sqlite3_finalize(statement)
+        return history_status("error")
+    return history_collect_one(statement)
+
+# Cursor traversal has no total result cap. LIMIT 1 advances a single cursor;
+# callers continue until end, with no fixed number of calls or messages.
+# An empty literal searches all events. Percent signs and SQL text are literal.
+# Fields: status, event, sequence, kind, occurred, character count, digest.
+define history_next with database as Int and session as Str and after_sequence as Int and through_sequence as Int and literal as Str returning List:
+    if after_sequence is less than 0 or else through_sequence is less than after_sequence:
+        return history_status("error")
+    set query to concat(session_scope_sql() and "SELECT e.event,e.sequence,e.kind,e.occurred,length(e.payload),e.digest FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary WHERE e.sequence>?2 AND e.sequence<=?3 AND instr(e.payload,?4)>0 ORDER BY e.sequence LIMIT 1;")
+    set statement to archive_prepare(database and query)
+    if statement equals 0:
+        return history_status("error")
+    set bound to archive_bind(statement and 1 and session)
+    set bound to bound + ep_sqlite3_bind_int(statement and 2 and after_sequence)
+    set bound to bound + ep_sqlite3_bind_int(statement and 3 and through_sequence)
+    set bound to bound + archive_bind(statement and 4 and literal)
+    if bound is not equal to 0:
+        set finished to ep_sqlite3_finalize(statement)
+        return history_status("error")
+    return history_collect_one(statement)
+
+# Offsets and lengths count Unicode characters as defined by SQLite, not UTF-8
+# bytes. The caller sizes a piece using the live provider budget/tokenizer.
+# No default excerpt size truncates the source. Empty final pieces are valid.
+# Fields: status, event, kind, occurred, total characters, digest, offset, piece.
+define history_read_piece with database as Int and session as Str and event as Str and offset as Int and characters as Int returning List:
+    if offset is less than 0 or else characters is less than 1 or else offset equals 9223372036854775807:
+        return history_status("error")
+    set query to concat(session_scope_sql() and "SELECT e.event,e.kind,e.occurred,length(e.payload),e.digest,?2,substr(e.payload,?3,?4) FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary WHERE e.event=?5 AND length(e.payload)>=?6;")
+    set statement to archive_prepare(database and query)
+    if statement equals 0:
+        return history_status("error")
+    set bound to archive_bind(statement and 1 and session)
+    set bound to bound + ep_sqlite3_bind_int(statement and 2 and offset)
+    set bound to bound + ep_sqlite3_bind_int(statement and 3 and offset + 1)
+    set bound to bound + ep_sqlite3_bind_int(statement and 4 and characters)
+    set bound to bound + archive_bind(statement and 5 and event)
+    set bound to bound + ep_sqlite3_bind_int(statement and 6 and offset)
+    if bound is not equal to 0:
+        set finished to ep_sqlite3_finalize(statement)
+        return history_status("error")
+    return history_collect_one(statement)

@@ -1,0 +1,89 @@
+import "../retained_text"
+import "history_tools"
+import "../archive/file_text"
+import "../archive/pdf_cache"
+
+define attachment_text_execute with database as Int and session as Str and arguments as Str returning Str:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "attachment" or else key equals "offset" or else key equals "characters" or else key equals "page"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set field to provider_member(tokens and 0 and "attachment")
+    set offset to history_tool_integer(tokens and "offset")
+    set characters to history_tool_integer(tokens and "characters")
+    if not (provider_kind(tokens and field) equals "string") or else offset is less than 0 or else characters is less than 1:
+        return "{\"status\":\"invalid-arguments\"}"
+    set identity to provider_value(tokens and field)
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and identity)
+    set row to history_collect_one(checkpoint_prepare(database and concat(session_scope_sql() and "SELECT a.path,a.digest,CAST(a.bytes AS TEXT),a.event,a.media_type FROM scopes s JOIN echo_attachments a ON a.session=s.session JOIN echo_events e ON e.event=a.event AND e.session=a.session AND e.sequence<=s.boundary JOIN echo_session_owners o ON o.session=a.session JOIN echo_devices d ON d.device=o.device WHERE a.attachment=?2 AND d.revoked=0 AND d.device=(SELECT device FROM echo_session_owners WHERE session=?1);") and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(row and 0)) and "}"))
+    set page to 0
+    if provider_member(tokens and 0 and "page") is not equal to -1:
+        set page to history_tool_integer(tokens and "page")
+        if page is less than 0:
+            return "{\"status\":\"invalid-arguments\"}"
+    set representation to "original-utf8"
+    set pages to 0
+    set extractor to ""
+    set read to create_list()
+    if archive_list_text(row and 5) equals "application/pdf":
+        set representation to "pdfkit-page-text"
+        set extracted to pdf_cached_page(database and archive_list_text(row and 4) and archive_list_text(row and 1) and archive_list_text(row and 2) and http_decimal(archive_list_text(row and 3)) and page)
+        set pages to get_list(extracted and 2)
+        set extractor to archive_list_text(extracted and 3)
+        if not (archive_list_text(extracted and 0) equals "extracted"):
+            return concat("{\"status\":" and concat(provider_quote(archive_list_text(extracted and 0)) and concat(",\"pages\":" and concat(provider_quote(int_to_string(pages)) and "}"))))
+        set read to attachment_unicode_window(archive_list_text(extracted and 1) and offset and characters)
+    else:
+        if provider_member(tokens and 0 and "page") is not equal to -1:
+            return "{\"status\":\"invalid-arguments\"}"
+        set read to file_text_window(archive_list_text(row and 1) and archive_list_text(row and 2) and http_decimal(archive_list_text(row and 3)) and 65536 and offset and characters)
+    if not (archive_list_text(read and 0) equals "verified"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(read and 0)) and "}"))
+    set text to archive_list_text(read and 1)
+    set received to get_list(read and 2)
+    set payload to concat("{\"status\":\"found\",\"attachment\":" and provider_quote(identity))
+    set payload to concat(payload and concat(",\"event\":" and provider_quote(archive_list_text(row and 4))))
+    set payload to concat(payload and concat(",\"sha256\":" and provider_quote(archive_list_text(row and 2))))
+    set payload to concat(payload and concat(",\"offset\":" and provider_quote(int_to_string(offset))))
+    set payload to concat(payload and concat(",\"characters\":" and provider_quote(int_to_string(received))))
+    set payload to concat(payload and concat(",\"text\":" and provider_quote(text)))
+    set payload to concat(payload and concat(",\"representation\":" and provider_quote(representation)))
+    if representation equals "pdfkit-page-text":
+        set payload to concat(payload and concat(",\"extractor\":" and provider_quote(extractor)))
+        set payload to concat(payload and concat(",\"page\":" and provider_quote(int_to_string(page))))
+        set payload to concat(payload and concat(",\"pages\":" and provider_quote(int_to_string(pages))))
+    return concat(payload and "}")
+
+# UTF-8 decoded by Foundation; offsets count Unicode scalars, not bytes.
+define attachment_unicode_window with text as Str and offset as Int and characters as Int returning List:
+    set size to string_length(text)
+    set pointer to str_to_ptr(text)
+    set position to 0
+    set scalar to 0
+    set start to size
+    set finish to size
+    set received to 0
+    repeat while position is less than size:
+        set code to peek_byte(pointer and position)
+        if code is less than 128 or else code >= 192:
+            if scalar equals offset:
+                set start to position
+            if scalar >= offset:
+                if received equals characters:
+                    set finish to position
+                    break
+                set received to received + 1
+            set scalar to scalar + 1
+        set position to position + 1
+    return file_text_result("verified" and ptr_to_str(substring(text and start and finish - start)) and received)

@@ -1,0 +1,210 @@
+import "../transport/isolated_process"
+import "../retained_text"
+import "cancellation"
+import "activity"
+
+define web_worker_schema with database as Int returning Int:
+    if web_cancel_schema(database) is not equal to 0:
+        return 1
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_web_workers(run TEXT PRIMARY KEY REFERENCES echo_runs(run),worker TEXT NOT NULL,status TEXT NOT NULL); CREATE TABLE IF NOT EXISTS echo_worker_lock_protocol(worker TEXT PRIMARY KEY,run TEXT NOT NULL REFERENCES echo_runs(run));")
+
+define web_worker_protocol with database as Int and run as Str and worker as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and worker)
+    set added to append_list(values and run)
+    return tool_ledger_change(database and "INSERT INTO echo_worker_lock_protocol(worker,run) VALUES(?,?) RETURNING worker;" and values)
+
+# An explicit worker claim survives process death. It is never silently reused;
+# restart recovery must establish that the previous worker is no longer alive.
+define web_worker_claim with database as Int and run as Str and worker as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and worker)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if tool_ledger_change(database and "INSERT INTO echo_web_workers(run,worker,status) SELECT r.run,?2,'running' FROM echo_runs r WHERE r.run=?1 AND r.state='ready' RETURNING run;" and values) is not equal to 0 or else web_worker_protocol(database and run and worker) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# A repeated submission can arrive after durable acceptance but before launch.
+# Return 0 for a new claim, 2 for existing or terminal work, and 1 on failure.
+# The ownership check, absence check and claim share one database write lock.
+define web_worker_ensure_claim with database as Int and device as Str and run as Str and worker as Str returning Int:
+    if string_length(worker) equals 0 or else sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if web_device_run_allowed(database and device and run) is not equal to 1:
+        return archive_rollback(database)
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and worker)
+    set current to history_collect_one(checkpoint_prepare(database and "SELECT r.state,COALESCE(w.worker,'') FROM echo_runs r LEFT JOIN echo_web_workers w ON w.run=r.run WHERE r.run=?1 AND ?2<>'';" and values))
+    if not (archive_list_text(current and 0) equals "found"):
+        return archive_rollback(database)
+    if not (archive_list_text(current and 1) equals "ready") or else string_length(archive_list_text(current and 2)) is greater than 0:
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return archive_rollback(database)
+        return 2
+    if tool_ledger_change(database and "INSERT INTO echo_web_workers(run,worker,status) VALUES(?1,?2,'running') RETURNING run;" and values) is not equal to 0 or else web_worker_protocol(database and run and worker) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# Retry only a worker that has durably returned, using its exact identity as a
+# compare-and-switch token. Running/uncertain work is never reclaimed here.
+define web_worker_retry_claim with database as Int and device as Str and run as Str and previous as Str and worker as Str returning Int:
+    if string_length(worker) equals 0 or else worker equals previous:
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if web_device_run_allowed(database and device and run) is not equal to 1:
+        return archive_rollback(database)
+    set values to create_list()
+    set added to append_list(values and worker)
+    set added to append_list(values and run)
+    set added to append_list(values and previous)
+    if tool_ledger_change(database and "UPDATE echo_web_workers SET worker=?1,status='running' WHERE run=?2 AND worker=?3 AND status<>'running' AND EXISTS(SELECT 1 FROM echo_runs r WHERE r.run=?2 AND r.state='ready') AND NOT EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=?2) AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=?2 AND t.state<>'observed') RETURNING run;" and values) is not equal to 0:
+        return archive_rollback(database)
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return archive_rollback(database)
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"previous_worker\":" and provider_quote(previous)))
+    set payload to concat(payload and concat(",\"worker\":" and concat(provider_quote(worker) and "}")))
+    if archive_append_pending(database and archive_list_text(row and 0) and concat(worker and ":retry") and "worker_retry" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else web_worker_protocol(database and run and worker) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+define web_worker_run with database_path as Str and run as Str and worker as Str and model as Str and port as Int and reserve as Int and batch as Int returning Int:
+    return web_worker_run_provider(database_path and run and worker and provider_llama_profile(model and port) and reserve and batch)
+
+define web_worker_run_provider with database_path as Str and run as Str and worker as Str and profile as Str and reserve as Int and batch as Int returning Int:
+    set database to archive_open(database_path)
+    if database equals 0:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        set closed to sql_close(database)
+        return 1
+    set descriptor to compaction_lock_acquire(database and concat("web-worker:" and run) and library)
+    if descriptor is less than 0:
+        set closed to sql_close(database)
+        set closed to ep_dlclose(library)
+        return 1
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and worker)
+    set current to history_collect_one(checkpoint_prepare(database and "SELECT w.run FROM echo_web_workers w JOIN echo_worker_lock_protocol p ON p.worker=w.worker AND p.run=w.run WHERE w.run=? AND w.worker=? AND w.status='running';" and values))
+    set result to 1
+    if archive_list_text(current and 0) equals "found":
+        set result to web_worker_run_owned_provider(database_path and run and worker and profile and reserve and batch)
+    set result to result + net_close(descriptor)
+    set result to result + ep_dlclose(library)
+    set result to result + sql_close(database)
+    return result
+
+# The outer owner lock remains held until provider work, monitor cleanup and
+# terminal worker status are finished. A stale claim never enters this function.
+define web_worker_run_owned with database_path as Str and run as Str and worker as Str and model as Str and port as Int and reserve as Int and batch as Int returning Int:
+    return web_worker_run_owned_provider(database_path and run and worker and provider_llama_profile(model and port) and reserve and batch)
+
+define web_worker_run_owned_provider with database_path as Str and run as Str and worker as Str and profile as Str and reserve as Int and batch as Int returning Int:
+    set database to archive_open(database_path)
+    if database equals 0:
+        display "Echo worker could not open its archive; its claim requires recovery."
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        set closed to sql_close(database)
+        return 1
+    set cancellation to socket_cancellation_create(library)
+    set stop to socket_cancellation_create(library)
+    if cancellation equals 0 or else stop equals 0:
+        if cancellation is not equal to 0:
+            set closed to socket_cancellation_close(cancellation)
+        if stop is not equal to 0:
+            set closed to socket_cancellation_close(stop)
+        set closed to sql_close(database)
+        set closed to ep_dlclose(library)
+        return 1
+    set completed to channel
+    set monitor_path to concat(database_path and "")
+    set monitor_run to concat(run and "")
+    spawn web_cancel_monitor(monitor_path and monitor_run and get_list(stop and 0) and get_list(cancellation and 1) and completed)
+    set pending_values to create_list()
+    set added to append_list(pending_values and run)
+    set pending to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run=?;" and pending_values))
+    set status to "cancellation-error"
+    if archive_list_text(pending and 0) equals "found":
+        if agent_cancel_run(database and run) equals 0:
+            set status to "cancelled"
+    else if archive_list_text(pending and 0) equals "end":
+        # Existing runs keep their archived selection across host restarts.
+        set selected to agent_provider_read(database and run)
+        if string_length(selected) equals 0:
+            set selected to profile
+        set status to agent_loop_provider(database and run and selected and reserve and get_list(cancellation and 0) and batch)
+    set closed to net_close(get_list(stop and 1))
+    set monitor_status to receive from completed
+    set closed to net_close(get_list(cancellation and 0))
+    set closed to ep_dlclose(library)
+    if monitor_status is not equal to 0:
+        set status to "cancellation-monitor-error"
+    set values to create_list()
+    set added to append_list(values and status)
+    set added to append_list(values and run)
+    set added to append_list(values and worker)
+    set updated to tool_ledger_change(database and "UPDATE echo_web_workers SET status=? WHERE run=? AND worker=? AND status='running' RETURNING run;" and values)
+    set closed to sql_close(database)
+    return updated + closed
+
+define web_worker_status with database as Int and run as Str returning Str:
+    set payload to web_run_status(database and run)
+    set values to create_list()
+    set added to append_list(values and run)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT status,worker,CASE WHEN status<>'running' AND EXISTS(SELECT 1 FROM echo_runs r WHERE r.run=?1 AND r.state='ready') AND NOT EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=?1) AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=?1 AND t.state<>'observed') THEN 'true' ELSE 'false' END FROM echo_web_workers WHERE run=?1;" and values))
+    set status to archive_list_text(row and 0)
+    if status equals "error":
+        return "{\"status\":\"database-error\"}"
+    set worker_status to "not-started"
+    set worker to ""
+    set retry_allowed to "false"
+    if status equals "found":
+        set worker_status to archive_list_text(row and 1)
+        set worker to archive_list_text(row and 2)
+        set retry_allowed to archive_list_text(row and 3)
+    set payload to ptr_to_str(substring(payload and 0 and string_length(payload) - 1))
+    set payload to concat(payload and concat(",\"worker_status\":" and provider_quote(worker_status)))
+    set payload to concat(payload and concat(",\"worker\":" and provider_quote(worker)))
+    set activity to web_run_activity(database and run)
+    set payload to concat(payload and concat(",\"activity\":" and provider_quote(activity)))
+    return concat(payload and concat(",\"retry_allowed\":" and concat(retry_allowed and "}")))
+
+# A returned worker has no monitor left to consume cancellation. Complete only
+# a ready run with no outstanding tool observations, under the same write lock
+# that excludes retry claims. Active or uncertain work keeps its durable request.
+define web_worker_cancel_idle with database as Int and run as Str returning Int:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set values to create_list()
+    set added to append_list(values and run)
+    set idle to history_collect_one(checkpoint_prepare(database and "SELECT r.session,r.last_event FROM echo_runs r JOIN echo_web_workers w ON w.run=r.run WHERE r.run=?1 AND r.state='ready' AND w.status<>'running' AND EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=r.run) AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state<>'observed');" and values))
+    if archive_list_text(idle and 0) equals "error":
+        return archive_rollback(database)
+    if archive_list_text(idle and 0) equals "found":
+        set parent to archive_list_text(idle and 2)
+        set event to agent_identity()
+        set payload to concat(agent_event_envelope(run and parent) and "}")
+        if archive_append_pending(database and archive_list_text(idle and 1) and event and "agent_cancelled" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and "ready" and parent and "cancelled" and event) is not equal to 0:
+            return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# A failed OS launch must leave a visible, retryable durable claim.
+define web_worker_dispatch with database as Int and database_path as Str and run as Str and worker as Str and profile as Str and reserve as Int and batch as Int returning Int:
+    set process to echo_worker_start(database_path and run and worker and profile and reserve and batch)
+    if process < 0:
+        set values to create_list()
+        set added to append_list(values and run)
+        set added to append_list(values and worker)
+        set recorded to tool_ledger_change(database and "UPDATE echo_web_workers SET status='launch-failed' WHERE run=? AND worker=? AND status='running' RETURNING run;" and values)
+    return process

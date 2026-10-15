@@ -1,0 +1,60 @@
+import "../retained_text"
+import "../agent/tool_ledger"
+import "../tools/history_tools"
+import "../providers/archived_stream"
+
+external define peek_byte with pointer and offset returning Int
+external define poke_byte with pointer and offset and value returning Int
+
+# Each pipe chunk is an immutable event, with independently ordered stream
+# offsets. Binary bytes use hex so NUL and invalid UTF-8 cannot alter the record.
+# This is a host capture API, not a model-callable tool. Caller owns the pointer
+# and must stop the process if recording fails, rather than silently drop output.
+define workspace_output_record with database as Int and run as Str and call_id as Str and event as Str and stream as Str and pointer as Int and bytes as Int and ended as Int returning Int:
+    if not (stream equals "stdout" or else stream equals "stderr") or else (ended is not equal to 0 and ended is not equal to 1):
+        return 1
+    if bytes is less than 0 or else (ended equals 1 and bytes is not equal to 0) or else (ended equals 0 and (bytes equals 0 or else pointer equals 0)):
+        return 1
+    # Guard native integer overflow, not an output-size quota.
+    if bytes is greater than 4611686018427387903:
+        return 1
+    set buffer to create_list()
+    set index to 0
+    repeat while index is less than bytes / 4 + 1:
+        set added to append_list(buffer and 0)
+        set index to index + 1
+    set alphabet to "0123456789abcdef"
+    set index to 0
+    repeat while index is less than bytes:
+        set value to peek_byte(pointer and index)
+        set changed to poke_byte(get_list_data_ptr(buffer) and index * 2 and get_character(alphabet and value / 16))
+        set changed to poke_byte(get_list_data_ptr(buffer) and index * 2 + 1 and get_character(alphabet and value modulo 16))
+        set index to index + 1
+    set encoded to ptr_to_str(get_list_data_ptr(buffer))
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set values to tool_ledger_identity(run and call_id)
+    set owner to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_tool_calls WHERE run=?1 AND call_id=?2 AND state='running';" and values))
+    if not (archive_list_text(owner and 0) equals "found"):
+        return archive_rollback(database)
+    set added to append_list(values and stream)
+    set last to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.offset'),json_extract(payload,'$.bytes'),json_extract(payload,'$.eof') FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.call_id')=?2 AND json_extract(payload,'$.stream')=?3 ORDER BY sequence DESC LIMIT 1;" and values))
+    set offset to 0
+    if archive_list_text(last and 0) equals "found":
+        if not (archive_list_text(last and 3) equals "0"):
+            return archive_rollback(database)
+        set offset to string_to_int(archive_list_text(last and 1)) + string_to_int(archive_list_text(last and 2))
+    else if not (archive_list_text(last and 0) equals "end"):
+        return archive_rollback(database)
+    if offset is less than 0 or else bytes is greater than 9223372036854775807 - offset:
+        return archive_rollback(database)
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"stream\":" and provider_quote(stream)))
+    set payload to concat(payload and concat(",\"offset\":" and provider_quote(int_to_string(offset))))
+    set payload to concat(payload and concat(",\"bytes\":" and provider_quote(int_to_string(bytes))))
+    set payload to concat(payload and concat(",\"eof\":" and int_to_string(ended)))
+    set payload to concat(payload and concat(",\"encoding\":\"hex\",\"data\":" and concat(provider_quote(encoded) and "}")))
+    if archive_append_pending(database and archive_list_text(owner and 1) and event and "process_output" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0

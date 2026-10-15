@@ -1,0 +1,82 @@
+import "../retained_text"
+import "file_base64"
+
+# Decode the verified original bytes into immutable NSData before PDFKit sees
+# them. This avoids reopening a mutable path between hashing and extraction.
+# The first implementation holds the encoded and decoded file in memory.
+define pdf_text_verified with path as Str and digest as Str and bytes as Int returning List:
+    return pdf_text_page_verified(path and digest and bytes and -1)
+
+# Page minus one is the internal whole-document compatibility path.
+define pdf_text_page_verified with path as Str and digest as Str and bytes as Int and page as Int returning List:
+    set result to create_list()
+    set added to append_list(result and "unavailable")
+    set added to append_list(result and "")
+    set added to append_list(result and 0)
+    set encoded to file_base64_verified(path and digest and bytes and 65536)
+    if not (archive_list_text(encoded and 0) equals "verified"):
+        set changed to set_list(result and 0 and archive_list_text(encoded and 0))
+        return result
+    set runtime to ep_dlopen("/usr/lib/libobjc.A.dylib")
+    set framework to ep_dlopen("/System/Library/Frameworks/PDFKit.framework/PDFKit")
+    if runtime equals 0 or else framework equals 0:
+        return result
+    set class_function to ep_dlsym(runtime and "objc_getClass")
+    set selector_function to ep_dlsym(runtime and "sel_registerName")
+    set message to ep_dlsym(runtime and "objc_msgSend")
+    if class_function equals 0 or else selector_function equals 0 or else message equals 0:
+        return result
+    set pool_class to ep_dlcall1(class_function and str_to_ptr("NSAutoreleasePool"))
+    set string_class to ep_dlcall1(class_function and str_to_ptr("NSString"))
+    set data_class to ep_dlcall1(class_function and str_to_ptr("NSData"))
+    set document_class to ep_dlcall1(class_function and str_to_ptr("PDFDocument"))
+    set allocate to ep_dlcall1(selector_function and str_to_ptr("alloc"))
+    set initialize to ep_dlcall1(selector_function and str_to_ptr("init"))
+    set release to ep_dlcall1(selector_function and str_to_ptr("release"))
+    set pool to ep_dlcall2(message and ep_dlcall2(message and pool_class and allocate) and initialize)
+    set string_selector to ep_dlcall1(selector_function and str_to_ptr("stringWithUTF8String:"))
+    set string to ep_dlcall3(message and string_class and string_selector and str_to_ptr(archive_list_text(encoded and 1)))
+    set data_selector to ep_dlcall1(selector_function and str_to_ptr("initWithBase64EncodedString:options:"))
+    set data to ep_dlcall4(message and ep_dlcall2(message and data_class and allocate) and data_selector and string and 0)
+    set document_selector to ep_dlcall1(selector_function and str_to_ptr("initWithData:"))
+    set document to 0
+    if data is not equal to 0:
+        set document to ep_dlcall3(message and ep_dlcall2(message and document_class and allocate) and document_selector and data)
+    set changed to set_list(result and 0 and "invalid-pdf")
+    if document is not equal to 0:
+        set locked_selector to ep_dlcall1(selector_function and str_to_ptr("isLocked"))
+        if ep_dlcall2(message and document and locked_selector) is not equal to 0:
+            set changed to set_list(result and 0 and "locked-pdf")
+        else:
+            set count_selector to ep_dlcall1(selector_function and str_to_ptr("pageCount"))
+            set pages to ep_dlcall2(message and document and count_selector)
+            set text_selector to ep_dlcall1(selector_function and str_to_ptr("string"))
+            set text to 0
+            if page equals -1:
+                set text to ep_dlcall2(message and document and text_selector)
+            else if page >= 0 and page is less than pages:
+                set page_selector to ep_dlcall1(selector_function and str_to_ptr("pageAtIndex:"))
+                set page_object to ep_dlcall3(message and document and page_selector and page)
+                set text to ep_dlcall2(message and page_object and text_selector)
+            set changed to set_list(result and 0 and "no-extractable-text")
+            set changed to set_list(result and 2 and pages)
+            if page >= pages or else page is less than -1:
+                set changed to set_list(result and 0 and "page-out-of-range")
+            if text is not equal to 0:
+                set utf8_selector to ep_dlcall1(selector_function and str_to_ptr("UTF8String"))
+                set raw to ep_dlcall2(message and text and utf8_selector)
+                if raw is not equal to 0:
+                    set content to ptr_to_str(raw)
+                    set byte_count_selector to ep_dlcall1(selector_function and str_to_ptr("lengthOfBytesUsingEncoding:"))
+                    set byte_count to ep_dlcall3(message and text and byte_count_selector and 4)
+                    if byte_count is not equal to string_length(content):
+                        set changed to set_list(result and 0 and "unsupported-text")
+                    else if string_length(content) is greater than 0:
+                        set changed to set_list(result and 0 and "extracted")
+                        set changed to set_list(result and 1 and content)
+    set freed to ep_dlcall2(message and document and release)
+    set freed to ep_dlcall2(message and data and release)
+    set drain to ep_dlcall1(selector_function and str_to_ptr("drain"))
+    set freed to ep_dlcall2(message and pool and drain)
+    # Objective-C classes remain registered; keep framework handles loaded.
+    return result

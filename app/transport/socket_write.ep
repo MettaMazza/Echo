@@ -1,0 +1,63 @@
+import "socket_read"
+
+# Darwin arm64 variadic arguments are stack-passed. The ninth argument of the
+# integer FFI occupies that stack slot after its eight register arguments.
+# Verify F_GETFL afterwards so an ABI mismatch cannot silently enable blocking.
+define socket_make_nonblocking with library as Int and descriptor as Int returning Int:
+    if not (ptr_to_str(arch_name()) equals "arm64"):
+        return 1
+    set control_function to ep_dlsym(library and "fcntl")
+    if control_function equals 0:
+        return 1
+    set flags to socket_signed_result(ep_dlcall2(control_function and descriptor and 3))
+    if flags is less than 0:
+        return 1
+    if flags modulo 8 is less than 4:
+        set flags to flags + 4
+    if socket_signed_result(ep_dlcall9(control_function and descriptor and 4 and 0 and 0 and 0 and 0 and 0 and 0 and flags)) is not equal to 0:
+        return 1
+    set verified to socket_signed_result(ep_dlcall2(control_function and descriptor and 3))
+    if verified is less than 0 or else verified modulo 8 is less than 4:
+        return 1
+    return 0
+
+# Return status and the exact byte count sent, including on cancellation/error.
+# This never retries an entire message after a partial write.
+define socket_write_result with status as Str and count as Int returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and count)
+    return result
+
+define socket_write_all with library as Int and descriptor as Int and cancellation_reader as Int and pointer as Int and count as Int returning List:
+    if count is less than 0 or else (count is greater than 0 and pointer equals 0):
+        return socket_write_result("error" and 0)
+    if socket_make_nonblocking(library and descriptor) is not equal to 0:
+        return socket_write_result("error" and 0)
+    set send_function to ep_dlsym(library and "send")
+    set option_function to ep_dlsym(library and "setsockopt")
+    if send_function equals 0 or else option_function equals 0:
+        return socket_write_result("error" and 0)
+    set enabled to create_list()
+    set added to append_list(enabled and 1)
+    if socket_signed_result(ep_dlcall5(option_function and descriptor and 65535 and 4130 and get_list_data_ptr(enabled) and 4)) is not equal to 0:
+        return socket_write_result("error" and 0)
+    set sent to 0
+    repeat while sent is less than count:
+        set ready to socket_wait_event(library and descriptor and cancellation_reader and 4)
+        if ready equals 0:
+            return socket_write_result("cancelled" and sent)
+        if ready is less than 0:
+            return socket_write_result("error" and sent)
+        # The verified nonblocking descriptor returns control to the next poll.
+        # MSG_DONTWAIT is also supplied; it is not relied on by itself.
+        set written to ep_dlcall4(send_function and descriptor and pointer + sent and count - sent and 128)
+        if written is greater than 0:
+            set sent to sent + written
+        else:
+            if written equals 0:
+                return socket_write_result("error" and sent)
+            set error_number to socket_errno(library)
+            if error_number is not equal to 4 and error_number is not equal to 35:
+                return socket_write_result("error" and sent)
+    return socket_write_result("sent" and sent)

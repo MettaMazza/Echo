@@ -1,0 +1,61 @@
+import "../retained_text"
+import "sessions"
+import "../agent/run_state"
+
+define workspace_execution_denied with status as Str returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    return result
+
+# Resolve an execution request from its original immutable tool event. No caller
+# or model arguments can override session, device, workspace root or environment.
+# Result: status, session, device, program, argv list. This grants no launch on
+# its own: the dispatcher must pin the workspace and recheck owner at dispatch.
+define workspace_execution_request with database as Int and run as Str and call_id as Str returning List:
+    set restored to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_attachment_restore_receipt';"))
+    if not (archive_list_text(restored and 0) equals "end"):
+        return workspace_execution_denied("review-required")
+    set values to tool_ledger_identity(run and call_id)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.session,d.device,e.payload FROM echo_tool_calls t JOIN echo_runs r ON r.run=t.run AND r.session=t.session JOIN echo_events e ON e.event=t.request_event AND e.session=r.session JOIN echo_session_owners o ON o.session=r.session JOIN echo_devices d ON d.device=o.device WHERE t.run=?1 AND t.call_id=?2 AND t.state='running' AND r.state='tools' AND d.revoked=0 AND e.kind='tool_call';" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return workspace_execution_denied("not-authorized")
+    set tokens to provider_json_tokens(archive_list_text(row and 3))
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return workspace_execution_denied("invalid-request")
+    set name to provider_member(tokens and 0 and "name")
+    set original_run to provider_member(tokens and 0 and "run_id")
+    set original_call to provider_member(tokens and 0 and "call_id")
+    set field to provider_member(tokens and 0 and "arguments")
+    if not (provider_kind(tokens and name) equals "string") or else not (provider_value(tokens and name) equals "workspace_execute") or else not (provider_kind(tokens and original_run) equals "string") or else not (provider_value(tokens and original_run) equals run) or else not (provider_kind(tokens and original_call) equals "string") or else not (provider_value(tokens and original_call) equals call_id) or else not (provider_kind(tokens and field) equals "string"):
+        return workspace_execution_denied("invalid-request")
+    set arguments to provider_json_tokens(provider_value(tokens and field))
+    if arguments equals 0 or else provider_unique_objects(arguments) equals 0 or else not (provider_kind(arguments and 0) equals "{"):
+        return workspace_execution_denied("invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(arguments and index) equals "}"):
+        set key to provider_value(arguments and index)
+        if not (key equals "program" or else key equals "arguments"):
+            return workspace_execution_denied("invalid-arguments")
+        set index to provider_after(arguments and index + 2)
+        if provider_kind(arguments and index) equals ",":
+            set index to index + 1
+    set program_field to provider_member(arguments and 0 and "program")
+    set argv_field to provider_member(arguments and 0 and "arguments")
+    if not (provider_kind(arguments and program_field) equals "string") or else string_length(provider_value(arguments and program_field)) equals 0 or else not (provider_kind(arguments and argv_field) equals "["):
+        return workspace_execution_denied("invalid-arguments")
+    set items to provider_items(arguments and argv_field)
+    set argv to create_list()
+    set index to 0
+    repeat while index is less than length_list(items):
+        set item to get_list(items and index)
+        if not (provider_kind(arguments and item) equals "string"):
+            return workspace_execution_denied("invalid-arguments")
+        set added to append_list(argv and provider_value(arguments and item))
+        set index to index + 1
+    set result to create_list()
+    set added to append_list(result and "authorized")
+    set added to append_list(result and get_list(row and 1))
+    set added to append_list(result and get_list(row and 2))
+    set added to append_list(result and provider_value(arguments and program_field))
+    set added to append_list(result and argv)
+    return result

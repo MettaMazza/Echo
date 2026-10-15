@@ -1,0 +1,61 @@
+import "file_stage"
+
+# Host-controlled paths only. Permanent reservations serialize cooperating Echo
+# publishers on APFS and ExFAT. Failed attempts retain evidence for inspection.
+# This does not exclude unrelated processes with write access to these paths.
+define file_publication_reserve with system as Int and path as Str returning Int:
+    # ExFAT does not support RENAME_EXCL. An exclusive mkdir reservation
+    # serializes cooperating Echo writers without requiring hard links.
+    set reservation to concat(path and ".reservation")
+    if ep_dlcall2(ep_dlsym(system and "mkdir") and str_to_ptr(reservation) and 448) is not equal to 0:
+        return 1
+    set existing to create_list()
+    set index to 0
+    repeat while index is less than 18:
+        set added to append_list(existing and 0)
+        set index to index + 1
+    set inspect to ep_dlsym(system and "lstat")
+    if ep_dlcall2(inspect and str_to_ptr(path) and get_list_data_ptr(existing)) equals 0 or else socket_errno(system) is not equal to 2:
+        return 1
+    return 0
+
+define file_publication_finish with system as Int and temporary as Str and path as Str returning Int:
+    set existing to create_list()
+    set index to 0
+    repeat while index is less than 18:
+        set added to append_list(existing and 0)
+        set index to index + 1
+    set inspect to ep_dlsym(system and "lstat")
+    set publish to ep_dlsym(system and "renamex_np")
+    set renamed to -1
+    if publish is not equal to 0:
+        set renamed to ep_dlcall3(publish and str_to_ptr(temporary) and str_to_ptr(path) and 4)
+    if renamed is not equal to 0:
+        # Darwin ENOTSUP45 observed on One Touch. The permanent reservation
+        # makes this fallback exclusive among Echo publishers. Refuse any
+        # destination already present, including a dangling symlink.
+        if socket_errno(system) is not equal to 45:
+            return 1
+        if ep_dlcall2(inspect and str_to_ptr(path) and get_list_data_ptr(existing)) equals 0 or else socket_errno(system) is not equal to 2:
+            return 1
+        if ep_dlcall2(ep_dlsym(system and "rename") and str_to_ptr(temporary) and str_to_ptr(path)) is not equal to 0:
+            return 1
+    set index to 0
+    set slash to -1
+    repeat while index is less than string_length(path):
+        if get_character(path and index) equals 47:
+            set slash to index
+        set index to index + 1
+    if slash is less than 1:
+        return 1
+    set parent to ptr_to_str(substring(path and 0 and slash))
+    # Darwin O_CLOEXEC | O_NOFOLLOW_ANY | O_DIRECTORY, read-only directory.
+    set directory to native_open_mode(system and parent and 554696704 and 0)
+    if directory is less than 0:
+        return 1
+    set flushed to ep_dlcall1(ep_dlsym(system and "fsync") and directory)
+    set closed to net_close(directory)
+    if flushed is not equal to 0 or else closed is not equal to 0:
+        display "Publication directory flush did not complete"
+        return 1
+    return 0

@@ -1,0 +1,134 @@
+import "file_digest"
+
+external define peek_byte with pointer as Int and offset as Int returning Int
+external define poke_byte with pointer as Int and offset as Int and value as Int returning Int
+
+define file_base64_group with output as Int and offset as Int and value as Int and bytes as Int returning Int:
+    set alphabet to "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    set written to poke_byte(output and offset and get_character(alphabet and value / 262144))
+    set written to poke_byte(output and offset + 1 and get_character(alphabet and (value / 4096) modulo 64))
+    set third to 61
+    set fourth to 61
+    if bytes is greater than 1:
+        set third to get_character(alphabet and (value / 64) modulo 64)
+    if bytes equals 3:
+        set fourth to get_character(alphabet and value modulo 64)
+    set written to poke_byte(output and offset + 2 and third)
+    set written to poke_byte(output and offset + 3 and fourth)
+    return offset + 4
+
+# Encode and hash the same binary descriptor stream; preserve NUL/high bytes.
+# The inline provider request requires retaining the encoded payload in memory.
+# Batch bounds are CommonCrypto ABI limits, never an attachment-size ceiling.
+define file_base64_verified with path as Str and expected_digest as Str and expected_bytes as Int and batch as Int returning List:
+    if batch is less than 1 or else batch is greater than 4294967295 or else expected_bytes is less than 0:
+        return file_digest_result("invalid-arguments" and "" and 0)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return file_digest_result("unavailable" and "" and 0)
+    set open_function to ep_dlsym(library and "open")
+    set read_function to ep_dlsym(library and "read")
+    set allocate to ep_dlsym(library and "malloc")
+    set release to ep_dlsym(library and "free")
+    set copy_function to ep_dlsym(library and "memcpy")
+    set initialize to ep_dlsym(library and "CC_SHA256_Init")
+    set update to ep_dlsym(library and "CC_SHA256_Update")
+    set finish to ep_dlsym(library and "CC_SHA256_Final")
+    if open_function equals 0 or else read_function equals 0 or else allocate equals 0 or else release equals 0 or else copy_function equals 0 or else initialize equals 0 or else update equals 0 or else finish equals 0:
+        set closed to ep_dlclose(library)
+        return file_digest_result("unavailable" and "" and 0)
+    set descriptor to socket_signed_result(ep_dlcall2(open_function and str_to_ptr(path) and 16777472))
+    if descriptor is less than 0:
+        set closed to ep_dlclose(library)
+        return file_digest_result("open-failed" and "" and 0)
+    set buffer to ep_dlcall1(allocate and batch)
+    if buffer equals 0:
+        set closed to net_close(descriptor)
+        set closed to ep_dlclose(library)
+        return file_digest_result("allocation-failed" and "" and 0)
+    set encoded_buffer to ep_dlcall1(allocate and ((batch + 2) / 3 + 1) * 4 + 1)
+    if encoded_buffer equals 0:
+        set freed to ep_dlcall1(release and buffer)
+        set closed to net_close(descriptor)
+        set closed to ep_dlclose(library)
+        return file_digest_result("allocation-failed" and "" and 0)
+    set builder to create_builder()
+    set accumulator to 0
+    set pending to 0
+    # CC_SHA256_CTX is 26 unsigned 32-bit words in the installed SDK.
+    set context to create_list()
+    set index to 0
+    repeat while index is less than 13:
+        set added to append_list(context and 0)
+        set index to index + 1
+    set total to 0
+    set status to "verified"
+    if ep_dlcall1(initialize and get_list_data_ptr(context)) is not equal to 1:
+        set status to "hash-failed"
+    repeat while status equals "verified":
+        set count to ep_dlcall3(read_function and descriptor and buffer and batch)
+        if count equals 0:
+            break
+        if count is less than 0 or else count is greater than batch:
+            if socket_errno(library) equals 4:
+                continue
+            set status to "read-failed"
+            break
+        if count is greater than expected_bytes - total:
+            set status to "integrity-failed"
+            break
+        if ep_dlcall3(update and get_list_data_ptr(context) and buffer and count) is not equal to 1:
+            set status to "hash-failed"
+            break
+        set position to 0
+        set encoded_position to 0
+        repeat while position is less than count:
+            set accumulator to accumulator * 256 + peek_byte(buffer and position)
+            set pending to pending + 1
+            if pending equals 3:
+                set encoded_position to file_base64_group(encoded_buffer and encoded_position and accumulator and 3)
+                set accumulator to 0
+                set pending to 0
+            set position to position + 1
+        set terminated to poke_byte(encoded_buffer and encoded_position and 0)
+        set added to builder_append(builder and ptr_to_str(encoded_buffer))
+        set total to total + count
+    set digest to ""
+    if status equals "verified":
+        set output to create_list()
+        set index to 0
+        repeat while index is less than 4:
+            set added to append_list(output and 0)
+            set index to index + 1
+        if ep_dlcall2(finish and get_list_data_ptr(output) and get_list_data_ptr(context)) is not equal to 1:
+            set status to "hash-failed"
+        else:
+            set index to 0
+            repeat while index is less than 32:
+                set byte to create_list()
+                set added to append_list(byte and 0)
+                set copied to ep_dlcall3(copy_function and get_list_data_ptr(byte) and get_list_data_ptr(output) + index and 1)
+                set value to get_list(byte and 0)
+                set digest to concat(digest and ptr_to_str(substring("0123456789abcdef" and value / 16 and 1)))
+                set digest to concat(digest and ptr_to_str(substring("0123456789abcdef" and value modulo 16 and 1)))
+                set index to index + 1
+    if pending is greater than 0:
+        if pending equals 1:
+            set accumulator to accumulator * 65536
+        else:
+            set accumulator to accumulator * 256
+        set emitted to file_base64_group(encoded_buffer and 0 and accumulator and pending)
+        set terminated to poke_byte(encoded_buffer and emitted and 0)
+        set added to builder_append(builder and ptr_to_str(encoded_buffer))
+    set freed to ep_dlcall1(release and encoded_buffer)
+    set freed to ep_dlcall1(release and buffer)
+    if net_close(descriptor) is not equal to 0:
+        set status to "close-failed"
+    set closed to ep_dlclose(library)
+    set encoded to ptr_to_str(builder_to_string(builder))
+    if status equals "verified":
+        if total is not equal to expected_bytes or else not (digest equals expected_digest):
+            set status to "integrity-failed"
+    if not (status equals "verified"):
+        return file_digest_result(status and "" and total)
+    return file_digest_result(status and encoded and total)

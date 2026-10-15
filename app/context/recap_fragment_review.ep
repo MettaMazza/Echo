@@ -1,0 +1,103 @@
+import "../retained_text"
+import "recap_fragment"
+
+# A fragment verdict is bound to candidate bytes and an exact original range.
+# It cannot be substituted for whole-source or whole-candidate review.
+define recap_fragment_review_validate with candidate as Str and endpoint as Str and event as Str and digest as Str and offset as Int and next_offset as Int and report as Str returning Str:
+    set tokens to provider_json_tokens(report)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "invalid-review"
+    if not (provider_value(tokens and provider_member(tokens and 0 and "candidate_digest")) equals ep_sha256(candidate)) or else not (provider_value(tokens and provider_member(tokens and 0 and "source_end")) equals endpoint) or else not (provider_value(tokens and provider_member(tokens and 0 and "event")) equals event) or else not (provider_value(tokens and provider_member(tokens and 0 and "source_digest")) equals digest):
+        return "invalid-review"
+    if history_tool_integer(tokens and "offset") is not equal to offset or else history_tool_integer(tokens and "next_offset") is not equal to next_offset or else next_offset <= offset:
+        return "invalid-review"
+    set explanation to provider_member(tokens and 0 and "explanation")
+    if not (provider_kind(tokens and explanation) equals "string") or else string_length(provider_value(tokens and explanation)) equals 0:
+        return "invalid-review"
+    set verdict to provider_value(tokens and provider_member(tokens and 0 and "verdict"))
+    set status to "fragment-review-pass"
+    if verdict equals "omitted" or else verdict equals "contradicted" or else verdict equals "uncertain":
+        set status to "fragment-review-repair"
+    else if not (verdict equals "covered"):
+        return "invalid-review"
+    set findings to provider_items(tokens and provider_member(tokens and 0 and "findings"))
+    if findings equals 0:
+        return "invalid-review"
+    set index to 0
+    repeat while index is less than length_list(findings):
+        set finding to get_list(findings and index)
+        if not (provider_kind(tokens and finding) equals "string") or else string_length(provider_value(tokens and finding)) equals 0:
+            return "invalid-review"
+        set status to "fragment-review-repair"
+        set index to index + 1
+    return status
+
+# Return status, next offset, receipt identity. Invalid/truncated reports do not
+# advance coverage. A repair verdict is saved evidence, never activation consent.
+define recap_fragment_review_generate_provider with database as Int and session as Str and endpoint as Str and job as Str and event as Str and offset as Int and candidate as Str and request as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    set result to create_list()
+    set added to append_list(result and "structure-invalid")
+    set added to append_list(result and offset)
+    set added to append_list(result and "")
+    if recap_validate_structure(database and session and endpoint and candidate) is not equal to 0:
+        return result
+    set fitted to recap_fit_fragment_for_provider(database and session and endpoint and event and offset and request and profile and reserve and cancellation_reader and read_size and candidate)
+    set status to archive_list_text(fitted and 0)
+    set changed to set_list(result and 0 and status)
+    if not (status equals "ready"):
+        return result
+    set next_offset to get_list(fitted and 2)
+    set body to archive_list_text(fitted and 1)
+    set payload to concat("{\"purpose\":\"recap-fragment-review\",\"request_body\":" and concat(provider_quote(body) and "}"))
+    if archive_append(database and session and request and "model_request" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set changed to set_list(result and 0 and "archive-error")
+        return result
+    set response to local_chat_generate(database and session and request and port and "/v1/chat/completions" and body and cancellation_reader and read_size)
+    set status to archive_list_text(response and 0)
+    set changed to set_list(result and 0 and status)
+    if not (status equals "complete"):
+        return result
+    set state to get_list(response and 1)
+    set changed to set_list(result and 0 and "incomplete-response")
+    if get_list(state and 2) is not equal to 2:
+        return result
+    set choice to chat_find(get_list(state and 0) and "0")
+    if choice equals 0:
+        return result
+    if length_list(get_list(choice and 3)) is not equal to 0:
+        set changed to set_list(result and 0 and "unexpected-tool-call")
+        return result
+    set report to archive_list_text(choice and 1)
+    set original to archive_read_event(database and event)
+    if original equals 0:
+        set changed to set_list(result and 0 and "invalid-source")
+        return result
+    set digest to archive_list_text(original and 6)
+    set status to recap_fragment_review_validate(candidate and endpoint and event and digest and offset and next_offset and report)
+    set changed to set_list(result and 0 and status)
+    if status equals "invalid-review":
+        return result
+    set payload to concat("{\"job\":" and provider_quote(job))
+    set payload to concat(payload and concat(",\"candidate_digest\":" and provider_quote(ep_sha256(candidate))))
+    set payload to concat(payload and concat(",\"source_end\":" and provider_quote(endpoint)))
+    set payload to concat(payload and concat(",\"source_event\":" and provider_quote(event)))
+    set payload to concat(payload and concat(",\"source_digest\":" and provider_quote(digest)))
+    set payload to concat(payload and concat(",\"offset\":" and int_to_string(offset)))
+    set payload to concat(payload and concat(",\"next_offset\":" and int_to_string(next_offset)))
+    set payload to concat(payload and concat(",\"validation\":" and provider_quote(status)))
+    set payload to concat(payload and concat(",\"report\":" and concat(provider_quote(report) and "}")))
+    set receipt to concat(request and ":fragment-review")
+    if archive_append(database and session and receipt and "recap_fragment_review" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set changed to set_list(result and 0 and "archive-error")
+        return result
+    set changed to set_list(result and 1 and next_offset)
+    set changed to set_list(result and 2 and receipt)
+    return result
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define recap_fragment_review_generate with database as Int and session as Str and endpoint as Str and job as Str and event as Str and offset as Int and candidate as Str and request as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set profile to provider_llama_profile(model and port)
+    return recap_fragment_review_generate_provider(database and session and endpoint and job and event and offset and candidate and request and profile and reserve and cancellation_reader and read_size)

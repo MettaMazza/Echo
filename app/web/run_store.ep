@@ -1,0 +1,386 @@
+import "../retained_text"
+import "devices"
+import "source_reads"
+import "../archive/turn_attachments"
+import "../providers/registry"
+
+define web_run_schema with database as Int returning Int:
+    if agent_run_schema(database) is not equal to 0 or else checkpoint_schema(database) is not equal to 0:
+        return 1
+    if sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_sessions(session TEXT PRIMARY KEY,title TEXT NOT NULL,created TEXT NOT NULL);") is not equal to 0:
+        return 1
+    if provider_registry_schema(database) is not equal to 0:
+        return 1
+    return web_device_schema(database)
+
+define web_submit_result with status as Str and session as Str and run as Str and created as Int returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and session)
+    set added to append_list(result and run)
+    set added to append_list(result and created)
+    return result
+
+define web_submit_abort with database as Int and status as Str returning List:
+    set rolled_back to sql_execute(database and "ROLLBACK;")
+    if rolled_back is not equal to 0:
+        return web_submit_result("database-error" and "" and "" and 0)
+    return web_submit_result(status and "" and "" and 0)
+
+# Submission identity is supplied once by the browser and retained on retries.
+# Message, session and ready run commit together before a worker is launched.
+# Different text with the same identity is a conflict, never an overwrite.
+define web_submit with database as Int and submission as Str and requested_session as Str and message as Str returning List:
+    return web_submit_owned(database and "" and submission and requested_session and message)
+
+# Empty device is reserved for the existing host-only construction path.
+# Network routes must resolve a credential and reject an empty principal.
+define web_submit_owned with database as Int and device as Str and submission as Str and requested_session as Str and message as Str returning List:
+    return web_submit_owned_files(database and device and submission and requested_session and message and create_list())
+
+define web_submit_owned_files with database as Int and device as Str and submission as Str and requested_session as Str and message as Str and attachments as List returning List:
+    return web_submit_owned_provider(database and device and submission and requested_session and message and attachments and "")
+
+# Freeze the registered provider in the same transaction as the new run. An
+# empty browser selection freezes the registered default, while its original
+# empty selection remains unchanged for idempotent retries after default changes.
+define web_submit_owned_provider with database as Int and device as Str and submission as Str and requested_session as Str and message as Str and attachments as List and provider_identity as Str returning List:
+    if string_length(submission) equals 0 or else string_length(message) equals 0:
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return web_submit_result("database-busy" and "" and "" and 0)
+    set session to requested_session
+    if string_length(session) equals 0:
+        set session to concat("session:" and submission)
+    if string_length(device) is greater than 0:
+        set identities to create_list()
+        set added to append_list(identities and device)
+        set principal to history_collect_one(checkpoint_prepare(database and "SELECT device FROM echo_devices WHERE device=? AND revoked=0;" and identities))
+        if not (archive_list_text(principal and 0) equals "found"):
+            return web_submit_abort(database and "not-found")
+        if string_length(requested_session) is greater than 0 and web_device_session_allowed(database and device and session) equals 0:
+            return web_submit_abort(database and "not-found")
+    set event to concat(submission and ":user")
+    set manifest to turn_attachment_manifest(database and device and session and event and attachments)
+    if string_length(manifest) equals 0:
+        return web_submit_abort(database and "invalid-attachments")
+    set values to create_list()
+    set added to append_list(values and submission)
+    set statement to checkpoint_prepare(database and "SELECT r.session,e.payload FROM echo_runs r JOIN echo_events e ON e.event=r.objective_event WHERE r.run=?;" and values)
+    set existing to history_collect_one(statement)
+    set status to archive_list_text(existing and 0)
+    if status equals "error":
+        return web_submit_abort(database and "database-error")
+    if status equals "found":
+        if string_length(device) is greater than 0 and web_device_run_allowed(database and device and submission) equals 0:
+            return web_submit_abort(database and "not-found")
+        if not (archive_list_text(existing and 1) equals session) or else not (archive_list_text(existing and 2) equals message):
+            return web_submit_abort(database and "submission-conflict")
+        set saved_selection to archive_read_event(database and concat(submission and ":provider-selection"))
+        if saved_selection equals 0:
+            if string_length(provider_identity) is greater than 0:
+                return web_submit_abort(database and "submission-conflict")
+        else:
+            if not (archive_list_text(saved_selection and 3) equals provider_identity):
+                return web_submit_abort(database and "submission-conflict")
+        set binding to turn_attachment_read(database and session and event)
+        set binding_status to archive_list_text(binding and 0)
+        if binding_status equals "error":
+            return web_submit_abort(database and "database-error")
+        if binding_status equals "found":
+            if not (archive_list_text(binding and 1) equals manifest) or else not (archive_list_text(binding and 2) equals "turn_attachments"):
+                return web_submit_abort(database and "submission-conflict")
+        else if length_list(attachments) is greater than 0:
+            return web_submit_abort(database and "submission-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return web_submit_abort(database and "database-error")
+        return web_submit_result("accepted" and session and submission and 0)
+    set values to create_list()
+    set added to append_list(values and session)
+    set selected_profile to ""
+    if string_length(provider_identity) equals 0:
+        set selected_default to provider_registry_default(database)
+        set default_status to archive_list_text(selected_default and 0)
+        if default_status equals "found":
+            set selected_profile to archive_list_text(selected_default and 3)
+            if not (provider_profile_status(selected_profile) equals "ready"):
+                return web_submit_abort(database and "invalid-provider")
+        else if not (default_status equals "end"):
+            return web_submit_abort(database and "database-error")
+    if string_length(provider_identity) is greater than 0:
+        set registered to provider_registry_read(database and provider_identity)
+        if not (archive_list_text(registered and 0) equals "found"):
+            return web_submit_abort(database and "unknown-provider")
+        set selected_profile to archive_list_text(registered and 2)
+        if not (provider_profile_status(selected_profile) equals "ready"):
+            return web_submit_abort(database and "invalid-provider")
+    if string_length(requested_session) is greater than 0:
+        set existing to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_sessions WHERE session=?;" and values))
+        if not (archive_list_text(existing and 0) equals "found"):
+            return web_submit_abort(database and "unknown-session")
+    set active to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_runs r WHERE r.session=? AND (r.state NOT IN ('completed','cancelled','failed') OR EXISTS (SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state<>'observed'));" and values))
+    if not (archive_list_text(active and 0) equals "found"):
+        return web_submit_abort(database and "database-error")
+    if not (archive_list_text(active and 1) equals "0"):
+        return web_submit_abort(database and "session-active")
+    set occurred to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+    if string_length(requested_session) equals 0:
+        set added to append_list(values and message)
+        set added to append_list(values and occurred)
+        set statement to checkpoint_prepare(database and "INSERT INTO echo_sessions(session,title,created) VALUES(?,?,?);" and values)
+        if statement equals 0:
+            return web_submit_abort(database and "database-error")
+        if archive_finish(statement and 101) is not equal to 0:
+            return web_submit_abort(database and "database-error")
+        if string_length(device) is greater than 0:
+            if web_device_own_pending(database and device and session) is not equal to 0:
+                return web_submit_abort(database and "database-error")
+    if string_length(requested_session) is greater than 0:
+        set title_values to create_list()
+        set added to append_list(title_values and message)
+        set added to append_list(title_values and session)
+        set title_statement to checkpoint_prepare(database and "UPDATE echo_sessions SET title=?1 WHERE session=?2 AND NOT EXISTS(SELECT 1 FROM echo_runs WHERE session=?2) AND NOT EXISTS(SELECT 1 FROM echo_events WHERE session=?2 AND kind='session_title');" and title_values)
+        if title_statement equals 0:
+            return web_submit_abort(database and "database-error")
+        if archive_finish(title_statement and 101) is not equal to 0:
+            return web_submit_abort(database and "database-error")
+    set event to concat(submission and ":user")
+    if archive_append_pending(database and session and event and "user" and message and occurred) is not equal to 0 or else agent_run_create(database and submission and session and event) is not equal to 0:
+        return web_submit_abort(database and "database-error")
+    if string_length(selected_profile) is greater than 0:
+        if archive_append_pending(database and session and concat(submission and ":provider-selection") and "run_provider_selection" and provider_identity and occurred) is not equal to 0 or else archive_append_pending(database and session and concat(submission and ":provider-profile") and "run_provider_profile" and selected_profile and occurred) is not equal to 0:
+            return web_submit_abort(database and "database-error")
+    if length_list(attachments) is greater than 0:
+        if archive_append_pending(database and session and concat(event and ":attachments") and "turn_attachments" and manifest and occurred) is not equal to 0:
+            return web_submit_abort(database and "database-error")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return web_submit_abort(database and "database-error")
+    return web_submit_result("accepted" and session and submission and 1)
+
+# Small status response; originals and streamed events remain in the archive.
+# Rendering consumes text as text, never provider-supplied markup.
+define web_run_status with database as Int and run as Str returning Str:
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return "{\"status\":\"not-found\"}"
+    set state to archive_list_text(row and 2)
+    set event to archive_list_text(row and 3)
+    set payload to concat("{\"status\":\"found\",\"run\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"session\":" and provider_quote(archive_list_text(row and 0))))
+    set payload to concat(payload and concat(",\"state\":" and provider_quote(state)))
+    set payload to concat(payload and concat(",\"event\":" and provider_quote(event)))
+    set text to ""
+    set original to archive_read_event(database and event)
+    if original equals 0:
+        return "{\"status\":\"database-error\"}"
+    if state equals "completed" or else state equals "failed":
+        set tokens to provider_json_tokens(archive_list_text(original and 3))
+        if tokens equals 0:
+            return "{\"status\":\"database-error\"}"
+        set field to "content"
+        if state equals "failed":
+            set field to "reason"
+        set text to provider_value(tokens and provider_member(tokens and 0 and field))
+    return concat(payload and concat(",\"text\":" and concat(provider_quote(text) and "}")))
+
+define web_session_transcript with database as Int and session as Str returning Str:
+    return web_session_transcript_window(database and session and 0 and -1)
+
+# Message batches are a transport/rendering choice, never archive retention.
+# Stable global sequence cursors also traverse frozen branch ancestry.
+define web_session_transcript_window with database as Int and session as Str and before as Int and amount as Int returning Str:
+    if before is less than 0 or else amount equals 0 or else amount is less than -1:
+        return "{\"status\":\"invalid-range\"}"
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and int_to_string(before))
+    set added to append_list(values and int_to_string(amount))
+    set query to concat(session_scope_sql() and "SELECT * FROM (SELECT e.event,e.kind,e.payload,r.run,e.session,r.objective_event,e.sequence FROM scopes s JOIN echo_runs r ON r.session=s.session JOIN echo_events e ON r.objective_event=e.event OR (r.last_event=e.event AND r.state='completed') WHERE e.sequence<=s.boundary AND e.event<>s.omit_user AND (CAST(?2 AS INTEGER)=0 OR e.sequence<CAST(?2 AS INTEGER)) ORDER BY e.sequence DESC LIMIT CAST(?3 AS INTEGER)) ORDER BY sequence;")
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set builder to create_builder()
+    set added to builder_append(builder and "{\"status\":\"found\",\"messages\":[")
+    set count to 0
+    set next_before to "0"
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"database-error\"}"
+        set event to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set source_run to ptr_to_str(ep_sqlite3_column_text(statement and 3))
+        set source_session to ptr_to_str(ep_sqlite3_column_text(statement and 4))
+        set source_objective to ptr_to_str(ep_sqlite3_column_text(statement and 5))
+        if count equals 0:
+            set next_before to concat(ptr_to_str(ep_sqlite3_column_text(statement and 6)) and "")
+        set kind to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set content to ptr_to_str(ep_sqlite3_column_text(statement and 2))
+        set role to "user"
+        if kind equals "assistant_final":
+            set tokens to provider_json_tokens(content)
+            if tokens equals 0:
+                set closed to ep_sqlite3_finalize(statement)
+                return "{\"status\":\"database-error\"}"
+            set content to provider_value(tokens and provider_member(tokens and 0 and "content"))
+            set role to "assistant"
+        if count is greater than 0:
+            set added to builder_append(builder and ",")
+        set added to builder_append(builder and concat("{\"event\":" and provider_quote(event)))
+        set added to builder_append(builder and concat(",\"role\":" and provider_quote(role)))
+        set added to builder_append(builder and concat(",\"run\":" and provider_quote(source_run)))
+        set added to builder_append(builder and concat(",\"source_session\":" and provider_quote(source_session)))
+        set added to builder_append(builder and concat(",\"user_event\":" and provider_quote(source_objective)))
+        set sources to "[]"
+        if role equals "user":
+            set binding to turn_attachment_read(database and source_session and event)
+            set binding_status to archive_list_text(binding and 0)
+            if binding_status equals "error":
+                set closed to ep_sqlite3_finalize(statement)
+                return "{\"status\":\"database-error\"}"
+            if binding_status equals "found":
+                set manifest to archive_list_text(binding and 1)
+                set tokens to provider_json_tokens(manifest)
+                if tokens equals 0 or else not (archive_list_text(binding and 2) equals "turn_attachments"):
+                    set closed to ep_sqlite3_finalize(statement)
+                    return "{\"status\":\"database-error\"}"
+                set field to provider_member(tokens and 0 and "attachments")
+                if not (provider_kind(tokens and field) equals "[") or else not (provider_value(tokens and provider_member(tokens and 0 and "user_event")) equals event):
+                    set closed to ep_sqlite3_finalize(statement)
+                    return "{\"status\":\"database-error\"}"
+                set sources to agent_json_source(manifest and tokens and field)
+        set added to builder_append(builder and concat(",\"text\":" and provider_quote(content)))
+        set reads to "[]"
+        if role equals "assistant":
+            set reads to web_run_source_reads(database and source_session and source_run)
+            if string_length(reads) equals 0:
+                set closed to ep_sqlite3_finalize(statement)
+                return "{\"status\":\"database-error\"}"
+        if role equals "assistant":
+            set sources to web_message_audio(database and source_session and source_run and event)
+        set added to builder_append(builder and concat(",\"attachments\":" and sources))
+        set added to builder_append(builder and concat(",\"source_reads\":" and concat(reads and "}")))
+        set count to count + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    set added to builder_append(builder and concat("],\"next_before\":" and provider_quote(next_before)))
+    set more to "false"
+    if amount is greater than 0 and count equals amount:
+        set more to "true"
+    set added to builder_append(builder and concat(",\"older_possible\":" and concat(more and "}")))
+    return ptr_to_str(builder_to_string(builder))
+
+# Ownership is part of the query, not a browser-side filter. No fixed count
+# ceiling silently hides old conversations. Latest run follows archive order.
+define web_device_sessions with database as Int and device as Str returning Str:
+    return web_device_sessions_search(database and device and "")
+
+# Literal matching avoids wildcard expansion. Search original user/final text,
+# not duplicated transport payloads or another device's archive.
+define web_device_sessions_search with database as Int and device as Str and query as Str returning Str:
+    set values to create_list()
+    set added to append_list(values and device)
+    set added to append_list(values and query)
+    set statement to checkpoint_prepare(database and "SELECT s.session,s.title,COALESCE((SELECT r.run FROM echo_runs r JOIN echo_events e ON e.event=r.objective_event WHERE r.session=s.session ORDER BY e.sequence DESC LIMIT 1),'') FROM echo_sessions s JOIN echo_session_owners o ON o.session=s.session JOIN echo_devices d ON d.device=o.device WHERE d.device=?1 AND d.revoked=0 AND (?2='' OR instr(s.title,?2)>0 OR EXISTS(SELECT 1 FROM echo_events e WHERE e.session=s.session AND ((e.kind='user' AND instr(e.payload,?2)>0) OR (e.kind='assistant_final' AND instr(CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.content') END,?2)>0)))) ORDER BY s.rowid DESC;" and values)
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set builder to create_builder()
+    set added to builder_append(builder and "{\"status\":\"found\",\"sessions\":[")
+    set count to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set discarded to builder_to_string(builder)
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"database-error\"}"
+        if count is greater than 0:
+            set added to builder_append(builder and ",")
+        set session to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set title to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set run to ptr_to_str(ep_sqlite3_column_text(statement and 2))
+        set added to builder_append(builder and concat("{\"session\":" and provider_quote(session)))
+        set added to builder_append(builder and concat(",\"title\":" and provider_quote(title)))
+        set added to builder_append(builder and concat(",\"run\":" and concat(provider_quote(run) and "}")))
+        set count to count + 1
+    set closed to ep_sqlite3_finalize(statement)
+    if closed is not equal to 0:
+        set discarded to builder_to_string(builder)
+        return "{\"status\":\"database-error\"}"
+    set added to builder_append(builder and "]}")
+    return ptr_to_str(builder_to_string(builder))
+
+# Save an owned empty conversation before its first upload. The browser keeps
+# the creation identity until acknowledgement so interrupted retries are safe.
+define web_create_session with database as Int and device as Str and identity as Str returning List:
+    if string_length(identity) equals 0 or else string_length(device) equals 0:
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return web_submit_result("database-busy" and "" and "" and 0)
+    set session to concat("draft:" and identity)
+    set values to create_list()
+    set added to append_list(values and device)
+    set principal to history_collect_one(checkpoint_prepare(database and "SELECT device FROM echo_devices WHERE device=? AND revoked=0;" and values))
+    if not (archive_list_text(principal and 0) equals "found"):
+        return web_submit_abort(database and "not-found")
+    set values to create_list()
+    set added to append_list(values and session)
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_sessions WHERE session=?;" and values))
+    if archive_list_text(existing and 0) equals "error":
+        return web_submit_abort(database and "database-error")
+    if archive_list_text(existing and 0) equals "found":
+        if web_device_session_allowed(database and device and session) is not equal to 1:
+            return web_submit_abort(database and "not-found")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return web_submit_abort(database and "database-error")
+        return web_submit_result("accepted" and session and "" and 0)
+    set occurred to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+    set added to append_list(values and "New conversation")
+    set added to append_list(values and occurred)
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_sessions(session,title,created) VALUES(?,?,?);" and values)
+    if statement equals 0:
+        return web_submit_abort(database and "database-error")
+    if archive_finish(statement and 101) is not equal to 0 or else web_device_own_pending(database and device and session) is not equal to 0:
+        return web_submit_abort(database and "database-error")
+    if archive_append_pending(database and session and concat(session and ":created") and "session_created" and "{}" and occurred) is not equal to 0:
+        return web_submit_abort(database and "database-error")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return web_submit_abort(database and "database-error")
+    return web_submit_result("accepted" and session and "" and 1)
+
+# Compare the displayed title inside the write transaction so another tab cannot
+# silently overwrite a rename. The original conversation events remain intact.
+define web_rename_session with database as Int and device as Str and session as Str and previous as Str and title as Str returning Str:
+    if string_length(title) equals 0:
+        return "invalid-title"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    if web_device_session_allowed(database and device and session) equals 0:
+        set rolled_back to sql_execute(database and "ROLLBACK;")
+        return "not-found"
+    set values to create_list()
+    set added to append_list(values and session)
+    set current to history_collect_one(checkpoint_prepare(database and "SELECT title FROM echo_sessions WHERE session=?;" and values))
+    if not (archive_list_text(current and 0) equals "found"):
+        set rolled_back to sql_execute(database and "ROLLBACK;")
+        return "database-error"
+    set current_title to archive_list_text(current and 1)
+    if current_title equals title:
+        set rolled_back to sql_execute(database and "ROLLBACK;")
+        return "renamed"
+    if not (current_title equals previous):
+        set rolled_back to sql_execute(database and "ROLLBACK;")
+        return "title-changed"
+    set added to append_list(values and title)
+    set event to concat("title:" and agent_identity())
+    set occurred to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+    if web_device_write(database and "UPDATE echo_sessions SET title=?2 WHERE session=?1;" and values) is not equal to 0 or else archive_append_pending(database and session and event and "session_title" and title and occurred) is not equal to 0:
+        set rolled_back to sql_execute(database and "ROLLBACK;")
+        return "database-error"
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled_back to sql_execute(database and "ROLLBACK;")
+        return "database-error"
+    return "renamed"

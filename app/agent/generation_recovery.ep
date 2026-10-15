@@ -1,0 +1,41 @@
+import "../retained_text"
+import "generation"
+import "../providers/restored_stream"
+
+# The caller must own the run's native worker lock. No provider request or tool
+# action is replayed here. Complete streams publish atomically; partial streams
+# remain archived and the run receives a new ready head for a fresh attempt.
+define agent_recover_generation_owned with database as Int and run as Str and recovery_event as Str and choice_index as Str returning Str:
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return "invalid-run"
+    if not (archive_list_text(row and 2) equals "generating"):
+        return archive_list_text(row and 2)
+    set session to archive_list_text(row and 0)
+    set request to archive_list_text(row and 3)
+    if archive_verify(database and session) is not equal to 0:
+        return "archive-error"
+    set original to archive_read_event(database and request)
+    if original equals 0 or else not (archive_list_text(original and 0) equals session) or else not (archive_list_text(original and 2) equals "model_request"):
+        return "invalid-request"
+    set tokens to provider_json_tokens(archive_list_text(original and 3))
+    if tokens equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "run_id")) equals run):
+        return "invalid-request"
+    set restored to provider_restore_stream(database and session and request)
+    set status to archive_list_text(restored and 0)
+    if status equals "complete":
+        if agent_generation_publish(database and run and session and request and get_list(restored and 1) and choice_index) is not equal to 0:
+            return "publication-recovery-required"
+        set updated to agent_run_read(database and run)
+        if updated equals 0:
+            return "archive-error"
+        return archive_list_text(updated and 2)
+    if not (status equals "incomplete-response"):
+        return status
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "archive-error"
+    set payload to concat(agent_event_envelope(run and request) and ",\"reason\":\"interrupted or incomplete generation; original provider events retained; next attempt needs a fresh identity\"}")
+    if archive_append_pending(database and session and recovery_event and "agent_recovered" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and "generating" and request and "ready" and recovery_event) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "recovery-conflict"
+    return "ready"

@@ -1,0 +1,181 @@
+import "../retained_text"
+import "run_store"
+
+# Empty means absent; duplicate matching fields are explicitly ambiguous.
+define web_header with headers as List and name as Str returning List:
+    set result to create_list()
+    set added to append_list(result and "missing")
+    set added to append_list(result and "")
+    set index to 0
+    repeat while index is less than length_list(headers):
+        set pair to get_list(headers and index)
+        if archive_list_text(pair and 0) equals name:
+            if archive_list_text(result and 0) equals "found":
+                set changed to set_list(result and 0 and "ambiguous")
+                return result
+            set changed to set_list(result and 0 and "found")
+            set changed to set_list(result and 1 and get_list(pair and 1))
+        set index to index + 1
+    return result
+
+define web_local_host with request as List and port as Int returning Int:
+    set host to web_header(get_list(request and 5) and "host")
+    if not (archive_list_text(host and 0) equals "found"):
+        return 0
+    set value to archive_list_text(host and 1)
+    if value equals concat("127.0.0.1:" and int_to_string(port)) or else value equals concat("localhost:" and int_to_string(port)):
+        return 1
+    return 0
+
+# The token is generated once per server process and delivered in same-origin
+# bootstrap JSON. No permissive CORS or query-string credentials are used.
+# State-changing requests also require an exact origin matching their Host.
+define web_authorized with request as List and port as Int and token as Str and mutation as Int returning Int:
+    return web_authorized_origin(request and port and token and mutation and "")
+
+define web_https_origin_valid with origin as Str returning Int:
+    if string_length(origin) is less than 9 or else not (ptr_to_str(substring(origin and 0 and 8)) equals "https://"):
+        return 0
+    set position to 8
+    set colon to -1
+    repeat while position is less than string_length(origin):
+        set character to ptr_to_str(substring(origin and position and 1))
+        if character equals ":":
+            if colon is not equal to -1 or else position equals 8:
+                return 0
+            set colon to position
+        else if string_contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-" and character) equals 0:
+            return 0
+        set position to position + 1
+    if colon is not equal to -1:
+        set configured_port to http_decimal(ptr_to_str(substring(origin and colon + 1 and string_length(origin) - colon - 1)))
+        if configured_port is less than 1 or else configured_port is greater than 65535:
+            return 0
+    return 1
+
+# The public origin comes only from host startup configuration. Forwarded
+# headers never select it. The gateway preserves Origin and rewrites Host to
+# the loopback upstream, whose listener remains inaccessible over the LAN.
+define web_origin_allowed with request as List and port as Int and required as Int and public_origin as Str returning Int:
+    if web_local_host(request and port) equals 0:
+        return 0
+    set headers to get_list(request and 5)
+    set origin to web_header(headers and "origin")
+    if required equals 0 and archive_list_text(origin and 0) equals "missing":
+        return 1
+    if not (archive_list_text(origin and 0) equals "found"):
+        return 0
+    set host to web_header(headers and "host")
+    set local_origin to concat("http://" and archive_list_text(host and 1))
+    set supplied_origin to archive_list_text(origin and 1)
+    if supplied_origin equals local_origin:
+        return 1
+    if string_length(public_origin) equals 0:
+        return 0
+    return supplied_origin equals public_origin
+
+define web_authorized_origin with request as List and port as Int and token as Str and mutation as Int and public_origin as Str returning Int:
+    if string_length(token) equals 0 or else web_local_host(request and port) equals 0:
+        return 0
+    set headers to get_list(request and 5)
+    set supplied to web_header(headers and "x-echo-token")
+    if not (archive_list_text(supplied and 0) equals "found") or else not (archive_list_text(supplied and 1) equals token):
+        return 0
+    return web_origin_allowed(request and port and mutation and public_origin)
+
+# Call only after authorization. There is no fixed message-size cutoff; the
+# body is consumed through the HTTP framing reader, preserving UTF-8 exactly.
+define web_read_json with reader as List and request as List and read_size as Int returning List:
+    set headers to get_list(request and 5)
+    set content_type to web_header(headers and "content-type")
+    if not (archive_list_text(content_type and 0) equals "found"):
+        return http_failure("unsupported-content-type")
+    set mime to ptr_to_str(string_to_lower(get_list(content_type and 1)))
+    if not (mime equals "application/json" or else mime equals "application/json; charset=utf-8"):
+        return http_failure("unsupported-content-type")
+    set expect to web_header(headers and "expect")
+    if not (archive_list_text(expect and 0) equals "missing"):
+        return http_failure("unsupported-expectation")
+    set body to http_body_create(archive_list_text(request and 3) and get_list(request and 4))
+    set builder to create_builder()
+    set byte to create_list()
+    set added to append_list(byte and 0)
+    set copy to ep_dlsym(get_list(reader and 0) and "memcpy")
+    if copy equals 0:
+        return http_failure("error")
+    repeat while 1 equals 1:
+        set piece to http_body_next(reader and body and read_size)
+        set status to archive_list_text(piece and 0)
+        if status equals "done":
+            break
+        if not (status equals "data"):
+            set discarded to builder_to_string(builder)
+            return http_failure(status)
+        set index to 0
+        repeat while index is less than get_list(piece and 2):
+            set cleared to set_list(byte and 0 and 0)
+            set copied to ep_dlcall3(copy and get_list_data_ptr(byte) and get_list(piece and 1) + index and 1)
+            if get_list(byte and 0) equals 0:
+                set discarded to builder_to_string(builder)
+                return http_failure("invalid-json")
+            set added to builder_append(builder and ptr_to_str(get_list_data_ptr(byte)))
+            set index to index + 1
+    set text to ptr_to_str(builder_to_string(builder))
+    if provider_valid_utf8(text) equals 0:
+        return http_failure("invalid-json")
+    set tokens to provider_json_tokens(text)
+    if tokens equals 0:
+        return http_failure("invalid-json")
+    if provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return http_failure("invalid-json")
+    set result to http_failure("ready")
+    set added to append_list(result and text)
+    set added to append_list(result and tokens)
+    return result
+
+define web_submit_json with database as Int and tokens as List returning List:
+    return web_submit_json_owned(database and "" and tokens)
+
+define web_submit_json_owned with database as Int and device as Str and tokens as List returning List:
+    if not (provider_kind(tokens and 0) equals "{") or else provider_unique_objects(tokens) equals 0:
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    set identity to provider_member(tokens and 0 and "submission")
+    set message to provider_member(tokens and 0 and "message")
+    set session to provider_member(tokens and 0 and "session")
+    set selected_provider to provider_member(tokens and 0 and "provider")
+    if selected_provider is not equal to -1 and not (provider_kind(tokens and selected_provider) equals "string"):
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    if not (provider_kind(tokens and identity) equals "string") or else not (provider_kind(tokens and message) equals "string"):
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    if session is not equal to -1 and not (provider_kind(tokens and session) equals "string"):
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "submission" or else key equals "message" or else key equals "session" or else key equals "attachments" or else key equals "provider"):
+            return web_submit_result("invalid-request" and "" and "" and 0)
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set attachments to create_list()
+    set field to provider_member(tokens and 0 and "attachments")
+    if field is not equal to -1:
+        if not (provider_kind(tokens and field) equals "["):
+            return web_submit_result("invalid-request" and "" and "" and 0)
+        set items to provider_items(tokens and field)
+        if items equals 0:
+            return web_submit_result("invalid-request" and "" and "" and 0)
+        set position to 0
+        repeat while position is less than length_list(items):
+            set item to get_list(items and position)
+            if not (provider_kind(tokens and item) equals "string"):
+                return web_submit_result("invalid-request" and "" and "" and 0)
+            set added to append_list(attachments and provider_value(tokens and item))
+            set position to position + 1
+    return web_submit_owned_provider(database and device and provider_value(tokens and identity) and provider_value(tokens and session) and provider_value(tokens and message) and attachments and provider_value(tokens and selected_provider))
+
+define web_submit_payload with result as List returning Str:
+    set payload to concat("{\"status\":" and provider_quote(archive_list_text(result and 0)))
+    set payload to concat(payload and concat(",\"session\":" and provider_quote(archive_list_text(result and 1))))
+    set payload to concat(payload and concat(",\"run\":" and provider_quote(archive_list_text(result and 2))))
+    return concat(payload and "}")

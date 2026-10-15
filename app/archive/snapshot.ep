@@ -1,0 +1,101 @@
+import "event_store"
+import "fs"
+import "runtime_lock"
+
+# Verify the database structure and every session without loading all events.
+define archive_verify_all with database as Int returning Int:
+    set statement to archive_prepare(database and "PRAGMA integrity_check;")
+    if statement equals 0:
+        return 1
+    set result to ep_sqlite3_step(statement)
+    set healthy to 0
+    if result equals 100:
+        set message to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        if message equals "ok":
+            set healthy to 1
+    set next_result to ep_sqlite3_step(statement)
+    set finished to ep_sqlite3_finalize(statement)
+    if healthy equals 0 or else next_result is not equal to 101 or else finished is not equal to 0:
+        return 1
+    set statement to archive_prepare(database and "PRAGMA foreign_key_check;")
+    if statement equals 0:
+        return 1
+    set result to ep_sqlite3_step(statement)
+    set finished to ep_sqlite3_finalize(statement)
+    if result is not equal to 101 or else finished is not equal to 0:
+        return 1
+    set statement to archive_prepare(database and "SELECT DISTINCT session FROM echo_events;")
+    if statement equals 0:
+        return 1
+    set result to ep_sqlite3_step(statement)
+    repeat while result equals 100:
+        set session to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        if archive_verify(database and session) is not equal to 0:
+            set finished to ep_sqlite3_finalize(statement)
+            return 1
+        set result to ep_sqlite3_step(statement)
+    set finished to ep_sqlite3_finalize(statement)
+    if result is not equal to 101 or else finished is not equal to 0:
+        return 1
+    return 0
+
+# SQLite takes a consistent snapshot while the application can keep its own
+# connection. The destination must be new; an earlier backup is never replaced.
+# A FULL-synchronous receipt transaction flushes the output before success.
+# A failed or interrupted candidate must not be advertised as a usable backup.
+define archive_snapshot with database as Int and destination as Str returning Int:
+    if string_length(destination) equals 0 or else file_exists(destination):
+        display "Snapshot needs a new destination."
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 1
+    set anchor to archive_runtime_anchor(database and library)
+    set closed to ep_dlclose(library)
+    if string_length(anchor) equals 0 or else closed is not equal to 0:
+        return 1
+    set statement to archive_prepare(database and "VACUUM INTO ?;")
+    if statement equals 0:
+        return 1
+    if archive_bind(statement and 1 and destination) is not equal to 0:
+        set finished to ep_sqlite3_finalize(statement)
+        return 1
+    if archive_finish(statement and 101) is not equal to 0:
+        return 1
+    set snapshot to sql_open(destination)
+    if snapshot equals 0:
+        return 1
+    if archive_verify_all(snapshot) is not equal to 0:
+        set closed to sql_close(snapshot)
+        return 1
+    set receipt to "PRAGMA synchronous=FULL; BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS echo_snapshot_receipt (identity INTEGER PRIMARY KEY CHECK(identity=1), event_count INTEGER NOT NULL, last_sequence INTEGER NOT NULL); INSERT OR REPLACE INTO echo_snapshot_receipt SELECT 1,COUNT(*),COALESCE(MAX(sequence),0) FROM echo_events; COMMIT;"
+    if sql_execute(snapshot and receipt) is not equal to 0:
+        set closed to sql_close(snapshot)
+        return 1
+    return sql_close(snapshot)
+
+# A restore is a fresh snapshot into an explicitly chosen internal destination.
+# Validate completion, row coverage and original hashes before copying anything.
+define archive_restore with source as Str and destination as Str returning Int:
+    if not file_exists(source):
+        return 1
+    set snapshot to sql_open(source)
+    if snapshot equals 0:
+        return 1
+    set statement to archive_prepare(snapshot and "SELECT identity FROM echo_snapshot_receipt WHERE identity=1 AND event_count=(SELECT COUNT(*) FROM echo_events) AND last_sequence=(SELECT COALESCE(MAX(sequence),0) FROM echo_events);")
+    if statement equals 0:
+        set closed to sql_close(snapshot)
+        return 1
+    set result to ep_sqlite3_step(statement)
+    set finished to ep_sqlite3_finalize(statement)
+    if result is not equal to 100 or else finished is not equal to 0:
+        set closed to sql_close(snapshot)
+        return 1
+    if archive_verify_all(snapshot) is not equal to 0:
+        set closed to sql_close(snapshot)
+        return 1
+    set result to archive_snapshot(snapshot and destination)
+    set closed to sql_close(snapshot)
+    if closed is not equal to 0:
+        return 1
+    return result

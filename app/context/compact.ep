@@ -1,0 +1,129 @@
+import "../retained_text"
+import "recap_accept"
+import "recap_collect"
+import "recap_merge"
+import "recap_repair"
+import "compaction_lock"
+import "compaction_resume"
+
+define context_compact_provider with database as Int and run as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return "invalid-run"
+    set descriptor to compaction_lock_acquire(database and archive_list_text(row and 0) and library)
+    if descriptor is less than 0:
+        return "compaction-lock-unavailable"
+    set status to context_compact_owned_provider(database and run and profile and reserve and cancellation_reader and read_size and library)
+    if net_close(descriptor) is not equal to 0:
+        return "compaction-lock-release-error"
+    return status
+
+# Compaction preserves the run identity and accepted tool lineage. Every stage
+# archives its evidence; only reviewed, fitting context reaches activation.
+# Oversized merge/review/repair inputs remain explicit recoverable results.
+define context_compact_owned_provider with database as Int and run as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return "invalid-run"
+    if not (archive_list_text(row and 2) equals "ready"):
+        return "run-not-ready"
+    set session to archive_list_text(row and 0)
+    set captured to checkpoint_capture(database and session)
+    if captured equals 0:
+        return "invalid-source"
+    set file_status to compaction_attachments_verify(database and session and archive_list_text(captured and 0))
+    if not (file_status equals "verified"):
+        return file_status
+    set binding to compaction_job(database and session and run and archive_list_text(row and 3) and captured)
+    if not (archive_list_text(binding and 0) equals "ready"):
+        return archive_list_text(binding and 0)
+    set job to archive_list_text(binding and 1)
+    set endpoint to archive_list_text(binding and 2)
+    set cancellation to agent_cancellation_pending(library and cancellation_reader)
+    if cancellation is less than 0:
+        return "cancellation-error"
+    if cancellation equals 1:
+        return "cancelled"
+    set generated to compaction_saved_candidate(database and session and endpoint and job)
+    set seen to get_list(generated and 3)
+    set request to archive_list_text(generated and 2)
+    if archive_list_text(generated and 0) equals "no-candidate":
+        set request to concat(job and concat(":candidate:" and agent_identity()))
+        set generated to recap_generate_provider(database and session and endpoint and request and profile and reserve and cancellation_reader and read_size)
+    set status to archive_list_text(generated and 0)
+    if status equals "compaction-required":
+        set collected to recap_collect_inner_provider(database and session and job and profile and reserve and cancellation_reader and read_size and library)
+        if not (collected equals "source-ranges-covered"):
+            return collected
+        set request to concat(job and concat(":merge:" and agent_identity()))
+        set generated to recap_merge_provider(database and session and job and request and profile and reserve and cancellation_reader and read_size)
+        set status to archive_list_text(generated and 0)
+    repeat while 1 equals 1:
+        set cancellation to agent_cancellation_pending(library and cancellation_reader)
+        if cancellation is less than 0:
+            return "cancellation-error"
+        if cancellation equals 1:
+            return "cancelled"
+        set status to archive_list_text(generated and 0)
+        if not (status equals "structure-valid" or else status equals "structure-invalid"):
+            return status
+        set candidate to archive_list_text(generated and 1)
+        set digest to ep_sha256(candidate)
+        set index to 0
+        repeat while index is less than length_list(seen):
+            if archive_list_text(seen and index) equals digest:
+                return "recap-no-progress"
+            set index to index + 1
+        set added to append_list(seen and digest)
+        set feedback to "The candidate failed the detailed recap structural/provenance contract. Check valid unique-key JSON, source_end, nonempty summary and summary_sources, all required state arrays, and valid original-event references for every retained item."
+        if status equals "structure-valid":
+            set reviewed to compaction_saved_review(database and session and endpoint and job and candidate)
+            set review_request to archive_list_text(reviewed and 2)
+            set review_event to concat(review_request and ":review")
+            if archive_list_text(reviewed and 0) equals "no-review":
+                set reviewed to compaction_saved_synthesis(database and session and endpoint and job and candidate)
+                set review_event to archive_list_text(reviewed and 2)
+            if archive_list_text(reviewed and 0) equals "no-review":
+                set review_request to concat(job and concat(":review:" and agent_identity()))
+                set reviewed to recap_review_generate_provider(database and session and endpoint and candidate and review_request and profile and reserve and cancellation_reader and read_size)
+                set review_event to concat(review_request and ":review")
+            set status to archive_list_text(reviewed and 0)
+            if status equals "compaction-required":
+                set coverage to recap_review_collect_provider(database and session and endpoint and job and candidate and profile and reserve and cancellation_reader and read_size and library)
+                if not (coverage equals "fragment-reviews-covered" or else coverage equals "fragment-reviews-repair"):
+                    return coverage
+                set review_request to concat(job and concat(":synthesis:" and agent_identity()))
+                set reviewed to recap_review_synthesis_provider(database and session and job and candidate and review_request and profile and reserve and cancellation_reader and read_size)
+                set review_event to concat(review_request and ":synthesis")
+                set status to archive_list_text(reviewed and 0)
+            if status equals "review-pass":
+                set cancellation to agent_cancellation_pending(library and cancellation_reader)
+                if cancellation is less than 0:
+                    return "cancellation-error"
+                if cancellation equals 1:
+                    return "cancelled"
+                return recap_accept_provider(database and session and run and concat(request and ":candidate") and review_event and concat(job and concat(":checkpoint:" and agent_identity())) and profile and reserve and cancellation_reader and read_size)
+            if not (status equals "review-repair"):
+                return status
+            set feedback to archive_list_text(reviewed and 1)
+        # No arbitrary retry ceiling. Repeated candidates are a detected cycle;
+        # changed candidates must independently pass review before activation.
+        set request to concat(job and concat(":repair:" and agent_identity()))
+        set generated to recap_repair_provider(database and session and endpoint and candidate and feedback and request and profile and reserve and cancellation_reader and read_size)
+    return "error"
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define context_compact with database as Int and run as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    set profile to provider_llama_profile(model and port)
+    return context_compact_provider(database and run and profile and reserve and cancellation_reader and read_size and library)
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define context_compact_owned with database as Int and run as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    set profile to provider_llama_profile(model and port)
+    return context_compact_owned_provider(database and run and profile and reserve and cancellation_reader and read_size and library)

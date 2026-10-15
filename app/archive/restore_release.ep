@@ -1,0 +1,53 @@
+import "attachment_restore"
+
+# No pending historical action is automatically retried or marked completed.
+# This release mode applies only to a snapshot whose recorded runs, tools and
+# processes are already terminal. Uncertain snapshots stay held for review.
+define restore_release_transaction with database as Int and attachment_root as Str and reviewed_hash as Str returning Int:
+    if sql_execute(database and "PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set receipt to history_collect_one(archive_prepare(database and "SELECT state FROM echo_attachment_restore_receipt WHERE identity=1;"))
+    if not (ptr_to_str(get_list(receipt and 0)) equals "found") or else not (ptr_to_str(get_list(receipt and 1)) equals "review-required"):
+        return archive_rollback(database)
+    set pending to history_collect_one(archive_prepare(database and "SELECT CAST((SELECT count(*) FROM echo_runs WHERE state NOT IN ('completed','cancelled'))+(SELECT count(*) FROM echo_tool_calls WHERE state<>'observed')+(SELECT count(*) FROM echo_process_launches WHERE finished IS NULL)+(SELECT count(*) FROM echo_web_workers WHERE status='running') AS TEXT);"))
+    if not (ptr_to_str(get_list(pending and 0)) equals "found") or else not (ptr_to_str(get_list(pending and 1)) equals "0"):
+        display "Historical work is unfinished or uncertain; execution remains held."
+        return archive_rollback(database)
+    if archive_verify_all(database) is not equal to 0 or else attachment_snapshot_verify(database and attachment_root) is not equal to 0:
+        return archive_rollback(database)
+    if sql_execute(database and "CREATE TABLE echo_restore_release(identity INTEGER PRIMARY KEY CHECK(identity=1),mode TEXT NOT NULL CHECK(mode='terminal-snapshot'),reviewed_sha256 TEXT NOT NULL CHECK(length(reviewed_sha256)=64),reviewed_events INTEGER NOT NULL,released_at TEXT NOT NULL); CREATE TRIGGER echo_restore_release_no_update BEFORE UPDATE ON echo_restore_release BEGIN SELECT RAISE(ABORT,'Restore release is immutable'); END; CREATE TRIGGER echo_restore_release_no_delete BEFORE DELETE ON echo_restore_release BEGIN SELECT RAISE(ABORT,'Restore release is immutable'); END;") is not equal to 0:
+        return archive_rollback(database)
+    set values to create_list()
+    set added to append_list(values and reviewed_hash)
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_restore_release SELECT 1,'terminal-snapshot',?1,count(*),datetime('now') FROM echo_events;" and values)
+    if statement equals 0 or else archive_finish(statement and 101) is not equal to 0:
+        return archive_rollback(database)
+    if sql_execute(database and "UPDATE echo_attachment_restore_receipt SET state='reconciled' WHERE identity=1 AND state='review-required'; COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+define restore_release with path as Str and attachment_root as Str and expected_hash as Str returning Int:
+    if string_length(expected_hash) is not equal to 64 or else not file_exists(path):
+        return 1
+    set database to sql_open(path)
+    if database equals 0:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set owner to archive_runtime_lock(database and library)
+    if owner is less than 0:
+        display "Original or restored runtime is owned; stop it before reconciliation."
+        set closed to sql_close(database)
+        set closed to ep_dlclose(library)
+        return 1
+    set actual to file_digest_durable(path and 65536)
+    set result to 1
+    if ptr_to_str(get_list(actual and 0)) equals "verified" and ptr_to_str(get_list(actual and 1)) equals expected_hash:
+        set result to restore_release_transaction(database and attachment_root and expected_hash)
+    else:
+        display "Restored database differs from the supplied review hash; release refused."
+    set closed to sql_close(database)
+    if closed is not equal to 0:
+        set result to 1
+    set closed to net_close(owner)
+    set closed to ep_dlclose(library)
+    return result

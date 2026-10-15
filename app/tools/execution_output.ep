@@ -1,0 +1,52 @@
+import "../retained_text"
+import "history_tools"
+
+# Traverse only original output records, excluding model requests and later
+# search/read copies. Session comes from the current run, never from arguments.
+define execution_output_execute with database as Int and session as Str and arguments as Str returning Str:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "run_id" or else key equals "call_id" or else key equals "stream" or else key equals "after"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set run_field to provider_member(tokens and 0 and "run_id")
+    set call_field to provider_member(tokens and 0 and "call_id")
+    set stream_field to provider_member(tokens and 0 and "stream")
+    set after to history_tool_integer(tokens and "after")
+    if not (provider_kind(tokens and run_field) equals "string") or else not (provider_kind(tokens and call_field) equals "string") or else not (provider_kind(tokens and stream_field) equals "string") or else after is less than 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set stream to provider_value(tokens and stream_field)
+    if not (stream equals "stdout" or else stream equals "stderr"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and provider_value(tokens and run_field))
+    set added to append_list(values and provider_value(tokens and call_field))
+    set owner to history_collect_one(checkpoint_prepare(database and "SELECT t.request_event FROM echo_tool_calls t JOIN echo_runs r ON r.run=t.run AND r.session=t.session JOIN echo_session_owners o ON o.session=r.session JOIN echo_devices d ON d.device=o.device WHERE r.session=?1 AND t.run=?2 AND t.call_id=?3 AND d.revoked=0;" and values))
+    if not (archive_list_text(owner and 0) equals "found"):
+        return "{\"status\":\"not-authorized\"}"
+    set added to append_list(values and stream)
+    set added to append_list(values and int_to_string(after))
+    set query to "SELECT event,CAST(sequence AS TEXT),json_extract(payload,'$.offset'),json_extract(payload,'$.bytes'),CAST(json_extract(payload,'$.eof') AS TEXT),digest FROM echo_events WHERE session=?1 AND kind='process_output' AND json_extract(payload,'$.run_id')=?2 AND json_extract(payload,'$.call_id')=?3 AND json_extract(payload,'$.stream')=?4 AND sequence>CAST(?5 AS INTEGER) ORDER BY sequence LIMIT 1;"
+    set row to history_collect_one(checkpoint_prepare(database and query and values))
+    if archive_list_text(row and 0) equals "end":
+        set ended to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE session=?1 AND kind='process_output' AND json_extract(payload,'$.run_id')=?2 AND json_extract(payload,'$.call_id')=?3 AND json_extract(payload,'$.stream')=?4 AND json_extract(payload,'$.eof')=1 AND sequence<=CAST(?5 AS INTEGER) LIMIT 1;" and values))
+        if archive_list_text(ended and 0) equals "found":
+            return "{\"status\":\"end\"}"
+        if archive_list_text(ended and 0) equals "end":
+            return "{\"status\":\"pending-or-incomplete\"}"
+        return "{\"status\":\"error\"}"
+    set keys to create_list()
+    set added to append_list(keys and "event")
+    set added to append_list(keys and "sequence")
+    set added to append_list(keys and "byte_offset")
+    set added to append_list(keys and "bytes")
+    set added to append_list(keys and "eof")
+    set added to append_list(keys and "digest")
+    return history_tool_row(row and keys)

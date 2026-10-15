@@ -1,0 +1,82 @@
+import "../../app/web/recovery"
+import "../fixtures/runner_provider"
+
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_worker_schema(database) is not equal to 0:
+        return 1
+    set provider_port to 0
+    if get_argument(2) equals "resume":
+        set profile to agent_provider_read(database and "run")
+        set configuration to provider_json_tokens(profile)
+        if configuration equals 0:
+            return 1
+        set provider_port to http_decimal(provider_index(configuration and provider_member(configuration and 0 and "port")))
+        if provider_port is less than 1:
+            return 1
+    # Restart the fixture at its persisted endpoint, as a real provider restart
+    # must do. A new ephemeral endpoint would be a different provider profile.
+    set listener to local_socket_listen(provider_port)
+    if listener equals 0:
+        return 1
+    set completed to channel
+    if get_argument(2) equals "interrupt":
+        if archive_append(database and "session" and "objective" and "user" and "Remember café." and "fixture") is not equal to 0 or else agent_run_create(database and "run" and "session" and "objective") is not equal to 0 or else web_worker_claim(database and "run" and "first-worker") is not equal to 0:
+            return 1
+        spawn compaction_fixture(listener and -6 and completed)
+        set result to web_worker_run(get_argument(1) and "run" and "first-worker" and "fixture" and get_list(listener and 2) and 20 and 4096)
+        display "FAIL: worker process was not interrupted."
+        return 1
+    if not (get_argument(2) equals "resume"):
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set held to compaction_lock_acquire(database and "web-worker:run" and library)
+    if held is less than 0:
+        return 1
+    if web_worker_recover_ready(database and "run" and "first-worker" and "while-owned" and library) equals 0:
+        display "FAIL: recovery replaced a live owner."
+        return 1
+    if net_close(held) is not equal to 0 or else web_worker_recover_ready(database and "run" and "stale-worker" and "wrong-parent" and library) equals 0:
+        return 1
+    # A claim from an older executable has no lock protocol proof.
+    if archive_append(database and "legacy-session" and "legacy-user" and "user" and "Legacy fixture" and "fixture") is not equal to 0 or else agent_run_create(database and "legacy" and "legacy-session" and "legacy-user") is not equal to 0 or else sql_execute(database and "INSERT INTO echo_web_workers(run,worker,status) VALUES('legacy','legacy-worker','running');") is not equal to 0:
+        return 1
+    if web_worker_recover_ready(database and "legacy" and "legacy-worker" and "unsafe-legacy-recovery" and library) equals 0 or else ep_dlclose(library) is not equal to 0:
+        return 1
+    set captured to checkpoint_capture(database and "session")
+    set binding to compaction_job(database and "session" and "run" and "objective" and captured)
+    if not (ptr_to_str(get_list(binding and 0)) equals "ready"):
+        return 1
+    set endpoint to ptr_to_str(get_list(binding and 2))
+    set saved to compaction_saved_candidate(database and "session" and endpoint and ptr_to_str(get_list(binding and 1)))
+    if not (ptr_to_str(get_list(saved and 0)) equals "structure-valid"):
+        return 1
+    set candidate_copy to concat(ptr_to_str(get_list(saved and 1)) and "")
+    spawn compaction_recovery_fixture(listener and candidate_copy and endpoint and 1 and completed)
+    # A changed host default must not replace this interrupted run's selection.
+    if web_recover_ready_workers(database and get_argument(1) and "different-host-default" and 1 and 20 and 4096) is not equal to 0:
+        return 1
+    set fixture_result to receive from completed
+    if fixture_result is not equal to 0:
+        return 1
+    repeat while 1 equals 1:
+        set status to provider_json_tokens(web_worker_status(database and "run"))
+        set worker_status to provider_value(status and provider_member(status and 0 and "worker_status"))
+        if not (worker_status equals "running"):
+            if not (worker_status equals "completed"):
+                display concat("FAIL: recovered worker " and worker_status)
+                return 1
+            break
+        set waited to sleep_ms(10)
+    if web_worker_run(get_argument(1) and "run" and "first-worker" and "fixture" and 1 and 20 and 4096) equals 0:
+        display "FAIL: stale worker was allowed to execute."
+        return 1
+    set counts to history_collect_one(archive_prepare(database and "SELECT (SELECT COUNT(*) FROM echo_events WHERE kind='worker_recovery'),(SELECT COUNT(*) FROM echo_events WHERE kind='recap_candidate'),(SELECT COUNT(*) FROM echo_events WHERE kind='recap_review');"))
+    if not (ptr_to_str(get_list(counts and 1)) equals "1") or else not (ptr_to_str(get_list(counts and 2)) equals "1") or else not (ptr_to_str(get_list(counts and 3)) equals "1"):
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: crashed ready worker recovered once with its saved provider despite changed host defaults; live/stale/legacy ownership rejected; saved compaction receipts reused and original run completed."
+    return 0

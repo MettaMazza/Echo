@@ -1,0 +1,141 @@
+import "local_socket"
+import "select"
+
+define socket_errno with library as Int returning Int:
+    set location_function to ep_dlsym(library and "__error")
+    set copy_function to ep_dlsym(library and "memcpy")
+    if location_function equals 0 or else copy_function equals 0:
+        return -1
+    set value to create_list()
+    set added to append_list(value and 0)
+    set copied to ep_dlcall3(copy_function and get_list_data_ptr(value) and ep_dlcall0(location_function) and 4)
+    return get_list(value and 0)
+
+# The request owner closes the write end to cancel, waking poll immediately.
+# No periodic timeout or wall-clock lifetime limit is needed.
+define socket_cancellation_create with library as Int returning List:
+    set pipe_function to ep_dlsym(library and "pipe")
+    if pipe_function equals 0:
+        return 0
+    set packed to create_list()
+    set added to append_list(packed and 0)
+    if socket_signed_result(ep_dlcall1(pipe_function and get_list_data_ptr(packed))) is not equal to 0:
+        return 0
+    set pair to create_list()
+    set added to append_list(pair and get_list(packed and 0) modulo 4294967296)
+    set added to append_list(pair and get_list(packed and 0) / 4294967296)
+    return pair
+
+# Only the request owner mutates the cancellation pair.
+define socket_cancel with pair as List returning Int:
+    set writer to get_list(pair and 1)
+    if writer is less than 0:
+        return 0
+    set changed to set_list(pair and 1 and -1)
+    return net_close(writer)
+
+define socket_cancellation_close with pair as List returning Int:
+    set cancelled to socket_cancel(pair)
+    set reader to get_list(pair and 0)
+    if reader is less than 0:
+        return cancelled
+    set changed to set_list(pair and 0 and -1)
+    set closed to net_close(reader)
+    if cancelled is not equal to 0 or else closed is not equal to 0:
+        return 1
+    return 0
+
+# Result: -1 failure, 0 cancelled, 1 requested event or terminal state ready.
+define socket_wait_event with library as Int and descriptor as Int and cancellation_reader as Int and event as Int returning Int:
+    set poll_function to ep_dlsym(library and "poll")
+    if poll_function equals 0 or else descriptor is less than 0 or else (event is not equal to 1 and event is not equal to 4):
+        return -1
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    set waiting to 1
+    repeat while waiting equals 1:
+        set descriptors to create_list()
+        # Darwin pollfd is two 32-bit halves: fd, then events/revents shorts.
+        set added to append_list(descriptors and descriptor + event * 4294967296)
+        if cancellation_reader is less than 0:
+            set added to append_list(descriptors and 4294967295)
+        else:
+            set added to append_list(descriptors and cancellation_reader + 4294967296)
+        set result to socket_signed_result(ep_dlcall3(poll_function and get_list_data_ptr(descriptors) and 2 and 0))
+        if result is less than 0:
+            if socket_errno(library) is not equal to 4:
+                return -1
+        else if result equals 0:
+            # Scheduling cadence only; no network lifetime or size limit.
+            # Cooperate with other Ernos workers while nothing is ready.
+            set waited to select(waits and 1)
+        else:
+            set cancellation_events to get_list(descriptors and 1) / 281474976710656
+            set socket_events to get_list(descriptors and 0) / 281474976710656
+            if cancellation_events is greater than 0:
+                if cancellation_events modulo 64 is greater than 31:
+                    return -1
+                return 0
+            if socket_events is greater than 0:
+                if socket_events modulo 64 is greater than 31:
+                    return -1
+                return 1
+    return -1
+
+define socket_wait_readable with library as Int and descriptor as Int and cancellation_reader as Int returning Int:
+    return socket_wait_event(library and descriptor and cancellation_reader and 1)
+
+define socket_read_result with status as Str and pointer as Int and count as Int returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and pointer)
+    set added to append_list(result and count)
+    return result
+
+# Native buffers preserve embedded NUL bytes. The owner releases every data
+# buffer with socket_release_buffer after parsing or persisting it.
+# A chunk is sized from SO_RCVBUF, not an application-wide message ceiling.
+define socket_read_chunk with library as Int and descriptor as Int and cancellation_reader as Int returning List:
+    set option_function to ep_dlsym(library and "getsockopt")
+    set allocate_function to ep_dlsym(library and "malloc")
+    set release_function to ep_dlsym(library and "free")
+    set receive_function to ep_dlsym(library and "recv")
+    if option_function equals 0 or else allocate_function equals 0 or else release_function equals 0 or else receive_function equals 0:
+        return socket_read_result("error" and 0 and 0)
+    set capacity to create_list()
+    set added to append_list(capacity and 0)
+    set size to create_list()
+    set added to append_list(size and 4)
+    if socket_signed_result(ep_dlcall5(option_function and descriptor and 65535 and 4098 and get_list_data_ptr(capacity) and get_list_data_ptr(size))) is not equal to 0:
+        return socket_read_result("error" and 0 and 0)
+    set available to get_list(capacity and 0)
+    if available is less than 1:
+        return socket_read_result("error" and 0 and 0)
+    repeat while 1 equals 1:
+        set ready to socket_wait_readable(library and descriptor and cancellation_reader)
+        if ready equals 0:
+            return socket_read_result("cancelled" and 0 and 0)
+        if ready is less than 0:
+            return socket_read_result("error" and 0 and 0)
+        set buffer to ep_dlcall1(allocate_function and available)
+        if buffer equals 0:
+            return socket_read_result("error" and 0 and 0)
+        set received to ep_dlcall4(receive_function and descriptor and buffer and available and 0)
+        if received is greater than 0:
+            return socket_read_result("data" and buffer and received)
+        set error_number to socket_errno(library)
+        set released to ep_dlcall1(release_function and buffer)
+        if received equals 0:
+            return socket_read_result("eof" and 0 and 0)
+        if error_number is not equal to 4 and error_number is not equal to 35:
+            return socket_read_result("error" and 0 and 0)
+    return socket_read_result("error" and 0 and 0)
+
+define socket_release_buffer with library as Int and buffer as Int returning Int:
+    set release_function to ep_dlsym(library and "free")
+    if release_function equals 0:
+        return 1
+    if buffer is not equal to 0:
+        set released to ep_dlcall1(release_function and buffer)
+    return 0

@@ -1,0 +1,75 @@
+import "../retained_text"
+import "recap_sources"
+import "recap_contract"
+import "../providers/prepare"
+import "../providers/local_chat"
+
+define recap_request_body with model as Str and sources as Str returning Str:
+    set body to concat("{\"model\":" and provider_quote(model))
+    set body to concat(body and concat(",\"stream\":true,\"messages\":[{\"role\":\"system\",\"content\":" and provider_quote(concat(recap_generation_instruction() and " For progressive fragment notes, update previous_candidate using next_fragment and return the complete cumulative recap, not just changes. Preserve prior supported content, add new facts and corrections, and keep unresolved fragment-boundary uncertainty. The original_event identifies the evidence to cite; note_event is processing provenance, not an original source. A fragment can split a sentence. Preserve its unfinished meaning for the next piece. Reduce repetition while retaining task-relevant detail so the cumulative recap can leave space for further source processing. Processing coverage is tracked separately; never claim that an intermediate draft covers unseen notes."))))
+    return concat(body and concat("},{\"role\":\"user\",\"content\":" and concat(provider_quote(sources) and "}]}")))
+
+define recap_generation_result with status as Str and candidate as Str returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and candidate)
+    return result
+
+# Generates a candidate only. The active context cannot change here. Oversized
+# source input returns the real preflight decision for token-aware segmentation.
+define recap_generate_provider with database as Int and session as Str and endpoint as Str and request as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    set sources to recap_sources(database and session and endpoint)
+    if string_length(sources) equals 0:
+        return recap_generation_result("invalid-source" and "")
+    return recap_generate_sources_provider(database and session and endpoint and sources and request and profile and reserve and cancellation_reader and read_size)
+
+# Internal entry point for a verified frozen source or covered-notes package.
+# The response still requires source validation and separate semantic review.
+define recap_generate_sources_provider with database as Int and session as Str and endpoint as Str and sources as Str and request as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    set body to recap_request_body(model and sources)
+    set decision to provider_prepare(database and session and concat(request and ":preflight") and profile and body and reserve and cancellation_reader and read_size)
+    if not (archive_list_text(decision and 0) equals "ready"):
+        return recap_generation_result(archive_list_text(decision and 0) and "")
+    set body to archive_list_text(decision and 5)
+    set payload to concat("{\"purpose\":\"recap-candidate\",\"source_end\":" and provider_quote(endpoint))
+    set payload to concat(payload and concat(",\"request_body\":" and concat(provider_quote(body) and "}")))
+    if archive_append(database and session and request and "model_request" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return recap_generation_result("archive-error" and "")
+    set response to local_chat_generate(database and session and request and port and "/v1/chat/completions" and body and cancellation_reader and read_size)
+    if not (archive_list_text(response and 0) equals "complete"):
+        return recap_generation_result(archive_list_text(response and 0) and "")
+    set state to get_list(response and 1)
+    if get_list(state and 2) is not equal to 2:
+        return recap_generation_result("incomplete-response" and "")
+    set choice to chat_find(get_list(state and 0) and "0")
+    if choice equals 0:
+        return recap_generation_result("missing-choice" and "")
+    if length_list(get_list(choice and 3)) is not equal to 0:
+        return recap_generation_result("unexpected-tool-call" and "")
+    set candidate to archive_list_text(choice and 1)
+    set valid to recap_validate_structure(database and session and endpoint and candidate)
+    set status to "structure-valid"
+    if valid is not equal to 0:
+        set status to "structure-invalid"
+    set payload to concat("{\"source_end\":" and provider_quote(endpoint))
+    set payload to concat(payload and concat(",\"validation\":" and provider_quote(status)))
+    set payload to concat(payload and concat(",\"candidate\":" and concat(provider_quote(candidate) and "}")))
+    if archive_append(database and session and concat(request and ":candidate") and "recap_candidate" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return recap_generation_result("archive-error" and "")
+    return recap_generation_result(status and candidate)
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define recap_generate with database as Int and session as Str and endpoint as Str and request as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set profile to provider_llama_profile(model and port)
+    return recap_generate_provider(database and session and endpoint and request and profile and reserve and cancellation_reader and read_size)
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define recap_generate_sources with database as Int and session as Str and endpoint as Str and sources as Str and request as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set profile to provider_llama_profile(model and port)
+    return recap_generate_sources_provider(database and session and endpoint and sources and request and profile and reserve and cancellation_reader and read_size)

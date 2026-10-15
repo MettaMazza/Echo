@@ -1,0 +1,69 @@
+import "../retained_text"
+import "attachments"
+import "upload_body"
+
+define web_upload_schema with database as Int returning Int:
+    if web_attachment_schema(database) is not equal to 0:
+        return 1
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_uploads(upload TEXT PRIMARY KEY,session TEXT NOT NULL REFERENCES echo_sessions(session),device TEXT NOT NULL REFERENCES echo_devices(device),path TEXT NOT NULL UNIQUE,name TEXT NOT NULL,media_type TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('prepared','receiving','failed'))); CREATE TRIGGER IF NOT EXISTS echo_upload_identity_immutable BEFORE UPDATE OF upload,session,device,path,name,media_type ON echo_uploads BEGIN SELECT RAISE(ABORT,'Upload identity is immutable'); END;")
+
+# Root is host configuration. The opaque storage name is always host-generated.
+define web_upload_prepare with database as Int and device as Str and session as Str and root as Str and name as Str and media_type as Str returning Str:
+    if string_length(root) equals 0 or else string_length(name) equals 0:
+        return ""
+    if get_character(root and 0) is not equal to 47 or else sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return ""
+    if web_device_session_allowed(database and device and session) is not equal to 1:
+        set ignored to archive_rollback(database)
+        return ""
+    set identity to agent_identity()
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and session)
+    set added to append_list(values and device)
+    set added to append_list(values and concat(root and concat("/" and concat(identity and ".blob"))))
+    set added to append_list(values and name)
+    set added to append_list(values and media_type)
+    if web_device_write(database and "INSERT INTO echo_uploads(upload,session,device,path,name,media_type,state) VALUES(?,?,?,?,?,?,'prepared');" and values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return ""
+    return identity
+
+define web_upload_owned with database as Int and device as Str and upload as Str returning List:
+    set values to create_list()
+    set added to append_list(values and device)
+    set added to append_list(values and upload)
+    return history_collect_one(checkpoint_prepare(database and "SELECT u.session,u.path,u.name,u.media_type,CASE WHEN EXISTS(SELECT 1 FROM echo_attachments a WHERE a.attachment=u.upload AND a.session=u.session AND a.path=u.path) THEN 'complete' ELSE u.state END FROM echo_uploads u JOIN echo_session_owners o ON o.session=u.session AND o.device=u.device JOIN echo_devices d ON d.device=u.device WHERE u.device=?1 AND u.upload=?2 AND d.revoked=0;" and values))
+
+define web_upload_claim with database as Int and device as Str and upload as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and device)
+    set added to append_list(values and upload)
+    return tool_ledger_change(database and "UPDATE echo_uploads SET state='receiving' WHERE device=?1 AND upload=?2 AND state='prepared' AND EXISTS(SELECT 1 FROM echo_devices d JOIN echo_session_owners o ON o.device=d.device WHERE d.device=?1 AND d.revoked=0 AND o.session=echo_uploads.session) RETURNING upload;" and values)
+
+# The active body owner marks transport/storage failures; a saved receipt can
+# never be downgraded. Failed uploads require a new identity and staging file.
+define web_upload_fail with database as Int and device as Str and upload as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and device)
+    set added to append_list(values and upload)
+    return tool_ledger_change(database and "UPDATE echo_uploads SET state='failed' WHERE device=?1 AND upload=?2 AND state='receiving' AND NOT EXISTS(SELECT 1 FROM echo_attachments a WHERE a.attachment=?2) RETURNING upload;" and values)
+
+# Only the successful claim holder may call this after closing the body writer.
+# Completion is derived from the atomic attachment receipt, so a crash after
+# registration does not leave an ambiguous separate completion flag.
+define web_upload_register with database as Int and device as Str and upload as Str returning Int:
+    set row to web_upload_owned(database and device and upload)
+    if not (archive_list_text(row and 0) equals "found"):
+        return 1
+    if archive_list_text(row and 5) equals "complete":
+        return 0
+    if not (archive_list_text(row and 5) equals "receiving"):
+        return 1
+    return web_attachment_register(database and device and archive_list_text(row and 1) and upload and archive_list_text(row and 2) and archive_list_text(row and 3) and archive_list_text(row and 4))
+
+# Startup only: caller holds the shared runtime lock before accepting clients.
+# No old upload writer can still belong to this runtime. Never infer success
+# from leftover bytes: only the atomic attachment receipt proves completion.
+define web_upload_recover with database as Int returning Int:
+    return sql_execute(database and "UPDATE echo_uploads SET state='failed' WHERE state='receiving' AND NOT EXISTS(SELECT 1 FROM echo_attachments a WHERE a.attachment=echo_uploads.upload AND a.session=echo_uploads.session AND a.path=echo_uploads.path);")

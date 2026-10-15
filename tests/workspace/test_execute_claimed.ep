@@ -1,0 +1,103 @@
+import "../../app/workspace/sandbox_process"
+import "../../app/workspace/process_output"
+import "../../app/workspace/files"
+import "fs"
+import "../../app/workspace/execute_process"
+
+external define peek_byte with pointer and offset returning Int
+external define poke_byte with pointer and offset and value returning Int
+
+define capture_cancel_after_eof with path as Str and writer as Int and completed as Int returning Int:
+    set database to archive_open(path)
+    set status to 1
+    set started to ep_time_now_ms()
+    if database is not equal to 0:
+        repeat while ep_time_now_ms() - started is less than 5000:
+            set row to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.eof')=1;"))
+            if ptr_to_str(get_list(row and 0)) equals "found" and ptr_to_str(get_list(row and 1)) equals "2":
+                set status to 0
+                break
+            set slept to sleep_ms(10)
+        set closed to sql_close(database)
+    set closed to net_close(writer)
+    send status to completed
+    return 0
+
+define main returning Int:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if get_argument_count() equals 2:
+        if get_argument(1) equals "close-and-wait":
+            set closed to net_close(1)
+            set closed to net_close(2)
+            repeat while 1 equals 1:
+                set slept to sleep_ms(100)
+        set block to create_list()
+        set added to append_list(block and 0)
+        set added to append_list(block and 0)
+        set index to 0
+        repeat while index is less than 16:
+            set changed to poke_byte(get_list_data_ptr(block) and index and index)
+            set index to index + 1
+        set index to 0
+        repeat while index is less than 12288:
+            if file_stage_write(library and 1 and get_list_data_ptr(block) and 16) is not equal to 0 or else file_stage_write(library and 2 and get_list_data_ptr(block) and 16) is not equal to 0:
+                return 1
+            set index to index + 1
+        return 0
+    if get_argument_count() is not equal to 5 or else file_exists(get_argument(3)):
+        return 1
+    set runtime to get_argument(1)
+    set workspace to get_argument(2)
+    set mode to get_argument(4)
+    set database to archive_open(get_argument(3))
+    if database equals 0 or else tool_ledger_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "home" and "request" and "tool_call" and "{\"run_id\":\"run-a\",\"call_id\":\"call-a\"}" and "fixture") is not equal to 0 or else tool_ledger_queue(database and "run-a" and "call-a" and "home" and "request") is not equal to 0 or else tool_ledger_claim(database and "run-a" and "call-a") is not equal to 0:
+        return 1
+    if mode equals "reject-output":
+        if sql_execute(database and "CREATE TRIGGER reject_capture BEFORE INSERT ON echo_events WHEN NEW.kind='process_output' BEGIN SELECT RAISE(ABORT,'Injected output failure'); END;") is not equal to 0:
+            return 1
+    if mode equals "reject-start":
+        if sql_execute(database and "CREATE TRIGGER reject_start BEFORE INSERT ON echo_events WHEN NEW.kind='process_started' BEGIN SELECT RAISE(ABORT,'Injected start receipt failure'); END;") is not equal to 0:
+            return 1
+    set directory to workspace_root_open(library and workspace)
+    set cancellation to socket_cancellation_create(library)
+    set arguments to create_list()
+    if mode equals "after-eof":
+        set added to append_list(arguments and "close-and-wait")
+    else:
+        set added to append_list(arguments and "child")
+    set environment to create_list()
+    set completed to channel
+    if mode equals "after-eof":
+        spawn capture_cancel_after_eof(get_argument(3) and get_list(cancellation and 1) and completed)
+    set result to workspace_execute_claimed(database and "run-a" and "call-a" and runtime and workspace and directory and get_argument(0) and arguments and environment and get_list(cancellation and 0))
+    if mode equals "after-eof":
+        set checked to receive from completed
+        set changed to set_list(cancellation and 1 and -1)
+        if checked is not equal to 0:
+            return 1
+    set expected to "complete"
+    if mode equals "after-eof":
+        set expected to "cancelled"
+    else if mode equals "reject-output" or else mode equals "reject-start":
+        set expected to "persistence-failed"
+    if not (ptr_to_str(get_list(result and 0)) equals expected) or else get_list(result and 1) is not equal to 0:
+        display concat("FAIL: execution " and ptr_to_str(get_list(result and 0)))
+        return 1
+    if mode equals "complete":
+        if get_list(result and 2) is not equal to 0 or else get_list(result and 3) is not equal to 196608 or else get_list(result and 4) is not equal to 196608:
+            return 1
+    else:
+        if get_list(result and 2) modulo 128 is not equal to 9:
+            return 1
+    set closed to socket_cancellation_close(cancellation)
+    set again to workspace_execute_claimed(database and "run-a" and "call-a" and runtime and workspace and directory and get_argument(0) and arguments and environment and -1)
+    if not (ptr_to_str(get_list(again and 0)) equals "reservation-failed"):
+        return 1
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    if archive_verify(database and "home") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display concat("PASS: shared claimed execution " and concat(mode and "; no retained child handle and repeat launch refused."))
+    return 0

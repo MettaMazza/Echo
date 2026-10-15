@@ -1,0 +1,58 @@
+import "../transport/native_open"
+import "event_store"
+import "../transport/local_socket"
+
+# Copies retain this lock location. Do not delete lock files or silently change
+# the anchor when moving a restored archive on the same host.
+define archive_runtime_anchor with database as Int and library as Int returning Str:
+    if sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_runtime_anchor(identity INTEGER PRIMARY KEY CHECK(identity=1),path TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS echo_runtime_anchor_no_update BEFORE UPDATE ON echo_runtime_anchor BEGIN SELECT RAISE(ABORT,'Runtime anchor is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_runtime_anchor_no_delete BEFORE DELETE ON echo_runtime_anchor BEGIN SELECT RAISE(ABORT,'Runtime anchor is immutable'); END;") is not equal to 0:
+        return ""
+    set statement to archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';")
+    if statement equals 0:
+        return ""
+    if ep_sqlite3_step(statement) is not equal to 100:
+        set closed to ep_sqlite3_finalize(statement)
+        return ""
+    set path to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+    if archive_finish(statement and 101) is not equal to 0:
+        return ""
+    set resolve to ep_dlsym(library and "realpath")
+    set release to ep_dlsym(library and "free")
+    if resolve equals 0 or else release equals 0:
+        return ""
+    set resolved to ep_dlcall2(resolve and str_to_ptr(path) and 0)
+    if resolved equals 0:
+        return ""
+    set anchor to concat(ptr_to_str(resolved) and ".runtime.lock")
+    set freed to ep_dlcall1(release and resolved)
+    set statement to archive_prepare(database and "INSERT OR IGNORE INTO echo_runtime_anchor(identity,path) VALUES(1,?);")
+    if statement equals 0:
+        return ""
+    if archive_bind(statement and 1 and anchor) is not equal to 0 or else archive_finish(statement and 101) is not equal to 0:
+        return ""
+    set statement to archive_prepare(database and "SELECT path FROM echo_runtime_anchor WHERE identity=1;")
+    if statement equals 0:
+        return ""
+    if ep_sqlite3_step(statement) is not equal to 100:
+        set closed to ep_sqlite3_finalize(statement)
+        return ""
+    set anchor to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+    if archive_finish(statement and 101) is not equal to 0:
+        return ""
+    return anchor
+
+define archive_runtime_lock with database as Int and library as Int returning Int:
+    set anchor to archive_runtime_anchor(database and library)
+    if string_length(anchor) equals 0:
+        return -1
+    set open_function to ep_dlsym(library and "open")
+    set lock_function to ep_dlsym(library and "flock")
+    if open_function equals 0 or else lock_function equals 0:
+        return -1
+    set descriptor to native_open_mode(library and anchor and 16777986 and 384)
+    if descriptor is less than 0:
+        return -1
+    if socket_signed_result(ep_dlcall2(lock_function and descriptor and 6)) is not equal to 0:
+        set closed to net_close(descriptor)
+        return -1
+    return descriptor

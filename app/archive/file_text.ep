@@ -1,0 +1,173 @@
+import "file_digest"
+
+external define peek_byte with pointer as Int and offset as Int returning Int
+
+# Only the requested Unicode passage is retained. Hashing and UTF-8 validation
+# cover the same complete descriptor stream, including bytes outside the range.
+define file_text_result with status as Str and text as Str and characters as Int returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and text)
+    set added to append_list(result and characters)
+    return result
+
+# This scanner borrows a freshly opened descriptor at offset zero. It does not
+# close or reopen it. Empty expected digest or byte count -1 requests a new
+# snapshot: status read, with observed SHA256 and byte count at indexes3 and4.
+# Verified means both supplied expectations matched the complete byte stream.
+define file_text_descriptor_window with library as Int and descriptor as Int and expected_digest as Str and expected_bytes as Int and batch as Int and offset as Int and characters as Int returning List:
+    if descriptor is less than 0 or else batch is less than 1 or else batch is greater than 4294967295 or else expected_bytes is less than -1 or else offset is less than 0 or else characters is less than 1:
+        return file_text_result("invalid-arguments" and "" and 0)
+    set read_function to ep_dlsym(library and "read")
+    set allocate to ep_dlsym(library and "malloc")
+    set release to ep_dlsym(library and "free")
+    set copy_function to ep_dlsym(library and "memcpy")
+    set find_function to ep_dlsym(library and "memchr")
+    set clear_function to ep_dlsym(library and "memset")
+    set initialize to ep_dlsym(library and "CC_SHA256_Init")
+    set update to ep_dlsym(library and "CC_SHA256_Update")
+    set finish to ep_dlsym(library and "CC_SHA256_Final")
+    if find_function equals 0 or else clear_function equals 0 or else read_function equals 0 or else allocate equals 0 or else release equals 0 or else copy_function equals 0 or else initialize equals 0 or else update equals 0 or else finish equals 0:
+        return file_text_result("unavailable" and "" and 0)
+    set buffer to ep_dlcall1(allocate and batch + 1)
+    if buffer equals 0:
+        return file_text_result("allocation-failed" and "" and 0)
+    # CC_SHA256_CTX is 26 unsigned 32-bit words in the installed SDK.
+    set context to create_list()
+    set index to 0
+    repeat while index is less than 13:
+        set added to append_list(context and 0)
+        set index to index + 1
+    set builder to create_builder()
+    set remaining to 0
+    set minimum to 128
+    set maximum to 191
+    set position to 0
+    set received to 0
+    set selected to 0
+    set total to 0
+    set status to "verified"
+    if ep_dlcall1(initialize and get_list_data_ptr(context)) is not equal to 1:
+        set status to "hash-failed"
+    repeat while status equals "verified":
+        set count to ep_dlcall3(read_function and descriptor and buffer and batch)
+        if count equals 0:
+            break
+        if count is less than 0 or else count is greater than batch:
+            if socket_errno(library) equals 4:
+                continue
+            set status to "read-failed"
+            break
+        if expected_bytes >= 0 and count is greater than expected_bytes - total:
+            set status to "integrity-failed"
+            break
+        if ep_dlcall3(update and get_list_data_ptr(context) and buffer and count) is not equal to 1:
+            set status to "hash-failed"
+            break
+        if ep_dlcall3(find_function and buffer and 0 and count) is not equal to 0:
+            set status to "unsupported-text"
+            break
+        set cleared to ep_dlcall3(clear_function and buffer + count and 0 and 1)
+        set index to 0
+        set start to count
+        set end to 0
+        repeat while index is less than count:
+            set code to peek_byte(buffer and index)
+            if remaining is greater than 0:
+                if code is less than minimum or else code is greater than maximum:
+                    set status to "unsupported-text"
+                    break
+                set remaining to remaining - 1
+                set minimum to 128
+                set maximum to 191
+            else:
+                set selected to 0
+                if position >= offset and received is less than characters:
+                    set selected to 1
+                    set received to received + 1
+                set position to position + 1
+                if code is greater than 127:
+                    if code is greater than 193 and code is less than 224:
+                        set remaining to 1
+                    else if code is greater than 223 and code is less than 240:
+                        set remaining to 2
+                        if code equals 224:
+                            set minimum to 160
+                        if code equals 237:
+                            set maximum to 159
+                    else if code is greater than 239 and code is less than 245:
+                        set remaining to 3
+                        if code equals 240:
+                            set minimum to 144
+                        if code equals 244:
+                            set maximum to 143
+                    else:
+                        set status to "unsupported-text"
+                        break
+            if selected equals 1:
+                if start equals count:
+                    set start to index
+                set end to index + 1
+            set index to index + 1
+        if end is greater than start:
+            set cleared to ep_dlcall3(clear_function and buffer + end and 0 and 1)
+            set added to builder_append(builder and ptr_to_str(buffer + start))
+        set total to total + count
+    set digest to ""
+    if status equals "verified":
+        set output to create_list()
+        set index to 0
+        repeat while index is less than 4:
+            set added to append_list(output and 0)
+            set index to index + 1
+        if ep_dlcall2(finish and get_list_data_ptr(output) and get_list_data_ptr(context)) is not equal to 1:
+            set status to "hash-failed"
+        else:
+            set index to 0
+            repeat while index is less than 32:
+                set byte to create_list()
+                set added to append_list(byte and 0)
+                set copied to ep_dlcall3(copy_function and get_list_data_ptr(byte) and get_list_data_ptr(output) + index and 1)
+                set value to get_list(byte and 0)
+                set digest to concat(digest and ptr_to_str(substring("0123456789abcdef" and value / 16 and 1)))
+                set digest to concat(digest and ptr_to_str(substring("0123456789abcdef" and value modulo 16 and 1)))
+                set index to index + 1
+    set freed to ep_dlcall1(release and buffer)
+    set text to ptr_to_str(builder_to_string(builder))
+    if status equals "verified":
+        if (expected_bytes >= 0 and total is not equal to expected_bytes) or else (string_length(expected_digest) is greater than 0 and not (digest equals expected_digest)):
+            set status to "integrity-failed"
+        else if remaining is not equal to 0:
+            set status to "unsupported-text"
+    if not (status equals "verified"):
+        return file_text_result(status and "" and 0)
+    if expected_bytes equals -1 or else string_length(expected_digest) equals 0:
+        set status to "read"
+    set result to file_text_result(status and text and received)
+    set added to append_list(result and digest)
+    set added to append_list(result and total)
+    return result
+
+define file_text_window with path as Str and expected_digest as Str and expected_bytes as Int and batch as Int and offset as Int and characters as Int returning List:
+    if expected_bytes is less than 0 or else string_length(expected_digest) equals 0:
+        return file_text_result("invalid-arguments" and "" and 0)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return file_text_result("unavailable" and "" and 0)
+    set open_function to ep_dlsym(library and "open")
+    if open_function equals 0:
+        set closed to ep_dlclose(library)
+        return file_text_result("unavailable" and "" and 0)
+    set descriptor to socket_signed_result(ep_dlcall2(open_function and str_to_ptr(path) and 16777472))
+    if descriptor is less than 0:
+        set closed to ep_dlclose(library)
+        return file_text_result("open-failed" and "" and 0)
+    set result to file_text_descriptor_window(library and descriptor and expected_digest and expected_bytes and batch and offset and characters)
+    if net_close(descriptor) is not equal to 0:
+        set result to file_text_result("close-failed" and "" and 0)
+    set closed to ep_dlclose(library)
+    return result
+
+# Compatibility helper for callers explicitly requesting the entire text.
+define file_text_read with path as Str and expected_digest as Str and expected_bytes as Int and batch as Int returning List:
+    return file_text_window(path and expected_digest and expected_bytes and batch and 0 and 9223372036854775807)

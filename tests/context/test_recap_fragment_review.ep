@@ -1,0 +1,122 @@
+import "../../app/context/recap_review_synthesis"
+import "../fixtures/json_fixture"
+import "../fixtures/generation_fixture"
+
+define review_fragment_reply with listener as List and method as Str and path as Str and body as Str and response as Str returning Int:
+    set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " and int_to_string(string_length(response)))
+    set wire to concat(wire and concat("\r\n\r\n" and response))
+    set completed to channel
+    spawn json_fixture(listener and method and path and body and wire and completed)
+    return receive from completed
+
+define review_fragment_provider with listener as List and full as Str and half as Str and report as Str and completed as Int returning Int:
+    set failed to 0
+    set index to 0
+    repeat while index is less than 2:
+        set failed to failed + review_fragment_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
+        set failed to failed + review_fragment_reply(listener and "GET" and "/props" and "" and "{\"default_generation_settings\":{\"n_ctx\":262144,\"params\":{\"n_predict\":-1}}}")
+        set body to full
+        set count to "{\"input_tokens\":262144}"
+        if index equals 1:
+            set body to half
+            set count to "{\"input_tokens\":1000}"
+        set failed to failed + review_fragment_reply(listener and "POST" and "/v1/chat/completions/input_tokens" and body and count)
+        set index to index + 1
+    set data to concat("{\"choices\":[{\"index\":0,\"delta\":{\"content\":" and concat(provider_quote(report) and "},\"finish_reason\":\"stop\"}]}"))
+    set generated to channel
+    spawn generation_fixture(listener and data and generated)
+    set outcome to receive from generated
+    send failed + outcome to completed
+    return 0
+
+define main returning Int:
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else checkpoint_schema(database) is not equal to 0 or else agent_run_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "session" and "source" and "user" and "Aé🌍B" and "fixture") is not equal to 0:
+        return 1
+    if agent_run_create(database and "run" and "session" and "source") is not equal to 0 or else recap_job_create(database and "session" and "source" and "job") is not equal to 0:
+        return 1
+    set candidate to "{\"source_end\":\"source\",\"summary\":\"Keep Aé🌍B.\",\"summary_sources\":[\"source\"],\"state\":{\"objectives\":[],\"constraints\":[],\"facts\":[],\"relationships\":[],\"decisions\":[],\"corrections\":[],\"pending_work\":[],\"tool_state\":[],\"artifacts\":[],\"uncertainties\":[]}}"
+    if not (recap_review_package(database and "session" and "job" and candidate) equals ""):
+        return 1
+    set original to archive_read_event(database and "source")
+    set digest to ptr_to_str(get_list(original and 6))
+    set report to concat("{\"candidate_digest\":" and provider_quote(ep_sha256(candidate)))
+    set report to concat(report and concat(",\"source_end\":\"source\",\"event\":\"source\",\"source_digest\":" and provider_quote(digest)))
+    set report to concat(report and ",\"offset\":0,\"next_offset\":2,\"verdict\":\"covered\",\"explanation\":\"The prefix Aé is retained.\",\"findings\":[]}")
+    set full to recap_fragment_review_body("fixture" and "source" and history_read_piece(database and "session" and "source" and 0 and 4) and 0 and 4 and candidate)
+    set half to recap_fragment_review_body("fixture" and "source" and history_read_piece(database and "session" and "source" and 0 and 2) and 0 and 2 and candidate)
+    set listener to local_socket_listen(0)
+    set completed to channel
+    set report_copy to concat(report and "")
+    spawn review_fragment_provider(listener and full and half and report_copy and completed)
+    set result to recap_fragment_review_generate(database and "session" and "source" and "job" and "source" and 0 and candidate and "review-fragment" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set failed to receive from completed
+    if failed is not equal to 0 or else not (ptr_to_str(get_list(result and 0)) equals "fragment-review-pass") or else get_list(result and 1) is not equal to 2:
+        display concat("FAIL: fragment review " and ptr_to_str(get_list(result and 0)))
+        return 1
+    if not (recap_fragment_review_validate(candidate and "source" and "source" and digest and 1 and 2 and report) equals "invalid-review") or else not (recap_fragment_review_validate(concat(candidate and " ") and "source" and "source" and digest and 0 and 2 and report) equals "invalid-review"):
+        return 1
+    set uncertain to ptr_to_str(string_replace(report and "covered" and "uncertain"))
+    if not (recap_fragment_review_validate(candidate and "source" and "source" and digest and 0 and 2 and uncertain) equals "fragment-review-repair"):
+        return 1
+    set invalid_report to ptr_to_str(string_replace(report and "\"offset\":0" and "\"offset\":1"))
+    set invalid_done to channel
+    set full_again to recap_fragment_review_body("fixture" and "source" and history_read_piece(database and "session" and "source" and 0 and 4) and 0 and 4 and candidate)
+    set half_again to recap_fragment_review_body("fixture" and "source" and history_read_piece(database and "session" and "source" and 0 and 2) and 0 and 2 and candidate)
+    spawn review_fragment_provider(listener and full_again and half_again and invalid_report and invalid_done)
+    set invalid to recap_fragment_review_generate(database and "session" and "source" and "job" and "source" and 0 and candidate and "invalid-fragment" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set invalid_fixture to receive from invalid_done
+    if invalid_fixture is not equal to 0 or else not (ptr_to_str(get_list(invalid and 0)) equals "invalid-review") or else get_list(invalid and 1) is not equal to 0 or else archive_read_event(database and "invalid-fragment:fragment-review") is not equal to 0:
+        return 1
+    set remainder_body to recap_fragment_review_body("fixture" and "source" and history_read_piece(database and "session" and "source" and 2 and 2) and 2 and 4 and candidate)
+    set remainder_report to ptr_to_str(string_replace(report and "\"offset\":0,\"next_offset\":2" and "\"offset\":2,\"next_offset\":4"))
+    set remainder_report to ptr_to_str(string_replace(remainder_report and "The prefix Aé is retained." and "The suffix 🌍B is retained."))
+    set remainder_report to ptr_to_str(string_replace(remainder_report and "covered" and "uncertain"))
+    set remainder_done to channel
+    spawn review_remainder_provider(listener and remainder_body and remainder_report and remainder_done)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set collected to recap_review_collect(database and "session" and "source" and "job" and candidate and "fixture" and get_list(listener and 2) and 100 and -1 and 4096 and library)
+    set remainder_fixture to receive from remainder_done
+    if remainder_fixture is not equal to 0 or else not (collected equals "fragment-reviews-repair") or else ep_dlclose(library) is not equal to 0:
+        return 1
+    set package to recap_review_package(database and "session" and "job" and candidate)
+    set package_tokens to provider_json_tokens(package)
+    if package_tokens equals 0:
+        return 1
+    set records to provider_items(package_tokens and provider_member(package_tokens and 0 and "records"))
+    if records equals 0 or else length_list(records) is not equal to 1:
+        return 1
+    set fragments to provider_items(package_tokens and provider_member(package_tokens and get_list(records and 0) and "fragment_reviews"))
+    if fragments equals 0 or else length_list(fragments) is not equal to 2 or else not (recap_review_package(database and "session" and "job" and concat(candidate and " ")) equals ""):
+        return 1
+    set synthesized_report to concat("{\"candidate_digest\":" and provider_quote(ep_sha256(candidate)))
+    set synthesized_report to concat(synthesized_report and ",\"source_end\":\"source\",\"records\":[{\"event\":\"source\",\"verdict\":\"covered\",\"explanation\":\"Fixture deliberately overlooks fragment uncertainty.\"}],\"findings\":[]}")
+    set synthesis_body to recap_review_synthesis_body("fixture" and package)
+    set synthesis_done to channel
+    spawn review_remainder_provider(listener and synthesis_body and synthesized_report and synthesis_done)
+    set synthesized to recap_review_synthesis(database and "session" and "job" and candidate and "synthesis" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set synthesis_fixture to receive from synthesis_done
+    if synthesis_fixture is not equal to 0 or else not (ptr_to_str(get_list(synthesized and 0)) equals "review-repair") or else archive_read_event(database and "synthesis:synthesis") equals 0:
+        display "FAIL: synthesis erased a fragment's repair requirement."
+        return 1
+    if checkpoint_read_active(database and "session") is not equal to 0 or else archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    set progress to recap_review_progress(database and "session" and "job" and candidate)
+    if not (ptr_to_str(get_list(progress and 0)) equals "fragment-reviews-repair") or else archive_read_event(database and "review-fragment:fragment-review") equals 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: fitted review and remaining-range collection, complete candidate-bound evidence package, synthesis cannot erase fragment uncertainty, durable receipts and no checkpoint activation."
+    return 0
+
+define review_remainder_provider with listener as List and body as Str and report as Str and completed as Int returning Int:
+    set failed to review_fragment_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
+    set failed to failed + review_fragment_reply(listener and "GET" and "/props" and "" and "{\"default_generation_settings\":{\"n_ctx\":262144,\"params\":{\"n_predict\":-1}}}")
+    set failed to failed + review_fragment_reply(listener and "POST" and "/v1/chat/completions/input_tokens" and body and "{\"input_tokens\":1000}")
+    set data to concat("{\"choices\":[{\"index\":0,\"delta\":{\"content\":" and concat(provider_quote(report) and "},\"finish_reason\":\"stop\"}]}"))
+    set generated to channel
+    spawn generation_fixture(listener and data and generated)
+    set outcome to receive from generated
+    send failed + outcome to completed
+    return 0

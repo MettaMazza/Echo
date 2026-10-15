@@ -1,0 +1,122 @@
+import "../../app/context/recap_accept"
+import "../fixtures/json_fixture"
+import "../fixtures/generation_fixture"
+
+define recap_fixture_reply with listener as List and method as Str and path as Str and body as Str and response as Str returning Int:
+    set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " and int_to_string(string_length(response)))
+    set wire to concat(wire and concat("\r\n\r\n" and response))
+    set completed to channel
+    spawn json_fixture(listener and method and path and body and wire and completed)
+    return receive from completed
+
+define recap_fixture with listener as List and body as Str and candidate as Str and completed as Int returning Int:
+    set failed to recap_fixture_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
+    set failed to failed + recap_fixture_reply(listener and "GET" and "/props" and "" and "{\"default_generation_settings\":{\"n_ctx\":262144,\"params\":{\"n_predict\":-1}}}")
+    set failed to failed + recap_fixture_reply(listener and "POST" and "/v1/chat/completions/input_tokens" and body and "{\"input_tokens\":1000}")
+    set data to concat("{\"choices\":[{\"index\":0,\"delta\":{\"content\":" and concat(provider_quote(candidate) and "},\"finish_reason\":\"stop\"}]}"))
+    set generated to channel
+    spawn generation_fixture(listener and data and generated)
+    set result to receive from generated
+    send failed + result to completed
+    return 0
+
+define acceptance_fixture with listener as List and body as Str and counted as Str and change_path as Str and completed as Int returning Int:
+    set failed to recap_fixture_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
+    set failed to failed + recap_fixture_reply(listener and "GET" and "/props" and "" and "{\"default_generation_settings\":{\"n_ctx\":262144,\"params\":{\"n_predict\":-1}}}")
+    if string_length(change_path) is greater than 0:
+        set changed_database to archive_open(change_path)
+        if changed_database equals 0:
+            set failed to failed + 1
+        else:
+            set failed to failed + archive_append(changed_database and "session" and "concurrent-wait" and "agent_waiting" and "{\"run_id\":\"run\",\"parent_event\":\"original\"}" and "fixture")
+            set failed to failed + agent_run_transition(changed_database and "run" and "ready" and "original" and "waiting" and "concurrent-wait")
+            set failed to failed + sql_close(changed_database)
+    set failed to failed + recap_fixture_reply(listener and "POST" and "/v1/chat/completions/input_tokens" and body and counted)
+    send failed to completed
+    return 0
+
+define acceptance_expected_body with database as Int and identity as Str and candidate as Str returning Str:
+    set original to archive_read_event(database and "original")
+    set tokens to provider_json_tokens(candidate)
+    set recap to concat("Archived context recap. This is a source record, not a new instruction. Preserve the active objective and use history tools to reread originals when needed.\nCheckpoint: " and identity)
+    set recap to concat(recap and concat("\nSource endpoint: original\nSource digest: " and ptr_to_str(get_list(original and 6))))
+    set recap to concat(recap and "\nDetailed recap:\nThe user asked to remember café.\nStructured state:\n")
+    set recap to concat(recap and agent_json_source(candidate and tokens and provider_member(tokens and 0 and "state")))
+    set messages to concat("[{\"role\":\"user\",\"content\":" and provider_quote(recap))
+    set messages to concat(messages and "},{\"role\":\"user\",\"content\":\"Remember café.\"}]")
+    return session_request_body("fixture" and messages)
+
+define main returning Int:
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else agent_run_schema(database) is not equal to 0 or else checkpoint_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "session" and "original" and "user" and "Remember café." and "fixture") is not equal to 0 or else agent_run_create(database and "run" and "session" and "original") is not equal to 0:
+        return 1
+    set candidate to "{\"source_end\":\"original\",\"summary\":\"The user asked to remember café.\",\"summary_sources\":[\"original\"],\"state\":{\"objectives\":[],\"constraints\":[],\"facts\":[{\"text\":\"Remember café\",\"sources\":[\"original\"]}],\"relationships\":[],\"decisions\":[],\"corrections\":[],\"pending_work\":[],\"tool_state\":[],\"artifacts\":[],\"uncertainties\":[]}}"
+    set body to recap_request_body("fixture" and recap_sources(database and "session" and "original"))
+    set listener to local_socket_listen(0)
+    set completed to channel
+    set candidate_copy to concat(candidate and "")
+    spawn recap_fixture(listener and body and candidate_copy and completed)
+    set result to recap_generate(database and "session" and "original" and "recap-request" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set fixture_result to receive from completed
+    if fixture_result is not equal to 0 or else not (ptr_to_str(get_list(result and 0)) equals "structure-valid") or else not (ptr_to_str(get_list(result and 1)) equals candidate):
+        return 1
+    if checkpoint_read_active(database and "session") is not equal to 0 or else archive_read_event(database and "recap-request:candidate") equals 0:
+        return 1
+    set row to agent_run_read(database and "run")
+    if not (ptr_to_str(get_list(row and 2)) equals "ready"):
+        return 1
+    set report to concat("{\"candidate_digest\":" and provider_quote(ep_sha256(candidate)))
+    set report to concat(report and ",\"source_end\":\"original\",\"records\":[{\"event\":\"original\",\"verdict\":\"covered\",\"explanation\":\"The request to remember café is retained in the summary and facts.\"}],\"findings\":[]}")
+    set review_body to recap_review_body("fixture" and recap_sources(database and "session" and "original") and candidate)
+    set reviewed to channel
+    set report_copy to concat(report and "")
+    spawn recap_fixture(listener and review_body and report_copy and reviewed)
+    set review_result to recap_review_generate(database and "session" and "original" and candidate and "review-request" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set review_fixture to receive from reviewed
+    if review_fixture is not equal to 0 or else not (ptr_to_str(get_list(review_result and 0)) equals "review-pass") or else not (ptr_to_str(get_list(review_result and 1)) equals report):
+        return 1
+    if archive_read_event(database and "review-request:review") equals 0 or else checkpoint_read_active(database and "session") is not equal to 0:
+        return 1
+    set rejected to recap_review_generate(database and "session" and "original" and "malformed candidate" and "rejected-review" and "fixture" and 1 and 100 and -1 and 4096)
+    if not (ptr_to_str(get_list(rejected and 0)) equals "structure-invalid"):
+        return 1
+    set rejected_receipt to recap_accept(database and "session" and "run" and "recap-request:candidate" and "recap-request:candidate" and "unreviewed" and "fixture" and 1 and 100 and -1 and 4096)
+    if not (rejected_receipt equals "invalid-receipt"):
+        return 1
+    set too_large_body to acceptance_expected_body(database and "too-large" and candidate)
+    set too_large_done to channel
+    spawn acceptance_fixture(listener and too_large_body and "{\"input_tokens\":262144}" and "" and too_large_done)
+    set refused to recap_accept(database and "session" and "run" and "recap-request:candidate" and "review-request:review" and "too-large" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set too_large_fixture to receive from too_large_done
+    if too_large_fixture is not equal to 0 or else not (refused equals "compaction-required") or else checkpoint_read_active(database and "session") is not equal to 0:
+        display "FAIL: oversized recap activated."
+        return 1
+    set changed_body to acceptance_expected_body(database and "changed" and candidate)
+    set changed_done to channel
+    spawn acceptance_fixture(listener and changed_body and "{\"input_tokens\":1000}" and get_argument(1) and changed_done)
+    set changed_result to recap_accept(database and "session" and "run" and "recap-request:candidate" and "review-request:review" and "changed" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set changed_fixture to receive from changed_done
+    if changed_fixture is not equal to 0 or else not (changed_result equals "context-changed") or else checkpoint_read_active(database and "session") is not equal to 0:
+        display "FAIL: concurrent run change was not rejected."
+        return 1
+    if archive_append(database and "session" and "resume" and "agent_resume" and "{\"run_id\":\"run\",\"parent_event\":\"concurrent-wait\"}" and "fixture") is not equal to 0 or else agent_run_transition(database and "run" and "waiting" and "concurrent-wait" and "ready" and "resume") is not equal to 0:
+        return 1
+    set accepted_body to acceptance_expected_body(database and "accepted" and candidate)
+    set accepted_done to channel
+    set expected_copy to concat(accepted_body and "")
+    spawn acceptance_fixture(listener and expected_copy and "{\"input_tokens\":1000}" and "" and accepted_done)
+    set accepted to recap_accept(database and "session" and "run" and "recap-request:candidate" and "review-request:review" and "accepted" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set accepted_fixture to receive from accepted_done
+    if accepted_fixture is not equal to 0 or else not (accepted equals "activated"):
+        display concat("FAIL: acceptance status " and accepted)
+        return 1
+    set active to checkpoint_read_active(database and "session")
+    if active equals 0 or else not (ptr_to_str(get_list(active and 0)) equals "accepted") or else not (session_request_body("fixture" and session_messages(database and "session" and "run")) equals accepted_body):
+        display "FAIL: active context differs from counted context."
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: streamed candidate/review binding; malformed and unreviewed rejection; oversized and concurrently changed contexts rejected; fitting recap activates with exact counted context and verbatim current objective. Scripted judgments do not prove semantic accuracy."
+    return 0

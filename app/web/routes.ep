@@ -1,0 +1,341 @@
+import "../transport/isolated_process"
+import "../retained_text"
+import "message_speech"
+import "trace"
+import "branches"
+import "worker"
+import "progress"
+import "export"
+import "uploads"
+import "compaction"
+import "../providers/status"
+
+# Configuration: database path, model, provider port, workload reserve,
+# I/O batch size. It is immutable while workers use it.
+# Optional index 8 carries the host-selected provider profile.
+define web_config_provider with config as List returning Str:
+    if length_list(config) is greater than 8:
+        return concat(archive_list_text(config and 8) and "")
+    return provider_llama_profile(archive_list_text(config and 1) and get_list(config and 2))
+
+define web_reply with status as Str and body as Str returning List:
+    set reply to create_list()
+    set added to append_list(reply and status)
+    set added to append_list(reply and body)
+    return reply
+
+define web_route with reader as List and request as List and port as Int and config as List returning List:
+    set method to archive_list_text(request and 1)
+    set target to archive_list_text(request and 2)
+    set read_only to 0
+    if length_list(config) is greater than 7:
+        set read_only to get_list(config and 7)
+    set public_origin to ""
+    if length_list(config) is greater than 5:
+        set public_origin to archive_list_text(config and 5)
+    if web_local_host(request and port) equals 0:
+        return web_reply("400 Bad Request" and "{\"status\":\"invalid-host\"}")
+    if method equals "GET" and target equals "/api/bootstrap":
+        if web_origin_allowed(request and port and 0 and public_origin) equals 0:
+            return web_reply("403 Forbidden" and "{\"status\":\"foreign-origin\"}")
+        set payload to concat("{\"pairing_required\":true,\"model\":" and provider_quote(archive_list_text(config and 1)))
+        if read_only equals 1:
+            set payload to concat(payload and ",\"read_only\":true")
+        else:
+            set payload to concat(payload and ",\"read_only\":false")
+        set payload to concat(payload and concat(",\"provider\":" and provider_status_read(web_config_provider(config))))
+        set payload to concat(payload and ",\"local\":true,\"phase\":\"building\"}")
+        return web_reply("200 OK" and payload)
+    if not (target equals "/api/speak" or else target equals "/api/providers" or else target equals "/api/session-revise" or else target equals "/api/session-branch" or else target equals "/api/session-rename" or else target equals "/api/session-create" or else target equals "/api/runs" or else target equals "/api/run" or else target equals "/api/compaction" or else target equals "/api/session" or else target equals "/api/sessions" or else target equals "/api/pair" or else target equals "/api/cancel" or else target equals "/api/progress" or else target equals "/api/trace" or else target equals "/api/retry" or else target equals "/api/export" or else target equals "/api/upload-prepare" or else target equals "/api/upload-status" or else target equals "/api/upload-body" or else target equals "/api/attachments" or else target equals "/api/attachment-download" or else target equals "/api/attachment-text"):
+        return web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+    if not (method equals "POST"):
+        return web_reply("405 Method Not Allowed" and "{\"status\":\"post-required\"}")
+    set supplied to web_header(get_list(request and 5) and "x-echo-token")
+    if not (archive_list_text(supplied and 0) equals "found"):
+        return web_reply("403 Forbidden" and "{\"status\":\"unauthorized\"}")
+    set credential to archive_list_text(supplied and 1)
+    # This checks exact origin and unambiguous headers. Authentication below
+    # resolves the credential against the durable device store.
+    if web_authorized_origin(request and port and credential and 1 and public_origin) equals 0:
+        return web_reply("403 Forbidden" and "{\"status\":\"unauthorized\"}")
+    set database to archive_open(archive_list_text(config and 0))
+    if database equals 0:
+        return web_reply("503 Service Unavailable" and "{\"status\":\"archive-unavailable\"}")
+    set device to web_device_authenticate(database and credential)
+    if not (target equals "/api/pair") and string_length(device) equals 0:
+        set closed to sql_close(database)
+        return web_reply("403 Forbidden" and "{\"status\":\"unauthorized\"}")
+    if read_only equals 1 and not (target equals "/api/run" or else target equals "/api/compaction" or else target equals "/api/session" or else target equals "/api/sessions" or else target equals "/api/progress" or else target equals "/api/trace" or else target equals "/api/export" or else target equals "/api/upload-status" or else target equals "/api/attachments" or else target equals "/api/attachment-download" or else target equals "/api/attachment-text"):
+        set closed to sql_close(database)
+        return web_reply("409 Conflict" and "{\"status\":\"restored-archive-read-only\"}")
+    if target equals "/api/upload-body":
+        set reply to web_receive_upload(database and device and reader and request and get_list(config and 4))
+        set closed to sql_close(database)
+        return reply
+    set parsed to web_read_json(reader and request and get_list(config and 4))
+    if not (archive_list_text(parsed and 0) equals "ready"):
+        set closed to sql_close(database)
+        return web_reply("400 Bad Request" and concat("{\"status\":" and concat(provider_quote(archive_list_text(parsed and 0)) and "}")))
+    set tokens to get_list(parsed and 2)
+    set reply to web_reply("400 Bad Request" and "{\"status\":\"invalid-request\"}")
+    if target equals "/api/speak":
+        set field to provider_member(tokens and 0 and "event")
+        if provider_kind(tokens and field) equals "string":
+            set reply to web_reply("200 OK" and web_message_speak(database and device and provider_value(tokens and field)))
+    else if target equals "/api/providers":
+        set identity to provider_member(tokens and 0 and "identity")
+        if identity equals -1:
+            set choices to provider_registry_choices(database)
+            set choice_tokens to provider_json_tokens(choices)
+            set reply to web_reply("503 Service Unavailable" and choices)
+            if provider_value(choice_tokens and provider_member(choice_tokens and 0 and "status")) equals "found":
+                set reply to web_reply("200 OK" and choices)
+        else if provider_kind(tokens and identity) equals "string":
+            set registered to provider_registry_read(database and provider_value(tokens and identity))
+            set reply to web_reply("404 Not Found" and "{\"status\":\"unknown-provider\"}")
+            if archive_list_text(registered and 0) equals "found":
+                set payload to concat("{\"status\":\"found\",\"identity\":" and provider_quote(provider_value(tokens and identity)))
+                set payload to concat(payload and concat(",\"label\":" and provider_quote(archive_list_text(registered and 1))))
+                set payload to concat(payload and concat(",\"provider\":" and concat(provider_status_read(archive_list_text(registered and 2)) and "}")))
+                set reply to web_reply("200 OK" and payload)
+    else if target equals "/api/upload-prepare":
+        set session to provider_member(tokens and 0 and "session")
+        set name to provider_member(tokens and 0 and "name")
+        set media to provider_member(tokens and 0 and "media_type")
+        if provider_kind(tokens and session) equals "string" and provider_kind(tokens and name) equals "string" and provider_kind(tokens and media) equals "string":
+            set reply to web_reply("503 Service Unavailable" and "{\"status\":\"upload-storage-unavailable\"}")
+            if length_list(config) is greater than 6 and string_length(archive_list_text(config and 6)) is greater than 0:
+                set reply to web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+                if web_device_session_allowed(database and device and provider_value(tokens and session)) equals 1:
+                    set upload to web_upload_prepare(database and device and provider_value(tokens and session) and archive_list_text(config and 6) and provider_value(tokens and name) and provider_value(tokens and media))
+                    if string_length(upload) is greater than 0:
+                        set reply to web_reply("201 Created" and concat("{\"status\":\"prepared\",\"upload\":" and concat(provider_quote(upload) and "}")))
+                    else:
+                        set reply to web_reply("503 Service Unavailable" and "{\"status\":\"upload-prepare-failed\"}")
+    else if target equals "/api/attachment-text":
+        set field to provider_member(tokens and 0 and "attachment")
+        if provider_kind(tokens and field) equals "string":
+            set owned to web_attachment_owned(database and device and provider_value(tokens and field))
+            set reply to web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+            if archive_list_text(owned and 0) equals "found":
+                set output to attachment_text_execute(database and archive_list_text(owned and 6) and archive_list_text(parsed and 1))
+                set result_tokens to provider_json_tokens(output)
+                set state to provider_value(result_tokens and provider_member(result_tokens and 0 and "status"))
+                set reply to web_reply("503 Service Unavailable" and output)
+                if state equals "found":
+                    set reply to web_reply("200 OK" and output)
+                else if state equals "invalid-arguments":
+                    set reply to web_reply("400 Bad Request" and output)
+                else if state equals "unsupported-text" or else state equals "invalid-pdf" or else state equals "locked-pdf" or else state equals "no-extractable-text" or else state equals "page-out-of-range":
+                    set reply to web_reply("422 Unprocessable Content" and output)
+                else if state equals "integrity-failed":
+                    set reply to web_reply("409 Conflict" and output)
+    else if target equals "/api/attachment-download":
+        set field to provider_member(tokens and 0 and "attachment")
+        if provider_kind(tokens and field) equals "string":
+            set row to web_attachment_owned(database and device and provider_value(tokens and field))
+            set reply to web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+            if archive_list_text(row and 0) equals "found":
+                set reply to web_reply("200 OK" and "")
+                set added to append_list(reply and archive_list_text(row and 1))
+                set added to append_list(reply and http_decimal(archive_list_text(row and 5)))
+    else if target equals "/api/attachments":
+        set field to provider_member(tokens and 0 and "session")
+        if provider_kind(tokens and field) equals "string":
+            set listed to web_attachment_list(database and device and provider_value(tokens and field))
+            set listed_tokens to provider_json_tokens(listed)
+            set state to provider_value(listed_tokens and provider_member(listed_tokens and 0 and "status"))
+            set reply to web_reply("503 Service Unavailable" and listed)
+            if state equals "found":
+                set reply to web_reply("200 OK" and listed)
+            else if state equals "not-found":
+                set reply to web_reply("404 Not Found" and listed)
+    else if target equals "/api/upload-status":
+        set field to provider_member(tokens and 0 and "upload")
+        if provider_kind(tokens and field) equals "string":
+            set row to web_upload_owned(database and device and provider_value(tokens and field))
+            set reply to web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+            if archive_list_text(row and 0) equals "found":
+                set reply to web_reply("200 OK" and concat("{\"status\":" and concat(provider_quote(archive_list_text(row and 5)) and "}")))
+    else if target equals "/api/pair":
+        set field to provider_member(tokens and 0 and "name")
+        if provider_kind(tokens and field) equals "string":
+            set identity to agent_identity()
+            set secret to concat(agent_identity() and agent_identity())
+            if web_device_pair(database and credential and identity and provider_value(tokens and field) and secret) equals 0:
+                set payload to concat("{\"status\":\"paired\",\"device\":" and provider_quote(identity))
+                set reply to web_reply("201 Created" and concat(payload and concat(",\"token\":" and concat(provider_quote(secret) and "}"))))
+            else:
+                set reply to web_reply("403 Forbidden" and "{\"status\":\"unauthorized\"}")
+    else if target equals "/api/trace":
+        set field to provider_member(tokens and 0 and "run")
+        set after to history_tool_integer(tokens and "after")
+        set events to history_tool_integer(tokens and "events")
+        if provider_kind(tokens and field) equals "string" and after >= 0 and events > 0:
+            set reply to web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+            if web_device_run_allowed(database and device and provider_value(tokens and field)) equals 1:
+                set reply to web_reply("200 OK" and web_run_trace(database and provider_value(tokens and field) and after and events))
+    else if target equals "/api/progress":
+        set field to provider_member(tokens and 0 and "run")
+        set generation to provider_member(tokens and 0 and "generation")
+        set after to history_tool_integer(tokens and "after")
+        if provider_kind(tokens and field) equals "string" and provider_kind(tokens and generation) equals "string" and after >= 0:
+            set reply to web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+            if web_device_run_allowed(database and device and provider_value(tokens and field)) equals 1:
+                set reply to web_reply("200 OK" and web_run_progress(database and provider_value(tokens and field) and provider_value(tokens and generation) and after))
+    else if target equals "/api/retry":
+        set field to provider_member(tokens and 0 and "run")
+        set previous to provider_member(tokens and 0 and "worker")
+        if provider_kind(tokens and field) equals "string" and provider_kind(tokens and previous) equals "string":
+            set reply to web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+            set run to provider_value(tokens and field)
+            if web_device_run_allowed(database and device and run) equals 1:
+                set worker to agent_identity()
+                set reply to web_reply("409 Conflict" and "{\"status\":\"run-not-retryable\"}")
+                if web_worker_retry_claim(database and device and run and provider_value(tokens and previous) and worker) equals 0:
+                    set database_path to concat(archive_list_text(config and 0) and "")
+                    set profile to web_config_provider(config)
+                    set launched_worker to web_worker_dispatch(database and database_path and run and worker and profile and get_list(config and 3) and get_list(config and 4))
+                    set reply to web_reply("202 Accepted" and "{\"status\":\"retrying\"}")
+    else if target equals "/api/session-branch":
+        set source to provider_member(tokens and 0 and "source")
+        set endpoint to provider_member(tokens and 0 and "endpoint")
+        set identity to provider_member(tokens and 0 and "identity")
+        if provider_kind(tokens and source) equals "string" and provider_kind(tokens and endpoint) equals "string" and provider_kind(tokens and identity) equals "string":
+            set result to web_branch_session(database and device and provider_value(tokens and source) and provider_value(tokens and endpoint) and provider_value(tokens and identity))
+            set code to "409 Conflict"
+            if archive_list_text(result and 0) equals "accepted":
+                set code to "200 OK"
+            else if archive_list_text(result and 0) equals "not-found":
+                set code to "404 Not Found"
+            set reply to web_reply(code and web_submit_payload(result))
+    else if target equals "/api/session-rename":
+        set session to provider_member(tokens and 0 and "session")
+        set previous to provider_member(tokens and 0 and "previous")
+        set title to provider_member(tokens and 0 and "title")
+        if provider_kind(tokens and session) equals "string" and provider_kind(tokens and previous) equals "string" and provider_kind(tokens and title) equals "string":
+            set status to web_rename_session(database and device and provider_value(tokens and session) and provider_value(tokens and previous) and provider_value(tokens and title))
+            set code to "409 Conflict"
+            if status equals "renamed":
+                set code to "200 OK"
+            else if status equals "not-found":
+                set code to "404 Not Found"
+            else if status equals "invalid-title":
+                set code to "400 Bad Request"
+            else if status equals "database-error" or else status equals "database-busy":
+                set code to "503 Service Unavailable"
+            set reply to web_reply(code and concat("{\"status\":" and concat(provider_quote(status) and "}")))
+    else if target equals "/api/session-create":
+        set field to provider_member(tokens and 0 and "identity")
+        if provider_kind(tokens and field) equals "string":
+            set result to web_create_session(database and device and provider_value(tokens and field))
+            set code to "409 Conflict"
+            if archive_list_text(result and 0) equals "accepted":
+                set code to "200 OK"
+            set reply to web_reply(code and web_submit_payload(result))
+    else if target equals "/api/cancel":
+        set field to provider_member(tokens and 0 and "run")
+        if provider_kind(tokens and field) equals "string":
+            set reply to web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+            if web_cancel_request(database and device and provider_value(tokens and field)) equals 0:
+                if web_worker_cancel_idle(database and provider_value(tokens and field)) equals 0:
+                    set reply to web_reply("202 Accepted" and "{\"status\":\"cancellation-requested\"}")
+                else:
+                    set reply to web_reply("503 Service Unavailable" and "{\"status\":\"cancellation-pending\"}")
+    else if target equals "/api/export":
+        set field to provider_member(tokens and 0 and "session")
+        if provider_kind(tokens and field) equals "string":
+            set exported to web_session_export(database and device and provider_value(tokens and field))
+            set result_tokens to provider_json_tokens(exported)
+            set status to provider_value(result_tokens and provider_member(result_tokens and 0 and "status"))
+            set reply to web_reply("503 Service Unavailable" and exported)
+            if status equals "found":
+                set reply to web_reply("200 OK" and exported)
+            else if status equals "not-found":
+                set reply to web_reply("404 Not Found" and exported)
+    else if target equals "/api/sessions":
+        set field to provider_member(tokens and 0 and "query")
+        if field equals -1:
+            set reply to web_reply("200 OK" and web_device_sessions(database and device))
+        else if provider_kind(tokens and field) equals "string":
+            set reply to web_reply("200 OK" and web_device_sessions_search(database and device and provider_value(tokens and field)))
+    else if target equals "/api/compaction":
+        set field to provider_member(tokens and 0 and "session")
+        set arguments to provider_member(tokens and 0 and "arguments")
+        if provider_kind(tokens and field) equals "string" and provider_kind(tokens and arguments) equals "string":
+            set result to web_compaction_read(database and device and provider_value(tokens and field) and provider_value(tokens and arguments))
+            set reply to web_reply("200 OK" and result)
+    else if target equals "/api/session":
+        set field to provider_member(tokens and 0 and "session")
+        if provider_kind(tokens and field) equals "string":
+            set reply to web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+            if web_device_session_allowed(database and device and provider_value(tokens and field)) equals 1:
+                set before_field to provider_member(tokens and 0 and "before")
+                set amount_field to provider_member(tokens and 0 and "messages")
+                if before_field is less than 0 and amount_field is less than 0:
+                    set reply to web_reply("200 OK" and web_session_transcript(database and provider_value(tokens and field)))
+                else:
+                    set reply to web_reply("400 Bad Request" and "{\"status\":\"invalid-range\"}")
+                    set before to http_decimal(provider_value(tokens and before_field))
+                    set amount to history_tool_integer(tokens and "messages")
+                    if provider_kind(tokens and before_field) equals "string" and before >= 0 and amount > 0:
+                        set reply to web_reply("200 OK" and web_session_transcript_window(database and provider_value(tokens and field) and before and amount))
+    else if target equals "/api/run":
+        set field to provider_member(tokens and 0 and "run")
+        if provider_kind(tokens and field) equals "string":
+            set reply to web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+            if web_device_run_allowed(database and device and provider_value(tokens and field)) equals 1:
+                set reply to web_reply("200 OK" and web_worker_status(database and provider_value(tokens and field)))
+    else:
+        set submitted to web_submit_result("invalid-request" and "" and "" and 0)
+        if target equals "/api/session-revise":
+            set source to provider_member(tokens and 0 and "source")
+            set user_event to provider_member(tokens and 0 and "user_event")
+            set identity to provider_member(tokens and 0 and "identity")
+            set mode to provider_member(tokens and 0 and "mode")
+            set text to provider_member(tokens and 0 and "text")
+            set selected_provider to provider_member(tokens and 0 and "provider")
+            set valid_provider to selected_provider equals -1 or else provider_kind(tokens and selected_provider) equals "string"
+            if valid_provider and provider_kind(tokens and source) equals "string" and provider_kind(tokens and user_event) equals "string" and provider_kind(tokens and identity) equals "string" and provider_kind(tokens and mode) equals "string" and provider_kind(tokens and text) equals "string":
+                set submitted to web_revision_provider(database and device and provider_value(tokens and source) and provider_value(tokens and user_event) and provider_value(tokens and identity) and provider_value(tokens and mode) and provider_value(tokens and text) and provider_value(tokens and selected_provider))
+        else:
+            set submitted to web_submit_json_owned(database and device and tokens)
+        if archive_list_text(submitted and 0) equals "accepted":
+            set run to concat(archive_list_text(submitted and 2) and "")
+            set worker to agent_identity()
+            set claimed to web_worker_ensure_claim(database and device and run and worker)
+            if claimed equals 1:
+                set reply to web_reply("503 Service Unavailable" and "{\"status\":\"worker-claim-failed\"}")
+            else if claimed equals 0:
+                set database_path to concat(archive_list_text(config and 0) and "")
+                set profile to web_config_provider(config)
+                set launched_worker to web_worker_dispatch(database and database_path and run and worker and profile and get_list(config and 3) and get_list(config and 4))
+                set reply to web_reply("202 Accepted" and web_submit_payload(submitted))
+            else:
+                set reply to web_reply("200 OK" and web_submit_payload(submitted))
+        else:
+            set reply to web_reply("409 Conflict" and web_submit_payload(submitted))
+    if sql_close(database) is not equal to 0:
+        return web_reply("503 Service Unavailable" and "{\"status\":\"archive-close-failed\"}")
+    return reply
+
+define web_receive_upload with database as Int and device as Str and reader as List and request as List and batch as Int returning List:
+    set identity to web_header(get_list(request and 5) and "x-echo-upload")
+    if not (archive_list_text(identity and 0) equals "found"):
+        return web_reply("400 Bad Request" and "{\"status\":\"upload-identity-required\"}")
+    set upload to archive_list_text(identity and 1)
+    set row to web_upload_owned(database and device and upload)
+    if not (archive_list_text(row and 0) equals "found"):
+        return web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
+    if archive_list_text(row and 5) equals "complete":
+        return web_reply("200 OK" and "{\"status\":\"complete\"}")
+    if web_upload_claim(database and device and upload) is not equal to 0:
+        return web_reply("409 Conflict" and "{\"status\":\"upload-not-ready\"}")
+    set staged to web_upload_stage(reader and request and archive_list_text(row and 2) and batch)
+    if not (archive_list_text(staged and 0) equals "verified"):
+        set failed to web_upload_fail(database and device and upload)
+        return web_reply("400 Bad Request" and "{\"status\":\"upload-incomplete\"}")
+    if web_upload_register(database and device and upload) is not equal to 0:
+        set failed to web_upload_fail(database and device and upload)
+        return web_reply("503 Service Unavailable" and "{\"status\":\"attachment-commit-failed\"}")
+    return web_reply("201 Created" and "{\"status\":\"complete\"}")

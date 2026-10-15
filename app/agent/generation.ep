@@ -1,0 +1,120 @@
+import "../retained_text"
+import "run_state"
+import "../providers/local_chat"
+
+define agent_event_envelope with run as Str and parent as Str returning Str:
+    return concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"parent_event\":" and provider_quote(parent))))
+
+# Keep the small identity envelope in a named live value while quoting a large
+# multimodal body. Do not leave it as an intermediate nested-call result.
+define agent_request_envelope with run as Str and parent as Str and body as Str returning Str:
+    set payload to agent_event_envelope(run and parent)
+    set quoted_body to provider_quote(body)
+    set payload to concat(payload and ",\"request_body\":")
+    set payload to concat(payload and quoted_body)
+    return concat(payload and "}")
+
+define agent_generation_fail with database as Int and run as Str and session as Str and request as Str and reason as Str returning Int:
+    set event to concat(request and ":failure")
+    set payload to concat(agent_event_envelope(run and request) and concat(",\"reason\":" and concat(provider_quote(reason) and "}")))
+    if archive_append(database and session and event and "agent_failure" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return 1
+    return agent_run_transition(database and run and "generating" and request and "failed" and event)
+
+# Persist originals before making the selected response actionable. Selection
+# is explicit; other choices remain in the archived provider events.
+define agent_generation_publish with database as Int and run as Str and session as Str and request as Str and state as List and choice_index as Str returning Int:
+    if get_list(state and 2) is not equal to 2:
+        return 1
+    set choice to chat_find(get_list(state and 0) and choice_index)
+    if choice equals 0:
+        return 1
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return 1
+    if not (archive_list_text(row and 0) equals session) or else not (archive_list_text(row and 2) equals "generating") or else not (archive_list_text(row and 3) equals request):
+        return 1
+    set calls to get_list(choice and 3)
+    set kind to "assistant_final"
+    set next_state to "completed"
+    if length_list(calls) is greater than 0:
+        set kind to "assistant_tool_calls"
+        set next_state to "tools"
+    set event to concat(request and ":response")
+    set payload to agent_event_envelope(run and request)
+    set payload to concat(payload and concat(",\"choice_index\":" and provider_quote(choice_index)))
+    set payload to concat(payload and concat(",\"content\":" and provider_quote(archive_list_text(choice and 1))))
+    set payload to concat(payload and concat(",\"reasoning_content\":" and provider_quote(archive_list_text(choice and 2))))
+    set payload to concat(payload and concat(",\"finish_reason\":" and provider_quote(archive_list_text(choice and 4))))
+    set payload to concat(payload and ",\"tool_calls\":[")
+    set events to create_list()
+    # Publication is one commit: originals, the complete tool ledger batch and
+    # the accepted run head cannot be separated by a process interruption.
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set index to 0
+    repeat while index is less than length_list(calls):
+        set call to get_list(calls and index)
+        set call_event to concat(request and concat(":call:" and archive_list_text(call and 0)))
+        set added to append_list(events and call_event)
+        if index is greater than 0:
+            set payload to concat(payload and ",")
+        set payload to concat(payload and provider_quote(call_event))
+        set call_payload to agent_event_envelope(run and request)
+        set call_payload to concat(call_payload and concat(",\"call_id\":" and provider_quote(archive_list_text(call and 1))))
+        set call_payload to concat(call_payload and concat(",\"name\":" and provider_quote(archive_list_text(call and 2))))
+        set call_payload to concat(call_payload and concat(",\"arguments\":" and provider_quote(archive_list_text(call and 3))))
+        set call_payload to concat(call_payload and "}")
+        if archive_append_pending(database and session and call_event and "tool_call" and call_payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return archive_rollback(database)
+        set index to index + 1
+    set payload to concat(payload and "]}")
+    if archive_append_pending(database and session and event and kind and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return archive_rollback(database)
+    # Queue the complete tool set and advance the exact generation in one
+    # transaction. Workers cannot claim a partial batch; stale replies roll back.
+    set index to 0
+    repeat while index is less than length_list(calls):
+        set call to get_list(calls and index)
+        if tool_ledger_queue(database and run and archive_list_text(call and 1) and session and archive_list_text(events and index)) is not equal to 0:
+            return archive_rollback(database)
+        set index to index + 1
+    if agent_run_transition(database and run and "generating" and request and next_state and event) is not equal to 0:
+        return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# One generation within the persistent ReAct run. No iteration counter or turn
+# cap is imposed here. A tool dispatcher supplies observations before the next
+# generation; the context builder supplies the complete token-budgeted request.
+define agent_generate_local_at with database as Int and run as Str and expected_parent as Str and request as Str and body as Str and port as Int and path as Str and cancellation_reader as Int and read_size as Int and choice_index as Str returning Int:
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return 1
+    if not (archive_list_text(row and 2) equals "ready"):
+        return 1
+    set session to archive_list_text(row and 0)
+    set parent to archive_list_text(row and 3)
+    if not (parent equals expected_parent):
+        return 1
+    set payload to agent_request_envelope(run and parent and body)
+    if archive_append(database and session and request and "model_request" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return 1
+    if agent_run_transition(database and run and "ready" and parent and "generating" and request) is not equal to 0:
+        return 1
+    set response to local_chat_generate(database and session and request and port and path and body and cancellation_reader and read_size)
+    set status to archive_list_text(response and 0)
+    if not (status equals "complete"):
+        set failed to agent_generation_fail(database and run and session and request and status)
+        return 1
+    if agent_generation_publish(database and run and session and request and get_list(response and 1) and choice_index) is not equal to 0:
+        set failed to agent_generation_fail(database and run and session and request and "response-publication-failed")
+        return 1
+    return 0
+
+define agent_generate_local with database as Int and run as Str and request as Str and body as Str and port as Int and path as Str and cancellation_reader as Int and read_size as Int and choice_index as Str returning Int:
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return 1
+    return agent_generate_local_at(database and run and archive_list_text(row and 3) and request and body and port and path and cancellation_reader and read_size and choice_index)

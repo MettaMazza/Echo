@@ -1,0 +1,113 @@
+import "../../app/web/branches"
+import "../../app/web/attachments"
+import "../../app/web/export"
+import "fs"
+import "../../app/web/worker"
+
+define main returning Int:
+    if get_argument_count() is not equal to 2:
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0 or else web_worker_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Owner" and "secret") is not equal to 0:
+        return 1
+    set created to web_create_session(database and "owner" and "revision-source")
+    set source to ptr_to_str(get_list(created and 1))
+    set path to concat(get_argument(1) and ".txt")
+    if write_file(path and "Keep this original attachment") is not equal to 1 or else web_attachment_register(database and "owner" and source and "file" and path and "source.txt" and "text/plain") is not equal to 0:
+        return 1
+    set files to create_list()
+    set added to append_list(files and "file")
+    set submitted to web_submit_owned_files(database and "owner" and "original" and source and "Original question" and files)
+    if not (ptr_to_str(get_list(submitted and 0)) equals "accepted"):
+        return 1
+    set blocked to web_revision(database and "owner" and source and "original:user" and "active" and "edit" and "Cannot edit active work")
+    if not (ptr_to_str(get_list(blocked and 0)) equals "invalid-boundary"):
+        return 1
+    if archive_append(database and source and "request" and "model_request" and "{\"run_id\":\"original\",\"parent_event\":\"original:user\"}" and "fixture") is not equal to 0 or else agent_run_transition(database and "original" and "ready" and "original:user" and "generating" and "request") is not equal to 0:
+        return 1
+    if archive_append(database and source and "answer" and "assistant_final" and "{\"run_id\":\"original\",\"parent_event\":\"request\",\"content\":\"Original answer\",\"reasoning_content\":\"\",\"tool_calls\":[]}" and "fixture") is not equal to 0 or else agent_run_transition(database and "original" and "generating" and "request" and "completed" and "answer") is not equal to 0:
+        return 1
+    set foreign to web_revision(database and "other" and source and "original:user" and "edit-one" and "edit" and "Changed")
+    if not (ptr_to_str(get_list(foreign and 0)) equals "not-found"):
+        return 1
+    set first_profile to provider_llama_profile("first" and 8080)
+    set second_profile to provider_llama_profile("second" and 8081)
+    if provider_registry_register(database and "one" and "First" and first_profile) is not equal to 0 or else provider_registry_register(database and "two" and "Second" and second_profile) is not equal to 0:
+        return 2
+    set missing to web_revision_provider(database and "owner" and source and "original:user" and "missing-provider" and "edit" and "Changed" and "absent")
+    if not (ptr_to_str(get_list(missing and 0)) equals "unknown-provider") or else archive_read_event(database and "branch:missing-provider:origin") is not equal to 0:
+        return 3
+    # The branch boundary already freezes selection before a run exists.
+    set staged to web_branch_at_provider(database and "owner" and source and "original:user" and "selected-edit" and "edit" and "Selected question" and "one")
+    if not (ptr_to_str(get_list(staged and 0)) equals "accepted") or else sql_close(database) is not equal to 0:
+        return 4
+    set database to archive_open(get_argument(1))
+    set changed to web_revision_provider(database and "owner" and source and "original:user" and "selected-edit" and "edit" and "Selected question" and "two")
+    if not (ptr_to_str(get_list(changed and 0)) equals "identity-conflict") or else agent_run_read(database and "revision:selected-edit") is not equal to 0:
+        return 5
+    set recovered_selection to web_revision_provider(database and "owner" and source and "original:user" and "selected-edit" and "edit" and "Selected question" and "one")
+    if not (ptr_to_str(get_list(recovered_selection and 0)) equals "accepted") or else not (agent_provider_read(database and "revision:selected-edit") equals first_profile):
+        return 6
+    set selected_regeneration to web_revision_provider(database and "owner" and source and "original:user" and "selected-regen" and "regenerate" and "" and "two")
+    if not (ptr_to_str(get_list(selected_regeneration and 0)) equals "accepted") or else not (agent_provider_read(database and "revision:selected-regen") equals second_profile):
+        return 7
+    if archive_verify(database and "branch:selected-edit") is not equal to 0 or else archive_verify(database and "branch:selected-regen") is not equal to 0:
+        return 8
+    # Simulate disconnect after branch commit but before submission.
+    set orphan to web_branch_at(database and "owner" and source and "original:user" and "interrupted" and "edit" and "Recovered question")
+    if not (ptr_to_str(get_list(orphan and 0)) equals "accepted") or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    set recovered to web_revision(database and "owner" and source and "original:user" and "interrupted" and "edit" and "Recovered question")
+    if not (ptr_to_str(get_list(recovered and 0)) equals "accepted") or else get_list(recovered and 3) is not equal to 1 or else sql_close(database) is not equal to 0:
+        return 1
+    # Simulate another disconnect after submission commit but before worker claim.
+    set database to archive_open(get_argument(1))
+    set retried to web_revision(database and "owner" and source and "original:user" and "interrupted" and "edit" and "Recovered question")
+    if not (ptr_to_str(get_list(retried and 0)) equals "accepted") or else get_list(retried and 3) is not equal to 0:
+        return 1
+    if web_worker_ensure_claim(database and "other" and "revision:interrupted" and "foreign-worker") is not equal to 1:
+        return 1
+    if web_worker_ensure_claim(database and "owner" and "revision:interrupted" and "recovered-worker") is not equal to 0:
+        return 1
+    if web_worker_ensure_claim(database and "owner" and "revision:interrupted" and "duplicate-worker") is not equal to 2:
+        return 1
+    set worker_status to web_worker_status(database and "revision:interrupted")
+    if string_contains(worker_status and "recovered-worker") equals 0 or else string_contains(worker_status and "duplicate-worker") is not equal to 0:
+        return 1
+    set edited to web_revision(database and "owner" and source and "original:user" and "edit-one" and "edit" and "Revised question")
+    if not (ptr_to_str(get_list(edited and 0)) equals "accepted") or else get_list(edited and 3) is not equal to 1:
+        return 1
+    set retry to web_revision(database and "owner" and source and "original:user" and "edit-one" and "edit" and "Revised question")
+    if not (ptr_to_str(get_list(retry and 0)) equals "accepted") or else get_list(retry and 3) is not equal to 0:
+        return 1
+    set conflict to web_revision(database and "owner" and source and "original:user" and "edit-one" and "edit" and "Different question")
+    if not (ptr_to_str(get_list(conflict and 0)) equals "identity-conflict"):
+        return 1
+    set messages to session_messages(database and "branch:edit-one" and "revision:edit-one")
+    if string_contains(messages and "Revised question") equals 0 or else string_contains(messages and "Original question") is not equal to 0 or else string_contains(messages and "Original answer") is not equal to 0 or else string_contains(messages and "file:attachment") equals 0:
+        return 1
+    set transcript to web_session_transcript(database and "branch:edit-one")
+    if string_contains(transcript and "Original question") is not equal to 0 or else string_contains(transcript and "Revised question") equals 0:
+        return 1
+    set regenerated to web_revision(database and "owner" and source and "original:user" and "regen-one" and "regenerate" and "Ignored replacement")
+    if not (ptr_to_str(get_list(regenerated and 0)) equals "accepted"):
+        return 1
+    set messages to session_messages(database and "branch:regen-one" and "revision:regen-one")
+    if string_contains(messages and "Original question") equals 0 or else string_contains(messages and "Original answer") is not equal to 0 or else string_contains(messages and "Ignored replacement") is not equal to 0:
+        return 1
+    if archive_export_verify(web_session_export(database and "owner" and "branch:edit-one") and "") is not equal to 0:
+        return 1
+    set original to archive_read_event(database and "original:user")
+    if not (ptr_to_str(get_list(original and 3)) equals "Original question") or else archive_verify(database and source) is not equal to 0:
+        return 1
+    if sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    if not (session_messages(database and "branch:regen-one" and "revision:regen-one") equals messages):
+        return 1
+    set closed to sql_close(database)
+    display "PASS: edit/regenerate preserve originals and attachments, replace active context, enforce ownership, recover interrupted branch/submission commits without duplicate workers and survive reopen."
+    return 0

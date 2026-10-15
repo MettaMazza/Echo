@@ -1,0 +1,159 @@
+import "attachment_restore"
+import "tree_snapshot"
+import "../providers/archived_stream"
+import "../lifecycle/service_profile"
+
+# Host-only profile. Each tree and individual file is explicit; weights are
+# not silently duplicated. Runtime ownership prevents Echo from restarting
+# while its database and files are copied. Other host editors must be stopped.
+define backup_bundle_identity with path as Str returning Str:
+    set verified to file_digest_durable(path and 65536)
+    if not (ptr_to_str(get_list(verified and 0)) equals "verified"):
+        return ""
+    return concat("{\"sha256\":" and concat(provider_quote(ptr_to_str(get_list(verified and 1))) and concat(",\"bytes\":" and concat(int_to_string(get_list(verified and 2)) and "}"))))
+
+define backup_bundle_absolute with value as Str returning Int:
+    if string_length(value) equals 0 or else get_character(value and 0) is not equal to 47 or else service_native_text(value) equals 0:
+        return 0
+    return 1
+
+define backup_bundle_valid with tokens as List returning Int:
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return 0
+    set fields to ["database", "bundle", "verification"]
+    set index to 0
+    repeat while index is less than length_list(fields):
+        set field to provider_member(tokens and 0 and ptr_to_str(get_list(fields and index)))
+        if not (provider_kind(tokens and field) equals "string") or else backup_bundle_absolute(provider_value(tokens and field)) equals 0:
+            return 0
+        set index to index + 1
+    set collections to ["trees", "files"]
+    set collection to 0
+    repeat while collection is less than length_list(collections):
+        set items to provider_items(tokens and provider_member(tokens and 0 and ptr_to_str(get_list(collections and collection))))
+        if items equals 0:
+            return 0
+        set index to 0
+        set names to create_list()
+        repeat while index is less than length_list(items):
+            set item to get_list(items and index)
+            set name to provider_value(tokens and provider_member(tokens and item and "name"))
+            set source to provider_value(tokens and provider_member(tokens and item and "source"))
+            set parts to workspace_path_parts(name)
+            if parts equals 0 or else length_list(parts) is not equal to 1 or else service_native_text(name) equals 0 or else backup_bundle_absolute(source) equals 0:
+                return 0
+            set prior to 0
+            repeat while prior is less than length_list(names):
+                if ptr_to_str(get_list(names and prior)) equals name:
+                    return 0
+                set prior to prior + 1
+            set added to append_list(names and name)
+            set index to index + 1
+        set collection to collection + 1
+    return 1
+
+define backup_bundle_copy with library as Int and database as Int and tokens as List and profile as Str returning Int:
+    set bundle to provider_value(tokens and provider_member(tokens and 0 and "bundle"))
+    set verification to provider_value(tokens and provider_member(tokens and 0 and "verification"))
+    if ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(bundle) and 448) is not equal to 0 or else ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(verification) and 448) is not equal to 0:
+        return 1
+    set files to concat(bundle and "/registered-attachments")
+    set restored_files to concat(verification and "/registered-attachments")
+    if ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(files) and 448) is not equal to 0 or else ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(restored_files) and 448) is not equal to 0:
+        return 1
+    set snapshot to concat(bundle and "/archive.sqlite")
+    if archive_snapshot(database and snapshot) is not equal to 0:
+        return 1
+    set backup to sql_open(snapshot)
+    if backup equals 0:
+        return 1
+    set copied to attachment_snapshot_copy(backup and files)
+    if copied equals 0:
+        set copied to attachment_snapshot_verify(backup and files)
+    set closed to sql_close(backup)
+    if copied is not equal to 0 or else closed is not equal to 0:
+        return 1
+    if attachment_restore(snapshot and files and concat(verification and "/archive.sqlite") and restored_files) is not equal to 0:
+        return 1
+    set database_identity to backup_bundle_identity(snapshot)
+    if string_length(database_identity) equals 0:
+        return 1
+    set manifest to concat("{\"format\":\"echo-offline-bundle-v1\",\"profile\":" and profile)
+    set manifest to concat(manifest and concat(",\"database\":" and database_identity))
+    set manifest to concat(manifest and ",\"trees\":[")
+    set items to provider_items(tokens and provider_member(tokens and 0 and "trees"))
+    set index to 0
+    repeat while index is less than length_list(items):
+        set item to get_list(items and index)
+        set name to provider_value(tokens and provider_member(tokens and item and "name"))
+        set source to provider_value(tokens and provider_member(tokens and item and "source"))
+        set target to concat(bundle and concat("/tree-" and name))
+        if tree_snapshot(source and target and concat(verification and concat("/tree-" and name))) is not equal to 0:
+            display concat("Tree did not verify: " and name)
+            return 1
+        set archive_identity to backup_bundle_identity(concat(target and "/files.tar"))
+        set tree_identity to backup_bundle_identity(concat(target and "/contents.mtree"))
+        if string_length(archive_identity) equals 0 or else string_length(tree_identity) equals 0:
+            return 1
+        if index is greater than 0:
+            set manifest to concat(manifest and ",")
+        set manifest to concat(manifest and concat("{\"name\":" and provider_quote(name)))
+        set manifest to concat(manifest and concat(",\"archive\":" and archive_identity))
+        set manifest to concat(manifest and concat(",\"inventory\":" and concat(tree_identity and "}")))
+        set index to index + 1
+    set manifest to concat(manifest and "],\"files\":[")
+    set items to provider_items(tokens and provider_member(tokens and 0 and "files"))
+    set index to 0
+    repeat while index is less than length_list(items):
+        set item to get_list(items and index)
+        set name to provider_value(tokens and provider_member(tokens and item and "name"))
+        set source to provider_value(tokens and provider_member(tokens and item and "source"))
+        set identity to file_digest_durable(source and 65536)
+        if not (ptr_to_str(get_list(identity and 0)) equals "verified"):
+            return 1
+        set target to concat(bundle and concat("/file-" and name))
+        if file_copy_verified(source and target and ptr_to_str(get_list(identity and 1)) and get_list(identity and 2) and 65536) is not equal to 0:
+            return 1
+        set record to backup_bundle_identity(target)
+        if string_length(record) equals 0:
+            return 1
+        if index is greater than 0:
+            set manifest to concat(manifest and ",")
+        set manifest to concat(manifest and concat("{\"name\":" and concat(provider_quote(name) and concat(",\"content\":" and concat(record and "}")))))
+        set index to index + 1
+    set manifest to concat(manifest and "],\"restored_execution\":\"held-for-reconciliation\",\"weight_files_included\":false,\"coverage\":\"Only the explicitly listed trees and files, database and registered attachments; not yet full dependency or crash-recovery qualification.\"}")
+    set path to concat(bundle and "/manifest.json")
+    if provider_json_tokens(manifest) equals 0 or else file_publication_reserve(library and path) is not equal to 0:
+        return 1
+    set temporary to concat(path and ".partial")
+    set descriptor to file_stage_open(library and temporary)
+    if descriptor is less than 0:
+        return 1
+    if file_stage_write(library and descriptor and str_to_ptr(manifest) and string_length(manifest)) is not equal to 0 or else file_stage_finish(library and descriptor) is not equal to 0:
+        return 1
+    return file_publication_finish(library and temporary and path)
+
+define backup_bundle_run with profile as Str returning Int:
+    set tokens to provider_json_tokens(profile)
+    if backup_bundle_valid(tokens) equals 0:
+        return 1
+    set database to sql_open(provider_value(tokens and provider_member(tokens and 0 and "database")))
+    if database equals 0:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set owner to archive_runtime_lock(database and library)
+    if owner is less than 0:
+        display "Stop the Echo service first; the archive runtime is still owned or unavailable."
+        set closed to sql_close(database)
+        set closed to ep_dlclose(library)
+        return 1
+    set pending to history_collect_one(archive_prepare(database and "SELECT CAST((SELECT count(*) FROM echo_runs WHERE state NOT IN ('completed','cancelled'))+(SELECT count(*) FROM echo_tool_calls WHERE state<>'observed')+(SELECT count(*) FROM echo_process_launches WHERE finished IS NULL) AS TEXT);"))
+    set result to 1
+    if ptr_to_str(get_list(pending and 0)) equals "found" and ptr_to_str(get_list(pending and 1)) equals "0":
+        set result to backup_bundle_copy(library and database and tokens and profile)
+    else:
+        display "Unfinished runs, tools or process launches require reconciliation before this offline backup."
+    set closed to sql_close(database)
+    set closed to net_close(owner)
+    set closed to ep_dlclose(library)
+    return result

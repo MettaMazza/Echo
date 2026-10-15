@@ -1,0 +1,121 @@
+import "../transport/socket_read"
+import "string"
+
+define file_digest_result with status as Str and digest as Str and bytes as Int returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and digest)
+    set added to append_list(result and bytes)
+    return result
+
+# Binary streaming SHA-256 via the installed macOS CommonCrypto ABI.
+# Batch size is I/O granularity, not a file-size ceiling. Never use C strings
+# for file contents: attachments may include NUL and arbitrary byte values.
+define file_digest with path as Str and batch as Int returning List:
+    return file_digest_mode(path and batch and 0)
+
+# Compaction requires a flushed regular original. Hash the same descriptor
+# after fsync; nonblocking/no-symlink opening rejects special-file substitutions.
+define file_digest_durable with path as Str and batch as Int returning List:
+    return file_digest_mode(path and batch and 1)
+
+define file_digest_mode with path as Str and batch as Int and durable as Int returning List:
+    if batch is less than 1 or else batch is greater than 4294967295:
+        return file_digest_result("invalid-batch" and "" and 0)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return file_digest_result("unavailable" and "" and 0)
+    set open_function to ep_dlsym(library and "open")
+    set read_function to ep_dlsym(library and "read")
+    set allocate to ep_dlsym(library and "malloc")
+    set release to ep_dlsym(library and "free")
+    set copy_function to ep_dlsym(library and "memcpy")
+    set initialize to ep_dlsym(library and "CC_SHA256_Init")
+    set update to ep_dlsym(library and "CC_SHA256_Update")
+    set finish to ep_dlsym(library and "CC_SHA256_Final")
+    if open_function equals 0 or else read_function equals 0 or else allocate equals 0 or else release equals 0 or else copy_function equals 0 or else initialize equals 0 or else update equals 0 or else finish equals 0:
+        set closed to ep_dlclose(library)
+        return file_digest_result("unavailable" and "" and 0)
+    set flags to 16777472
+    if durable equals 1:
+        # O_CLOEXEC | O_NOFOLLOW_ANY | O_NONBLOCK. Darwin rejects combining
+        # O_NOFOLLOW_ANY with the separate O_NOFOLLOW flag.
+        set flags to 553648132
+    set descriptor to socket_signed_result(ep_dlcall2(open_function and str_to_ptr(path) and flags))
+    if descriptor is less than 0:
+        set closed to ep_dlclose(library)
+        return file_digest_result("open-failed" and "" and 0)
+    if durable equals 1:
+        set inspect to ep_dlsym(library and "fstat")
+        set flush to ep_dlsym(library and "fsync")
+        set information to create_list()
+        set index to 0
+        repeat while index is less than 18:
+            set added to append_list(information and 0)
+            set index to index + 1
+        set valid to 0
+        if inspect is not equal to 0 and flush is not equal to 0:
+            if ep_dlcall2(inspect and descriptor and get_list_data_ptr(information)) equals 0:
+                set mode to (get_list(information and 0) / 4294967296) modulo 65536
+                if mode / 4096 equals 8:
+                    if ep_dlcall1(flush and descriptor) equals 0:
+                        set valid to 1
+        if valid equals 0:
+            set closed to net_close(descriptor)
+            set closed to ep_dlclose(library)
+            return file_digest_result("durability-check-failed" and "" and 0)
+    set buffer to ep_dlcall1(allocate and batch)
+    if buffer equals 0:
+        set closed to net_close(descriptor)
+        set closed to ep_dlclose(library)
+        return file_digest_result("allocation-failed" and "" and 0)
+    # CC_SHA256_CTX is 26 unsigned 32-bit words in the installed SDK.
+    set context to create_list()
+    set index to 0
+    repeat while index is less than 13:
+        set added to append_list(context and 0)
+        set index to index + 1
+    set total to 0
+    set status to "verified"
+    if ep_dlcall1(initialize and get_list_data_ptr(context)) is not equal to 1:
+        set status to "hash-failed"
+    repeat while status equals "verified":
+        set count to ep_dlcall3(read_function and descriptor and buffer and batch)
+        if count equals 0:
+            break
+        if count is less than 0 or else count is greater than batch:
+            if socket_errno(library) equals 4:
+                continue
+            set status to "read-failed"
+            break
+        if total is greater than 9223372036854775807 - count:
+            set status to "size-overflow"
+            break
+        if ep_dlcall3(update and get_list_data_ptr(context) and buffer and count) is not equal to 1:
+            set status to "hash-failed"
+            break
+        set total to total + count
+    set digest to ""
+    if status equals "verified":
+        set output to create_list()
+        set index to 0
+        repeat while index is less than 4:
+            set added to append_list(output and 0)
+            set index to index + 1
+        if ep_dlcall2(finish and get_list_data_ptr(output) and get_list_data_ptr(context)) is not equal to 1:
+            set status to "hash-failed"
+        else:
+            set index to 0
+            repeat while index is less than 32:
+                set byte to create_list()
+                set added to append_list(byte and 0)
+                set copied to ep_dlcall3(copy_function and get_list_data_ptr(byte) and get_list_data_ptr(output) + index and 1)
+                set value to get_list(byte and 0)
+                set digest to concat(digest and ptr_to_str(substring("0123456789abcdef" and value / 16 and 1)))
+                set digest to concat(digest and ptr_to_str(substring("0123456789abcdef" and value modulo 16 and 1)))
+                set index to index + 1
+    set freed to ep_dlcall1(release and buffer)
+    if net_close(descriptor) is not equal to 0:
+        set status to "close-failed"
+    set closed to ep_dlclose(library)
+    return file_digest_result(status and digest and total)

@@ -1,0 +1,61 @@
+import "../retained_text"
+import "recap_jobs"
+import "../agent/control"
+
+# One caller owns a collection job at a time. Conflicting concurrent notes are
+# rejected by coverage accounting, never silently merged or called complete.
+# Collection has no iteration cap; every successful step must advance its cursor.
+define recap_collect_inner_provider with database as Int and session as Str and job as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    set manifest to archive_read_event(database and job)
+    if manifest equals 0:
+        return "invalid-job"
+    if not (archive_list_text(manifest and 0) equals session) or else not (archive_list_text(manifest and 2) equals "recap_job"):
+        return "invalid-job"
+    set tokens to provider_json_tokens(archive_list_text(manifest and 3))
+    if tokens equals 0:
+        return "invalid-job"
+    set endpoint to provider_value(tokens and provider_member(tokens and 0 and "source_end"))
+    repeat while 1 equals 1:
+        set cancellation to agent_cancellation_pending(library and cancellation_reader)
+        if cancellation is less than 0:
+            return "cancellation-error"
+        if cancellation equals 1:
+            return "cancelled"
+        set progress to recap_job_progress(database and session and job)
+        set status to archive_list_text(progress and 0)
+        if not (status equals "notes-required"):
+            return status
+        set offset to get_list(progress and 1)
+        set source to archive_list_text(progress and 2)
+        set request to concat(job and concat(":notes:" and agent_identity()))
+        set result to recap_note_generate_provider(database and session and endpoint and job and source and offset and request and profile and reserve and cancellation_reader and read_size)
+        if not (archive_list_text(result and 0) equals "notes-saved"):
+            return archive_list_text(result and 0)
+        if get_list(result and 1) <= offset:
+            return "no-progress"
+    return "error"
+
+define recap_collect_provider with database as Int and session as Str and job as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning Str:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "platform-error"
+    set status to recap_collect_inner_provider(database and session and job and profile and reserve and cancellation_reader and read_size and library)
+    if ep_dlclose(library) is not equal to 0:
+        return "cleanup-error"
+    return status
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define recap_collect_inner with database as Int and session as Str and job as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    set profile to provider_llama_profile(model and port)
+    return recap_collect_inner_provider(database and session and job and profile and reserve and cancellation_reader and read_size and library)
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define recap_collect with database as Int and session as Str and job as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int returning Str:
+    set profile to provider_llama_profile(model and port)
+    return recap_collect_provider(database and session and job and profile and reserve and cancellation_reader and read_size)

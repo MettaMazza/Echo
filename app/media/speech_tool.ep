@@ -1,0 +1,234 @@
+import "speech_text"
+import "../retained_text"
+import "speech_request"
+import "voice_request"
+import "../archive/file_copy"
+import "image_logs"
+import "../web/attachments"
+import "../workspace/directories"
+import "../providers/helper_process"
+
+# Run/call identity comes from the dispatcher. Re-read the immutable request.
+define speech_tool_authority with database as Int and run as Str and call_id as Str returning List:
+    set restored to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_attachment_restore_receipt';"))
+    if not (archive_list_text(restored and 0) equals "end"):
+        set retained_list_1 to create_list()
+        set retained_item_1_0 to "review-required"
+        set retained_added to append_list(retained_list_1 and retained_item_1_0)
+        return retained_list_1
+    set values to tool_ledger_identity(run and call_id)
+    set authority to history_collect_one(checkpoint_prepare(database and "SELECT r.session,d.device,e.payload,e.event FROM echo_tool_calls t JOIN echo_runs r ON r.run=t.run AND r.session=t.session JOIN echo_events e ON e.event=t.request_event AND e.session=r.session JOIN echo_session_owners o ON o.session=r.session JOIN echo_devices d ON d.device=o.device WHERE t.run=?1 AND t.call_id=?2 AND t.state='running' AND r.state='tools' AND d.revoked=0 AND e.kind='tool_call' AND json_valid(e.payload) AND json_extract(e.payload,'$.name') IN ('attachment_transcribe','speech_synthesize') AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.call_id')=?2;" and values))
+    if archive_list_text(authority and 0) equals "found":
+        return authority
+    # Direct Speak actions have no model run. Their immutable request binds the
+    # exact saved assistant event and is still claimed through the tool ledger.
+    return history_collect_one(checkpoint_prepare(database and "SELECT t.session,d.device,e.payload,e.event FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event AND e.session=t.session JOIN echo_events source ON source.event=json_extract(e.payload,'$.speech_source') AND source.session=t.session AND source.kind='assistant_final' JOIN echo_session_owners o ON o.session=t.session JOIN echo_devices d ON d.device=o.device WHERE t.run=?1 AND t.call_id=?2 AND t.state='running' AND d.revoked=0 AND e.kind='tool_call' AND json_extract(e.payload,'$.name')='speech_synthesize' AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.call_id')=?2 AND json_extract(json_extract(e.payload,'$.arguments'),'$.text')=json_extract(source.payload,'$.content');" and values))
+
+define speech_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:
+    set database to archive_open(path)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set status to 1
+    if database is not equal to 0 and library is not equal to 0:
+        set status to 0
+        repeat while 1 equals 1:
+            if agent_cancellation_pending(library and stop) is not equal to 0:
+                break
+            if agent_cancellation_pending(library and cancellation) is not equal to 0:
+                break
+            set authority to speech_tool_authority(database and run and call_id)
+            if not (archive_list_text(authority and 0) equals "found"):
+                set status to 1
+                break
+            set slept to sleep_ms(100)
+    if database is not equal to 0:
+        set closed to sql_close(database)
+    if library is not equal to 0:
+        set closed to ep_dlclose(library)
+    set closed to net_close(writer)
+    send status to completed
+    return 0
+
+# Each claimed call gets its own private directory outside writable workspaces.
+# Interrupted calls remain uncertain under the existing tool ledger; no replay.
+define speech_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:
+    set authority to speech_tool_authority(database and run and call_id)
+    if not (archive_list_text(authority and 0) equals "found"):
+        return "{\"status\":\"not-authorized\"}"
+    set original to provider_json_tokens(archive_list_text(authority and 3))
+    set synthesis to provider_value(original and provider_member(original and 0 and "name")) equals "speech_synthesize"
+    set profile_path to ptr_to_str(get_env("ECHO_SPEECH_PROFILE"))
+    if synthesis:
+        set profile_path to ptr_to_str(get_env("ECHO_VOICE_PROFILE"))
+    set root_path to ptr_to_str(get_env("ECHO_SPEECH_ROOT"))
+    if string_length(profile_path) equals 0 or else string_length(root_path) equals 0:
+        return "{\"status\":\"not-configured\"}"
+    set profile to ptr_to_str(read_file(profile_path))
+    set session to archive_list_text(authority and 1)
+    set device to archive_list_text(authority and 2)
+    set source to create_list()
+    set arguments to create_list()
+    set spoken_text to ""
+    set original_text to ""
+    if synthesis:
+        set spoken_text to voice_request_text(provider_value(original and provider_member(original and 0 and "arguments")))
+        set original_text to spoken_text
+        set spoken_text to speech_plain_text(original_text)
+        if string_length(spoken_text) equals 0:
+            return "{\"status\":\"invalid-voice-text\"}"
+        set arguments to voice_request_arguments(profile)
+    else:
+        set source to speech_request_source(database and session and provider_value(original and provider_member(original and 0 and "arguments")))
+        if not (archive_list_text(source and 0) equals "found"):
+            return concat("{\"status\":" and concat(provider_quote(archive_list_text(source and 0)) and "}"))
+        set arguments to speech_request_arguments(profile and archive_list_text(source and 6))
+    if arguments equals 0:
+        return "{\"status\":\"invalid-speech-profile\"}"
+    set config to provider_json_tokens(profile)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "{\"status\":\"platform-error\"}"
+    if provider_helper_cancelled(library and cancellation) is not equal to 0:
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"cancelled-before-launch\"}"
+    set anchor to archive_runtime_anchor(database and library)
+    if string_length(anchor) equals 0:
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"archive-anchor-error\"}"
+    set stem to ep_sha256(concat(archive_hash_field(anchor) and concat(archive_hash_field(run) and archive_hash_field(call_id))))
+    set identity to concat("speech:" and stem)
+    set root to workspace_root_open(library and root_path)
+    set directory to workspace_directory_open(library and root and stem and 1)
+    if root >= 0:
+        set closed to net_close(root)
+    if directory is less than 0:
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"speech-storage-unavailable\"}"
+    set staged to 0
+    if synthesis:
+        # Private job input is exclusive and flushed before dispatch. It is not
+        # published into a user workspace, so no rename operation is required.
+        set input_file to workspace_file_open(library and directory and "input.txt" and 1)
+        if input_file is less than 0:
+            set staged to 1
+        else:
+            set staged to file_stage_write(library and input_file and str_to_ptr(spoken_text) and string_length(spoken_text))
+            if file_stage_finish(library and input_file) is not equal to 0:
+                set staged to 1
+    else:
+        set input_path to concat(root_path and concat("/" and concat(stem and "/input.wav")))
+        set staged to file_copy_verified(archive_list_text(source and 1) and input_path and archive_list_text(source and 2) and string_to_int(archive_list_text(source and 3)) and 65536)
+    if staged is not equal to 0:
+        set closed to net_close(directory)
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"audio-integrity-or-storage-failed\"}"
+    set output to workspace_file_open(library and directory and "runtime.stdout" and 1)
+    set errors to workspace_file_open(library and directory and "runtime.stderr" and 1)
+    set status to "storage-conflict"
+    set reaped to 0
+    set profile_kind to "speech_transcription_profile"
+    if synthesis:
+        set profile_kind to "speech_synthesis_profile"
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if output >= 0 and errors >= 0 and archive_list_text(location and 0) equals "found":
+        set stop to socket_cancellation_create(library)
+        set cancelled to socket_cancellation_create(library)
+        if stop is not equal to 0 and cancelled is not equal to 0:
+            set complete to channel
+            spawn speech_tool_monitor(archive_list_text(location and 1) and run and call_id and cancellation and get_list(stop and 0) and get_list(cancelled and 1) and complete)
+            set status to "archive-error"
+            if archive_append(database and session and concat(identity and ":profile") and profile_kind and profile and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) equals 0:
+                set executable to provider_value(config and provider_member(config and 0 and "executable"))
+                set retained_list_2 to create_list()
+                set retained_item_2_0 to "LC_ALL=C"
+                set retained_added to append_list(retained_list_2 and retained_item_2_0)
+                set retained_item_2_1 to "PATH=/usr/bin:/bin"
+                set retained_added to append_list(retained_list_2 and retained_item_2_1)
+                set environment to retained_list_2
+                set result to provider_helper_run(database and session and concat(identity and ":dispatch") and executable and arguments and environment and directory and output and errors and get_list(cancelled and 0))
+                set status to archive_list_text(result and 0)
+                if get_list(result and 1) >= 0:
+                    set reaped to 1
+            set closed to socket_cancel(stop)
+            set monitored to receive from complete
+            set changed to set_list(cancelled and 1 and -1)
+            if monitored is not equal to 0:
+                set status to "authorization-changed"
+        else:
+            set status to "pipe-failed"
+        if stop is not equal to 0:
+            set closed to socket_cancellation_close(stop)
+        if cancelled is not equal to 0:
+            set closed to socket_cancellation_close(cancelled)
+    set logs_failed to 0
+    if reaped equals 1:
+        if image_log_archive(database and run and call_id and library and output and "stdout") is not equal to 0:
+            set logs_failed to 1
+        if image_log_archive(database and run and call_id and library and errors and "stderr") is not equal to 0:
+            set logs_failed to 1
+    if output >= 0:
+        set closed to file_stage_finish(library and output)
+        if closed is not equal to 0:
+            set status to "storage-flush-failed"
+    if errors >= 0:
+        set closed to file_stage_finish(library and errors)
+        if closed is not equal to 0:
+            set status to "storage-flush-failed"
+    set filename to "transcript.txt"
+    set display_name to "Audio transcript.txt"
+    set media_type to "text/plain"
+    if synthesis:
+        set filename to "spoken.wav"
+        set display_name to "Spoken reply.wav"
+        set media_type to "audio/wav"
+    set path to concat(root_path and concat("/" and concat(stem and concat("/" and filename))))
+    if status equals "complete":
+        set artifact to workspace_file_open(library and directory and filename and 0)
+        if artifact is less than 0:
+            set status to "artifact-missing"
+        else:
+            if file_stage_finish(library and artifact) is not equal to 0:
+                set status to "artifact-flush-failed"
+        if not synthesis:
+            set timings to workspace_file_open(library and directory and "transcript.json" and 0)
+            if timings is less than 0:
+                set status to "segments-missing"
+            else:
+                if file_stage_finish(library and timings) is not equal to 0:
+                    set status to "segments-flush-failed"
+        set flush to ep_dlsym(library and "fsync")
+        if flush equals 0 or else ep_dlcall1(flush and directory) is not equal to 0:
+            set status to "directory-flush-failed"
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    # Leave an uncertain claim when logging failed; never report a fully saved
+    # result or authorize automatic replay after partial archive persistence.
+    if logs_failed equals 1:
+        return ""
+    if not (status equals "complete"):
+        return concat("{\"status\":" and concat(provider_quote(status) and "}"))
+    set authority to speech_tool_authority(database and run and call_id)
+    if not (archive_list_text(authority and 0) equals "found"):
+        return "{\"status\":\"authorization-changed\"}"
+    if web_attachment_schema(database) is not equal to 0 or else web_attachment_register(database and device and session and identity and path and display_name and media_type) is not equal to 0:
+        return ""
+    set saved to web_attachment_owned(database and device and identity)
+    if not (archive_list_text(saved and 0) equals "found"):
+        return ""
+    if synthesis:
+        set payload to concat("{\"status\":\"complete\",\"attachment\":" and provider_quote(identity))
+        set payload to concat(payload and concat(",\"event\":" and provider_quote(archive_list_text(saved and 7))))
+        set payload to concat(payload and concat(",\"source_event\":" and provider_quote(archive_list_text(authority and 4))))
+        set payload to concat(payload and concat(",\"original_text_sha256\":" and provider_quote(ep_sha256(original_text))))
+        set payload to concat(payload and ",\"speech_presentation\":\"plain-v1\"")
+        set payload to concat(payload and concat(",\"text_sha256\":" and provider_quote(ep_sha256(spoken_text))))
+        return concat(payload and ",\"representation\":\"local-speech-synthesis\",\"instruction\":\"The spoken reply is saved. The user can play the original WAV. Generation success is not a pronunciation check; use attachment_transcribe to inspect recognized words if needed.\"}")
+    set timing_identity to concat(identity and ":segments")
+    set timing_path to concat(root_path and concat("/" and concat(stem and "/transcript.json")))
+    if web_attachment_register(database and device and session and timing_identity and timing_path and "Audio segments.json" and "application/json") is not equal to 0:
+        return ""
+    set payload to concat("{\"status\":\"complete\",\"attachment\":" and provider_quote(identity))
+    set payload to concat(payload and concat(",\"segments_attachment\":" and provider_quote(timing_identity)))
+    set payload to concat(payload and concat(",\"source_event\":" and provider_quote(archive_list_text(source and 4))))
+    set payload to concat(payload and concat(",\"source_sha256\":" and provider_quote(archive_list_text(source and 2))))
+    set payload to concat(payload and concat(",\"event\":" and provider_quote(archive_list_text(saved and 7))))
+    return concat(payload and ",\"representation\":\"local-speech-recognition\",\"instruction\":\"Read the transcript and timestamped segments with attachment_read_text. The original audio is preserved. Recognition may be wrong; do not present it as exact original text. Runtime logs are archived.\"}")

@@ -1,0 +1,136 @@
+import "string"
+
+define http_failure with status as Str returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    return result
+
+define http_token with text as Str returning Int:
+    if string_length(text) equals 0:
+        return 0
+    set punctuation to "!#$%&'*+-.^_`|~"
+    set position to 0
+    repeat while position is less than string_length(text):
+        set code to get_character(text and position)
+        if is_alphanumeric(code) equals 0:
+            set character to ptr_to_str(substring(text and position and 1))
+            if string_contains(punctuation and character) equals 0:
+                return 0
+        set position to position + 1
+    return 1
+
+# Reject overflow at the machine Int boundary; no smaller body-size policy.
+define http_decimal with text as Str returning Int:
+    if string_length(text) equals 0:
+        return -1
+    set value to 0
+    set position to 0
+    repeat while position is less than string_length(text):
+        set digit to get_character(text and position) - 48
+        if digit is less than 0 or else digit is greater than 9:
+            return -1
+        if value is greater than (9223372036854775807 - digit) / 10:
+            return -1
+        set value to value * 10 + digit
+        set position to position + 1
+    return value
+
+# Parse a complete HTTP/1.1 origin-server head including its final CRLFCRLF.
+# Body bytes are kept separately by the streaming reader, never interpreted here.
+# Result: ready, method, target, framing (length/chunked), length, header pairs.
+# Framing errors close the connection; unsupported transfer codings need 501.
+define http_parse_head with head as Str returning List:
+    set size to string_length(head)
+    if size is less than 4:
+        return http_failure("bad-request")
+    if not (ptr_to_str(substring(head and size - 4 and 4)) equals "\r\n\r\n"):
+        return http_failure("bad-request")
+    set line_end to string_index_of(head and "\r\n")
+    if line_end is less than 1:
+        return http_failure("bad-request")
+    set request_line to ptr_to_str(substring(head and 0 and line_end))
+    set first_space to string_index_of(request_line and " ")
+    if first_space is less than 1:
+        return http_failure("bad-request")
+    set method to ptr_to_str(substring(request_line and 0 and first_space))
+    if http_token(method) equals 0:
+        return http_failure("bad-request")
+    set remaining to ptr_to_str(substring(request_line and first_space + 1 and string_length(request_line) - first_space - 1))
+    set second_space to string_index_of(remaining and " ")
+    if second_space is less than 1:
+        return http_failure("bad-request")
+    set target to ptr_to_str(substring(remaining and 0 and second_space))
+    set version to ptr_to_str(substring(remaining and second_space + 1 and string_length(remaining) - second_space - 1))
+    if not (version equals "HTTP/1.1"):
+        return http_failure("unsupported-version")
+    if get_character(target and 0) is not equal to 47:
+        return http_failure("unsupported-target")
+    set position to 0
+    repeat while position is less than string_length(target):
+        set code to get_character(target and position)
+        if code is less than 33 or else code is greater than 126 or else code equals 35:
+            return http_failure("bad-request")
+        set position to position + 1
+    set headers to create_list()
+    set length to -1
+    set transfer to ""
+    set host_seen to 0
+    set position to line_end + 2
+    repeat while position is less than size - 2:
+        set remaining to ptr_to_str(substring(head and position and size - position))
+        set line_end to string_index_of(remaining and "\r\n")
+        if line_end is less than 1:
+            return http_failure("bad-request")
+        set line to ptr_to_str(substring(remaining and 0 and line_end))
+        set colon to string_index_of(line and ":")
+        if colon is less than 1:
+            return http_failure("bad-request")
+        set name to ptr_to_str(substring(line and 0 and colon))
+        if http_token(name) equals 0:
+            return http_failure("bad-request")
+        set name to ptr_to_str(string_to_lower(name))
+        set value to ptr_to_str(substring(line and colon + 1 and string_length(line) - colon - 1))
+        set index to 0
+        repeat while index is less than string_length(value):
+            set code to get_character(value and index)
+            if (code is less than 32 and code is not equal to 9) or else code equals 127:
+                return http_failure("bad-request")
+            set index to index + 1
+        set value to ptr_to_str(string_trim(value))
+        if name equals "host":
+            if host_seen equals 1 or else string_length(value) equals 0:
+                return http_failure("bad-request")
+            set host_seen to 1
+        if name equals "content-length":
+            set parsed to http_decimal(value)
+            if parsed is less than 0 or else (length is not equal to -1 and length is not equal to parsed):
+                return http_failure("bad-request")
+            set length to parsed
+        if name equals "transfer-encoding":
+            if string_length(transfer) is greater than 0 or else string_length(value) equals 0:
+                return http_failure("bad-request")
+            set transfer to ptr_to_str(string_to_lower(value))
+        set pair to create_list()
+        set added to append_list(pair and name)
+        set added to append_list(pair and value)
+        set added to append_list(headers and pair)
+        set position to position + line_end + 2
+    if host_seen equals 0 or else position is not equal to size - 2:
+        return http_failure("bad-request")
+    set framing to "length"
+    if string_length(transfer) is greater than 0:
+        if length is not equal to -1:
+            return http_failure("bad-request")
+        if not (transfer equals "chunked"):
+            return http_failure("unsupported-transfer")
+        set framing to "chunked"
+    if length equals -1:
+        set length to 0
+    set result to create_list()
+    set added to append_list(result and "ready")
+    set added to append_list(result and method)
+    set added to append_list(result and target)
+    set added to append_list(result and framing)
+    set added to append_list(result and length)
+    set added to append_list(result and headers)
+    return result

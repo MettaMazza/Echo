@@ -1,0 +1,180 @@
+import "../retained_text"
+import "json_access"
+
+# State: choices, done marker, error. Each choice has index, text builder,
+# reasoning builder, tool list, finish reason. Each tool has index, id, name,
+# argument builder. Provider indexes are exact strings, not sparse allocations.
+define chat_stream_create returning List:
+    set state to create_list()
+    set added to append_list(state and create_list())
+    set added to append_list(state and 0)
+    set added to append_list(state and 0)
+    return state
+
+define chat_find with entries as List and identity as Str returning List:
+    set index to 0
+    repeat while index is less than length_list(entries):
+        set entry to get_list(entries and index)
+        if archive_list_text(entry and 0) equals identity:
+            return entry
+        set index to index + 1
+    return 0
+
+define chat_append_field with tokens as List and object as Int and name as Str and builder as Int returning Int:
+    set field to provider_member(tokens and object and name)
+    if field equals -1 or else provider_kind(tokens and field) equals "null":
+        return 0
+    if field equals -2 or else not (provider_kind(tokens and field) equals "string"):
+        return 1
+    set added to builder_append(builder and provider_value(tokens and field))
+    return 0
+
+define chat_tool_delta with choice as List and tokens as List and delta as Int returning Int:
+    set identity to provider_index(tokens and provider_member(tokens and delta and "index"))
+    if string_length(identity) equals 0:
+        return 1
+    set calls to get_list(choice and 3)
+    set call to chat_find(calls and identity)
+    if call equals 0:
+        set call to create_list()
+        set added to append_list(call and identity)
+        set added to append_list(call and "")
+        set added to append_list(call and "")
+        set added to append_list(call and create_builder())
+        set added to append_list(calls and call)
+    set field to provider_member(tokens and delta and "id")
+    if field is not equal to -1:
+        if not (provider_kind(tokens and field) equals "string"):
+            return 1
+        set changed to set_list(call and 1 and concat(archive_list_text(call and 1) and provider_value(tokens and field)))
+    set field to provider_member(tokens and delta and "type")
+    if field is not equal to -1:
+        if not (provider_kind(tokens and field) equals "string") or else not (provider_value(tokens and field) equals "function"):
+            return 1
+    set function to provider_member(tokens and delta and "function")
+    if function equals -1:
+        return 0
+    if not (provider_kind(tokens and function) equals "{"):
+        return 1
+    set field to provider_member(tokens and function and "name")
+    if field is not equal to -1:
+        if not (provider_kind(tokens and field) equals "string"):
+            return 1
+        set changed to set_list(call and 2 and concat(archive_list_text(call and 2) and provider_value(tokens and field)))
+    return chat_append_field(tokens and function and "arguments" and get_list(call and 3))
+
+define chat_choice_delta with state as List and tokens as List and object as Int returning Int:
+    set identity to provider_index(tokens and provider_member(tokens and object and "index"))
+    if string_length(identity) equals 0:
+        return 1
+    set choices to get_list(state and 0)
+    set choice to chat_find(choices and identity)
+    if choice equals 0:
+        set choice to create_list()
+        set added to append_list(choice and identity)
+        set added to append_list(choice and create_builder())
+        set added to append_list(choice and create_builder())
+        set added to append_list(choice and create_list())
+        set added to append_list(choice and "")
+        set added to append_list(choices and choice)
+    if string_length(archive_list_text(choice and 4)) is greater than 0:
+        return 1
+    set delta to provider_member(tokens and object and "delta")
+    if not (provider_kind(tokens and delta) equals "{"):
+        return 1
+    if chat_append_field(tokens and delta and "content" and get_list(choice and 1)) is not equal to 0 or else chat_append_field(tokens and delta and "reasoning_content" and get_list(choice and 2)) is not equal to 0:
+        return 1
+    set field to provider_member(tokens and delta and "tool_calls")
+    if field is not equal to -1:
+        set calls to provider_items(tokens and field)
+        if calls equals 0:
+            return 1
+        set index to 0
+        repeat while index is less than length_list(calls):
+            if chat_tool_delta(choice and tokens and get_list(calls and index)) is not equal to 0:
+                return 1
+            set index to index + 1
+    set field to provider_member(tokens and object and "finish_reason")
+    if field is not equal to -1 and not (provider_kind(tokens and field) equals "null"):
+        if not (provider_kind(tokens and field) equals "string") or else string_length(provider_value(tokens and field)) equals 0:
+            return 1
+        set changed to set_list(choice and 4 and provider_value(tokens and field))
+    return 0
+
+define chat_stream_accept_inner with state as List and data as Str returning Int:
+    if get_list(state and 1) is not equal to 0:
+        return 1
+    if data equals "[DONE]":
+        set changed to set_list(state and 1 and 1)
+        return 0
+    set tokens to provider_json_tokens(data)
+    if tokens equals 0:
+        return 1
+    if provider_unique_objects(tokens) equals 0:
+        return 1
+    set error to provider_member(tokens and 0 and "error")
+    if error is not equal to -1:
+        return 1
+    set choices to provider_items(tokens and provider_member(tokens and 0 and "choices"))
+    if choices equals 0:
+        return 1
+    set index to 0
+    repeat while index is less than length_list(choices):
+        if chat_choice_delta(state and tokens and get_list(choices and index)) is not equal to 0:
+            return 1
+        set index to index + 1
+    return 0
+
+define chat_stream_accept with state as List and data as Str returning Int:
+    if get_list(state and 2) is not equal to 0:
+        return 1
+    set result to chat_stream_accept_inner(state and data)
+    if result is not equal to 0:
+        set changed to set_list(state and 2 and 1)
+    return result
+
+# Finalize once, only after clean HTTP EOF. Result choice builders become strings.
+# Limited/unknown finishes and invalid arguments remain non-executable failures.
+define chat_stream_finish with state as List and transport as Str returning Int:
+    if get_list(state and 2) is not equal to 0:
+        return 1
+    set changed to set_list(state and 2 and 1)
+    if not (transport equals "eof") or else get_list(state and 1) is not equal to 1:
+        return 1
+    set choices to get_list(state and 0)
+    if length_list(choices) equals 0:
+        return 1
+    set index to 0
+    repeat while index is less than length_list(choices):
+        set choice to get_list(choices and index)
+        set reason to archive_list_text(choice and 4)
+        set calls to get_list(choice and 3)
+        if not (reason equals "stop" or else reason equals "tool_calls"):
+            return 1
+        if (reason equals "stop" and length_list(calls) is greater than 0) or else (reason equals "tool_calls" and length_list(calls) equals 0):
+            return 1
+        set changed to set_list(choice and 1 and builder_to_string(get_list(choice and 1)))
+        set changed to set_list(choice and 2 and builder_to_string(get_list(choice and 2)))
+        set tool_index to 0
+        repeat while tool_index is less than length_list(calls):
+            set call to get_list(calls and tool_index)
+            if string_length(archive_list_text(call and 1)) equals 0 or else string_length(archive_list_text(call and 2)) equals 0:
+                return 1
+            set previous to 0
+            repeat while previous is less than tool_index:
+                if ptr_to_str(get_list(get_list(calls and previous) and 1)) equals archive_list_text(call and 1):
+                    return 1
+                set previous to previous + 1
+            set arguments to ptr_to_str(builder_to_string(get_list(call and 3)))
+            set changed to set_list(call and 3 and arguments)
+            set parsed to provider_json_tokens(arguments)
+            if parsed equals 0:
+                return 1
+            if not (provider_kind(parsed and 0) equals "{"):
+                return 1
+            if provider_unique_objects(parsed) equals 0:
+                return 1
+            set tool_index to tool_index + 1
+        set index to index + 1
+    set changed to set_list(state and 2 and 2)
+    return 0

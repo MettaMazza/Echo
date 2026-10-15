@@ -1,0 +1,182 @@
+import "run_record"
+
+# Baseline -> actual intervention -> removal on one loaded primary model.
+define research_compare_run with allow_derived as Int returning Int:
+    if get_argument_count() is not equal to 9 and (get_argument_count() is not equal to 6 or else allow_derived equals 0):
+        display "Supply library directory, model, prompt, tensor, new output path, vector file, expected SHA256 and strength."
+        return 1
+    set directory to get_argument(1)
+    set library to ep_dlopen(concat(directory and "/libllama.dylib"))
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set ffi to research_ffi_open()
+    if library equals 0 or else system equals 0 or else ffi equals 0:
+        return 1
+    set vector to [0, 0]
+    set scale to [1056964608]
+    if get_argument_count() equals 9:
+        set scale to research_scale(ffi and system and get_argument(8))
+        if scale equals 0:
+            display "Invalid finite numeric strength"
+            return 1
+        set vector to research_vector_load(system and get_argument(6) and get_argument(7))
+        if vector equals 0:
+            display "Vector bytes/hash/type validation failed"
+            return 1
+    set prompt to ptr_to_str(read_file(get_argument(3)))
+    set prompt_path to concat(get_argument(5) and ".prompt.txt")
+    set descriptor to file_stage_open(system and prompt_path)
+    if descriptor is less than 0 or else file_stage_write(system and descriptor and str_to_ptr(prompt) and string_length(prompt)) is not equal to 0 or else file_stage_finish(system and descriptor) is not equal to 0:
+        return 1
+    set engine_record to research_file_record(concat(directory and "/libllama.dylib"))
+    set prompt_record to research_file_record(prompt_path)
+    if string_length(engine_record) equals 0 or else string_length(prompt_record) equals 0:
+        return 1
+    set strength to "0.5"
+    set vector_hash to "derived-from-baseline-final-token"
+    if get_argument_count() equals 9:
+        set strength to get_argument(8)
+        set vector_hash to get_argument(7)
+    set request to concat("{\"schema\":1,\"status\":\"requested\",\"model_file\":" and provider_quote(get_argument(2)))
+    set request to concat(request and ",\"all_model_weight_hashes_verified\":false,\"engine_library\":")
+    set request to concat(request and engine_record)
+    set request to concat(request and concat(",\"prompt\":" and prompt_record))
+    set request to concat(request and concat(",\"tensor\":" and provider_quote(get_argument(4))))
+    set request to concat(request and concat(",\"strength_text\":" and provider_quote(strength)))
+    set request to concat(request and concat(",\"strength_f32_bits\":" and int_to_string(get_list(scale and 0))))
+    set request to concat(request and concat(",\"vector_sha256\":" and provider_quote(vector_hash)))
+    set request to concat(request and ",\"sampling\":null,\"seed\":null,\"adapter\":null,\"workload\":\"full next-token logits; no sampled generation\"}")
+    set request_path to concat(get_argument(5) and ".request.json")
+    if research_record_write(system and request_path and request) is not equal to 0:
+        display "Research request record was not durably published"
+        return 1
+    set ignored to ep_dlcall1(ep_dlsym(library and "ggml_backend_load_all_from_path") and str_to_ptr(directory))
+    set ignored to ep_dlcall0(ep_dlsym(library and "llama_backend_init"))
+    set pointer to research_ffi_type(ffi and "pointer")
+    set integer to research_ffi_type(ffi and "sint32")
+    set model_type to research_llama_model_type(ffi)
+    set model_offsets to research_ffi_offsets(ffi and model_type)
+    set model_params to research_ffi_invoke(ffi and ep_dlsym(library and "llama_model_default_params") and research_ffi_pointer(model_type) and create_list() and create_list())
+    if model_params equals 0 or else model_offsets equals 0:
+        return 1
+    set base to get_list_data_ptr(model_params)
+    set ignored to research_native_write(system and base + get_list(model_offsets and 2) and -1 and 4)
+    set ignored to research_native_write(system and base + get_list(model_offsets and 4) and 1 and 4)
+    set ignored to research_native_write(system and base + get_list(model_offsets and 5) and 0 and 4)
+    set path to [str_to_ptr(get_argument(2))]
+    set loaded to research_ffi_invoke(ffi and ep_dlsym(library and "llama_model_load_from_file") and pointer and [pointer, research_ffi_pointer(model_type)] and [get_list_data_ptr(path), base])
+    if loaded equals 0 or else get_list(loaded and 0) equals 0:
+        return 1
+    set model to get_list(loaded and 0)
+    set vocab to ep_dlcall1(ep_dlsym(library and "llama_model_get_vocab") and model)
+    set tokenize to ep_dlsym(library and "llama_tokenize")
+    set required to socket_signed_result(ep_dlcall7(tokenize and vocab and str_to_ptr(prompt) and string_length(prompt) and 0 and 0 and 1 and 1))
+    if required >= 0:
+        return 1
+    set count to 0 - required
+    set tokens to research_native_words((count * 4 + 7) / 8)
+    if socket_signed_result(ep_dlcall7(tokenize and vocab and str_to_ptr(prompt) and string_length(prompt) and get_list_data_ptr(tokens) and count and 1 and 1)) is not equal to count:
+        return 1
+    set context_type to research_llama_context_type(ffi)
+    set offsets to research_ffi_offsets(ffi and context_type)
+    set params to research_ffi_invoke(ffi and ep_dlsym(library and "llama_context_default_params") and research_ffi_pointer(context_type) and create_list() and create_list())
+    if params equals 0 or else offsets equals 0:
+        return 1
+    set accelerate to ep_dlopen("/System/Library/Frameworks/Accelerate.framework/Accelerate")
+    set multiply_add to ep_dlsym(accelerate and "vDSP_vsma")
+    if multiply_add equals 0:
+        return 1
+    # Explicit host controls, or derived controls only in the opted-in fixture.
+    set state to [library, system, get_argument(4), get_argument(5), 0, 0, 0, 0, 0, get_list(vector and 0), get_list(vector and 1), get_list(scale and 0), multiply_add]
+    set callback to research_intervention_callback
+    set base to get_list_data_ptr(params)
+    # Full model context; batch dimensions derive from this finite probe's tokens.
+    set ignored to research_native_write(system and base + get_list(offsets and 0) and 0 and 4)
+    set ignored to research_native_write(system and base + get_list(offsets and 1) and count and 4)
+    set ignored to research_native_write(system and base + get_list(offsets and 2) and count and 4)
+    set ignored to research_native_write(system and base + get_list(offsets and 22) and callback and 8)
+    set ignored to research_native_write(system and base + get_list(offsets and 23) and state and 8)
+    set model_pointer to [model]
+    set created to research_ffi_invoke(ffi and ep_dlsym(library and "llama_init_from_model") and pointer and [pointer, research_ffi_pointer(context_type)] and [get_list_data_ptr(model_pointer), base])
+    if created equals 0 or else get_list(created and 0) equals 0:
+        return 1
+    set context to get_list(created and 0)
+    set batch_type to research_llama_batch_type(ffi)
+    set token_pointer to [get_list_data_ptr(tokens)]
+    set token_count to [count]
+    set batch to research_ffi_invoke(ffi and ep_dlsym(library and "llama_batch_get_one") and research_ffi_pointer(batch_type) and [pointer, integer] and [get_list_data_ptr(token_pointer), get_list_data_ptr(token_count)])
+    set context_pointer to [context]
+    set vocabulary_size to ep_dlcall1(ep_dlsym(library and "llama_vocab_n_tokens") and vocab)
+    set logit_bytes to vocabulary_size * 4
+    set baseline to ep_dlcall1(ep_dlsym(system and "malloc") and logit_bytes)
+    if baseline equals 0:
+        return 1
+    set labels to ["baseline", "intervention", "restored"]
+    set pass to 0
+    repeat while pass is less than 3:
+        set changed to set_list(state and 8 and pass)
+        set changed to set_list(state and 4 and 0)
+        # Clear both attention and recurrent state before re-evaluating the
+        # identical tokens from position0. No reuse of intervened KV state.
+        set memory to ep_dlcall1(ep_dlsym(library and "llama_get_memory") and context)
+        set ignored to ep_dlcall2(ep_dlsym(library and "llama_memory_clear") and memory and 1)
+        set decoded to research_ffi_invoke(ffi and ep_dlsym(library and "llama_decode") and integer and [pointer, research_ffi_pointer(batch_type)] and [get_list_data_ptr(context_pointer), get_list_data_ptr(batch)])
+        if decoded equals 0 or else get_list(decoded and 0) is not equal to 0 or else get_list(state and 4) is not equal to 1 or else get_list(state and 5) is not equal to 0:
+            display "FAIL: decode or callback"
+            return 1
+        set logits to ep_dlcall1(ep_dlsym(library and "llama_get_logits") and context)
+        if logits equals 0 or else research_f32_finite(system and logits and vocabulary_size) is not equal to 1:
+            display "FAIL: nonfinite or missing logits"
+            return 1
+        if pass equals 0:
+            set ignored to ep_dlcall3(ep_dlsym(system and "memcpy") and baseline and logits and logit_bytes)
+        else:
+            set comparison to ep_dlcall3(ep_dlsym(system and "memcmp") and baseline and logits and logit_bytes)
+            if (pass equals 1 and get_list(scale and 0) is not equal to 0 and get_list(scale and 0) is not equal to 2147483648 and comparison equals 0) or else (pass equals 2 and comparison is not equal to 0):
+                display "FAIL: intervention unchanged or restored baseline differs"
+                return 1
+        set destination to concat(get_argument(5) and concat("." and concat(ptr_to_str(get_list(labels and pass)) and ".logits.f32")))
+        set descriptor to file_stage_open(system and destination)
+        if descriptor is less than 0 or else file_stage_write(system and descriptor and logits and logit_bytes) is not equal to 0 or else file_stage_finish(system and descriptor) is not equal to 0:
+            return 1
+        display concat("Completed finite logits: " and ptr_to_str(get_list(labels and pass)))
+        set pass to pass + 1
+    set descriptor to file_stage_open(system and concat(get_argument(5) and ".vector.f32"))
+    if descriptor is less than 0 or else file_stage_write(system and descriptor and get_list(state and 9) and get_list(state and 10)) is not equal to 0 or else file_stage_finish(system and descriptor) is not equal to 0:
+        return 1
+    set descriptor to file_stage_open(system and concat(get_argument(5) and ".tokens.i32"))
+    if descriptor is less than 0 or else file_stage_write(system and descriptor and get_list_data_ptr(tokens) and count * 4) is not equal to 0 or else file_stage_finish(system and descriptor) is not equal to 0:
+        return 1
+    set dimensions to get_list(state and 6)
+    set artifacts to "["
+    set artifact_paths to [get_argument(5), concat(get_argument(5) and ".baseline.logits.f32"), concat(get_argument(5) and ".intervention.logits.f32"), concat(get_argument(5) and ".restored.logits.f32"), concat(get_argument(5) and ".vector.f32"), concat(get_argument(5) and ".tokens.i32")]
+    set index to 0
+    repeat while index is less than length_list(artifact_paths):
+        set artifact to research_file_record(ptr_to_str(get_list(artifact_paths and index)))
+        if string_length(artifact) equals 0:
+            return 1
+        if index is greater than 0:
+            set artifacts to concat(artifacts and ",")
+        set artifacts to concat(artifacts and artifact)
+        set index to index + 1
+    set artifacts to concat(artifacts and "]")
+    set result to concat("{\"schema\":1,\"status\":\"comparison-passed\",\"request\":" and research_file_record(request_path))
+    set result to concat(result and concat(",\"source_token_count\":" and int_to_string(count)))
+    set result to concat(result and concat(",\"context\":" and int_to_string(ep_dlcall1(ep_dlsym(library and "llama_n_ctx") and context))))
+    set result to concat(result and ",\"dtype\":\"float32 little endian\",\"shape\":[")
+    set index to 0
+    repeat while index is less than 4:
+        if index is greater than 0:
+            set result to concat(result and ",")
+        set result to concat(result and int_to_string(get_list(dimensions and index)))
+        set index to index + 1
+    set result to concat(result and "] ,\"token_position_start\":0,\"all_logits_finite\":true,\"restored_baseline_byte_identical\":true,\"cache_policy\":\"attention and recurrent state cleared before every pass\",\"artifacts\":")
+    set result to concat(result and concat(artifacts and "}"))
+    if research_record_write(system and concat(get_argument(5) and ".result.json") and result) is not equal to 0:
+        display "Research result record was not durably published"
+        return 1
+    set ignored to ep_dlcall1(ep_dlsym(system and "free") and baseline)
+    set ignored to ep_dlcall1(ep_dlsym(system and "free") and get_list(state and 9))
+    set ignored to ep_dlcall1(ep_dlsym(library and "llama_free") and context)
+    set ignored to ep_dlcall1(ep_dlsym(library and "llama_model_free") and model)
+    display "PASS: host-controlled primary-model activation comparison passed finite logits; removal with cleared cache restored byte-identical baseline logits."
+    return 0

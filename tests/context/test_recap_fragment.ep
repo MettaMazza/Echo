@@ -1,0 +1,56 @@
+import "../../app/context/recap_fragment"
+import "../fixtures/json_fixture"
+
+define fragment_reply with listener as List and method as Str and path as Str and body as Str and response as Str returning Int:
+    set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " and int_to_string(string_length(response)))
+    set wire to concat(wire and concat("\r\n\r\n" and response))
+    set completed to channel
+    spawn json_fixture(listener and method and path and body and wire and completed)
+    return receive from completed
+
+define fragment_provider with listener as List and full as Str and half as Str and completed as Int returning Int:
+    set failed to 0
+    set index to 0
+    repeat while index is less than 2:
+        set failed to failed + fragment_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
+        set failed to failed + fragment_reply(listener and "GET" and "/props" and "" and "{\"default_generation_settings\":{\"n_ctx\":262144,\"params\":{\"n_predict\":-1}}}")
+        set body to full
+        set count to "{\"input_tokens\":262144}"
+        if index equals 1:
+            set body to half
+            set count to "{\"input_tokens\":1000}"
+        set failed to failed + fragment_reply(listener and "POST" and "/v1/chat/completions/input_tokens" and body and count)
+        set index to index + 1
+    send failed to completed
+    return 0
+
+define main returning Int:
+    set database to archive_open(get_argument(1))
+    if database equals 0:
+        return 1
+    if archive_append(database and "session" and "source" and "user" and "Aé🌍B" and "fixture") is not equal to 0:
+        return 1
+    set full to recap_fragment_body("fixture" and "source" and history_read_piece(database and "session" and "source" and 0 and 4) and 0 and 4)
+    set half to recap_fragment_body("fixture" and "source" and history_read_piece(database and "session" and "source" and 0 and 2) and 0 and 2)
+    set listener to local_socket_listen(0)
+    set completed to channel
+    spawn fragment_provider(listener and full and half and completed)
+    set result to recap_fit_fragment(database and "session" and "source" and "source" and 0 and "fragment" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set failed to receive from completed
+    if failed is not equal to 0 or else not (ptr_to_str(get_list(result and 0)) equals "ready") or else get_list(result and 2) is not equal to 2:
+        return 1
+    set tokens to provider_json_tokens(ptr_to_str(get_list(result and 1)))
+    set messages to provider_items(tokens and provider_member(tokens and 0 and "messages"))
+    set source to provider_json_tokens(provider_value(tokens and provider_member(tokens and get_list(messages and 1) and "content")))
+    if not (provider_value(source and provider_member(source and 0 and "text")) equals "Aé"):
+        return 1
+    set rest to history_read_piece(database and "session" and "source" and get_list(result and 2) and 4)
+    if not (concat("Aé" and ptr_to_str(get_list(rest and 7))) equals "Aé🌍B"):
+        return 1
+    set ended to recap_fit_fragment(database and "session" and "source" and "source" and 4 and "end" and "fixture" and 1 and 100 and -1 and 4096)
+    if not (ptr_to_str(get_list(ended and 0)) equals "end"):
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: provider-counted fragment shrink, exact request bodies, Unicode offsets and lossless continuation; no context-cap reduction."
+    return 0

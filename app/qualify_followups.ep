@@ -1,0 +1,79 @@
+import "providers/llama_preflight"
+import "providers/local_chat"
+import "fs"
+
+# Three live turns: import the saved full-context probe, then two changed user
+# requests with the actual intervening assistant replies. No output token cap.
+define main returning Int:
+    if get_argument_count() is not equal to 5 or else file_exists(get_argument(3)):
+        display "Supply source archive, source request, new archive and local port."
+        return 1
+    set source to archive_open(get_argument(1))
+    set event to archive_read_event(source and get_argument(2))
+    if event equals 0 or else archive_verify(source and ptr_to_str(get_list(event and 0))) is not equal to 0:
+        return 1
+    set envelope to provider_json_tokens(ptr_to_str(get_list(event and 3)))
+    set body to provider_value(envelope and provider_member(envelope and 0 and "request_body"))
+    set tokens to provider_json_tokens(body)
+    set model to provider_value(tokens and provider_member(tokens and 0 and "model"))
+    set items to provider_items(tokens and provider_member(tokens and 0 and "messages"))
+    if items equals 0 or else length_list(items) is not equal to 1:
+        return 1
+    set original to provider_value(tokens and provider_member(tokens and get_list(items and 0) and "content"))
+    set messages to concat("[{\"role\":\"user\",\"content\":" and concat(provider_quote(original) and "}"))
+    if sql_close(source) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(3))
+    set port to http_decimal(get_argument(4))
+    if database equals 0 or else port is less than 1 or else port is greater than 65535:
+        return 1
+    set turn to 0
+    repeat while turn is less than 3:
+        set identity to concat("turn:" and int_to_string(turn))
+        set decision to llama_preflight(database and "followups" and concat(identity and ":preflight") and port and body and 1 and -1 and 65536)
+        if not (ptr_to_str(get_list(decision and 0)) equals "ready"):
+            display ptr_to_str(get_list(decision and 0))
+            return 1
+        set payload to concat("{\"request_body\":" and concat(provider_quote(body) and "}"))
+        if archive_append(database and "followups" and identity and "model_request" and payload and "live") is not equal to 0:
+            return 1
+        display concat("Turn: " and int_to_string(turn))
+        display concat("Input tokens: " and int_to_string(get_list(decision and 3)))
+        set started to ep_time_now_ms()
+        set result to local_chat_generate(database and "followups" and identity and port and "/v1/chat/completions" and body and -1 and 65536)
+        set elapsed to ep_time_now_ms() - started
+        display concat("Elapsed milliseconds: " and int_to_string(elapsed))
+        if not (ptr_to_str(get_list(result and 0)) equals "complete"):
+            display ptr_to_str(get_list(result and 0))
+            return 1
+        set state to get_list(result and 1)
+        set choice to chat_find(get_list(state and 0) and "0")
+        if choice equals 0 or else not (ptr_to_str(get_list(choice and 4)) equals "stop"):
+            return 1
+        set answer to ptr_to_str(get_list(choice and 1))
+        set reasoning to ptr_to_str(get_list(choice and 2))
+        display answer
+        set record to concat("{\"elapsed_ms\":" and concat(int_to_string(elapsed) and concat(",\"content\":" and concat(provider_quote(answer) and "}"))))
+        if archive_append(database and "followups" and concat(identity and ":answer") and "qualification_answer" and record and "live") is not equal to 0:
+            return 1
+        if turn equals 0:
+            if string_contains(answer and "ORCHID-731") equals 0 or else string_contains(answer and "COMET-284") equals 0 or else string_contains(answer and "HARBOR-956") equals 0:
+                return 1
+        else if turn equals 1:
+            if not (ptr_to_str(string_trim(answer)) equals "COMET-284"):
+                return 1
+        else:
+            if string_contains(answer and "HARBOR-956") equals 0 or else string_contains(answer and "ORCHID-731") equals 0:
+                return 1
+        set messages to concat(messages and concat(",{\"role\":\"assistant\",\"content\":" and provider_quote(answer)))
+        set messages to concat(messages and concat(",\"reasoning_content\":" and concat(provider_quote(reasoning) and "}")))
+        set question to "From the original archive, return only the silver key value."
+        if turn equals 1:
+            set question to "Now return only the gold key followed by the copper key, separated by a comma."
+        set messages to concat(messages and concat(",{\"role\":\"user\",\"content\":" and concat(provider_quote(question) and "}")))
+        set body to concat("{\"model\":" and concat(provider_quote(model) and concat(",\"stream\":true,\"messages\":" and concat(messages and "]}"))))
+        set turn to turn + 1
+    if archive_verify(database and "followups") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: initial full-context import and two changed follow-up turns retained the seeded facts; timings are recorded separately."
+    return 0

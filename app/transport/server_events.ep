@@ -1,0 +1,143 @@
+import "../retained_text"
+import "http_stream"
+
+# Incremental UTF-8 server events. Each input is one wire byte, so network
+# boundaries cannot change parsing. Invalid UTF-8 and NUL fail explicitly;
+# Echo never silently changes a provider's JSON or tool arguments.
+# State: line builder, data builder, event type, last id, skip LF, first line,
+# UTF-8 continuation count, next minimum, next maximum, failed, retry text,
+# reusable byte cell.
+define server_events_create returning List:
+    set state to create_list()
+    set added to append_list(state and create_builder())
+    set added to append_list(state and create_builder())
+    set added to append_list(state and "")
+    set added to append_list(state and "")
+    set added to append_list(state and 0)
+    set added to append_list(state and 1)
+    set added to append_list(state and 0)
+    set added to append_list(state and 128)
+    set added to append_list(state and 191)
+    set added to append_list(state and 0)
+    set added to append_list(state and "")
+    set byte to create_list()
+    set added to append_list(byte and 0)
+    set added to append_list(state and byte)
+    return state
+
+define server_events_line with state as List returning List:
+    set line to ptr_to_str(builder_to_string(get_list(state and 0)))
+    set changed to set_list(state and 0 and create_builder())
+    if get_list(state and 5) equals 1:
+        set changed to set_list(state and 5 and 0)
+        if string_length(line) is greater than 2:
+            if get_character(line and 0) equals 239 and get_character(line and 1) equals 187 and get_character(line and 2) equals 191:
+                set line to ptr_to_str(substring(line and 3 and string_length(line) - 3))
+    if string_length(line) equals 0:
+        set size to builder_length(get_list(state and 1))
+        set kind to archive_list_text(state and 2)
+        set changed to set_list(state and 2 and "")
+        if size equals 0:
+            return http_failure("pending")
+        if string_length(kind) equals 0:
+            set kind to "message"
+        set data to ptr_to_str(substring(builder_to_string(get_list(state and 1)) and 0 and size - 1))
+        set changed to set_list(state and 1 and create_builder())
+        set result to http_failure("event")
+        set added to append_list(result and kind)
+        set added to append_list(result and data)
+        set added to append_list(result and get_list(state and 3))
+        return result
+    if get_character(line and 0) equals 58:
+        return http_failure("pending")
+    set colon to string_index_of(line and ":")
+    set field to line
+    set value to ""
+    if colon is not equal to -1:
+        set field to ptr_to_str(substring(line and 0 and colon))
+        set start to colon + 1
+        if start is less than string_length(line):
+            if get_character(line and start) equals 32:
+                set start to start + 1
+        set value to ptr_to_str(substring(line and start and string_length(line) - start))
+    if field equals "data":
+        set added to builder_append(get_list(state and 1) and value)
+        set added to builder_append(get_list(state and 1) and "\n")
+    else if field equals "event":
+        set changed to set_list(state and 2 and value)
+    else if field equals "id":
+        set changed to set_list(state and 3 and value)
+    else if field equals "retry":
+        set valid to string_length(value)
+        set index to 0
+        repeat while index is less than string_length(value):
+            set code to get_character(value and index)
+            if code is less than 48 or else code is greater than 57:
+                set valid to 0
+            set index to index + 1
+        if valid is greater than 0:
+            set changed to set_list(state and 10 and value)
+    return http_failure("pending")
+
+define server_events_byte with state as List and code as Int returning List:
+    if get_list(state and 9) is not equal to 0:
+        return http_failure("invalid-event-stream")
+    set valid to 1
+    if code is less than 1 or else code is greater than 255:
+        set valid to 0
+    else if get_list(state and 6) is greater than 0:
+        if code is less than get_list(state and 7) or else code is greater than get_list(state and 8):
+            set valid to 0
+        set changed to set_list(state and 6 and get_list(state and 6) - 1)
+        set changed to set_list(state and 7 and 128)
+        set changed to set_list(state and 8 and 191)
+    else if code is greater than 127:
+        set remaining to 0
+        set minimum to 128
+        set maximum to 191
+        if code is greater than 193 and code is less than 224:
+            set remaining to 1
+        else if code is greater than 223 and code is less than 240:
+            set remaining to 2
+            if code equals 224:
+                set minimum to 160
+            if code equals 237:
+                set maximum to 159
+        else if code is greater than 239 and code is less than 245:
+            set remaining to 3
+            if code equals 240:
+                set minimum to 144
+            if code equals 244:
+                set maximum to 143
+        else:
+            set valid to 0
+        set changed to set_list(state and 6 and remaining)
+        set changed to set_list(state and 7 and minimum)
+        set changed to set_list(state and 8 and maximum)
+    if valid equals 0:
+        set changed to set_list(state and 9 and 1)
+        return http_failure("invalid-event-stream")
+    set skip to get_list(state and 4)
+    set changed to set_list(state and 4 and 0)
+    if skip equals 1 and code equals 10:
+        return http_failure("pending")
+    if code equals 13 or else code equals 10:
+        if code equals 13:
+            set changed to set_list(state and 4 and 1)
+        return server_events_line(state)
+    set byte to get_list(state and 11)
+    set changed to set_list(byte and 0 and code)
+    set added to builder_append(get_list(state and 0) and ptr_to_str(get_list_data_ptr(byte)))
+    return http_failure("pending")
+
+# EOF never dispatches an unfinished event and never proves model completion.
+# The provider adapter must require its own finish signal. No automatic replay.
+define server_events_end with state as List returning List:
+    if get_list(state and 6) is not equal to 0 or else get_list(state and 9) is not equal to 0:
+        set changed to set_list(state and 9 and 1)
+        return http_failure("invalid-event-stream")
+    set discarded_line to builder_to_string(get_list(state and 0))
+    set discarded_data to builder_to_string(get_list(state and 1))
+    set changed to set_list(state and 9 and 2)
+    set changed to set_list(state and 2 and "")
+    return http_failure("eof")

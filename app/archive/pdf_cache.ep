@@ -1,0 +1,84 @@
+import "../retained_text"
+import "pdf_text"
+import "../tools/history_tools"
+
+# Cache versions include the OS build because PDFKit extraction can change
+# between system releases. The algorithm prefix changes when this adapter does.
+define pdf_extractor_version returning Str:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return ""
+    set query to ep_dlsym(library and "sysctlbyname")
+    set allocate to ep_dlsym(library and "malloc")
+    set release to ep_dlsym(library and "free")
+    set size to create_list()
+    set added to append_list(size and 0)
+    set version to ""
+    if query is not equal to 0 and allocate is not equal to 0 and release is not equal to 0:
+        if ep_dlcall5(query and str_to_ptr("kern.osversion") and 0 and get_list_data_ptr(size) and 0 and 0) equals 0 and get_list(size and 0) is greater than 0:
+            set buffer to ep_dlcall1(allocate and get_list(size and 0))
+            if buffer is not equal to 0:
+                if ep_dlcall5(query and str_to_ptr("kern.osversion") and buffer and get_list_data_ptr(size) and 0 and 0) equals 0:
+                    set version to concat("echo-pdf-page-v1:macos-" and ptr_to_str(buffer))
+                set freed to ep_dlcall1(release and buffer)
+    set closed to ep_dlclose(library)
+    return version
+
+define pdf_cache_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_pdf_text_cache(source_event TEXT NOT NULL REFERENCES echo_events(event),version TEXT NOT NULL,page INTEGER NOT NULL CHECK(page>=0),original_digest TEXT NOT NULL,payload TEXT NOT NULL,payload_digest TEXT NOT NULL,PRIMARY KEY(source_event,version,page)); CREATE TRIGGER IF NOT EXISTS echo_pdf_cache_no_update BEFORE UPDATE ON echo_pdf_text_cache BEGIN SELECT RAISE(ABORT,'immutable PDF extraction'); END; CREATE TRIGGER IF NOT EXISTS echo_pdf_cache_no_delete BEFORE DELETE ON echo_pdf_text_cache BEGIN SELECT RAISE(ABORT,'immutable PDF extraction'); END;")
+
+define pdf_cache_result with status as Str and text as Str and pages as Int and version as Str and cached as Int returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and text)
+    set added to append_list(result and pages)
+    set added to append_list(result and version)
+    set added to append_list(result and cached)
+    return result
+
+# Caller has already resolved ownership and source path. Every cache hit checks
+# original file integrity as well as the derived payload's own digest.
+define pdf_cached_page with database as Int and event as Str and path as Str and digest as Str and bytes as Int and page as Int returning List:
+    set version to pdf_extractor_version()
+    if string_length(version) equals 0 or else page is less than 0 or else pdf_cache_schema(database) is not equal to 0:
+        return pdf_cache_result("cache-unavailable" and "" and 0 and version and 0)
+    set values to create_list()
+    set added to append_list(values and event)
+    set added to append_list(values and version)
+    set added to append_list(values and int_to_string(page))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT original_digest,payload,payload_digest FROM echo_pdf_text_cache WHERE source_event=?1 AND version=?2 AND page=?3;" and values))
+    if archive_list_text(row and 0) equals "error":
+        return pdf_cache_result("cache-error" and "" and 0 and version and 0)
+    if archive_list_text(row and 0) equals "found":
+        set payload to archive_list_text(row and 2)
+        if not (archive_list_text(row and 1) equals digest) or else not (ep_sha256(payload) equals archive_list_text(row and 3)):
+            return pdf_cache_result("cache-integrity-failed" and "" and 0 and version and 1)
+        set original to file_digest(path and 65536)
+        if not (archive_list_text(original and 0) equals "verified") or else not (archive_list_text(original and 1) equals digest) or else get_list(original and 2) is not equal to bytes:
+            return pdf_cache_result("integrity-failed" and "" and 0 and version and 1)
+        set tokens to provider_json_tokens(payload)
+        if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+            return pdf_cache_result("cache-integrity-failed" and "" and 0 and version and 1)
+        set status to provider_value(tokens and provider_member(tokens and 0 and "status"))
+        set text_field to provider_member(tokens and 0 and "text")
+        set pages to http_decimal(provider_value(tokens and provider_member(tokens and 0 and "pages")))
+        if not (status equals "extracted" or else status equals "no-extractable-text") or else not (provider_kind(tokens and text_field) equals "string") or else pages <= page:
+            return pdf_cache_result("cache-integrity-failed" and "" and 0 and version and 1)
+        return pdf_cache_result(status and provider_value(tokens and text_field) and pages and version and 1)
+    set extracted to pdf_text_page_verified(path and digest and bytes and page)
+    set status to archive_list_text(extracted and 0)
+    set text to archive_list_text(extracted and 1)
+    set pages to get_list(extracted and 2)
+    if status equals "extracted" or else status equals "no-extractable-text":
+        set payload to concat("{\"status\":" and provider_quote(status))
+        set payload to concat(payload and concat(",\"text\":" and provider_quote(text)))
+        set payload to concat(payload and concat(",\"pages\":" and concat(provider_quote(int_to_string(pages)) and "}")))
+        set added to append_list(values and digest)
+        set added to append_list(values and payload)
+        set added to append_list(values and ep_sha256(payload))
+        set statement to checkpoint_prepare(database and "INSERT OR IGNORE INTO echo_pdf_text_cache(source_event,version,page,original_digest,payload,payload_digest) VALUES(?1,?2,?3,?4,?5,?6);" and values)
+        if statement equals 0:
+            return pdf_cache_result("cache-error" and "" and pages and version and 0)
+        if archive_finish(statement and 101) is not equal to 0:
+            return pdf_cache_result("cache-error" and "" and pages and version and 0)
+    return pdf_cache_result(status and text and pages and version and 0)

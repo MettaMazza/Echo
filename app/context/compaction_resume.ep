@@ -1,0 +1,163 @@
+import "../retained_text"
+import "recap_jobs"
+import "recap_review_synthesis"
+import "../agent/control"
+
+# Call only while owning the session compaction lock. A job belongs to the exact
+# accepted run head and prior checkpoint; changed work starts a different job.
+define compaction_job with database as Int and session as Str and run as Str and parent as Str and captured as List returning List:
+    set previous to archive_list_text(captured and 3)
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and run)
+    set added to append_list(values and parent)
+    set added to append_list(values and previous)
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.job') FROM echo_events WHERE session=? AND kind='compaction_binding' AND json_extract(payload,'$.run_id')=? AND json_extract(payload,'$.parent_event')=? AND json_extract(payload,'$.previous_checkpoint')=? ORDER BY sequence DESC LIMIT 1;" and values))
+    set result to create_list()
+    set added to append_list(result and "archive-error")
+    set added to append_list(result and "")
+    set added to append_list(result and "")
+    set status to archive_list_text(saved and 0)
+    set endpoint to archive_list_text(captured and 0)
+    set job to ""
+    if status equals "found":
+        set job to archive_list_text(saved and 1)
+        set manifest to archive_read_event(database and job)
+        if manifest equals 0:
+            return result
+        if not (archive_list_text(manifest and 0) equals session) or else not (archive_list_text(manifest and 2) equals "recap_job"):
+            return result
+        set tokens to provider_json_tokens(archive_list_text(manifest and 3))
+        if tokens equals 0:
+            return result
+        set endpoint to provider_value(tokens and provider_member(tokens and 0 and "source_end"))
+    else if status equals "end":
+        set job to concat("compaction:" and agent_identity())
+        if recap_job_create(database and session and endpoint and job) is not equal to 0:
+            return result
+        set payload to concat("{\"run_id\":" and provider_quote(run))
+        set payload to concat(payload and concat(",\"parent_event\":" and provider_quote(parent)))
+        set payload to concat(payload and concat(",\"previous_checkpoint\":" and provider_quote(previous)))
+        set payload to concat(payload and concat(",\"job\":" and concat(provider_quote(job) and "}")))
+        if archive_append(database and session and concat(job and ":binding") and "compaction_binding" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return result
+    else:
+        return result
+    set changed to set_list(result and 0 and "ready")
+    set changed to set_list(result and 1 and job)
+    set changed to set_list(result and 2 and endpoint)
+    return result
+
+# Revalidate saved review evidence against the exact candidate and originals.
+# Invalid reports can be retried; valid repair feedback and passes are reused.
+define compaction_saved_review with database as Int and session as Str and endpoint as Str and job as Str and candidate as Str returning List:
+    set result to create_list()
+    set added to append_list(result and "no-review")
+    set added to append_list(result and "")
+    set added to append_list(result and "")
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and concat(job and ":"))
+    set added to append_list(values and endpoint)
+    set added to append_list(values and ep_sha256(candidate))
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT event,payload FROM echo_events WHERE session=? AND kind='recap_review' AND substr(event,1,length(?2))=?2 AND json_extract(payload,'$.source_end')=?3 AND json_extract(payload,'$.candidate_digest')=?4 ORDER BY sequence DESC LIMIT 1;" and values))
+    set status to archive_list_text(saved and 0)
+    if status equals "end":
+        return result
+    if not (status equals "found"):
+        set changed to set_list(result and 0 and "archive-error")
+        return result
+    set event to archive_list_text(saved and 1)
+    set tokens to provider_json_tokens(archive_list_text(saved and 2))
+    if tokens equals 0 or else string_length(event) is less than 7:
+        return result
+    if not (substring(event and string_length(event) - 7 and 7) equals ":review"):
+        return result
+    set report to provider_value(tokens and provider_member(tokens and 0 and "report"))
+    set sources to recap_sources(database and session and endpoint)
+    if string_length(sources) equals 0:
+        set changed to set_list(result and 0 and "invalid-source")
+        return result
+    set status to recap_review_validate(sources and candidate and report)
+    if status equals "review-pass" or else status equals "review-repair":
+        set changed to set_list(result and 0 and status)
+        set changed to set_list(result and 1 and report)
+        set changed to set_list(result and 2 and substring(event and 0 and string_length(event) - 7))
+    return result
+
+# Only complete candidate receipts are reusable. Requests without a receipt are
+# abandoned attempts; a subsequent dispatch always receives a fresh identity.
+# Return status, candidate, request identity, earlier candidate hashes.
+define compaction_saved_candidate with database as Int and session as Str and endpoint as Str and job as Str returning List:
+    set result to create_list()
+    set added to append_list(result and "no-candidate")
+    set added to append_list(result and "")
+    set added to append_list(result and "")
+    set seen to create_list()
+    set added to append_list(result and seen)
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and concat(job and ":"))
+    set statement to checkpoint_prepare(database and "SELECT event,payload FROM echo_events WHERE session=? AND kind='recap_candidate' AND substr(event,1,length(?2))=?2 ORDER BY sequence;" and values)
+    if statement equals 0:
+        set changed to set_list(result and 0 and "archive-error")
+        return result
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            set changed to set_list(result and 0 and "archive-error")
+            return result
+        set event to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        set payload to concat(ptr_to_str(ep_sqlite3_column_text(statement and 1)) and "")
+        set tokens to provider_json_tokens(payload)
+        if tokens equals 0 or else string_length(event) is less than 10:
+            set closed to ep_sqlite3_finalize(statement)
+            set changed to set_list(result and 0 and "invalid-receipt")
+            return result
+        if not (provider_value(tokens and provider_member(tokens and 0 and "source_end")) equals endpoint) or else not (substring(event and string_length(event) - 10 and 10) equals ":candidate"):
+            set closed to ep_sqlite3_finalize(statement)
+            set changed to set_list(result and 0 and "invalid-receipt")
+            return result
+        if not (archive_list_text(result and 0) equals "no-candidate"):
+            set added to append_list(seen and ep_sha256(archive_list_text(result and 1)))
+        set changed to set_list(result and 0 and "saved")
+        set changed to set_list(result and 1 and provider_value(tokens and provider_member(tokens and 0 and "candidate")))
+        set changed to set_list(result and 2 and substring(event and 0 and string_length(event) - 10))
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        set changed to set_list(result and 0 and "archive-error")
+        return result
+    if archive_list_text(result and 0) equals "saved":
+        set changed to set_list(result and 0 and "structure-valid")
+        if recap_validate_structure(database and session and endpoint and archive_list_text(result and 1)) is not equal to 0:
+            set changed to set_list(result and 0 and "structure-invalid")
+    return result
+
+# A completed synthesis is reusable only after rechecking original coverage.
+# Result: verdict, report, exact receipt identity (no suffix reconstruction).
+define compaction_saved_synthesis with database as Int and session as Str and endpoint as Str and job as Str and candidate as Str returning List:
+    set result to create_list()
+    set added to append_list(result and "no-review")
+    set added to append_list(result and "")
+    set added to append_list(result and "")
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and job)
+    set added to append_list(values and ep_sha256(candidate))
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT event,payload FROM echo_events WHERE session=? AND kind='recap_review_synthesis' AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.job') END=? AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.candidate_digest') END=? ORDER BY sequence DESC LIMIT 1;" and values))
+    set status to archive_list_text(saved and 0)
+    if status equals "end":
+        return result
+    if not (status equals "found"):
+        set changed to set_list(result and 0 and "archive-error")
+        return result
+    set payload to archive_list_text(saved and 2)
+    set status to recap_synthesis_validate(database and session and endpoint and candidate and payload)
+    if status equals "review-pass" or else status equals "review-repair":
+        set tokens to provider_json_tokens(payload)
+        set changed to set_list(result and 0 and status)
+        set changed to set_list(result and 1 and provider_value(tokens and provider_member(tokens and 0 and "report")))
+        set changed to set_list(result and 2 and archive_list_text(saved and 1))
+    return result

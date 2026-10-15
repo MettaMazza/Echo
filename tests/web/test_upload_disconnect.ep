@@ -1,0 +1,60 @@
+import "../../app/web/uploads"
+
+# Public credentials and finite payload only for this isolated loopback fixture.
+# Modes: setup, disconnect, crash, verify. Crash keeps its socket open until
+# the externally terminated fixture server closes it; no elapsed-time verdict.
+define main returning Int:
+    if get_argument_count() is not equal to 5:
+        return 1
+    set database to archive_open(get_argument(1))
+    set root to get_argument(2)
+    set port to http_decimal(get_argument(3))
+    set mode to get_argument(4)
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_upload_schema(database) is not equal to 0:
+        return 1
+    if mode equals "setup":
+        if web_pairing_invite(database and "upload-fault-invite") is not equal to 0 or else web_device_pair(database and "upload-fault-invite" and "upload-fault-owner" and "Upload fault fixture" and "upload-fault-secret") is not equal to 0:
+            return 1
+        set created to web_create_session(database and "upload-fault-owner" and "upload-fault-session")
+        if not (ptr_to_str(get_list(created and 0)) equals "accepted"):
+            return 1
+        display "Fixture ready"
+        return sql_close(database)
+    if mode equals "verify":
+        set rows to history_collect_one(archive_prepare(database and "SELECT COUNT(*),SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) FROM echo_uploads WHERE name IN ('disconnect','crash');"))
+        set attachments to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_attachments;"))
+        if not (ptr_to_str(get_list(rows and 1)) equals "2") or else not (ptr_to_str(get_list(rows and 2)) equals "2") or else not (ptr_to_str(get_list(attachments and 1)) equals "0"):
+            display "FAIL: interrupted bodies were not both failed without attachments"
+            return 1
+        if archive_verify(database and "draft:upload-fault-session") is not equal to 0:
+            return 1
+        display "PASS: actual disconnect and server termination/restart leave both incomplete uploads failed, no attachment receipts, valid archive."
+        return sql_close(database)
+    if not (mode equals "disconnect") and not (mode equals "crash"):
+        return 1
+    set identity to web_upload_prepare(database and "upload-fault-owner" and "draft:upload-fault-session" and root and mode and "application/octet-stream")
+    if string_length(identity) equals 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set descriptor to net_connect("127.0.0.1" and port)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if descriptor is less than 0 or else library equals 0:
+        return 1
+    set origin to concat("http://127.0.0.1:" and get_argument(3))
+    set head to concat("POST /api/upload-body HTTP/1.1\r\nHost: 127.0.0.1:" and get_argument(3))
+    set head to concat(head and concat("\r\nOrigin: " and origin))
+    set head to concat(head and concat("\r\nX-Echo-Token: upload-fault-secret\r\nX-Echo-Upload: " and identity))
+    set head to concat(head and "\r\nContent-Type: application/octet-stream\r\nContent-Length: 8\r\n\r\n1234567")
+    set sent to socket_write_all(library and descriptor and -1 and str_to_ptr(head) and string_length(head))
+    if not (ptr_to_str(get_list(sent and 0)) equals "sent"):
+        return 1
+    if mode equals "crash":
+        # Wait for authoritative peer closure, not a timeout or a guessed delay.
+        set received to socket_read_chunk(library and descriptor and -1)
+        if ptr_to_str(get_list(received and 0)) equals "data":
+            display "FAIL: server replied before receiving the complete declared body"
+            return 1
+        display "Peer closed during incomplete body"
+    if net_close(descriptor) is not equal to 0 or else ep_dlclose(library) is not equal to 0:
+        return 1
+    display concat("Sent seven of eight declared bytes: " and mode)
+    return 0

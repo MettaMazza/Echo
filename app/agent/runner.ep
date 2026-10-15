@@ -1,0 +1,90 @@
+import "../retained_text"
+import "control"
+import "provider_profile"
+import "../context/compact"
+
+define agent_loop_inner_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    repeat while 1 equals 1:
+        set row to agent_run_read(database and run)
+        if row equals 0:
+            return "invalid-run"
+        set state to archive_list_text(row and 2)
+        if state equals "completed" or else state equals "cancelled":
+            return state
+        set cancellation to agent_cancellation_pending(library and cancellation_reader)
+        if cancellation is less than 0:
+            return "cancellation-error"
+        if cancellation equals 1:
+            if agent_cancel_run(database and run) is not equal to 0:
+                return "cancellation-error"
+            return "cancelled"
+        if state equals "tools":
+            if agent_tool_step_cancellable(database and run and cancellation_reader) is not equal to 0:
+                return "tool-recovery-required"
+        else if state equals "ready":
+            set rebuild to recap_rebuild_pending(database and run)
+            if rebuild equals "recorded":
+                continue
+            if rebuild equals "required":
+                set rebuilt to context_compact_provider(database and run and profile and output_reserve and cancellation_reader and read_size and library)
+                if rebuilt equals "activated":
+                    continue
+                return rebuilt
+            if not (rebuild equals "none"):
+                return rebuild
+            set messages to session_messages(database and archive_list_text(row and 0) and run)
+            if string_length(messages) equals 0:
+                return "context-recovery-required"
+            set body to session_request_body(model and messages)
+            set request to agent_identity()
+            set decision to agent_generate_provider_at(database and run and archive_list_text(row and 3) and request and body and profile and output_reserve and cancellation_reader and read_size and "0")
+            set status to archive_list_text(decision and 0)
+            if status equals "compaction-required":
+                set status to context_compact_provider(database and run and profile and output_reserve and cancellation_reader and read_size and library)
+                if status equals "activated":
+                    continue
+            if not (status equals "advanced"):
+                if agent_cancellation_pending(library and cancellation_reader) equals 1:
+                    if agent_cancel_run(database and run) equals 0:
+                        return "cancelled"
+                return status
+        else if state equals "generating":
+            return "generation-recovery-required"
+        else:
+            return state
+    return "error"
+
+# The model/tool loop has no iteration limit. Non-ready preflight decisions are
+# Capacity triggers archived recap/review/activation before resuming this run.
+# Configuration and unresolved recap failures return explicitly, never truncate.
+define agent_loop_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set existing to agent_run_read(database and run)
+    if existing equals 0:
+        return "invalid-run"
+    set existing_state to archive_list_text(existing and 2)
+    if existing_state equals "completed" or else existing_state equals "cancelled":
+        return existing_state
+    set binding to agent_provider_bind(database and run and profile)
+    if binding equals 2:
+        return "provider-profile-conflict"
+    if binding is not equal to 0:
+        return "provider-profile-required"
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "platform-error"
+    set result to agent_loop_inner_provider(database and run and profile and output_reserve and cancellation_reader and read_size and library)
+    if ep_dlclose(library) is not equal to 0:
+        return "cleanup-error"
+    return result
+
+define agent_loop_inner with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    set profile to provider_llama_profile(model and port)
+    return agent_loop_inner_provider(database and run and profile and output_reserve and cancellation_reader and read_size and library)
+
+define agent_loop with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:
+    set profile to provider_llama_profile(model and port)
+    return agent_loop_provider(database and run and profile and output_reserve and cancellation_reader and read_size)

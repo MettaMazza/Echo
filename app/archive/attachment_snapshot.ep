@@ -1,0 +1,78 @@
+import "../retained_text"
+import "snapshot"
+import "file_copy"
+import "history"
+import "../context/checkpoint"
+
+# Caller chooses a new private snapshot and existing host-controlled directory.
+# Paths use a digest of the opaque ID, never an uploaded filename or raw ID.
+define attachment_snapshot_path with root as Str and attachment as Str returning Str:
+    return concat(root and concat("/" and concat(ep_sha256(attachment) and ".blob")))
+
+define attachment_snapshot_copy with database as Int and root as Str returning Int:
+    if string_length(root) equals 0 or else get_character(root and 0) is not equal to 47 or else archive_verify_all(database) is not equal to 0:
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE; CREATE TABLE echo_attachment_snapshot_files(attachment TEXT PRIMARY KEY REFERENCES echo_attachments(attachment),digest TEXT NOT NULL,bytes INTEGER NOT NULL); CREATE TABLE echo_attachment_snapshot_receipt(identity INTEGER PRIMARY KEY CHECK(identity=1),files INTEGER NOT NULL);") is not equal to 0:
+        return archive_rollback(database)
+    set statement to archive_prepare(database and "SELECT a.attachment,a.path,a.digest,CAST(a.bytes AS TEXT) FROM echo_attachments a ORDER BY a.attachment;")
+    if statement equals 0:
+        return archive_rollback(database)
+    set count to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return archive_rollback(database)
+        set attachment to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set path to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set digest to ptr_to_str(ep_sqlite3_column_text(statement and 2))
+        set bytes to ptr_to_str(ep_sqlite3_column_text(statement and 3))
+        if file_copy_verified(path and attachment_snapshot_path(root and attachment) and digest and string_to_int(bytes) and 65536) is not equal to 0:
+            set closed to ep_sqlite3_finalize(statement)
+            return archive_rollback(database)
+        set values to create_list()
+        set added to append_list(values and attachment)
+        set added to append_list(values and digest)
+        set added to append_list(values and bytes)
+        set saved to checkpoint_prepare(database and "INSERT INTO echo_attachment_snapshot_files(attachment,digest,bytes) VALUES(?,?,?);" and values)
+        if saved equals 0 or else archive_finish(saved and 101) is not equal to 0:
+            set closed to ep_sqlite3_finalize(statement)
+            return archive_rollback(database)
+        set count to count + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return archive_rollback(database)
+    set values to create_list()
+    set added to append_list(values and int_to_string(count))
+    set saved to checkpoint_prepare(database and "INSERT INTO echo_attachment_snapshot_receipt(identity,files) VALUES(1,?);" and values)
+    if saved equals 0 or else archive_finish(saved and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# Rehash every copied file and require complete one-to-one metadata coverage.
+# Root may move; no saved absolute backup path is followed.
+define attachment_snapshot_verify with database as Int and root as Str returning Int:
+    if string_length(root) equals 0 or else get_character(root and 0) is not equal to 47 or else archive_verify_all(database) is not equal to 0:
+        return 1
+    set checked to history_collect_one(archive_prepare(database and "SELECT identity FROM echo_attachment_snapshot_receipt WHERE identity=1 AND files=(SELECT COUNT(*) FROM echo_attachments) AND files=(SELECT COUNT(*) FROM echo_attachment_snapshot_files) AND NOT EXISTS(SELECT 1 FROM echo_attachments a LEFT JOIN echo_attachment_snapshot_files f ON f.attachment=a.attachment WHERE f.attachment IS NULL OR f.digest<>a.digest OR f.bytes<>a.bytes);"))
+    if not (archive_list_text(checked and 0) equals "found"):
+        return 1
+    set statement to archive_prepare(database and "SELECT attachment,digest,CAST(bytes AS TEXT) FROM echo_attachment_snapshot_files ORDER BY attachment;")
+    if statement equals 0:
+        return 1
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return 1
+        set identity to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set digest to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set bytes to string_to_int(ptr_to_str(ep_sqlite3_column_text(statement and 2)))
+        set checked to file_digest(attachment_snapshot_path(root and identity) and 65536)
+        if not (archive_list_text(checked and 0) equals "verified") or else not (archive_list_text(checked and 1) equals digest) or else get_list(checked and 2) is not equal to bytes:
+            set closed to ep_sqlite3_finalize(statement)
+            return 1
+    return ep_sqlite3_finalize(statement)

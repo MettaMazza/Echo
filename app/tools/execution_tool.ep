@@ -1,0 +1,141 @@
+import "../retained_text"
+import "../workspace/execution_request"
+import "../workspace/execute_process"
+import "../workspace/directories"
+
+# Separate connection observes revocation and cancellation while capture owns
+# the worker connection. Closing the private writer wakes blocked pipe reads.
+define execution_authority_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:
+    set database to archive_open(path)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set status to 1
+    if database is not equal to 0 and library is not equal to 0:
+        set status to 0
+        repeat while 1 equals 1:
+            if agent_cancellation_pending(library and stop) is not equal to 0:
+                break
+            if agent_cancellation_pending(library and cancellation) is not equal to 0:
+                break
+            set authority to workspace_execution_request(database and run and call_id)
+            if not (archive_list_text(authority and 0) equals "authorized"):
+                set status to 1
+                break
+            set slept to sleep_ms(100)
+    if database is not equal to 0:
+        set closed to sql_close(database)
+    if library is not equal to 0:
+        set closed to ep_dlclose(library)
+    set closed to net_close(writer)
+    send status to completed
+    return 0
+
+# Run/call come from the dispatcher, and arguments come from the saved request.
+# Empty result means unresolved execution/persistence and leaves the tool claim
+# unobserved for reconciliation. Never silently replay this side effect.
+define execution_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:
+    set authority to workspace_execution_request(database and run and call_id)
+    set status to archive_list_text(authority and 0)
+    if not (status equals "authorized"):
+        return concat("{\"status\":" and concat(provider_quote(status) and "}"))
+    set root_path to ptr_to_str(get_env("ECHO_WORKSPACE_ROOT"))
+    set runtime to ptr_to_str(get_env("ECHO_EXECUTION_RUNTIME"))
+    if string_length(root_path) equals 0 or else string_length(runtime) equals 0:
+        return "{\"status\":\"not-configured\"}"
+    if get_character(root_path and 0) is not equal to 47 or else get_character(runtime and 0) is not equal to 47:
+        return "{\"status\":\"invalid-host-path\"}"
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "{\"status\":\"unavailable\"}"
+    set session to archive_list_text(authority and 1)
+    set device to archive_list_text(authority and 2)
+    set directory to workspace_session_open(database and library and device and session and root_path)
+    set runtime_directory to workspace_root_open(library and runtime)
+    if directory is less than 0 or else runtime_directory is less than 0:
+        if directory >= 0:
+            set closed to net_close(directory)
+        if runtime_directory >= 0:
+            set closed to net_close(runtime_directory)
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"workspace-unavailable\"}"
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and device)
+    set added to append_list(values and root_path)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT directory FROM echo_workspaces WHERE session=?1 AND device=?2 AND root=?3;" and values))
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(location and 0) equals "found"):
+        set closed to net_close(directory)
+        set closed to net_close(runtime_directory)
+        set closed to ep_dlclose(library)
+        return ""
+    set workspace to concat(root_path and concat("/" and archive_list_text(row and 1)))
+    set program to archive_list_text(authority and 3)
+    if program equals "ernos":
+        set program to concat(runtime and "/epc")
+    else if get_character(program and 0) is not equal to 47:
+        if workspace_path_parts(program) equals 0:
+            set closed to net_close(directory)
+            set closed to net_close(runtime_directory)
+            set closed to ep_dlclose(library)
+            return "{\"status\":\"invalid-program\"}"
+        set program to concat(workspace and concat("/" and program))
+    set temporary to workspace_directory_open(library and directory and ".echo-tmp" and 1)
+    if temporary is less than 0:
+        set closed to net_close(directory)
+        set closed to net_close(runtime_directory)
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"temporary-directory-failed\"}"
+    set closed to net_close(temporary)
+    set environment to create_list()
+    set added to append_list(environment and "PATH=/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin")
+    set added to append_list(environment and "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")
+    set added to append_list(environment and concat("TMPDIR=" and concat(workspace and "/.echo-tmp")))
+    set stop to socket_cancellation_create(library)
+    set cancelled to socket_cancellation_create(library)
+    if stop equals 0 or else cancelled equals 0:
+        if stop is not equal to 0:
+            set closed to socket_cancellation_close(stop)
+        if cancelled is not equal to 0:
+            set closed to socket_cancellation_close(cancelled)
+        set closed to net_close(directory)
+        set closed to net_close(runtime_directory)
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"pipe-failed\"}"
+    set completed to channel
+    spawn execution_authority_monitor(archive_list_text(location and 1) and run and call_id and cancellation and get_list(stop and 0) and get_list(cancelled and 1) and completed)
+    set result to workspace_execute_claimed(database and run and call_id and runtime and workspace and directory and program and get_list(authority and 4) and environment and get_list(cancelled and 0))
+    # Retain ownership during exceptional cleanup. No abandoned live handle or
+    # guessed PID-based recovery; the worker stays pending until actually reaped.
+    set retained to get_list(result and 1)
+    if retained is not equal to 0:
+        repeat while workspace_process_abort(retained) is not equal to 0:
+            set slept to sleep_ms(100)
+        set closed to workspace_process_close(retained)
+    set closed to socket_cancel(stop)
+    set monitored to receive from completed
+    set changed to set_list(cancelled and 1 and -1)
+    set closed to socket_cancellation_close(stop)
+    set closed to socket_cancellation_close(cancelled)
+    set closed to net_close(directory)
+    set closed to net_close(runtime_directory)
+    set closed to ep_dlclose(library)
+    set status to archive_list_text(result and 0)
+    if retained is not equal to 0 or else status equals "cleanup-failed" or else status equals "persistence-failed" or else status equals "reservation-failed":
+        return ""
+    if monitored is not equal to 0 or else workspace_session_allowed(database and device and session) is not equal to 1:
+        return "{\"status\":\"authorization-changed\",\"effect\":\"command-may-have-executed\"}"
+    set payload to concat("{\"status\":" and provider_quote(status))
+    set payload to concat(payload and concat(",\"wait_status\":" and provider_quote(int_to_string(get_list(result and 2)))))
+    set payload to concat(payload and concat(",\"stdout_bytes\":" and provider_quote(int_to_string(get_list(result and 3)))))
+    set payload to concat(payload and concat(",\"stderr_bytes\":" and provider_quote(int_to_string(get_list(result and 4)))))
+    set payload to concat(payload and concat(",\"run_id\":" and provider_quote(run)))
+    set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+    set identities to tool_ledger_identity(run and call_id)
+    set sources to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE((SELECT event FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.call_id')=?2 AND json_extract(payload,'$.stream')='stdout' ORDER BY sequence LIMIT 1),''),COALESCE((SELECT event FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.call_id')=?2 AND json_extract(payload,'$.stream')='stderr' ORDER BY sequence LIMIT 1),''),COALESCE(finished,'') FROM echo_process_launches WHERE run=?1 AND call_id=?2;" and identities))
+    if archive_list_text(sources and 0) equals "error":
+        return ""
+    if archive_list_text(sources and 0) equals "found":
+        set payload to concat(payload and concat(",\"stdout_event\":" and provider_quote(archive_list_text(sources and 1))))
+        set payload to concat(payload and concat(",\"stderr_event\":" and provider_quote(archive_list_text(sources and 2))))
+        set payload to concat(payload and concat(",\"exit_event\":" and provider_quote(archive_list_text(sources and 3))))
+    return concat(payload and ",\"output\":\"Use history_read on stdout_event or stderr_event. Each process_output event records bytes as hexadecimal data with offset, byte count and EOF. Do not search for plaintext output inside hex.\"}")

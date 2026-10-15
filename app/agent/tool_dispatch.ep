@@ -1,0 +1,105 @@
+import "../retained_text"
+import "generation"
+import "../tools/attachment_tools"
+import "../tools/execution_tool"
+import "../media/image_tool"
+import "../media/speech_tool"
+import "../context/recap_rebuild"
+
+# One invocation executes at most the next cursor item. The enclosing run loops
+# until the ledger is observed; this is scheduling granularity, not a turn cap.
+define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return 1
+    if not (archive_list_text(row and 2) equals "tools"):
+        return 1
+    set session to archive_list_text(row and 0)
+    set parent to archive_list_text(row and 3)
+    set values to create_list()
+    set added to append_list(values and run)
+    # Do not advance another queued action past an unresolved earlier effect.
+    set unresolved to checkpoint_prepare(database and "SELECT call_id FROM echo_tool_calls WHERE run=? AND state IN ('running','uncertain') LIMIT 1;" and values)
+    if unresolved equals 0:
+        return 1
+    set unresolved_step to ep_sqlite3_step(unresolved)
+    set unresolved_closed to ep_sqlite3_finalize(unresolved)
+    if unresolved_step is not equal to 101 or else unresolved_closed is not equal to 0:
+        return 1
+    set statement to checkpoint_prepare(database and "SELECT t.call_id,t.request_event FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run=? AND t.state='queued' ORDER BY e.sequence LIMIT 1;" and values)
+    if statement equals 0:
+        return 1
+    set step to ep_sqlite3_step(statement)
+    if step equals 101:
+        set closed to ep_sqlite3_finalize(statement)
+        if closed is not equal to 0:
+            return 1
+        set statement to checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls WHERE run=? AND state<>'observed';" and values)
+        if statement equals 0:
+            return 1
+        if ep_sqlite3_step(statement) is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return 1
+        set remaining to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        if archive_finish(statement and 101) is not equal to 0 or else not (remaining equals "0"):
+            return 1
+        set event to concat(parent and ":observed")
+        set payload to concat(agent_event_envelope(run and parent) and "}")
+        if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+            return 1
+        if archive_append_pending(database and session and event and "agent_observation" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and "tools" and parent and "ready" and event) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+            return archive_rollback(database)
+        return 0
+    if step is not equal to 100:
+        set closed to ep_sqlite3_finalize(statement)
+        return 1
+    set call_id to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+    set request_event to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+    if archive_finish(statement and 101) is not equal to 0:
+        return 1
+    set original to archive_read_event(database and request_event)
+    if original equals 0:
+        return 1
+    set tokens to provider_json_tokens(archive_list_text(original and 3))
+    if tokens equals 0:
+        return 1
+    set name_field to provider_member(tokens and 0 and "name")
+    set arguments_field to provider_member(tokens and 0 and "arguments")
+    if not (provider_kind(tokens and name_field) equals "string") or else not (provider_kind(tokens and arguments_field) equals "string"):
+        return 1
+    if agent_run_claim_tool(database and run and call_id) is not equal to 0:
+        return 1
+    set observation to ""
+    if provider_value(tokens and name_field) equals "system_inspect":
+        set observation to echo_system_inspect(database and run and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "session_rebuild_recap":
+        set observation to recap_rebuild_enqueue(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "image_generate":
+        set observation to image_tool_execute(database and run and call_id and cancellation)
+    else if provider_value(tokens and name_field) equals "attachment_transcribe" or else provider_value(tokens and name_field) equals "speech_synthesize":
+        set observation to speech_tool_execute(database and run and call_id and cancellation)
+    else if provider_value(tokens and name_field) equals "workspace_execute":
+        set observation to execution_tool_execute(database and run and call_id and cancellation)
+    else:
+        set observation to session_tool_execute(database and session and provider_value(tokens and name_field) and provider_value(tokens and arguments_field))
+    if string_length(observation) equals 0:
+        return 1
+    set payload to agent_event_envelope(run and parent)
+    set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"request_event\":" and provider_quote(request_event)))
+    set payload to concat(payload and concat(",\"result\":" and concat(observation and "}")))
+    set event to concat(request_event and ":result")
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if archive_append_pending(database and session and event and "tool_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else tool_ledger_observe(database and run and call_id and event) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    if provider_value(tokens and name_field) equals "workspace_execute" or else provider_value(tokens and name_field) equals "image_generate" or else provider_value(tokens and name_field) equals "attachment_transcribe" or else provider_value(tokens and name_field) equals "speech_synthesize" or else provider_value(tokens and name_field) equals "session_rebuild_recap":
+        set result_tokens to provider_json_tokens(observation)
+        set result_status to provider_value(result_tokens and provider_member(result_tokens and 0 and "status"))
+        if result_status equals "cancelled" or else result_status equals "cancelled-before-launch" or else result_status equals "authorization-changed" or else result_status equals "not-authorized" or else result_status equals "review-required":
+            return agent_cancel_run(database and run)
+    return 0
+
+# Existing direct callers have no external cancellation descriptor.
+define agent_tool_step with database as Int and run as Str returning Int:
+    return agent_tool_step_cancellable(database and run and -1)

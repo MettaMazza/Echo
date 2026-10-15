@@ -1,0 +1,97 @@
+import "../retained_text"
+import "output_archive"
+import "native_process"
+import "../agent/control"
+
+# One launch reservation per durable tool call. Never infer that a reserved or
+# started process did not execute after restart; such work needs reconciliation.
+# Stored PIDs are observations, not authority to signal a possibly reused PID.
+define workspace_process_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_process_launches(run TEXT NOT NULL,call_id TEXT NOT NULL,session TEXT NOT NULL,reservation TEXT NOT NULL UNIQUE REFERENCES echo_events(event),started TEXT UNIQUE REFERENCES echo_events(event),finished TEXT UNIQUE REFERENCES echo_events(event),PRIMARY KEY(run,call_id),FOREIGN KEY(run,call_id) REFERENCES echo_tool_calls(run,call_id)); CREATE TRIGGER IF NOT EXISTS echo_process_identity_immutable BEFORE UPDATE OF run,call_id,session,reservation ON echo_process_launches BEGIN SELECT RAISE(ABORT,'Process launch identity is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_process_started_immutable BEFORE UPDATE OF started ON echo_process_launches WHEN OLD.started IS NOT NULL BEGIN SELECT RAISE(ABORT,'Process start receipt is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_process_finished_immutable BEFORE UPDATE OF finished ON echo_process_launches WHEN OLD.finished IS NOT NULL BEGIN SELECT RAISE(ABORT,'Process finish receipt is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_process_no_delete BEFORE DELETE ON echo_process_launches BEGIN SELECT RAISE(ABORT,'Process launch reservations cannot be deleted'); END;")
+
+define workspace_process_reserve with database as Int and run as Str and call_id as Str and description as Str returning Int:
+    set tokens to provider_json_tokens(description)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 1
+    if workspace_process_schema(database) is not equal to 0 or else sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set values to tool_ledger_identity(run and call_id)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_tool_calls WHERE run=?1 AND call_id=?2 AND state='running' AND NOT EXISTS(SELECT 1 FROM echo_process_launches WHERE run=?1 AND call_id=?2);" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return archive_rollback(database)
+    set session to archive_list_text(row and 1)
+    set event to agent_identity()
+    set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"call_id\":" and provider_quote(call_id))))
+    set payload to concat(payload and concat(",\"launch\":" and concat(description and "}")))
+    set added to append_list(values and session)
+    set added to append_list(values and event)
+    if archive_append_pending(database and session and event and "process_reserved" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else tool_ledger_change(database and "INSERT INTO echo_process_launches(run,call_id,session,reservation) VALUES(?1,?2,?3,?4) RETURNING reservation;" and values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# Only a live in-memory handle from this worker can supply start/exit receipts.
+# A finish receipt requires waitpid evidence, not an output EOF or saved PID.
+define workspace_process_receipt with database as Int and run as Str and call_id as Str and handle as List and capture_status as Str returning Int:
+    if handle equals 0 or else get_list(handle and 0) equals 0 or else get_list(handle and 1) is less than 1:
+        return 1
+    set finished to 0
+    if string_length(capture_status) is greater than 0:
+        if get_list(handle and 2) is not equal to 1:
+            return 1
+        if not (capture_status equals "complete" or else capture_status equals "cancelled" or else capture_status equals "persistence-failed" or else capture_status equals "read-failed" or else capture_status equals "cleanup-failed"):
+            return 1
+        set finished to 1
+    else if get_list(handle and 2) is not equal to 0:
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set values to tool_ledger_identity(run and call_id)
+    set condition to "p.started IS NULL AND p.finished IS NULL"
+    if finished equals 1:
+        set condition to "p.started IS NOT NULL AND p.finished IS NULL"
+    set query to concat("SELECT p.session,p.reservation,COALESCE(p.started,'') FROM echo_process_launches p JOIN echo_tool_calls t ON t.run=p.run AND t.call_id=p.call_id WHERE p.run=?1 AND p.call_id=?2 AND t.state='running' AND " and concat(condition and ";"))
+    set row to history_collect_one(checkpoint_prepare(database and query and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return archive_rollback(database)
+    if finished equals 1:
+        set original to archive_read_event(database and archive_list_text(row and 3))
+        if original equals 0:
+            return archive_rollback(database)
+        set tokens to provider_json_tokens(archive_list_text(original and 3))
+        if not (provider_value(tokens and provider_member(tokens and 0 and "pid")) equals int_to_string(get_list(handle and 1))):
+            return archive_rollback(database)
+    set event to agent_identity()
+    set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"call_id\":" and provider_quote(call_id))))
+    set payload to concat(payload and concat(",\"reservation\":" and provider_quote(archive_list_text(row and 2))))
+    set payload to concat(payload and concat(",\"pid\":" and provider_quote(int_to_string(get_list(handle and 1)))))
+    set kind to "process_started"
+    set column to "started"
+    if finished equals 1:
+        set kind to "process_finished"
+        set column to "finished"
+        set payload to concat(payload and concat(",\"capture_status\":" and provider_quote(capture_status)))
+        set payload to concat(payload and concat(",\"wait_status\":" and provider_quote(int_to_string(get_list(handle and 3)))))
+    set payload to concat(payload and "}")
+    set added to append_list(values and event)
+    set query to concat("UPDATE echo_process_launches SET " and concat(column and "=?3 WHERE run=?1 AND call_id=?2 RETURNING reservation;"))
+    if archive_append_pending(database and archive_list_text(row and 1) and event and kind and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else tool_ledger_change(database and query and values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# Invoke only when this worker's native start returned no handle. A reservation
+# found after a crash is insufficient evidence for this transition.
+define workspace_process_spawn_failed with database as Int and run as Str and call_id as Str returning Int:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set values to tool_ledger_identity(run and call_id)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT p.session,p.reservation FROM echo_process_launches p JOIN echo_tool_calls t ON t.run=p.run AND t.call_id=p.call_id WHERE p.run=?1 AND p.call_id=?2 AND t.state='running' AND p.started IS NULL AND p.finished IS NULL;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return archive_rollback(database)
+    set event to agent_identity()
+    set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"call_id\":" and provider_quote(call_id))))
+    set payload to concat(payload and concat(",\"reservation\":" and provider_quote(archive_list_text(row and 2))))
+    set payload to concat(payload and ",\"status\":\"native-start-failed\",\"child_created\":false}")
+    set added to append_list(values and event)
+    if archive_append_pending(database and archive_list_text(row and 1) and event and "process_spawn_failed" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else tool_ledger_change(database and "UPDATE echo_process_launches SET finished=?3 WHERE run=?1 AND call_id=?2 RETURNING reservation;" and values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0

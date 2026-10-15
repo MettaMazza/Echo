@@ -1,0 +1,96 @@
+import "../retained_text"
+import "../workspace/sessions"
+import "../workspace/read_text"
+import "../workspace/directories"
+import "../workspace/create_text"
+import "os"
+
+# The run supplies the session. Device ownership is resolved from the archive;
+# neither ownership nor the host root can be selected by tool arguments.
+define workspace_tool_execute with database as Int and session as Str and arguments as Str and operation as Str returning Str:
+    if not (operation equals "read" or else operation equals "directory" or else operation equals "create"):
+        return "{\"status\":\"unknown-tool\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "path" or else (operation equals "read" and (key equals "offset" or else key equals "characters")) or else (operation equals "create" and key equals "text")):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set field to provider_member(tokens and 0 and "path")
+    set offset to history_tool_integer(tokens and "offset")
+    set characters to history_tool_integer(tokens and "characters")
+    if not (provider_kind(tokens and field) equals "string") or else (operation equals "read" and (offset is less than 0 or else characters is less than 1)):
+        return "{\"status\":\"invalid-arguments\"}"
+    set path to provider_value(tokens and field)
+    if workspace_path_parts(path) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set text to ""
+    if operation equals "create":
+        set text_field to provider_member(tokens and 0 and "text")
+        if not (provider_kind(tokens and text_field) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set text to provider_value(tokens and text_field)
+    set restored to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_attachment_restore_receipt';"))
+    if not (archive_list_text(restored and 0) equals "end"):
+        return "{\"status\":\"review-required\"}"
+    set root_path to get_env("ECHO_WORKSPACE_ROOT")
+    if string_length(root_path) equals 0:
+        return "{\"status\":\"not-configured\"}"
+    set values to create_list()
+    set added to append_list(values and session)
+    set owner to history_collect_one(checkpoint_prepare(database and "SELECT o.device FROM echo_session_owners o JOIN echo_devices d ON d.device=o.device WHERE o.session=?1 AND d.revoked=0;" and values))
+    if not (archive_list_text(owner and 0) equals "found"):
+        return "{\"status\":\"not-authorized\"}"
+    set device to archive_list_text(owner and 1)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "{\"status\":\"unavailable\"}"
+    set root to workspace_session_open(database and library and device and session and root_path)
+    if root is less than 0:
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"workspace-unavailable\"}"
+    if operation equals "create":
+        set status to workspace_create_text(library and root and path and text)
+        set closed to net_close(root)
+        set closed to ep_dlclose(library)
+        if workspace_session_allowed(database and device and session) is not equal to 1:
+            return "{\"status\":\"authorization-changed\",\"effect\":\"file-may-exist\"}"
+        set payload to concat("{\"status\":" and concat(provider_quote(status) and concat(",\"path\":" and provider_quote(path))))
+        if status equals "created":
+            set payload to concat(payload and concat(",\"sha256\":" and provider_quote(ep_sha256(text))))
+            set payload to concat(payload and concat(",\"bytes\":" and provider_quote(int_to_string(string_length(text)))))
+        return concat(payload and "}")
+    if operation equals "directory":
+        set directory to workspace_directory_open(library and root and path and 1)
+        set status to "available"
+        if directory is less than 0:
+            set status to "directory-failed"
+        else:
+            if net_close(directory) is not equal to 0:
+                set status to "close-failed"
+        set closed to net_close(root)
+        set closed to ep_dlclose(library)
+        if workspace_session_allowed(database and device and session) is not equal to 1:
+            return "{\"status\":\"authorization-changed\",\"effect\":\"directory-may-exist\"}"
+        return concat("{\"status\":" and concat(provider_quote(status) and concat(",\"path\":" and concat(provider_quote(path) and "}"))))
+    set read to workspace_read_text(library and root and path and 65536 and offset and characters)
+    set closed to net_close(root)
+    set closed to ep_dlclose(library)
+    if workspace_session_allowed(database and device and session) is not equal to 1:
+        return "{\"status\":\"not-authorized\"}"
+    if not (archive_list_text(read and 0) equals "read"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(read and 0)) and "}"))
+    set payload to concat("{\"status\":\"found\",\"path\":" and provider_quote(path))
+    set payload to concat(payload and concat(",\"sha256\":" and provider_quote(archive_list_text(read and 3))))
+    set payload to concat(payload and concat(",\"bytes\":" and provider_quote(int_to_string(get_list(read and 4)))))
+    set payload to concat(payload and concat(",\"offset\":" and provider_quote(int_to_string(offset))))
+    set payload to concat(payload and concat(",\"characters\":" and provider_quote(int_to_string(get_list(read and 2)))))
+    return concat(payload and concat(",\"text\":" and concat(provider_quote(archive_list_text(read and 1)) and "}")))
+
+define workspace_text_execute with database as Int and session as Str and arguments as Str returning Str:
+    return workspace_tool_execute(database and session and arguments and "read")

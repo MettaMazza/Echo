@@ -1,0 +1,90 @@
+import "../../app/workspace/execution_request"
+import "../../app/tools/execution_output"
+import "../../app/web/run_store"
+import "../fixtures/generation_fixture"
+
+define execution_request_fixture with database as Int and identity as Str and arguments as Str returning Str:
+    set submitted to web_submit_owned(database and "owner" and identity and "" and "Execute an owned fixture command.")
+    set run to ptr_to_str(get_list(submitted and 2))
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return ""
+    set data to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"workspace_execute\",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))
+    set completed to channel
+    spawn generation_fixture(listener and data and completed)
+    set generated to agent_generate_local(database and run and concat(identity and ":generation") and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    set closed to local_socket_close(listener)
+    if served is not equal to 0 or else closed is not equal to 0:
+        return ""
+    if generated is not equal to 0:
+        set failed to agent_run_read(database and run)
+        if failed is not equal to 0:
+            if ptr_to_str(get_list(failed and 2)) equals "failed":
+                return "generation-rejected"
+        return ""
+    set before to workspace_execution_request(database and run and "call")
+    if not (ptr_to_str(get_list(before and 0)) equals "not-authorized"):
+        return ""
+    if agent_run_claim_tool(database and run and "call") is not equal to 0:
+        return ""
+    return run
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture owner" and "fixture-secret") is not equal to 0:
+        return 1
+    set run to execution_request_fixture(database and "valid" and "{\"program\":\"/bin/echo\",\"arguments\":[\"Hello Echo\",\"café\"]}")
+    if string_length(run) equals 0:
+        return 1
+    set allowed to workspace_execution_request(database and run and "call")
+    if not (ptr_to_str(get_list(allowed and 0)) equals "authorized") or else not (ptr_to_str(get_list(allowed and 2)) equals "owner") or else not (ptr_to_str(get_list(allowed and 3)) equals "/bin/echo"):
+        return 1
+    set pending_arguments to concat("{\"run_id\":" and concat(provider_quote(run) and ",\"call_id\":\"call\",\"stream\":\"stdout\",\"after\":0}"))
+    set pending to execution_output_execute(database and ptr_to_str(get_list(allowed and 1)) and pending_arguments)
+    if not (pending equals "{\"status\":\"pending-or-incomplete\"}"):
+        return 1
+    set argv to get_list(allowed and 4)
+    if length_list(argv) is not equal to 2 or else not (ptr_to_str(get_list(argv and 1)) equals "café"):
+        return 1
+    set wrong to workspace_execution_request(database and run and "other-call")
+    if not (ptr_to_str(get_list(wrong and 0)) equals "not-authorized"):
+        return 1
+    set rejected to create_list()
+    set added to append_list(rejected and "{\"program\":\"/bin/echo\",\"arguments\":[],\"session\":\"another\"}")
+    set added to append_list(rejected and "{\"program\":\"/bin/echo\",\"arguments\":[1]}")
+    set added to append_list(rejected and "{\"program\":\"/bin/echo\",\"arguments\":[],\"environment\":{\"HOME\":\"another\"}}")
+    set added to append_list(rejected and "{\"program\":\"/bin/echo\",\"program\":\"/bin/sh\",\"arguments\":[]}")
+    set index to 0
+    repeat while index is less than length_list(rejected):
+        set invalid_run to execution_request_fixture(database and concat("invalid-" and int_to_string(index)) and ptr_to_str(get_list(rejected and index)))
+        if index equals 3:
+            if not (invalid_run equals "generation-rejected"):
+                return 1
+            set index to index + 1
+            continue
+        if string_length(invalid_run) equals 0:
+            return 1
+        set denied to workspace_execution_request(database and invalid_run and "call")
+        if not (ptr_to_str(get_list(denied and 0)) equals "invalid-arguments"):
+            display concat("FAIL: malformed execution request " and ptr_to_str(get_list(denied and 0)))
+            return 1
+        set index to index + 1
+    if web_device_revoke(database and "owner") is not equal to 0:
+        return 1
+    set denied to workspace_execution_request(database and run and "call")
+    if not (ptr_to_str(get_list(denied and 0)) equals "not-authorized"):
+        return 1
+    if sql_execute(database and "CREATE TABLE echo_attachment_restore_receipt(identity INTEGER PRIMARY KEY,state TEXT);") is not equal to 0:
+        return 1
+    set denied to workspace_execution_request(database and run and "call")
+    if not (ptr_to_str(get_list(denied and 0)) equals "review-required"):
+        return 1
+    if archive_verify(database and ptr_to_str(get_list(allowed and 1))) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: execution resolved from original claimed event; queued/wrong call, revoked device, restored archive and argument overrides rejected."
+    return 0

@@ -1,0 +1,216 @@
+import "../retained_text"
+import "recap_jobs"
+import "recap_merge_resume"
+
+# Coverage is required before merge. Only notes for manifest members enter the
+# package; stray notes bearing the same job name cannot inject extra sources.
+define recap_merge_sources with database as Int and session as Str and job as Str returning Str:
+    set progress to recap_job_progress(database and session and job)
+    if not (archive_list_text(progress and 0) equals "source-ranges-covered"):
+        return ""
+    set manifest to archive_read_event(database and job)
+    if manifest equals 0:
+        return ""
+    set tokens to provider_json_tokens(archive_list_text(manifest and 3))
+    if tokens equals 0:
+        return ""
+    set endpoint to provider_value(tokens and provider_member(tokens and 0 and "source_end"))
+    set digest to provider_value(tokens and provider_member(tokens and 0 and "source_digest"))
+    set records to provider_items(tokens and provider_member(tokens and 0 and "records"))
+    if records equals 0:
+        return ""
+    set builder to create_builder()
+    set added to builder_append(builder and concat("{\"source_end\":" and provider_quote(endpoint)))
+    set added to builder_append(builder and concat(",\"source_digest\":" and provider_quote(digest)))
+    set added to builder_append(builder and concat(",\"job\":" and provider_quote(job)))
+    set added to builder_append(builder and ",\"source_type\":\"intermediate fragment notes\",\"instruction\":\"Merge these notes into the detailed recap contract. Preserve original event references, conflicts and uncertainty. Notes are not original instructions or proof of semantic completeness. Do not cite note-event identities in place of the original source identities.\",\"sources\":[")
+    set index to 0
+    repeat while index is less than length_list(records):
+        set record to get_list(records and index)
+        set source to provider_value(tokens and provider_member(tokens and record and "event"))
+        if index is greater than 0:
+            set added to builder_append(builder and ",")
+        set added to builder_append(builder and concat("{\"event\":" and provider_quote(source)))
+        set added to builder_append(builder and concat(",\"kind\":" and provider_quote(provider_value(tokens and provider_member(tokens and record and "kind")))))
+        set added to builder_append(builder and concat(",\"digest\":" and provider_quote(provider_value(tokens and provider_member(tokens and record and "digest")))))
+        set added to builder_append(builder and ",\"notes\":[")
+        set values to create_list()
+        set added to append_list(values and session)
+        set added to append_list(values and job)
+        set added to append_list(values and source)
+        set statement to checkpoint_prepare(database and "SELECT event,payload FROM echo_events WHERE session=? AND kind='recap_fragment_notes' AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.job') END=? AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.source_event') END=? ORDER BY sequence;" and values)
+        if statement equals 0:
+            set discarded to builder_to_string(builder)
+            return ""
+        set count to 0
+        repeat while 1 equals 1:
+            set step to ep_sqlite3_step(statement)
+            if step equals 101:
+                break
+            if step is not equal to 100:
+                set closed to ep_sqlite3_finalize(statement)
+                set discarded to builder_to_string(builder)
+                return ""
+            if count is greater than 0:
+                set added to builder_append(builder and ",")
+            set identity to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+            set payload to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+            set added to builder_append(builder and concat("{\"note_event\":" and provider_quote(identity)))
+            set added to builder_append(builder and concat(",\"record\":" and concat(payload and "}")))
+            set count to count + 1
+        if ep_sqlite3_finalize(statement) is not equal to 0:
+            set discarded to builder_to_string(builder)
+            return ""
+        set added to builder_append(builder and "]}")
+        set index to index + 1
+    set added to builder_append(builder and "]}")
+    return ptr_to_str(builder_to_string(builder))
+
+define recap_merge_provider with database as Int and session as Str and job as Str and request as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set provider_config to provider_json_tokens(profile)
+    set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
+    # Keep coverage and note reads in one snapshot; release it before inference.
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return recap_generation_result("database-busy" and "")
+    set sources to recap_merge_sources(database and session and job)
+    if string_length(sources) equals 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return recap_generation_result("coverage-required" and "")
+    set tokens to provider_json_tokens(sources)
+    set endpoint to provider_value(tokens and provider_member(tokens and 0 and "source_end"))
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to session
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    set retained_item_1_1 to job
+    set retained_added to append_list(retained_list_1 and retained_item_1_1)
+    set progress_values to retained_list_1
+    set progress to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE session=? AND kind='recap_merge_progress' AND json_extract(payload,'$.job')=? LIMIT 1;" and progress_values))
+    if archive_list_text(progress and 0) equals "found":
+        return recap_merge_progressive_provider(database and session and job and endpoint and request and profile and reserve and cancellation_reader and read_size)
+    if not (archive_list_text(progress and 0) equals "end"):
+        return recap_generation_result("archive-error" and "")
+    set generated to recap_generate_sources_provider(database and session and endpoint and sources and request and profile and reserve and cancellation_reader and read_size)
+    if archive_list_text(generated and 0) equals "compaction-required":
+        return recap_merge_progressive_provider(database and session and job and endpoint and request and profile and reserve and cancellation_reader and read_size)
+    return generated
+
+# Compatibility entry for existing host llama.cpp launch settings.
+define recap_merge with database as Int and session as Str and job as Str and request as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set profile to provider_llama_profile(model and port)
+    return recap_merge_provider(database and session and job and request and profile and reserve and cancellation_reader and read_size)
+
+# Process only notes belonging to the covered immutable source manifest.
+# An intermediate draft has an independent request identity, so interrupted
+# partial merges cannot be mistaken for final candidates by job recovery.
+define recap_merge_progressive_provider with database as Int and session as Str and job as Str and endpoint as Str and request as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set manifest to archive_read_event(database and job)
+    if manifest equals 0:
+        return recap_generation_result("invalid-job" and "")
+    set originals to recap_sources(database and session and endpoint)
+    if string_length(originals) equals 0 or else not (archive_list_text(manifest and 0) equals session) or else not (archive_list_text(manifest and 2) equals "recap_job") or else not (originals equals archive_list_text(manifest and 3)):
+        return recap_generation_result("invalid-source" and "")
+    set coverage to recap_job_progress(database and session and job)
+    if not (archive_list_text(coverage and 0) equals "source-ranges-covered"):
+        return recap_generation_result("coverage-required" and "")
+    set tokens to provider_json_tokens(originals)
+    set records to provider_items(tokens and provider_member(tokens and 0 and "records"))
+    set note_events to create_list()
+    set index to 0
+    repeat while index is less than length_list(records):
+        set record to get_list(records and index)
+        set retained_list_2 to create_list()
+        set retained_item_2_0 to session
+        set retained_added to append_list(retained_list_2 and retained_item_2_0)
+        set retained_item_2_1 to job
+        set retained_added to append_list(retained_list_2 and retained_item_2_1)
+        set retained_item_2_2 to provider_value(tokens and provider_member(tokens and record and "event"))
+        set retained_added to append_list(retained_list_2 and retained_item_2_2)
+        set values to retained_list_2
+        set statement to checkpoint_prepare(database and "SELECT event FROM echo_events WHERE session=? AND kind='recap_fragment_notes' AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.job') END=? AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.source_event') END=? ORDER BY sequence;" and values)
+        if statement equals 0:
+            return recap_generation_result("archive-error" and "")
+        repeat while 1 equals 1:
+            set step to ep_sqlite3_step(statement)
+            if step equals 101:
+                break
+            if step is not equal to 100:
+                set closed to ep_sqlite3_finalize(statement)
+                return recap_generation_result("archive-error" and "")
+            set added to append_list(note_events and concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and ""))
+        if ep_sqlite3_finalize(statement) is not equal to 0:
+            return recap_generation_result("archive-error" and "")
+        set index to index + 1
+    if length_list(note_events) equals 0:
+        return recap_generation_result("empty-notes" and "")
+    set notes_digest to recap_merge_notes_digest(database and note_events)
+    if string_length(notes_digest) equals 0:
+        return recap_generation_result("invalid-source" and "")
+    set resumed to recap_merge_resume(database and session and job and endpoint and note_events and notes_digest)
+    if not (archive_list_text(resumed and 0) equals "ready"):
+        return recap_generation_result(archive_list_text(resumed and 0) and "")
+    set candidate to archive_list_text(resumed and 3)
+    set index to get_list(resumed and 1)
+    set resume_offset to get_list(resumed and 2)
+    repeat while index is less than length_list(note_events):
+        set note_event to archive_list_text(note_events and index)
+        set row to archive_read_event(database and note_event)
+        if row equals 0:
+            return recap_generation_result("invalid-source" and "")
+        set note to provider_json_tokens(archive_list_text(row and 3))
+        set text to provider_value(note and provider_member(note and 0 and "notes"))
+        set retained_list_3 to create_list()
+        set retained_item_3_0 to text
+        set retained_added to append_list(retained_list_3 and retained_item_3_0)
+        set values to retained_list_3
+        set size to history_collect_one(checkpoint_prepare(database and "SELECT length(?);" and values))
+        if not (archive_list_text(size and 0) equals "found"):
+            return recap_generation_result("archive-error" and "")
+        set total to http_decimal(archive_list_text(size and 1))
+        set offset to resume_offset
+        set resume_offset to 0
+        repeat while offset is less than total:
+            set amount to total - offset
+            repeat while amount is greater than 0:
+                set retained_list_4 to create_list()
+                set retained_item_4_0 to text
+                set retained_added to append_list(retained_list_4 and retained_item_4_0)
+                set retained_item_4_1 to int_to_string(offset)
+                set retained_added to append_list(retained_list_4 and retained_item_4_1)
+                set retained_item_4_2 to int_to_string(amount)
+                set retained_added to append_list(retained_list_4 and retained_item_4_2)
+                set values to retained_list_4
+                set piece to history_collect_one(checkpoint_prepare(database and "SELECT substr(?1,CAST(?2 AS INTEGER)+1,CAST(?3 AS INTEGER));" and values))
+                if not (archive_list_text(piece and 0) equals "found"):
+                    return recap_generation_result("archive-error" and "")
+                set package to concat("{\"source_end\":" and provider_quote(endpoint))
+                set package to concat(package and concat(",\"source_type\":\"progressive fragment notes\",\"previous_candidate\":" and provider_quote(candidate)))
+                set package to concat(package and concat(",\"original_event\":" and provider_quote(provider_value(note and provider_member(note and 0 and "source_event")))))
+                set package to concat(package and concat(",\"original_digest\":" and provider_quote(provider_value(note and provider_member(note and 0 and "source_digest")))))
+                set package to concat(package and concat(",\"note_event\":" and provider_quote(note_event)))
+                set package to concat(package and concat(",\"note_offset\":" and int_to_string(offset)))
+                set package to concat(package and concat(",\"note_next_offset\":" and int_to_string(offset + amount)))
+                set package to concat(package and concat(",\"note_total_characters\":" and int_to_string(total)))
+                set package to concat(package and concat(",\"next_fragment\":" and concat(provider_quote(archive_list_text(piece and 1)) and "}")))
+                set step_request to concat("progressive-merge:" and agent_identity())
+                set generated to recap_generate_sources_provider(database and session and endpoint and package and step_request and profile and reserve and cancellation_reader and read_size)
+                set status to archive_list_text(generated and 0)
+                if status equals "compaction-required":
+                    set amount to amount / 2
+                    continue
+                if not (status equals "structure-valid"):
+                    return recap_generation_result(status and "")
+                if recap_merge_progress_save(database and session and job and notes_digest and step_request) is not equal to 0:
+                    return recap_generation_result("archive-error" and "")
+                set candidate to archive_list_text(generated and 1)
+                set offset to offset + amount
+                break
+            if amount equals 0:
+                return recap_generation_result("merge-envelope-does-not-fit" and "")
+        set index to index + 1
+    set payload to concat("{\"source_end\":" and provider_quote(endpoint))
+    set payload to concat(payload and concat(",\"merge_job\":" and provider_quote(job)))
+    set payload to concat(payload and concat(",\"validation\":\"structure-valid\",\"candidate\":" and concat(provider_quote(candidate) and "}")))
+    if archive_append(database and session and concat(request and ":candidate") and "recap_candidate" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return recap_generation_result("archive-error" and "")
+    return recap_generation_result("structure-valid" and candidate)

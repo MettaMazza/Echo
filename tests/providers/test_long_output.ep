@@ -1,0 +1,78 @@
+import "../../app/providers/prepare"
+import "../../app/providers/local_chat"
+import "fs"
+
+# The requested document length is a workload, not a generation ceiling.
+# Both adapters retain their full provider-derived available output allowance.
+define main returning Int:
+    if (get_argument_count() is not equal to 3 and get_argument_count() is not equal to 4) or else file_exists(get_argument(1)):
+        return 1
+    set profile to ptr_to_str(read_file(get_argument(2)))
+    set config to provider_json_tokens(profile)
+    set model to provider_value(config and provider_member(config and 0 and "model"))
+    set database to archive_open(get_argument(1))
+    if database equals 0:
+        return 1
+    set instruction to "This is a long-output transport test. Produce exactly 512 numbered lines, numbered 1 through 512 without skipping or abbreviating. Each line must contain one different complete sentence of at least 18 words about maintaining a local research notebook. Do not provide code to generate the lines, do not use ellipses, do not summarize, and do not stop early. After line 512, put END_OF_LONG_OUTPUT_512 on its own line. Start directly with line 1."
+    set body to concat("{\"model\":" and provider_quote(model))
+    set body to concat(body and ",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[{\"role\":\"user\",\"content\":")
+    set body to concat(body and concat(provider_quote(instruction) and "}]"))
+    # Optional explicit seed allows a controlled upstream scheduling comparison.
+    # Pinned MLX uses its single-request path for seeded requests. This does not
+    # alter context, output capacity, model weights or the test workload.
+    if get_argument_count() equals 4:
+        set seed to http_decimal(get_argument(3))
+        if seed is less than 0:
+            return 1
+        set body to concat(body and concat(",\"seed\":" and int_to_string(seed)))
+    set body to concat(body and "}")
+    # Independent fresh archives must not reuse the provider helper's immutable
+    # spool names from an earlier qualification run.
+    set preparation to concat("preflight:" and ep_sha256(get_argument(1)))
+    set decision to provider_prepare(database and "long-output" and preparation and profile and body and 1 and -1 and 65536)
+    if not (ptr_to_str(get_list(decision and 0)) equals "ready"):
+        display ptr_to_str(get_list(decision and 0))
+        return 1
+    display concat("Available output tokens: " and int_to_string(get_list(decision and 4)))
+    set wire to ptr_to_str(get_list(decision and 5))
+    set payload to concat("{\"request_body\":" and concat(provider_quote(wire) and "}"))
+    if archive_append(database and "long-output" and "request" and "model_request" and payload and "live") is not equal to 0:
+        return 1
+    set started to ep_time_now_ms()
+    set response to local_chat_generate(database and "long-output" and "request" and get_list(decision and 7) and ptr_to_str(get_list(decision and 6)) and wire and -1 and 65536)
+    display concat("Elapsed milliseconds: " and int_to_string(ep_time_now_ms() - started))
+    if not (ptr_to_str(get_list(response and 0)) equals "complete"):
+        display ptr_to_str(get_list(response and 0))
+        return 1
+    set choice to chat_find(get_list(get_list(response and 1) and 0) and "0")
+    if choice equals 0:
+        return 1
+    set answer to ptr_to_str(get_list(choice and 1))
+    set finish to ptr_to_str(get_list(choice and 4))
+    display concat("Finish reason: " and finish)
+    if write_file(concat(get_argument(1) and ".answer.txt") and answer) is not equal to 1:
+        return 1
+    set statement to archive_prepare(database and "SELECT payload FROM echo_events WHERE session='long-output' AND kind='provider_event' ORDER BY sequence;")
+    if statement equals 0:
+        return 1
+    set completion to -1
+    repeat while ep_sqlite3_step(statement) equals 100:
+        set envelope to provider_json_tokens(ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        set data to provider_value(envelope and provider_member(envelope and 0 and "data"))
+        if not (data equals "[DONE]"):
+            set tokens to provider_json_tokens(data)
+            set usage to provider_member(tokens and 0 and "usage")
+            if provider_kind(tokens and usage) equals "{":
+                set observed to http_decimal(provider_index(tokens and provider_member(tokens and usage and "completion_tokens")))
+                if observed > completion:
+                    set completion to observed
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return 1
+    display concat("Provider completion tokens: " and int_to_string(completion))
+    if archive_verify(database and "long-output") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    if not (finish equals "stop") or else completion < 8192 or else not (string_contains(answer and "END_OF_LONG_OUTPUT_512") > 0):
+        display "NOT QUALIFIED: requires natural stop, at least8192 reported completion tokens and final workload marker. Inspect retained original output."
+        return 1
+    display "PASS: real local long output exceeded8192 provider tokens and reached natural stop with terminal workload marker; wire request, usage and stream retained. Direct provider qualification, not browser endurance."
+    return 0

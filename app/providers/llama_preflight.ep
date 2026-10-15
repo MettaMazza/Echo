@@ -1,0 +1,82 @@
+import "../retained_text"
+import "llama_metadata"
+import "llama_modalities"
+import "context_admission"
+
+# The reserve comes from the next workload. Capacity and input count come only
+# from the loaded provider. No guessed context, output budget or safety margin.
+# Result: status, loaded context, training context, input tokens, available output.
+define llama_preflight_evaluate with models as Str and props as Str and counted as Str and model as Str and output_reserve as Int returning List:
+    set result to create_list()
+    set added to append_list(result and "invalid-metadata")
+    set metadata to llama_metadata_parse(models and props and model)
+    if not (archive_list_text(metadata and 0) equals "ready"):
+        return result
+    set input to llama_input_count(counted)
+    if input is less than 0 or else output_reserve is less than 1:
+        return result
+    set capacity to get_list(metadata and 2)
+    set trained to get_list(metadata and 3)
+    set decision to provider_context_admission(capacity and trained and input and -1 and output_reserve)
+    # n_predict is a configurable runtime default, not a model capability.
+    # Require its removal rather than treating it as a genuine output ceiling.
+    if archive_list_text(decision and 0) equals "context-configuration-required":
+        return decision
+    if get_list(metadata and 4) is not equal to -1:
+        set changed to set_list(decision and 0 and "output-configuration-required")
+    return decision
+
+# Preserve all endpoint evidence and the exact request, including failed HTTP
+# responses. A caller can inspect why a request was not admitted to generation.
+define llama_preflight_receipt with database as Int and session as Str and identity as Str and body as Str and output_reserve as Int and models as List and props as List and counted as List and decision as List returning Int:
+    set payload to concat("{\"request_body\":" and provider_quote(body))
+    set payload to concat(payload and concat(",\"output_reserve\":" and int_to_string(output_reserve)))
+    set payload to concat(payload and concat(",\"decision\":" and provider_quote(archive_list_text(decision and 0))))
+    set replies to create_list()
+    set added to append_list(replies and models)
+    set added to append_list(replies and props)
+    set added to append_list(replies and counted)
+    set payload to concat(payload and ",\"responses\":[")
+    set index to 0
+    repeat while index is less than length_list(replies):
+        set reply to get_list(replies and index)
+        if index is greater than 0:
+            set payload to concat(payload and ",")
+        set payload to concat(payload and concat("{\"status\":" and provider_quote(archive_list_text(reply and 0))))
+        set payload to concat(payload and concat(",\"http_status\":" and int_to_string(get_list(reply and 1))))
+        set payload to concat(payload and concat(",\"body\":" and concat(provider_quote(archive_list_text(reply and 2)) and "}")))
+        set index to index + 1
+    set payload to concat(payload and "]}")
+    return archive_append(database and session and identity and "provider_preflight" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+
+define llama_preflight with database as Int and session as Str and identity as Str and port as Int and body as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set decision to create_list()
+    set added to append_list(decision and "invalid-request")
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0:
+        return decision
+    if provider_unique_objects(tokens) equals 0:
+        return decision
+    set field to provider_member(tokens and 0 and "model")
+    if not (provider_kind(tokens and field) equals "string") or else output_reserve is less than 1:
+        return decision
+    set model to provider_value(tokens and field)
+    set models to local_json_request(port and "GET" and "/v1/models" and "" and cancellation_reader and read_size)
+    set props to local_json_result("not-requested" and 0 and "")
+    set counted to local_json_result("not-requested" and 0 and "")
+    set changed to set_list(decision and 0 and "discovery-failed")
+    if archive_list_text(models and 0) equals "ready":
+        set props to local_json_request(port and "GET" and "/props" and "" and cancellation_reader and read_size)
+        if archive_list_text(props and 0) equals "ready":
+            set capability to llama_modalities_check(body and archive_list_text(props and 2))
+            if capability equals "ready":
+                set counted to local_json_request(port and "POST" and "/v1/chat/completions/input_tokens" and body and cancellation_reader and read_size)
+                if archive_list_text(counted and 0) equals "ready":
+                    set decision to llama_preflight_evaluate(archive_list_text(models and 2) and archive_list_text(props and 2) and archive_list_text(counted and 2) and model and output_reserve)
+                else:
+                    set changed to set_list(decision and 0 and "token-count-failed")
+            else:
+                set changed to set_list(decision and 0 and capability)
+    if llama_preflight_receipt(database and session and identity and body and output_reserve and models and props and counted and decision) is not equal to 0:
+        set changed to set_list(decision and 0 and "archive-error")
+    return decision

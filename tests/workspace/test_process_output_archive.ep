@@ -1,0 +1,119 @@
+import "../../app/workspace/sandbox_process"
+import "../../app/workspace/process_output"
+import "../../app/workspace/files"
+import "fs"
+import "../../app/workspace/output_archive"
+
+external define peek_byte with pointer and offset returning Int
+external define poke_byte with pointer and offset and value returning Int
+
+define main returning Int:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if get_argument_count() equals 2:
+        set block to create_list()
+        set added to append_list(block and 0)
+        set added to append_list(block and 0)
+        set index to 0
+        repeat while index is less than 16:
+            set changed to poke_byte(get_list_data_ptr(block) and index and index)
+            set index to index + 1
+        set index to 0
+        repeat while index is less than 12288:
+            if file_stage_write(library and 1 and get_list_data_ptr(block) and 16) is not equal to 0 or else file_stage_write(library and 2 and get_list_data_ptr(block) and 16) is not equal to 0:
+                return 1
+            set index to index + 1
+        return 0
+    if get_argument_count() is not equal to 4:
+        return 1
+    if file_exists(get_argument(3)):
+        return 1
+    set database to archive_open(get_argument(3))
+    if database equals 0 or else tool_ledger_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "home" and "request" and "tool_call" and "{\"run_id\":\"run-a\",\"call_id\":\"call-a\"}" and "fixture") is not equal to 0 or else tool_ledger_queue(database and "run-a" and "call-a" and "home" and "request") is not equal to 0 or else tool_ledger_claim(database and "run-a" and "call-a") is not equal to 0:
+        return 1
+    set sequence to 0
+    set runtime to get_argument(1)
+    set workspace to get_argument(2)
+    set directory to workspace_root_open(library and workspace)
+    set output_pair to socket_cancellation_create(library)
+    set error_pair to socket_cancellation_create(library)
+    set cancellation to socket_cancellation_create(library)
+    if directory is less than 3 or else output_pair equals 0 or else error_pair equals 0 or else cancellation equals 0:
+        return 1
+    set arguments to create_list()
+    set added to append_list(arguments and "child")
+    set environment to create_list()
+    set handle to workspace_sandbox_start(runtime and workspace and get_argument(0) and arguments and environment and directory and get_list(output_pair and 1) and get_list(error_pair and 1))
+    if handle equals 0:
+        return 1
+    set closed to socket_cancel(output_pair)
+    set closed to socket_cancel(error_pair)
+    set output to get_list(output_pair and 0)
+    set errors to get_list(error_pair and 0)
+    set totals to create_list()
+    set added to append_list(totals and 0)
+    set added to append_list(totals and 0)
+    set preferred to 1
+    repeat while output >= 0 or else errors >= 0:
+        set chunk to workspace_output_next(library and output and errors and get_list(cancellation and 0) and preferred)
+        set status to ptr_to_str(get_list(chunk and 0))
+        set stream to get_list(chunk and 1)
+        set stream_name to "stdout"
+        if stream equals 2:
+            set stream_name to "stderr"
+        if status equals "data" or else status equals "eof":
+            set ended to 0
+            if status equals "eof":
+                set ended to 1
+            if workspace_output_record(database and "run-a" and "call-a" and concat("chunk-" and int_to_string(sequence)) and stream_name and get_list(chunk and 2) and get_list(chunk and 3) and ended) is not equal to 0:
+                set stopped to workspace_process_signal(handle and 9)
+                return 1
+            set sequence to sequence + 1
+        if status equals "data":
+            set index to 0
+            set total to get_list(totals and stream - 1)
+            repeat while index is less than get_list(chunk and 3):
+                if peek_byte(get_list(chunk and 2) and index) is not equal to (total + index) modulo 16:
+                    return 1
+                set index to index + 1
+            set changed to set_list(totals and stream - 1 and total + get_list(chunk and 3))
+            set released to socket_release_buffer(library and get_list(chunk and 2))
+            set preferred to 3 - stream
+        else if status equals "eof":
+            if stream equals 1:
+                set closed to net_close(output)
+                set output to -1
+            else:
+                set closed to net_close(errors)
+                set errors to -1
+        else:
+            display concat("FAIL: pipe read " and status)
+            return 1
+    set state to 0
+    repeat while state equals 0:
+        set state to workspace_process_poll(handle)
+        set slept to sleep_ms(10)
+    if state is not equal to 1 or else get_list(handle and 3) is not equal to 0 or else get_list(totals and 0) is not equal to 196608 or else get_list(totals and 1) is not equal to 196608:
+        return 1
+    set closed to workspace_process_close(handle)
+    # A closed cancellation pipe wakes even when output pipes have no data.
+    set waiting to socket_cancellation_create(library)
+    set closed to socket_cancel(cancellation)
+    set chunk to workspace_output_next(library and get_list(waiting and 0) and -1 and get_list(cancellation and 0) and 1)
+    if not (ptr_to_str(get_list(chunk and 0)) equals "cancelled"):
+        return 1
+    set closed to socket_cancellation_close(waiting)
+    set closed to socket_cancellation_close(cancellation)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    if archive_verify(database and "home") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(3))
+    set row to history_collect_one(archive_prepare(database and "SELECT SUM(CAST(json_extract(payload,'$.bytes') AS INTEGER)),SUM(json_extract(payload,'$.eof')) FROM echo_events WHERE kind='process_output';"))
+    if not (ptr_to_str(get_list(row and 0)) equals "found") or else not (ptr_to_str(get_list(row and 1)) equals "393216") or else not (ptr_to_str(get_list(row and 2)) equals "2"):
+        return 1
+    if archive_verify(database and "home") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: real sandboxed binary pipe output persisted with tool identity and EOF; 393216 bytes survive archive reopen and hash verification."
+    return 0

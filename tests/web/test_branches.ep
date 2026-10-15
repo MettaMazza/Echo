@@ -1,0 +1,118 @@
+import "../../app/web/export"
+import "../../app/archive/export_restore"
+import "fs"
+import "../../app/web/attachments"
+import "../../app/web/branches"
+
+define branch_fixture_finish with database as Int and run as Str and user_event as Str and request as Str and final as Str returning Int:
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set request_payload to concat(payload and concat(",\"parent_event\":" and concat(provider_quote(user_event) and "}")))
+    if archive_append(database and "session:source-run" and request and "model_request" and request_payload and "fixture") is not equal to 0 or else agent_run_transition(database and run and "ready" and user_event and "generating" and request) is not equal to 0:
+        return 1
+    set final_payload to concat(payload and concat(",\"parent_event\":" and provider_quote(request)))
+    set final_payload to concat(final_payload and ",\"content\":\"Saved original answer\",\"reasoning_content\":\"\",\"tool_calls\":[]}")
+    if archive_append(database and "session:source-run" and final and "assistant_final" and final_payload and "fixture") is not equal to 0:
+        return 1
+    return agent_run_transition(database and run and "generating" and request and "completed" and final)
+
+define main returning Int:
+    if get_argument_count() is not equal to 2:
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Owner" and "secret") is not equal to 0:
+        return 1
+    set source to web_submit_owned(database and "owner" and "source-run" and "" and "Original source question")
+    set session to ptr_to_str(get_list(source and 1))
+    set source_path to concat(get_argument(1) and ".source.txt")
+    set later_path to concat(get_argument(1) and ".later.txt")
+    if write_file(source_path and "Inherited source bytes") is not equal to 1 or else write_file(later_path and "Later private parent bytes") is not equal to 1:
+        return 1
+    if web_attachment_register(database and "owner" and session and "source-file" and source_path and "source.txt" and "text/plain") is not equal to 0:
+        return 1
+    set original to agent_run_read(database and "source-run")
+    if branch_fixture_finish(database and "source-run" and ptr_to_str(get_list(original and 1)) and "source-request" and "source-final") is not equal to 0:
+        return 1
+    set foreign to web_branch_session(database and "other" and session and "source-final" and "fork")
+    if not (ptr_to_str(get_list(foreign and 0)) equals "not-found"):
+        return 1
+    set invalid to web_branch_session(database and "owner" and session and "source-request" and "fork")
+    if not (ptr_to_str(get_list(invalid and 0)) equals "invalid-boundary"):
+        return 1
+    set created to web_branch_session(database and "owner" and session and "source-final" and "fork")
+    if not (ptr_to_str(get_list(created and 0)) equals "accepted") or else get_list(created and 3) is not equal to 1:
+        return 1
+    set retried to web_branch_session(database and "owner" and session and "source-final" and "fork")
+    if not (ptr_to_str(get_list(retried and 0)) equals "accepted") or else get_list(retried and 3) is not equal to 0:
+        return 1
+    set conflict to web_branch_session(database and "owner" and session and "source-request" and "fork")
+    if not (ptr_to_str(get_list(conflict and 0)) equals "identity-conflict"):
+        return 1
+    if web_attachment_register(database and "owner" and session and "later-file" and later_path and "later.txt" and "text/plain") is not equal to 0:
+        return 1
+    set files to create_list()
+    set added to append_list(files and "source-file")
+    set bound to turn_attachment_manifest(database and "owner" and "branch:fork" and "branch-next:user" and files)
+    if string_contains(bound and "source-file") equals 0:
+        return 1
+    set listed to web_attachment_list(database and "owner" and "branch:fork")
+    if string_contains(listed and "source-file") equals 0 or else string_contains(listed and "later-file") is not equal to 0:
+        return 1
+    set file_read to attachment_text_execute(database and "branch:fork" and "{\"attachment\":\"source-file\",\"offset\":0,\"characters\":100}")
+    if string_contains(file_read and "Inherited source bytes") equals 0:
+        return 1
+    set future_file to attachment_text_execute(database and "branch:fork" and "{\"attachment\":\"later-file\",\"offset\":0,\"characters\":100}")
+    if not (future_file equals "{\"status\":\"end\"}"):
+        return 1
+    set listed to attachment_tool_execute(database and "branch:fork" and "{\"after\":0}")
+    if string_contains(listed and "source-file") equals 0:
+        return 1
+    set later to web_submit_owned(database and "owner" and "later-source" and session and "Future parent text must stay out")
+    set continuation to web_submit_owned(database and "owner" and "branch-next" and "branch:fork" and "Branch continuation")
+    set messages to session_messages(database and "branch:fork" and "branch-next")
+    set tokens to provider_json_tokens(messages)
+    if tokens equals 0 or else length_list(provider_items(tokens and 0)) is not equal to 3:
+        return 1
+    if string_contains(messages and "Original source question") equals 0 or else string_contains(messages and "Saved original answer") equals 0 or else string_contains(messages and "Branch continuation") equals 0 or else string_contains(messages and "Future parent text") is not equal to 0:
+        return 1
+    set transcript to web_session_transcript(database and "branch:fork")
+    if string_contains(transcript and "Saved original answer") equals 0 or else string_contains(transcript and "Future parent text") is not equal to 0:
+        return 1
+    set original_read to history_read_piece(database and "branch:fork" and "source-run:user" and 0 and 100)
+    if not (ptr_to_str(get_list(original_read and 0)) equals "found") or else not (ptr_to_str(get_list(original_read and 7)) equals "Original source question"):
+        return 1
+    set future_read to history_read_piece(database and "branch:fork" and "later-source:user" and 0 and 100)
+    if not (ptr_to_str(get_list(future_read and 0)) equals "end"):
+        return 1
+    set recap to recap_sources(database and "branch:fork" and "branch-next:user")
+    if string_contains(recap and "Original source question") equals 0 or else string_contains(recap and "Future parent text") is not equal to 0:
+        return 1
+    set exported to web_session_export(database and "owner" and "branch:fork")
+    if archive_export_verify(exported and "") is not equal to 0 or else archive_export_verify(exported and "wrong head") equals 0 or else string_contains(exported and "Later private parent bytes") is not equal to 0 or else string_contains(exported and "later-file") is not equal to 0:
+        return 1
+    set export_tokens to provider_json_tokens(exported)
+    set export_chains to provider_items(export_tokens and provider_member(export_tokens and 0 and "chains"))
+    set incomplete to archive_export_part(exported and export_tokens and get_list(export_chains and 0))
+    if archive_export_verify(incomplete and "") equals 0:
+        return 1
+    set damaged to ptr_to_str(string_replace(exported and "Original source question" and "Changed source question"))
+    if archive_export_verify(damaged and "") equals 0:
+        return 1
+    set restored to archive_open(concat(get_argument(1) and ".restored"))
+    if restored equals 0 or else archive_export_restore(restored and damaged and "") equals 0 or else archive_export_restore(restored and exported and "") is not equal to 0:
+        return 1
+    set restored_read to history_read_piece(restored and "branch:fork" and "source-run:user" and 0 and 100)
+    if not (ptr_to_str(get_list(restored_read and 0)) equals "found") or else not (ptr_to_str(get_list(restored_read and 7)) equals "Original source question"):
+        return 1
+    set future_restored to archive_read_event(restored and "later-source:user")
+    if future_restored is not equal to 0 or else archive_export_restore(restored and exported and "") equals 0 or else sql_close(restored) is not equal to 0:
+        return 1
+    if archive_verify(database and session) is not equal to 0 or else archive_verify(database and "branch:fork") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    if not (session_messages(database and "branch:fork" and "branch-next") equals messages) or else not (web_session_transcript(database and "branch:fork") equals transcript):
+        return 1
+    set closed to sql_close(database)
+    display "PASS: owned immutable branch, exact boundary, retry/conflict, inherited context/transcript, future-parent isolation, inherited attachments, verified branch export/restore and reopen."
+    return 0

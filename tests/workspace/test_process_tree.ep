@@ -1,0 +1,77 @@
+import "../../app/workspace/native_process"
+import "../../app/workspace/files"
+import "fs"
+
+define main returning Int:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if get_argument_count() equals 3:
+        if get_argument(1) equals "leaf":
+            if write_file("leaf-ready.txt" and "ready") is not equal to 1:
+                return 1
+        else:
+            set arguments to create_list()
+            set added to append_list(arguments and str_to_ptr(get_argument(0)))
+            set added to append_list(arguments and str_to_ptr("leaf"))
+            set added to append_list(arguments and str_to_ptr(get_argument(2)))
+            set added to append_list(arguments and 0)
+            set environment to create_list()
+            set added to append_list(environment and 0)
+            set process to create_list()
+            set added to append_list(process and 0)
+            set spawn_function to ep_dlsym(library and "posix_spawn")
+            if ep_dlcall6(spawn_function and get_list_data_ptr(process) and str_to_ptr(get_argument(0)) and 0 and 0 and get_list_data_ptr(arguments) and get_list_data_ptr(environment)) is not equal to 0:
+                return 1
+            if write_file("leaf-pid.txt" and int_to_string(get_list(process and 0))) is not equal to 1:
+                return 1
+        repeat while 1 equals 1:
+            set slept to sleep_ms(100)
+    if get_argument_count() is not equal to 2:
+        return 1
+    set workspace to get_argument(1)
+    set directory to workspace_root_open(library and workspace)
+    set output to workspace_file_open(library and directory and "tree-stdout.txt" and 1)
+    set errors to workspace_file_open(library and directory and "tree-stderr.txt" and 1)
+    set arguments to create_list()
+    set added to append_list(arguments and "branch")
+    set added to append_list(arguments and workspace)
+    set environment to create_list()
+    set handle to workspace_process_start(get_argument(0) and arguments and environment and directory and output and errors)
+    if handle equals 0:
+        return 1
+    # Fixture readiness timeout only; the production adapter has no lifetime cap.
+    set start to ep_time_now_ms()
+    repeat while not (file_exists(concat(workspace and "/leaf-ready.txt")) and file_exists(concat(workspace and "/leaf-pid.txt"))):
+        if ep_time_now_ms() - start is greater than 5000 or else workspace_process_poll(handle) is not equal to 0:
+            set stopped to workspace_process_signal(handle and 9)
+            display "FAIL: descendant readiness"
+            return 1
+        set slept to sleep_ms(10)
+    set leaf to string_to_int(ptr_to_str(read_file(concat(workspace and "/leaf-pid.txt"))))
+    set group_function to ep_dlsym(library and "getpgid")
+    if leaf is less than 1 or else ep_dlcall1(group_function and leaf) is not equal to get_list(handle and 1):
+        set stopped to workspace_process_signal(handle and 9)
+        return 1
+    if workspace_process_signal(handle and 9) is not equal to 0:
+        return 1
+    set state to 0
+    repeat while state equals 0:
+        set state to workspace_process_poll(handle)
+        set slept to sleep_ms(10)
+    if state is not equal to 1 or else get_list(handle and 3) modulo 128 is not equal to 9:
+        return 1
+    set kill_function to ep_dlsym(library and "kill")
+    set start to ep_time_now_ms()
+    repeat while socket_signed_result(ep_dlcall2(kill_function and leaf and 0)) equals 0:
+        if ep_time_now_ms() - start is greater than 5000:
+            display concat("FAIL: descendant still exists " and int_to_string(leaf))
+            return 1
+        set slept to sleep_ms(10)
+    if socket_errno(library) is not equal to 3:
+        return 1
+    set closed to workspace_process_close(handle)
+    set closed to net_close(output)
+    set closed to net_close(errors)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    display "PASS: child and live descendant shared the group; cancellation terminated both, parent reaped and descendant absent."
+    return 0

@@ -1,0 +1,59 @@
+import "../../app/context/recap_notes"
+import "../fixtures/json_fixture"
+import "../fixtures/generation_fixture"
+
+define notes_reply with listener as List and method as Str and path as Str and body as Str and response as Str returning Int:
+    set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " and int_to_string(string_length(response)))
+    set wire to concat(wire and concat("\r\n\r\n" and response))
+    set completed to channel
+    spawn json_fixture(listener and method and path and body and wire and completed)
+    return receive from completed
+
+define notes_provider with listener as List and body as Str and reason as Str and completed as Int returning Int:
+    set failed to notes_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
+    set failed to failed + notes_reply(listener and "GET" and "/props" and "" and "{\"default_generation_settings\":{\"n_ctx\":262144,\"params\":{\"n_predict\":-1}}}")
+    set failed to failed + notes_reply(listener and "POST" and "/v1/chat/completions/input_tokens" and body and "{\"input_tokens\":1000}")
+    set data to concat("{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Retain café. Source original, characters 0 through 14.\"},\"finish_reason\":" and concat(provider_quote(reason) and "}]}"))
+    set generated to channel
+    spawn generation_fixture(listener and data and generated)
+    set result to receive from generated
+    send failed + result to completed
+    return 0
+
+define main returning Int:
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else checkpoint_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "session" and "original" and "user" and "Remember café." and "fixture") is not equal to 0:
+        return 1
+    set piece to history_read_piece(database and "session" and "original" and 0 and 14)
+    set body to recap_fragment_body("fixture" and "original" and piece and 0 and 14)
+    set listener to local_socket_listen(0)
+    set completed to channel
+    set body_copy to concat(body and "")
+    spawn notes_provider(listener and body_copy and "stop" and completed)
+    set result to recap_note_generate(database and "session" and "original" and "job" and "original" and 0 and "notes-request" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set failed to receive from completed
+    if failed is not equal to 0 or else not (ptr_to_str(get_list(result and 0)) equals "notes-saved") or else get_list(result and 1) is not equal to 14:
+        return 1
+    set saved to archive_read_event(database and "notes-request:notes")
+    if saved equals 0:
+        return 1
+    set tokens to provider_json_tokens(ptr_to_str(get_list(saved and 3)))
+    if not (provider_value(tokens and provider_member(tokens and 0 and "source_event")) equals "original") or else not (provider_value(tokens and provider_member(tokens and 0 and "job")) equals "job"):
+        return 1
+    set completed to channel
+    spawn notes_provider(listener and body and "length" and completed)
+    set result to recap_note_generate(database and "session" and "original" and "job" and "original" and 0 and "limited-request" and "fixture" and get_list(listener and 2) and 100 and -1 and 4096)
+    set failed to receive from completed
+    if failed is not equal to 0 or else ptr_to_str(get_list(result and 0)) equals "notes-saved" or else get_list(result and 1) is not equal to 0:
+        return 1
+    if archive_read_event(database and "limited-request:notes") is not equal to 0 or else checkpoint_read_active(database and "session") is not equal to 0:
+        return 1
+    if sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    if archive_read_event(database and "notes-request:notes") equals 0 or else archive_verify(database and "session") is not equal to 0 or else sql_close(database) is not equal to 0 or else local_socket_close(listener) is not equal to 0:
+        return 1
+    display "PASS: fitted source notes persisted with provenance/range, survived reopen, rejected length-ended output without advancing coverage or activating memory."
+    return 0

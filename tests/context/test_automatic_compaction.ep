@@ -1,0 +1,104 @@
+import "../fixtures/runner_provider"
+
+define main returning Int:
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else agent_run_schema(database) is not equal to 0 or else checkpoint_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "session" and "objective" and "user" and "Remember café." and "fixture") is not equal to 0 or else agent_run_create(database and "run" and "session" and "objective") is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    set completed to channel
+    set mode to -1
+    if get_argument_count() is greater than 2:
+        set mode to -2
+        if get_argument(2) equals "repair":
+            set mode to -3
+        if get_argument(2) equals "fragments":
+            set mode to -8
+        if get_argument(2) equals "recover":
+            set mode to -4
+    spawn compaction_fixture(listener and mode and completed)
+    set status to agent_loop(database and "run" and "fixture" and get_list(listener and 2) and 20 and -1 and 4096)
+    display concat("Agent status: " and status)
+    if not (status equals "completed" or else (mode equals -4 and status equals "invalid-review")):
+        return 1
+    set fixture_result to receive from completed
+    set lock_library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set released_lock to compaction_lock_acquire(database and "session" and lock_library)
+    if released_lock is less than 0 or else net_close(released_lock) is not equal to 0 or else ep_dlclose(lock_library) is not equal to 0:
+        display "FAIL: compaction retained its lock after returning."
+        return 1
+    if mode equals -4:
+        if fixture_result is not equal to 0 or else not (status equals "invalid-review") or else checkpoint_read_active(database and "session") is not equal to 0:
+            display concat("FAIL: expected recoverable invalid review, got " and status)
+            return 1
+        # Reopen application storage while the same provider endpoint remains available.
+        if sql_close(database) is not equal to 0:
+            return 1
+        set database to archive_open(get_argument(1))
+        set captured to checkpoint_capture(database and "session")
+        set binding to compaction_job(database and "session" and "run" and "objective" and captured)
+        if not (ptr_to_str(get_list(binding and 0)) equals "ready"):
+            return 1
+        set endpoint to ptr_to_str(get_list(binding and 2))
+        set saved to compaction_saved_candidate(database and "session" and endpoint and ptr_to_str(get_list(binding and 1)))
+        if not (ptr_to_str(get_list(saved and 0)) equals "structure-valid"):
+            return 1
+        # A retry may not silently change its persisted provider endpoint.
+        if not (agent_loop(database and "run" and "fixture" and 1 and 20 and -1 and 4096) equals "provider-profile-conflict"):
+            display "FAIL: recovery accepted a different provider profile."
+            return 1
+        set recovered to channel
+        set saved_copy to concat(ptr_to_str(get_list(saved and 1)) and "")
+        set endpoint_copy to concat(endpoint and "")
+        spawn compaction_recovery_fixture(listener and saved_copy and endpoint_copy and 0 and recovered)
+        set status to agent_loop(database and "run" and "fixture" and get_list(listener and 2) and 20 and -1 and 4096)
+        set fixture_result to receive from recovered
+        set receipt_count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='recap_candidate';"))
+        if not (ptr_to_str(get_list(receipt_count and 0)) equals "found") or else not (ptr_to_str(get_list(receipt_count and 1)) equals "1"):
+            display "FAIL: restart regenerated the saved candidate."
+            return 1
+    if mode equals -2:
+        set retained to agent_run_read(database and "run")
+        if fixture_result is not equal to 0 or else not (status equals "recap-no-progress") or else checkpoint_read_active(database and "session") is not equal to 0 or else retained equals 0:
+            return 1
+        if not (ptr_to_str(get_list(retained and 2)) equals "ready") or else not (ptr_to_str(get_list(retained and 3)) equals "objective") or else archive_verify(database and "session") is not equal to 0:
+            return 1
+        if local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+            return 1
+        set database to archive_open(get_argument(1))
+        set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        set retry to context_compact(database and "run" and "fixture" and 1 and 20 and -1 and 4096 and library)
+        if not (retry equals "recap-no-progress") or else checkpoint_read_active(database and "session") is not equal to 0 or else sql_close(database) is not equal to 0 or else ep_dlclose(library) is not equal to 0:
+            return 1
+        display "PASS: uncertain review triggers repair; unchanged candidate stops with original context intact; repeated-candidate detection survives reopen without provider requests."
+        return 0
+    if not (status equals "completed") or else fixture_result is not equal to 0:
+        display concat("FAIL: automatic compaction " and status)
+        return 1
+    if mode equals -8:
+        set synthesis to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='recap_review_synthesis';"))
+        set fragments to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='recap_fragment_review';"))
+        if not (ptr_to_str(get_list(synthesis and 1)) equals "1") or else not (ptr_to_str(get_list(fragments and 1)) equals "1"):
+            display "FAIL: oversized review did not traverse fragment and synthesis stages."
+            return 1
+    set active to checkpoint_read_active(database and "session")
+    set run to agent_run_read(database and "run")
+    if active equals 0 or else run equals 0 or else not (ptr_to_str(get_list(run and 1)) equals "objective"):
+        return 1
+    if mode equals -3 and not (ptr_to_str(get_list(active and 4)) equals "The active user request is to remember café."):
+        display "FAIL: rejected candidate activated instead of reviewed repair."
+        return 1
+    set final to archive_read_event(database and ptr_to_str(get_list(run and 3)))
+    if final equals 0:
+        return 1
+    set tokens to provider_json_tokens(ptr_to_str(get_list(final and 3)))
+    if not (provider_value(tokens and provider_member(tokens and 0 and "content")) equals "Resumed after compaction: café."):
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    if checkpoint_read_active(database and "session") equals 0 or else not (agent_loop(database and "run" and "fixture" and 1 and 20 and -1 and 4096) equals "completed") or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: capacity trigger, archived recap, original-source review, exact-context activation, same-run continuation and durable completion without provider replay after reopen. Counts and judgments are fixtures."
+    return 0

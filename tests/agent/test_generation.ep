@@ -1,0 +1,54 @@
+import "../../app/agent/generation"
+import "../fixtures/generation_fixture"
+
+define generation_case with database as Int and listener as List and run as Str and request as Str and data as Str and expected as Str returning Int:
+    set user_event to concat(run and ":user")
+    if archive_append(database and "session" and user_event and "user" and "fixture objective" and "fixture") is not equal to 0 or else agent_run_create(database and run and "session" and user_event) is not equal to 0:
+        return 1
+    set completed to channel
+    spawn generation_fixture(listener and data and completed)
+    set result to agent_generate_local(database and run and request and "{\"model\":\"fixture\",\"messages\":[],\"stream\":true}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if fixture_result is not equal to 0:
+        return 1
+    if expected equals "failed":
+        if result equals 0:
+            return 1
+    else if result is not equal to 0:
+        return 1
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return 1
+    if not (ptr_to_str(get_list(row and 2)) equals expected):
+        return 1
+    return 0
+
+define main returning Int:
+    if get_argument_count() is less than 2:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0 or else agent_run_schema(database) is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set final to "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"finished\"},\"finish_reason\":\"stop\"}]}"
+    set calls to "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-a\",\"function\":{\"name\":\"history_search\",\"arguments\":\"{\\\"query\\\":\\\"hello\\\"}\"}},{\"index\":1,\"id\":\"call-b\",\"function\":{\"name\":\"history_read\",\"arguments\":\"{\\\"event\\\":\\\"original\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}"
+    set limited to "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"unfinished\"},\"finish_reason\":\"length\"}]}"
+    if generation_case(database and listener and "final-run" and "final-request" and final and "completed") is not equal to 0 or else generation_case(database and listener and "tools-run" and "tools-request" and calls and "tools") is not equal to 0 or else generation_case(database and listener and "limited-run" and "limited-request" and limited and "failed") is not equal to 0:
+        display "FAIL: generation state."
+        return 1
+    if agent_run_claim_tool(database and "tools-run" and "call-a") is not equal to 0 or else agent_run_claim_tool(database and "tools-run" and "call-b") is not equal to 0:
+        display "FAIL: complete tool batch not queued."
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(path)
+    set row to agent_run_read(database and "final-run")
+    if row equals 0:
+        return 1
+    if not (ptr_to_str(get_list(row and 2)) equals "completed") or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: live provider requests drive durable final/tools/failed states, complete tool batch becomes claimable, limited output cannot complete, archive verifies and state survives reopen."
+    return 0

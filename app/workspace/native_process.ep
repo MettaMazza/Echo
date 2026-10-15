@@ -1,0 +1,134 @@
+import "../retained_text"
+import "../transport/socket_read"
+
+# Host-only Darwin process primitive. Callers supply explicit argv/environment,
+# already opened output descriptors, and a working-directory descriptor.
+# This primitive does not grant a model permission to execute a program.
+# The command tool must launch through the separately qualified sandbox.
+# Stdout/stderr go directly to owned descriptors, without a string buffer cap.
+# Handle fields: library, child PID, reaped flag, raw wait status.
+define workspace_process_start with executable as Str and arguments as List and environment as List and directory as Int and output as Int and errors as Int returning List:
+    if not (ptr_to_str(os_name()) equals "macos") or else directory is less than 3 or else output is less than 3 or else errors is less than 3:
+        return 0
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 0
+    set names to create_list()
+    set added to append_list(names and "posix_spawn")
+    set added to append_list(names and "posix_spawn_file_actions_init")
+    set added to append_list(names and "posix_spawn_file_actions_destroy")
+    set added to append_list(names and "posix_spawn_file_actions_adddup2")
+    set added to append_list(names and "posix_spawn_file_actions_addopen")
+    set added to append_list(names and "posix_spawn_file_actions_addfchdir_np")
+    set added to append_list(names and "posix_spawnattr_init")
+    set added to append_list(names and "posix_spawnattr_destroy")
+    set added to append_list(names and "posix_spawnattr_setflags")
+    set added to append_list(names and "posix_spawnattr_setpgroup")
+    set added to append_list(names and "posix_spawnattr_setsigmask")
+    set added to append_list(names and "posix_spawnattr_setsigdefault")
+    set functions to create_list()
+    set index to 0
+    repeat while index is less than length_list(names):
+        set function to ep_dlsym(library and archive_list_text(names and index))
+        if function equals 0:
+            set closed to ep_dlclose(library)
+            return 0
+        set added to append_list(functions and function)
+        set index to index + 1
+    set actions to create_list()
+    set added to append_list(actions and 0)
+    set attributes to create_list()
+    set added to append_list(attributes and 0)
+    set action_pointer to get_list_data_ptr(actions)
+    set attribute_pointer to get_list_data_ptr(attributes)
+    if ep_dlcall1(get_list(functions and 1) and action_pointer) is not equal to 0:
+        set closed to ep_dlclose(library)
+        return 0
+    if ep_dlcall1(get_list(functions and 6) and attribute_pointer) is not equal to 0:
+        set destroyed to ep_dlcall1(get_list(functions and 2) and action_pointer)
+        set closed to ep_dlclose(library)
+        return 0
+    set failed to 0
+    set failed to failed + ep_dlcall3(get_list(functions and 3) and action_pointer and output and 1)
+    set failed to failed + ep_dlcall3(get_list(functions and 3) and action_pointer and errors and 2)
+    set failed to failed + ep_dlcall5(get_list(functions and 4) and action_pointer and 0 and str_to_ptr("/dev/null") and 0 and 0)
+    set failed to failed + ep_dlcall2(get_list(functions and 5) and action_pointer and directory)
+    # CLOEXEC_DEFAULT closes every unmentioned descriptor. A new process group
+    # allows cancellation of ordinary descendants, not just their parent.
+    set failed to failed + ep_dlcall2(get_list(functions and 8) and attribute_pointer and 16398)
+    set failed to failed + ep_dlcall2(get_list(functions and 9) and attribute_pointer and 0)
+    set mask to create_list()
+    set added to append_list(mask and 0)
+    set defaults to create_list()
+    set added to append_list(defaults and 4294967295)
+    set failed to failed + ep_dlcall2(get_list(functions and 10) and attribute_pointer and get_list_data_ptr(mask))
+    set failed to failed + ep_dlcall2(get_list(functions and 11) and attribute_pointer and get_list_data_ptr(defaults))
+    set argv to create_list()
+    set added to append_list(argv and str_to_ptr(executable))
+    set index to 0
+    repeat while index is less than length_list(arguments):
+        set added to append_list(argv and get_list(arguments and index))
+        set index to index + 1
+    set added to append_list(argv and 0)
+    set envp to create_list()
+    set index to 0
+    repeat while index is less than length_list(environment):
+        set added to append_list(envp and get_list(environment and index))
+        set index to index + 1
+    set added to append_list(envp and 0)
+    set process to create_list()
+    set added to append_list(process and 0)
+    if failed equals 0:
+        set failed to ep_dlcall6(get_list(functions and 0) and get_list_data_ptr(process) and str_to_ptr(executable) and action_pointer and attribute_pointer and get_list_data_ptr(argv) and get_list_data_ptr(envp))
+    set destroyed to ep_dlcall1(get_list(functions and 2) and action_pointer)
+    set destroyed to ep_dlcall1(get_list(functions and 7) and attribute_pointer)
+    if failed is not equal to 0:
+        set closed to ep_dlclose(library)
+        return 0
+    set handle to create_list()
+    set added to append_list(handle and library)
+    set added to append_list(handle and get_list(process and 0))
+    set added to append_list(handle and 0)
+    set added to append_list(handle and 0)
+    return handle
+
+# 0 running, 1 reaped, -1 error. Owner calls until reaped, then closes handle.
+define workspace_process_poll with handle as List returning Int:
+    if get_list(handle and 2) equals 1:
+        return 1
+    set library to get_list(handle and 0)
+    set function to ep_dlsym(library and "waitpid")
+    if function equals 0:
+        return -1
+    set status to create_list()
+    set added to append_list(status and 0)
+    set result to socket_signed_result(ep_dlcall3(function and get_list(handle and 1) and get_list_data_ptr(status) and 1))
+    if result equals 0:
+        return 0
+    if result is less than 0:
+        if socket_errno(library) equals 4:
+            return 0
+        return -1
+    if result is not equal to get_list(handle and 1):
+        return -1
+    set changed to set_list(handle and 2 and 1)
+    set changed to set_list(handle and 3 and get_list(status and 0))
+    return 1
+
+# Caller chooses TERM or KILL; no hidden execution deadline. Do not signal a
+# reaped PID: its numeric identity may already have been reused by the kernel.
+define workspace_process_signal with handle as List and signal as Int returning Int:
+    if get_list(handle and 2) is not equal to 0 or else (signal is not equal to 15 and signal is not equal to 9):
+        return -1
+    set library to get_list(handle and 0)
+    set function to ep_dlsym(library and "kill")
+    if function equals 0:
+        return -1
+    return socket_signed_result(ep_dlcall2(function and 0 - get_list(handle and 1) and signal))
+
+define workspace_process_close with handle as List returning Int:
+    if get_list(handle and 2) is not equal to 1 or else get_list(handle and 0) equals 0:
+        return 1
+    set closed to ep_dlclose(get_list(handle and 0))
+    set changed to set_list(handle and 0 and 0)
+    return closed

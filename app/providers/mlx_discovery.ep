@@ -1,0 +1,66 @@
+import "../retained_text"
+import "mlx_preflight"
+
+# MLX /v1/models reports available identities, not weight hashes or loaded
+# context. Do not infer either from this list. Local pinned configuration and
+# runtime launch provenance remain separate requirements.
+define mlx_discovery_check with health as Str and models as Str and model as Str returning Str:
+    set health_tokens to provider_json_tokens(health)
+    set model_tokens to provider_json_tokens(models)
+    if health_tokens equals 0 or else model_tokens equals 0:
+        return "invalid-provider-metadata"
+    if provider_unique_objects(health_tokens) equals 0 or else provider_unique_objects(model_tokens) equals 0:
+        return "invalid-provider-metadata"
+    if not (provider_value(health_tokens and provider_member(health_tokens and 0 and "status")) equals "ok"):
+        return "provider-unavailable"
+    set entries to provider_items(model_tokens and provider_member(model_tokens and 0 and "data"))
+    if entries equals 0:
+        return "invalid-provider-metadata"
+    set found to 0
+    set index to 0
+    repeat while index is less than length_list(entries):
+        set field to provider_member(model_tokens and get_list(entries and index) and "id")
+        if not (provider_kind(model_tokens and field) equals "string"):
+            return "invalid-provider-metadata"
+        if provider_value(model_tokens and field) equals model:
+            set found to found + 1
+        set index to index + 1
+    if found equals 0:
+        return "model-unavailable"
+    if found is not equal to 1:
+        return "ambiguous-model-identity"
+    return "ready"
+
+define mlx_preflight with database as Int and session as Str and identity as Str and body as Str and port as Int and helper as Str and interpreter as Str and program as Str and model as Str and spool as Str and reserve as Int and cancellation as Int and batch as Int returning List:
+    set health to local_json_request(port and "GET" and "/health" and "" and cancellation and batch)
+    set models to local_json_result("not-requested" and 0 and "")
+    set status to "discovery-failed"
+    if archive_list_text(health and 0) equals "ready":
+        set models to local_json_request(port and "GET" and "/v1/models" and "" and cancellation and batch)
+        if archive_list_text(models and 0) equals "ready":
+            set status to mlx_discovery_check(archive_list_text(health and 2) and archive_list_text(models and 2) and model)
+    set payload to concat("{\"decision\":" and provider_quote(status))
+    set payload to concat(payload and concat(",\"port\":" and int_to_string(port)))
+    set payload to concat(payload and ",\"responses\":[")
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to health
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    set retained_item_1_1 to models
+    set retained_added to append_list(retained_list_1 and retained_item_1_1)
+    set replies to retained_list_1
+    set index to 0
+    repeat while index is less than length_list(replies):
+        set reply to get_list(replies and index)
+        if index is greater than 0:
+            set payload to concat(payload and ",")
+        set payload to concat(payload and concat("{\"status\":" and provider_quote(archive_list_text(reply and 0))))
+        set payload to concat(payload and concat(",\"http_status\":" and int_to_string(get_list(reply and 1))))
+        set payload to concat(payload and concat(",\"body\":" and provider_quote(archive_list_text(reply and 2))))
+        set payload to concat(payload and "}")
+        set index to index + 1
+    set payload to concat(payload and "]}")
+    if archive_append(database and session and concat(identity and ":discovery") and "provider_discovery" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return mlx_preflight_result("archive-error" and 0)
+    if not (status equals "ready"):
+        return mlx_preflight_result(status and 0)
+    return mlx_preflight_local(database and session and identity and body and helper and interpreter and program and model and spool and reserve and cancellation)

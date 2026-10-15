@@ -1,0 +1,61 @@
+import "../../app/web/activity"
+import "fs"
+
+define activity_expect with database as Int and expected as Str returning Int:
+    set actual to web_run_activity(database and "run")
+    if not (actual equals expected):
+        display concat("Unexpected activity: " and actual)
+        return 1
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0:
+        return 1
+    set submitted to web_submit(database and "run" and "" and "Activity test")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set row to agent_run_read(database and "run")
+    set parent to ptr_to_str(get_list(row and 3))
+    if activity_expect(database and "Preparing context for the next step") is not equal to 0:
+        return 1
+    set binding to concat("{\"run_id\":\"run\",\"job\":\"job\",\"parent_event\":" and concat(provider_quote(parent) and "}"))
+    if archive_append(database and session and "binding" and "compaction_binding" and binding and "test") is not equal to 0:
+        return 1
+    set stages to ["candidate", "notes", "merge", "fragment-review", "review", "synthesis", "repair", "checkpoint"]
+    set labels to ["Writing a detailed recap from original records", "Reading original history in parts", "Combining the saved recap notes", "Checking the recap against original records", "Checking the recap against original records", "Checking the combined recap reviews", "Revising the recap from review findings", "Verifying files and saving the reviewed recap"]
+    set index to 0
+    repeat while index is less than length_list(stages):
+        set event to concat("job:" and concat(ptr_to_str(get_list(stages and index)) and ":receipt"))
+        if archive_append(database and session and event and "provider_event" and "{}" and "test") is not equal to 0:
+            return 1
+        if activity_expect(database and ptr_to_str(get_list(labels and index))) is not equal to 0:
+            return 1
+        set index to index + 1
+    # A later unrelated job must not replace the current run's activity.
+    if archive_append(database and session and "other:candidate:receipt" and "provider_event" and "{}" and "test") is not equal to 0:
+        return 1
+    if activity_expect(database and "Verifying files and saving the reviewed recap") is not equal to 0:
+        return 1
+    # Even a matching job prefix in another session cannot supply a stage.
+    set other to web_submit(database and "foreign" and "" and "Separate conversation")
+    set foreign_session to ptr_to_str(get_list(other and 1))
+    if archive_append(database and foreign_session and "job:repair:foreign" and "provider_event" and "{}" and "test") is not equal to 0:
+        return 1
+    if activity_expect(database and "Verifying files and saving the reviewed recap") is not equal to 0:
+        return 1
+    # A committed binding for an old head must not describe a later run step.
+    if archive_append(database and session and "later-head" and "user" and "Next step" and "test") is not equal to 0 or else sql_execute(database and "UPDATE echo_runs SET last_event='later-head' WHERE run='run';") is not equal to 0:
+        return 1
+    if activity_expect(database and "Preparing context for the next step") is not equal to 0:
+        return 1
+    if agent_cancel_run(database and "run") is not equal to 0 or else activity_expect(database and "Stopped") is not equal to 0:
+        return 1
+    if archive_verify(database and session) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    if activity_expect(database and "Stopped") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: recap activity stages, unrelated job and foreign-session exclusion, stale-head exclusion, terminal state and reopened status."
+    return 0

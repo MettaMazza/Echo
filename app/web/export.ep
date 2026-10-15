@@ -1,0 +1,107 @@
+import "../retained_text"
+import "../archive/export_verify"
+import "run_store"
+
+# Export one verified read snapshot. Payload strings retain their original bytes
+# and hashes; credentials and other devices' sessions are never included.
+define web_session_export_prefix with database as Int and device as Str and session as Str and boundary as Int returning Str:
+    if web_device_session_allowed(database and device and session) is not equal to 1:
+        return "{\"status\":\"not-found\"}"
+    if archive_verify(database and session) is not equal to 0:
+        return "{\"status\":\"archive-verification-failed\"}"
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and int_to_string(boundary))
+    set statement to checkpoint_prepare(database and "SELECT json_object('sequence',CAST(sequence AS TEXT),'session',session,'event',event,'kind',kind,'payload',payload,'occurred',occurred,'previous',previous,'digest',digest) FROM echo_events WHERE session=?1 AND sequence<=CAST(?2 AS INTEGER) ORDER BY sequence;" and values)
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set builder to create_builder()
+    set added to builder_append(builder and "{\"status\":\"found\",\"format\":\"echo-session-events-v1\",\"session\":")
+    set added to builder_append(builder and provider_quote(session))
+    set added to builder_append(builder and ",\"events\":[")
+    set count to 0
+    set head to ""
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"database-error\"}"
+        if count is greater than 0:
+            set added to builder_append(builder and ",")
+        set added to builder_append(builder and ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        set record to provider_json_tokens(ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        set head to provider_value(record and provider_member(record and 0 and "digest"))
+        set count to count + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    set added to builder_append(builder and concat("],\"event_count\":" and provider_quote(int_to_string(count))))
+    set added to builder_append(builder and concat(",\"head\":" and concat(provider_quote(head) and "}")))
+    return ptr_to_str(builder_to_string(builder))
+
+# A branch export carries every required ancestor prefix as its own verified
+# hash chain. Descending endpoints put each child immediately before its parent.
+define web_session_export with database as Int and device as Str and session as Str returning Str:
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    if web_device_session_allowed(database and device and session) is not equal to 1:
+        set ended to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"not-found\"}"
+    set values to create_list()
+    set added to append_list(values and session)
+    set query to concat(session_scope_sql() and "SELECT session,boundary FROM scopes ORDER BY boundary DESC;")
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        set ended to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"database-error\"}"
+    set scopes to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            set ended to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"database-error\"}"
+        set record to create_list()
+        set added to append_list(record and ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        set added to append_list(record and ep_sqlite3_column_int(statement and 1))
+        set added to append_list(scopes and record)
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        set ended to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"database-error\"}"
+    set builder to create_builder()
+    set added to builder_append(builder and "{\"status\":\"found\",\"format\":\"echo-branch-events-v2\",\"session\":")
+    set added to builder_append(builder and provider_quote(session))
+    set added to builder_append(builder and ",\"chains\":[")
+    set first to ""
+    set head to ""
+    set index to 0
+    repeat while index is less than length_list(scopes):
+        set record to get_list(scopes and index)
+        set chain to web_session_export_prefix(database and device and archive_list_text(record and 0) and get_list(record and 1))
+        set tokens to provider_json_tokens(chain)
+        if tokens equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "status")) equals "found"):
+            set discarded to builder_to_string(builder)
+            set ended to sql_execute(database and "ROLLBACK;")
+            return chain
+        if index equals 0:
+            set first to chain
+            set head to provider_value(tokens and provider_member(tokens and 0 and "head"))
+        else:
+            set added to builder_append(builder and ",")
+        set added to builder_append(builder and chain)
+        set index to index + 1
+    set added to builder_append(builder and concat("],\"head\":" and concat(provider_quote(head) and "}")))
+    set bundle to ptr_to_str(builder_to_string(builder))
+    set output to bundle
+    if length_list(scopes) equals 1:
+        set output to first
+    if archive_export_verify(output and "") is not equal to 0:
+        set ended to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"archive-verification-failed\"}"
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ended to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"database-error\"}"
+    return output

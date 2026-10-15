@@ -1,0 +1,81 @@
+import "../../app/providers/local_chat"
+
+define chat_fixture_server with listener as List and expected as Str and completed as Int returning Int:
+    set descriptor to local_socket_accept(listener)
+    if descriptor is less than 0:
+        send 1 to completed
+        return 1
+    set reader to http_stream_create(get_list(listener and 0) and descriptor and -1)
+    set head to http_stream_head(reader)
+    set failure to 0
+    if not (ptr_to_str(get_list(head and 0)) equals "ready"):
+        send 1 to completed
+        return 1
+    if not (ptr_to_str(get_list(head and 1)) equals "POST") or else not (ptr_to_str(get_list(head and 2)) equals "/v1/chat/completions"):
+        set failure to 1
+    set body to http_body_create(ptr_to_str(get_list(head and 3)) and get_list(head and 4))
+    set position to 0
+    set compare to ep_dlsym(get_list(listener and 0) and "memcmp")
+    repeat while 1 equals 1:
+        set piece to http_body_next(reader and body and string_length(expected) + 1)
+        set status to ptr_to_str(get_list(piece and 0))
+        if status equals "done":
+            break
+        if not (status equals "data"):
+            set failure to 1
+            break
+        if get_list(piece and 2) is greater than string_length(expected) - position:
+            set failure to 1
+            break
+        if ep_dlcall3(compare and get_list(piece and 1) and str_to_ptr(expected) + position and get_list(piece and 2)) is not equal to 0:
+            set failure to 1
+        set position to position + get_list(piece and 2)
+    if position is not equal to string_length(expected):
+        set failure to 1
+    set answer to "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"live reply\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+    set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nContent-Length: " and int_to_string(string_length(answer)))
+    set wire to concat(wire and concat("\r\n\r\n" and answer))
+    set written to socket_write_all(get_list(listener and 0) and descriptor and -1 and str_to_ptr(wire) and string_length(wire))
+    if not (ptr_to_str(get_list(written and 0)) equals "sent"):
+        set failure to 1
+    set released to http_stream_release(reader)
+    set closed to net_close(descriptor)
+    send failure + released + closed to completed
+    return 0
+
+define main returning Int:
+    if get_argument_count() is less than 2:
+        return 1
+    set database to archive_open(get_argument(1))
+    set body to "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":\"hé🌍\"}],\"stream\":true}"
+    set payload to concat("{\"run_id\":\"run\",\"request_body\":" and concat(provider_quote(body) and "}"))
+    if archive_append(database and "session" and "request" and "model_request" and payload and "fixture") is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set completed to channel
+    set expected_body to concat(body and "")
+    spawn chat_fixture_server(listener and expected_body and completed)
+    set result to local_chat_generate(database and "session" and "request" and get_list(listener and 2) and "/v1/chat/completions" and body and -1 and 65536)
+    set server_result to receive from completed
+    if server_result is not equal to 0 or else not (ptr_to_str(get_list(result and 0)) equals "complete"):
+        display "FAIL: local provider round trip."
+        display ptr_to_str(get_list(result and 0))
+        return 1
+    set duplicate to local_chat_generate(database and "session" and "request" and get_list(listener and 2) and "/v1/chat/completions" and body and -1 and 65536)
+    if not (ptr_to_str(get_list(duplicate and 0)) equals "archive-error"):
+        return 1
+    set cancellation to socket_cancellation_create(get_list(listener and 0))
+    if cancellation equals 0:
+        return 1
+    if socket_cancel(cancellation) is not equal to 0:
+        return 1
+    set cancelled to local_socket_connect(get_list(listener and 0) and get_list(listener and 2) and get_list(cancellation and 0))
+    if not (ptr_to_str(get_list(cancelled and 0)) equals "cancelled") or else socket_cancellation_close(cancellation) is not equal to 0:
+        display "FAIL: connection cancellation."
+        return 1
+    if local_socket_close(listener) is not equal to 0 or else archive_verify(database and "session") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: outbound loopback POST, exact persisted Unicode request, HTTP validation, archived streamed reply, verified chain, connection cancellation and duplicate-dispatch rejection before network replay."
+    return 0

@@ -1,0 +1,107 @@
+import "os"
+import "net"
+
+external define get_list_data_ptr with values returning Int
+
+# Darwin's socket ABI uses signed 32-bit results. The generic integer FFI can
+# expose a negative result as an unsigned low word on Apple Silicon.
+define socket_signed_result with value as Int returning Int:
+    if value is greater than 2147483647:
+        return value - 4294967296
+    return value
+
+# This adapter is deliberately explicit about its operating-system ABI.
+# The model/provider layer remains independent of the local socket platform.
+# Return fields: library handle, listening descriptor, actual assigned port.
+define local_socket_listen with requested_port as Int returning List:
+    set platform to ptr_to_str(os_name())
+    if not (platform equals "macos") or else requested_port is less than 0 or else requested_port is greater than 65535:
+        return 0
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 0
+    set socket_function to ep_dlsym(library and "socket")
+    set bind_function to ep_dlsym(library and "bind")
+    set listen_function to ep_dlsym(library and "listen")
+    set name_function to ep_dlsym(library and "getsockname")
+    set sysctl_function to ep_dlsym(library and "sysctlbyname")
+    if socket_function equals 0 or else bind_function equals 0 or else listen_function equals 0 or else name_function equals 0 or else sysctl_function equals 0:
+        set closed to ep_dlclose(library)
+        return 0
+    # Protocol constants: AF_INET=2, SOCK_STREAM=1. No wildcard bind.
+    set descriptor to socket_signed_result(ep_dlcall3(socket_function and 2 and 1 and 0))
+    if descriptor is less than 0:
+        set closed to ep_dlclose(library)
+        return 0
+    # SO_REUSEADDR lets a stopped listener restart while old TCP connections
+    # finish closing. It does not enable simultaneous listeners (SO_REUSEPORT).
+    set option_function to ep_dlsym(library and "setsockopt")
+    set enabled to create_list()
+    set added to append_list(enabled and 1)
+    if option_function equals 0 or else socket_signed_result(ep_dlcall5(option_function and descriptor and 65535 and 4 and get_list_data_ptr(enabled) and 4)) is not equal to 0:
+        set closed to net_close(descriptor)
+        set closed to ep_dlclose(library)
+        return 0
+    # sockaddr_in: length, family, network-order port, 127.0.0.1, padding.
+    # List cells provide aligned, writable native memory for the ABI structure.
+    set address to create_list()
+    set packed to 16 + 2 * 256 + (requested_port / 256) * 65536 + (requested_port modulo 256) * 16777216 + 127 * 4294967296 + 72057594037927936
+    set added to append_list(address and packed)
+    set added to append_list(address and 0)
+    set address_pointer to get_list_data_ptr(address)
+    if socket_signed_result(ep_dlcall3(bind_function and descriptor and address_pointer and 16)) is not equal to 0:
+        set closed to net_close(descriptor)
+        set closed to ep_dlclose(library)
+        return 0
+    # Ask the kernel for its queue capacity instead of imposing our own backlog.
+    set backlog to create_list()
+    set added to append_list(backlog and 0)
+    set size to create_list()
+    set added to append_list(size and 4)
+    if socket_signed_result(ep_dlcall5(sysctl_function and str_to_ptr("kern.ipc.somaxconn") and get_list_data_ptr(backlog) and get_list_data_ptr(size) and 0 and 0)) is not equal to 0:
+        set closed to net_close(descriptor)
+        set closed to ep_dlclose(library)
+        return 0
+    if socket_signed_result(ep_dlcall2(listen_function and descriptor and get_list(backlog and 0))) is not equal to 0:
+        set closed to net_close(descriptor)
+        set closed to ep_dlclose(library)
+        return 0
+    set size to create_list()
+    set added to append_list(size and 16)
+    if socket_signed_result(ep_dlcall3(name_function and descriptor and address_pointer and get_list_data_ptr(size))) is not equal to 0:
+        set closed to net_close(descriptor)
+        set closed to ep_dlclose(library)
+        return 0
+    set packed to get_list(address and 0)
+    set port to ((packed / 65536) modulo 256) * 256 + ((packed / 16777216) modulo 256)
+    set result to create_list()
+    set added to append_list(result and library)
+    set added to append_list(result and descriptor)
+    set added to append_list(result and port)
+    return result
+
+# No fixed read/write deadline is inherited from the general networking helper.
+# Cancellation and readiness will be controlled by the request lifecycle.
+define local_socket_accept with listener as List returning Int:
+    set library to get_list(listener and 0)
+    set accept_function to ep_dlsym(library and "accept")
+    set option_function to ep_dlsym(library and "setsockopt")
+    if accept_function equals 0 or else option_function equals 0:
+        return -1
+    set descriptor to socket_signed_result(ep_dlcall3(accept_function and get_list(listener and 1) and 0 and 0))
+    if descriptor is less than 0:
+        return -1
+    # Return an EPIPE error instead of terminating Echo when a client closes.
+    set enabled to create_list()
+    set added to append_list(enabled and 1)
+    if socket_signed_result(ep_dlcall5(option_function and descriptor and 65535 and 4130 and get_list_data_ptr(enabled) and 4)) is not equal to 0:
+        set closed to net_close(descriptor)
+        return -1
+    return descriptor
+
+define local_socket_close with listener as List returning Int:
+    set closed to net_close(get_list(listener and 1))
+    set unloaded to ep_dlclose(get_list(listener and 0))
+    if closed is not equal to 0 or else unloaded is not equal to 0:
+        return 1
+    return 0

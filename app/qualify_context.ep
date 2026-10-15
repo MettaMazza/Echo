@@ -1,0 +1,88 @@
+import "providers/llama_preflight"
+import "providers/local_chat"
+
+# Synthetic context-capacity probe. Reserve is supplied for this workload and
+# never becomes a generation ceiling. The provider supplies capacity and counts.
+define qualification_body with model as Str and repeats as Int returning Str:
+    set text to create_builder()
+    set added to builder_append(text and "Read this synthetic archive. Remember three facts. Beginning fact: the copper key is ORCHID-731. Filler follows. ")
+    set index to 0
+    repeat while index is less than repeats:
+        if index equals repeats / 2:
+            set added to builder_append(text and " Middle fact: the silver key is COMET-284. ")
+        set added to builder_append(text and " cedar amber river stone")
+        set index to index + 1
+    set added to builder_append(text and " End fact: the gold key is HARBOR-956. Return only the copper, silver and gold key values in that order. Do not repeat filler.")
+    set content to ptr_to_str(builder_to_string(text))
+    return concat("{\"model\":" and concat(provider_quote(model) and concat(",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":" and concat(provider_quote(content) and "}]}"))))
+
+define qualification_count with port as Int and body as Str returning Int:
+    set response to local_json_request(port and "POST" and "/v1/chat/completions/input_tokens" and body and -1 and 65536)
+    if not (ptr_to_str(get_list(response and 0)) equals "ready"):
+        return -1
+    return llama_input_count(ptr_to_str(get_list(response and 2)))
+
+define main returning Int:
+    if get_argument_count() is not equal to 4:
+        display "Supply a new archive path, local port and workload output reserve."
+        return 1
+    set port to http_decimal(get_argument(2))
+    set reserve to http_decimal(get_argument(3))
+    if port is less than 1 or else port is greater than 65535 or else reserve is less than 1:
+        return 1
+    set models to local_json_request(port and "GET" and "/v1/models" and "" and -1 and 65536)
+    set props to local_json_request(port and "GET" and "/props" and "" and -1 and 65536)
+    if not (ptr_to_str(get_list(models and 0)) equals "ready") or else not (ptr_to_str(get_list(props and 0)) equals "ready"):
+        return 1
+    set tokens to provider_json_tokens(ptr_to_str(get_list(models and 2)))
+    set entries to provider_items(tokens and provider_member(tokens and 0 and "data"))
+    if entries equals 0 or else length_list(entries) is not equal to 1:
+        return 1
+    set model to provider_value(tokens and provider_member(tokens and get_list(entries and 0) and "id"))
+    set metadata to llama_metadata_parse(ptr_to_str(get_list(models and 2)) and ptr_to_str(get_list(props and 2)) and model)
+    if not (ptr_to_str(get_list(metadata and 0)) equals "ready"):
+        return 1
+    set capacity to get_list(metadata and 2)
+    if capacity <= reserve:
+        return 1
+    set target to capacity - reserve
+    set low to 0
+    set high to 1
+    repeat while 1 equals 1:
+        set count to qualification_count(port and qualification_body(model and high))
+        if count is less than 0:
+            return 1
+        if count is greater than target:
+            break
+        set low to high
+        set high to high * 2
+    repeat while high - low is greater than 1:
+        set middle to low + (high - low) / 2
+        set count to qualification_count(port and qualification_body(model and middle))
+        if count is less than 0:
+            return 1
+        if count <= target:
+            set low to middle
+        else:
+            set high to middle
+    set body to qualification_body(model and low)
+    set database to archive_open(get_argument(1))
+    if database equals 0:
+        return 1
+    set decision to llama_preflight(database and "context-probe" and "preflight" and port and body and reserve and -1 and 65536)
+    display concat("Preflight: " and ptr_to_str(get_list(decision and 0)))
+    if not (ptr_to_str(get_list(decision and 0)) equals "ready"):
+        return 1
+    display concat("Capacity: " and int_to_string(capacity))
+    display concat("Input tokens: " and int_to_string(get_list(decision and 3)))
+    display concat("Available output: " and int_to_string(get_list(decision and 4)))
+    set payload to concat("{\"run_id\":\"context-probe\",\"request_body\":" and concat(provider_quote(body) and "}"))
+    if archive_append(database and "context-probe" and "request" and "model_request" and payload and "live") is not equal to 0:
+        return 1
+    set started to ep_time_now_ms()
+    set result to local_chat_generate(database and "context-probe" and "request" and port and "/v1/chat/completions" and body and -1 and 65536)
+    display concat("Status: " and ptr_to_str(get_list(result and 0)))
+    display concat("Elapsed milliseconds: " and int_to_string(ep_time_now_ms() - started))
+    if not (ptr_to_str(get_list(result and 0)) equals "complete") or else archive_verify(database and "context-probe") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    return 0

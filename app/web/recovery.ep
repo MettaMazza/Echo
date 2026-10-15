@@ -1,0 +1,89 @@
+import "../transport/isolated_process"
+import "../retained_text"
+import "worker"
+import "../agent/generation_recovery"
+import "../agent/tool_recovery"
+
+# Only lock-aware claims are eligible. Legacy claims have no proof that their
+# live workers observe this lock protocol and must not be silently reclaimed.
+# Restore generation only after proving the abandoned claim under its lock.
+define web_worker_recover_ready with database as Int and run as Str and previous as Str and worker as Str and library as Int returning Int:
+    set descriptor to compaction_lock_acquire(database and concat("web-worker:" and run) and library)
+    if descriptor is less than 0:
+        return 1
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and previous)
+    set proof to history_collect_one(checkpoint_prepare(database and "SELECT w.run FROM echo_web_workers w JOIN echo_worker_lock_protocol p ON p.worker=w.worker AND p.run=w.run WHERE w.run=?1 AND w.worker=?2 AND w.status='running';" and values))
+    if not (archive_list_text(proof and 0) equals "found"):
+        set closed to net_close(descriptor)
+        return 1
+    set restored to agent_recover_generation_owned(database and run and concat(worker and ":generation-recovery") and "0")
+    if not (restored equals "ready" or else restored equals "tools" or else restored equals "completed" or else restored equals "cancelled"):
+        set closed to net_close(descriptor)
+        return 1
+    if agent_recover_tools_owned(database and run) is not equal to 0:
+        set closed to net_close(descriptor)
+        return 1
+    set result to web_worker_recover_owned(database and run and previous and worker)
+    set closed to net_close(descriptor)
+    return result + closed
+
+define web_worker_recover_owned with database as Int and run as Str and previous as Str and worker as Str returning Int:
+    if string_length(worker) equals 0 or else worker equals previous:
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set values to create_list()
+    set added to append_list(values and worker)
+    set added to append_list(values and run)
+    set added to append_list(values and previous)
+    if tool_ledger_change(database and "UPDATE echo_web_workers SET worker=?1 WHERE run=?2 AND worker=?3 AND status='running' AND EXISTS(SELECT 1 FROM echo_worker_lock_protocol p WHERE p.worker=?3 AND p.run=?2) AND EXISTS(SELECT 1 FROM echo_runs r WHERE r.run=?2 AND r.state IN ('ready','tools','completed','cancelled')) AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=?2 AND t.state NOT IN ('queued','observed')) RETURNING run;" and values) is not equal to 0:
+        return archive_rollback(database)
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return archive_rollback(database)
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"previous_worker\":" and provider_quote(previous)))
+    set payload to concat(payload and concat(",\"worker\":" and provider_quote(worker)))
+    set payload to concat(payload and ",\"reason\":\"recoverable worker claim had no active native owner\"}")
+    if archive_append_pending(database and archive_list_text(row and 0) and concat(worker and ":recovery") and "worker_recovery" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else web_worker_protocol(database and run and worker) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# Snapshot candidates before dispatch; each recovery rechecks ownership/state.
+define web_recover_ready_workers with database as Int and database_path as Str and model as Str and port as Int and reserve as Int and batch as Int returning Int:
+    return web_recover_ready_workers_provider(database and database_path and provider_llama_profile(model and port) and reserve and batch)
+
+define web_recover_ready_workers_provider with database as Int and database_path as Str and profile as Str and reserve as Int and batch as Int returning Int:
+    set statement to archive_prepare(database and "SELECT w.run,w.worker FROM echo_web_workers w JOIN echo_runs r ON r.run=w.run JOIN echo_worker_lock_protocol p ON p.worker=w.worker AND p.run=w.run WHERE w.status='running' AND r.state IN ('ready','generating','tools','completed','cancelled');")
+    if statement equals 0:
+        return 1
+    set pending to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return 1
+        set row to create_list()
+        set added to append_list(row and concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and ""))
+        set added to append_list(row and concat(ptr_to_str(ep_sqlite3_column_text(statement and 1)) and ""))
+        set added to append_list(pending and row)
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 1
+    set index to 0
+    repeat while index is less than length_list(pending):
+        set row to get_list(pending and index)
+        set run to archive_list_text(row and 0)
+        set worker to agent_identity()
+        if web_worker_recover_ready(database and run and archive_list_text(row and 1) and worker and library) equals 0:
+            set path_copy to concat(database_path and "")
+            set profile_copy to concat(profile and "")
+            set launched_worker to web_worker_dispatch(database and path_copy and run and worker and profile_copy and reserve and batch)
+        set index to index + 1
+    return ep_dlclose(library)

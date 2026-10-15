@@ -1,0 +1,95 @@
+import "../retained_text"
+import "file_publication"
+import "attachment_snapshot"
+import "../web/uploads"
+
+# Offline candidate only. Originals and hashes are unchanged; only host storage
+# locations are rebound inside a transaction, with immutability restored before
+# commit. Uploads without completed attachments cannot resume old paths.
+define attachment_restore_relocate with database as Int and backup_root as Str and destination_root as Str returning Int:
+    if web_upload_schema(database) is not equal to 0 or else sql_execute(database and "BEGIN IMMEDIATE; DROP TRIGGER echo_attachment_no_update; DROP TRIGGER echo_upload_identity_immutable;") is not equal to 0:
+        return archive_rollback(database)
+    set statement to archive_prepare(database and "SELECT attachment,digest,CAST(bytes AS TEXT) FROM echo_attachment_snapshot_files ORDER BY attachment;")
+    if statement equals 0:
+        return archive_rollback(database)
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return archive_rollback(database)
+        set identity to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set digest to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set bytes to string_to_int(ptr_to_str(ep_sqlite3_column_text(statement and 2)))
+        set destination to attachment_snapshot_path(destination_root and identity)
+        if file_copy_verified(attachment_snapshot_path(backup_root and identity) and destination and digest and bytes and 65536) is not equal to 0:
+            set closed to ep_sqlite3_finalize(statement)
+            return archive_rollback(database)
+        set values to create_list()
+        set added to append_list(values and destination)
+        set added to append_list(values and identity)
+        set update to checkpoint_prepare(database and "UPDATE echo_attachments SET path=?1 WHERE attachment=?2;" and values)
+        if update equals 0 or else archive_finish(update and 101) is not equal to 0:
+            set closed to ep_sqlite3_finalize(statement)
+            return archive_rollback(database)
+        set update to checkpoint_prepare(database and "UPDATE echo_uploads SET path=?1 WHERE upload=?2 AND session=(SELECT session FROM echo_attachments WHERE attachment=?2);" and values)
+        if update equals 0 or else archive_finish(update and 101) is not equal to 0:
+            set closed to ep_sqlite3_finalize(statement)
+            return archive_rollback(database)
+    if ep_sqlite3_finalize(statement) is not equal to 0 or else sql_execute(database and "UPDATE echo_uploads SET state='failed' WHERE NOT EXISTS(SELECT 1 FROM echo_attachments a WHERE a.attachment=echo_uploads.upload AND a.session=echo_uploads.session AND a.path=echo_uploads.path);") is not equal to 0:
+        return archive_rollback(database)
+    if web_upload_schema(database) is not equal to 0 or else sql_execute(database and "CREATE TABLE echo_attachment_restore_receipt(identity INTEGER PRIMARY KEY CHECK(identity=1),state TEXT NOT NULL); INSERT INTO echo_attachment_restore_receipt VALUES(1,'review-required'); COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# This gate prevents a historical backup from silently replaying actions that
+# may have completed after its snapshot. Reconciliation is a separate workflow.
+define attachment_restore_start_allowed with database as Int returning Int:
+    set exists to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_attachment_restore_receipt';"))
+    if archive_list_text(exists and 0) equals "end":
+        return 1
+    set release_table to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_restore_release';"))
+    if not (archive_list_text(release_table and 0) equals "found"):
+        return 0
+    set released to history_collect_one(archive_prepare(database and "SELECT r.identity FROM echo_attachment_restore_receipt r JOIN echo_restore_release a ON a.identity=r.identity WHERE r.identity=1 AND r.state='reconciled' AND a.mode='terminal-snapshot' AND length(a.reviewed_sha256)=64;"))
+    if archive_list_text(released and 0) equals "found":
+        return 1
+    return 0
+
+define attachment_restore_reserved with library as Int and source as Str and backup_root as Str and destination as Str and destination_root as Str returning Int:
+    if string_length(destination_root) equals 0 or else get_character(destination_root and 0) is not equal to 47 or else file_exists(destination):
+        return 1
+    set candidate to concat(destination and ".restoring")
+    if file_exists(candidate) or else archive_restore(source and candidate) is not equal to 0:
+        return 1
+    set database to sql_open(candidate)
+    if database equals 0:
+        return 1
+    set result to attachment_snapshot_verify(database and backup_root)
+    if result equals 0:
+        set result to attachment_restore_relocate(database and backup_root and destination_root)
+    if result equals 0:
+        set result to attachment_snapshot_verify(database and destination_root)
+    set closed to sql_close(database)
+    if result is not equal to 0 or else closed is not equal to 0:
+        return 1
+    # Attachment bytes were flushed by file_copy_verified; flush their directory
+    # before publishing the database that references them.
+    set directory to native_open_mode(library and destination_root and 554696704 and 0)
+    if directory is less than 0 or else file_stage_finish(library and directory) is not equal to 0:
+        return 1
+    set descriptor to native_open_mode(library and candidate and 16777472 and 0)
+    if descriptor is less than 0 or else file_stage_finish(library and descriptor) is not equal to 0:
+        return 1
+    return file_publication_finish(library and candidate and destination)
+
+define attachment_restore with source as Str and backup_root as Str and destination as Str and destination_root as Str returning Int:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 1
+    set result to file_publication_reserve(library and destination)
+    if result equals 0:
+        set result to attachment_restore_reserved(library and source and backup_root and destination and destination_root)
+    set closed to ep_dlclose(library)
+    return result

@@ -1,0 +1,63 @@
+import "web/attachments"
+import "agent/runner"
+
+# A live qualification entry point. Uses the sole model advertised by a local
+# provider; captures discovery and lets the normal runner perform exact token
+# preflight and archive every generated turn. No mock responses or output cap.
+define main returning Int:
+    if get_argument_count() is not equal to 4 and get_argument_count() is not equal to 5:
+        display "Supply a new archive path, local provider port, objective and optional PNG path."
+        return 1
+    set port to http_decimal(get_argument(2))
+    if port is less than 1 or else port is greater than 65535:
+        return 1
+    set models to local_json_request(port and "GET" and "/v1/models" and "" and -1 and 65536)
+    set props to local_json_request(port and "GET" and "/props" and "" and -1 and 65536)
+    if not (ptr_to_str(get_list(models and 0)) equals "ready") or else not (ptr_to_str(get_list(props and 0)) equals "ready"):
+        display "Provider discovery is not ready."
+        return 1
+    set tokens to provider_json_tokens(ptr_to_str(get_list(models and 2)))
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return 1
+    set entries to provider_items(tokens and provider_member(tokens and 0 and "data"))
+    if entries equals 0 or else length_list(entries) is not equal to 1:
+        display "Qualification requires an unambiguous loaded model."
+        return 1
+    set model to provider_value(tokens and provider_member(tokens and get_list(entries and 0) and "id"))
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0 or else checkpoint_schema(database) is not equal to 0:
+        return 1
+    set identity to agent_identity()
+    set device to concat(identity and ":device")
+    if web_pairing_invite(database and identity) is not equal to 0 or else web_device_pair(database and identity and device and "Local qualification" and agent_identity()) is not equal to 0:
+        return 1
+    set selected to create_list()
+    set requested_session to ""
+    if get_argument_count() equals 5:
+        set created to web_create_session(database and device and identity)
+        if not (ptr_to_str(get_list(created and 0)) equals "accepted"):
+            return 1
+        set requested_session to ptr_to_str(get_list(created and 1))
+        set attachment to concat(identity and ":image")
+        if web_attachment_register(database and device and requested_session and attachment and get_argument(4) and "qualification.png" and "image/png") is not equal to 0:
+            return 1
+        set added to append_list(selected and attachment)
+    set submitted to web_submit_owned_files(database and device and identity and requested_session and get_argument(3) and selected)
+    if not (ptr_to_str(get_list(submitted and 0)) equals "accepted"):
+        return 1
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    if archive_append(database and session and concat(identity and ":models") and "qualification_models" and ptr_to_str(get_list(models and 2)) and "live") is not equal to 0 or else archive_append(database and session and concat(identity and ":props") and "qualification_props" and ptr_to_str(get_list(props and 2)) and "live") is not equal to 0:
+        return 1
+    display concat("Model: " and model)
+    display concat("Run: " and run)
+    set started to ep_time_now_ms()
+    # One token is the admission reserve for this caller; it does not cap output.
+    set status to agent_loop(database and run and model and port and 1 and -1 and 65536)
+    display concat("Status: " and status)
+    display concat("Elapsed milliseconds: " and int_to_string(ep_time_now_ms() - started))
+    if archive_verify(database and session) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    if not (status equals "completed"):
+        return 1
+    return 0

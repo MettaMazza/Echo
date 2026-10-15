@@ -1,0 +1,109 @@
+import "../providers/json_access"
+import "../workspace/directories"
+
+# Host configuration only. This is not a browser or model execution endpoint.
+# Exec replaces the launcher, so the caller owns the actual service PID and
+# receives its exit status and signals without an unsupervised wrapper child.
+define service_native_text with text as Str returning Int:
+    set index to 0
+    repeat while index is less than string_length(text):
+        if get_character(text and index) equals 0:
+            return 0
+        set index to index + 1
+    return 1
+
+define service_profile_valid with tokens as List returning Int:
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 0
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "executable" or else key equals "directory" or else key equals "arguments" or else key equals "environment"):
+            return 0
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set names to ["executable", "directory"]
+    set index to 0
+    repeat while index is less than length_list(names):
+        set field to provider_member(tokens and 0 and ptr_to_str(get_list(names and index)))
+        set value to provider_value(tokens and field)
+        if not (provider_kind(tokens and field) equals "string") or else string_length(value) equals 0 or else get_character(value and 0) is not equal to 47 or else service_native_text(value) equals 0:
+            return 0
+        set index to index + 1
+    set names to ["arguments", "environment"]
+    set index to 0
+    repeat while index is less than length_list(names):
+        set name to ptr_to_str(get_list(names and index))
+        set items to provider_items(tokens and provider_member(tokens and 0 and name))
+        if items equals 0:
+            return 0
+        set keys to create_list()
+        set item to 0
+        repeat while item is less than length_list(items):
+            set field to get_list(items and item)
+            set value to provider_value(tokens and field)
+            if not (provider_kind(tokens and field) equals "string") or else service_native_text(value) equals 0:
+                return 0
+            if name equals "environment":
+                set position to 0
+                repeat while position is less than string_length(value) and get_character(value and position) is not equal to 61:
+                    set position to position + 1
+                if position equals 0 or else position equals string_length(value):
+                    return 0
+                set key to ptr_to_str(substring(value and 0 and position))
+                set prior to 0
+                repeat while prior is less than length_list(keys):
+                    if ptr_to_str(get_list(keys and prior)) equals key:
+                        return 0
+                    set prior to prior + 1
+                set added to append_list(keys and key)
+            set item to item + 1
+        set index to index + 1
+    return 1
+
+define service_profile_vector with tokens as List and name as Str returning List:
+    set values to create_list()
+    if name equals "arguments":
+        set added to append_list(values and provider_value(tokens and provider_member(tokens and 0 and "executable")))
+    set items to provider_items(tokens and provider_member(tokens and 0 and name))
+    set index to 0
+    repeat while index is less than length_list(items):
+        set added to append_list(values and provider_value(tokens and get_list(items and index)))
+        set index to index + 1
+    set added to append_list(values and 0)
+    return values
+
+# Check filesystem requirements without starting a service or changing cwd.
+define service_profile_run with profile as Str and check_only as Int returning Int:
+    set tokens to provider_json_tokens(profile)
+    if service_profile_valid(tokens) equals 0:
+        display "Invalid service profile. Expected executable, directory, arguments and explicit environment."
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 1
+    set access_function to ep_dlsym(library and "access")
+    set change_directory to ep_dlsym(library and "fchdir")
+    set execute to ep_dlsym(library and "execve")
+    set executable to provider_value(tokens and provider_member(tokens and 0 and "executable"))
+    set directory to workspace_root_open(library and provider_value(tokens and provider_member(tokens and 0 and "directory")))
+    set status to 1
+    if access_function is not equal to 0 and change_directory is not equal to 0 and execute is not equal to 0 and directory >= 0:
+        if ep_dlcall2(access_function and str_to_ptr(executable) and 1) equals 0:
+            if check_only equals 1:
+                display "Service profile and executable paths verified; service has not been started."
+                set status to 0
+            else:
+                set arguments to service_profile_vector(tokens and "arguments")
+                set environment to service_profile_vector(tokens and "environment")
+                if ep_dlcall1(change_directory and directory) equals 0:
+                    set closed to net_close(directory)
+                    set directory to -1
+                    # No shell expansion, inherited environment or token caps.
+                    set failed to ep_dlcall3(execute and str_to_ptr(executable) and get_list_data_ptr(arguments) and get_list_data_ptr(environment))
+                    display concat("Service exec failed with errno " and int_to_string(socket_errno(library)))
+    if directory >= 0:
+        set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    return status

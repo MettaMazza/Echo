@@ -1,0 +1,175 @@
+# Browser-local capture journal. The server archive remains canonical after
+# upload. Strict transactions commit each chunk and its count together.
+# Browser storage can be cleared or evicted; never describe it as a backup.
+define echo_audio_store_open:
+    set request to null
+    set database to null
+    set executor to given resolve and reject:
+        set request to window.indexedDB.open("echo-audio-recordings" and 1)
+        set request.onupgradeneeded to given event:
+            set database to request.result
+            database.createObjectStore("recordings")
+            database.createObjectStore("chunks")
+        set request.onsuccess to given event:
+            set database to request.result
+            set database.onversionchange to given ignored:
+                database.close()
+            resolve(database)
+        set request.onerror to given event:
+            reject(request.error)
+        set request.onblocked to given event:
+            reject("Recording storage is blocked by another tab.")
+    return Reflect.construct(Promise and [executor])
+
+define echo_audio_transaction with database and mode:
+    set options to Object()
+    set options.durability to "strict"
+    return database.transaction(["recordings", "chunks"] and mode and options)
+
+# All helpers resolve only after commit, never on individual request success.
+define echo_audio_commit with transaction and result:
+    set executor to given resolve and reject:
+        set transaction.oncomplete to given event:
+            resolve(result)
+        set transaction.onabort to given event:
+            reject(transaction.error || "Recording transaction aborted.")
+        set transaction.onerror to given event:
+            return 0
+    return Reflect.construct(Promise and [executor])
+
+define echo_audio_create with database and identity and owner and session and rate and settings:
+    if not identity || not owner || not session || not Number.isFinite(rate) || rate <= 0:
+        return Promise.reject("Invalid recording identity or sample rate.")
+    set record to Object()
+    set record.identity to identity
+    set record.owner to owner
+    set record.session to session
+    set record.rate to rate
+    set record.settings to settings
+    set record.state to "recording"
+    set record.chunks to 0
+    set record.frames to 0
+    set record.created to Date.now()
+    set transaction to echo_audio_transaction(database and "readwrite")
+    set committed to echo_audio_commit(transaction and record)
+    transaction.objectStore("recordings").add(record and identity)
+    return committed
+
+define echo_audio_append with database and identity and owner and sequence and samples:
+    if not Number.isSafeInteger(sequence) || sequence < 0 || not ArrayBuffer.isView(samples) || samples.constructor != Float32Array || samples.length == 0:
+        return Promise.reject("Invalid recording chunk.")
+    set transaction to echo_audio_transaction(database and "readwrite")
+    set committed to echo_audio_commit(transaction and sequence)
+    set request to transaction.objectStore("recordings").get(identity)
+    set record to null
+    set chunk to null
+    set request.onsuccess to given event:
+        set record to request.result
+        if not record || record.owner != owner || record.state != "recording" || record.chunks != sequence || not Number.isSafeInteger(record.frames + samples.length):
+            transaction.abort()
+            return 0
+        set chunk to Object()
+        set chunk.recording to identity
+        set chunk.owner to owner
+        set chunk.sequence to sequence
+        set chunk.samples to samples
+        transaction.objectStore("chunks").add(chunk and [identity, sequence])
+        set record.chunks to record.chunks + 1
+        set record.frames to record.frames + samples.length
+        transaction.objectStore("recordings").put(record and identity)
+    return committed
+
+# Sealing requires the caller's exact final chunk count. A stale tab cannot
+# silently seal a recording that another writer extended.
+define echo_audio_seal with database and identity and owner and count:
+    set transaction to echo_audio_transaction(database and "readwrite")
+    set committed to echo_audio_commit(transaction and identity)
+    set request to transaction.objectStore("recordings").get(identity)
+    set record to null
+    set request.onsuccess to given event:
+        set record to request.result
+        if not record || record.owner != owner || record.chunks != count || record.state != "recording":
+            transaction.abort()
+            return 0
+        set record.state to "ready"
+        transaction.objectStore("recordings").put(record and identity)
+    return committed
+
+# Read one chunk at a time so recovery need not load a whole recording.
+# Missing chunks are errors, never interpreted as silence or a shorter file.
+define echo_audio_read with database and identity and owner and sequence:
+    set transaction to echo_audio_transaction(database and "readonly")
+    set result to Object()
+    set committed to echo_audio_commit(transaction and result)
+    set request to transaction.objectStore("recordings").get(identity)
+    set record to null
+    set chunk_request to null
+    set request.onsuccess to given event:
+        set record to request.result
+        if not record || record.owner != owner:
+            transaction.abort()
+            return 0
+        set result.record to record
+        if sequence == null:
+            return 0
+        if not Number.isSafeInteger(sequence) || sequence < 0 || sequence >= record.chunks:
+            transaction.abort()
+            return 0
+        set chunk_request to transaction.objectStore("chunks").get([identity, sequence])
+        set chunk_request.onsuccess to given ignored:
+            if not chunk_request.result || chunk_request.result.owner != owner:
+                transaction.abort()
+                return 0
+            set result.chunk to chunk_request.result.samples
+    return committed
+
+define echo_audio_list with database and owner:
+    set transaction to echo_audio_transaction(database and "readonly")
+    set records to Array()
+    set committed to echo_audio_commit(transaction and records)
+    set request to transaction.objectStore("recordings").openCursor()
+    set cursor to null
+    set advance to null
+    set request.onsuccess to given event:
+        set cursor to request.result
+        if cursor:
+            if cursor.value.owner == owner:
+                records.push(cursor.value)
+            set advance to get_list(cursor and "continue")
+            advance.call(cursor)
+    return committed
+
+# Called only after the authenticated server confirms original upload. Keep
+# local chunks; marking the receipt does not erase the recovery source.
+define echo_audio_confirm with database and identity and owner and attachment:
+    if not attachment:
+        return Promise.reject("Missing confirmed attachment identity")
+    set transaction to echo_audio_transaction(database and "readwrite")
+    set committed to echo_audio_commit(transaction and attachment)
+    set request to transaction.objectStore("recordings").get(identity)
+    set record to null
+    set request.onsuccess to given event:
+        set record to request.result
+        if not record || record.owner != owner || record.state != "ready":
+            transaction.abort()
+            return 0
+        set record.saved_attachment to attachment
+        transaction.objectStore("recordings").put(record and identity)
+    return committed
+
+define echo_audio_bind_upload with database and identity and owner and previous and upload:
+    set transaction to echo_audio_transaction(database and "readwrite")
+    set committed to echo_audio_commit(transaction and upload)
+    set request to transaction.objectStore("recordings").get(identity)
+    set record to null
+    set request.onsuccess to given event:
+        set record to request.result
+        if not record || record.owner != owner || record.state != "ready" || record.saved_attachment || (record.pending_upload || "") != previous || not upload:
+            transaction.abort()
+            return 0
+        if not record.upload_attempts:
+            set record.upload_attempts to Array()
+        record.upload_attempts.push(upload)
+        set record.pending_upload to upload
+        transaction.objectStore("recordings").put(record and identity)
+    return committed

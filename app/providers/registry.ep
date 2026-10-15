@@ -1,0 +1,95 @@
+import "../retained_text"
+import "prepare"
+import "../context/checkpoint"
+import "../archive/history"
+
+# Only the local administrator registers executable profiles. Browser selections
+# refer to these immutable identities; they never supply paths or commands.
+define provider_registry_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_provider_profiles(identity TEXT PRIMARY KEY,label TEXT NOT NULL,profile TEXT NOT NULL); CREATE TABLE IF NOT EXISTS echo_provider_default(singleton INTEGER PRIMARY KEY CHECK(singleton=1),identity TEXT NOT NULL REFERENCES echo_provider_profiles(identity)); CREATE TRIGGER IF NOT EXISTS echo_provider_profiles_no_update BEFORE UPDATE ON echo_provider_profiles BEGIN SELECT RAISE(ABORT,'Provider versions are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_provider_profiles_no_delete BEFORE DELETE ON echo_provider_profiles BEGIN SELECT RAISE(ABORT,'Provider versions are immutable'); END;")
+
+# Return found, label, profile; or end/error. Profiles remain host-private.
+define provider_registry_read with database as Int and identity as Str returning List:
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to identity
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    return history_collect_one(checkpoint_prepare(database and "SELECT label,profile FROM echo_provider_profiles WHERE identity=?;" and retained_list_1))
+
+# Exact retries are harmless. Reusing an identity for different bytes conflicts.
+define provider_registry_register with database as Int and identity as Str and label as Str and profile as Str returning Int:
+    if string_length(string_trim(identity)) equals 0 or else string_length(string_trim(label)) equals 0 or else not (provider_profile_status(profile) equals "ready"):
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set row to provider_registry_read(database and identity)
+    set status to archive_list_text(row and 0)
+    if status equals "found":
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return archive_rollback(database)
+        if archive_list_text(row and 1) equals label and archive_list_text(row and 2) equals profile:
+            return 0
+        return 2
+    if not (status equals "end"):
+        return archive_rollback(database)
+    set retained_list_2 to create_list()
+    set retained_item_2_0 to identity
+    set retained_added to append_list(retained_list_2 and retained_item_2_0)
+    set retained_item_2_1 to label
+    set retained_added to append_list(retained_list_2 and retained_item_2_1)
+    set retained_item_2_2 to profile
+    set retained_added to append_list(retained_list_2 and retained_item_2_2)
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_provider_profiles(identity,label,profile) VALUES(?,?,?);" and retained_list_2)
+    if statement equals 0:
+        return archive_rollback(database)
+    if archive_finish(statement and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+define provider_registry_select with database as Int and identity as Str returning Int:
+    set retained_list_3 to create_list()
+    set retained_item_3_0 to identity
+    set retained_added to append_list(retained_list_3 and retained_item_3_0)
+    set row to history_collect_one(checkpoint_prepare(database and "INSERT INTO echo_provider_default(singleton,identity) SELECT 1,identity FROM echo_provider_profiles WHERE identity=? ON CONFLICT(singleton) DO UPDATE SET identity=excluded.identity RETURNING identity;" and retained_list_3))
+    if archive_list_text(row and 0) equals "found":
+        return 0
+    return 1
+
+define provider_registry_default with database as Int returning List:
+    return history_collect_one(archive_prepare(database and "SELECT p.identity,p.label,p.profile FROM echo_provider_default d JOIN echo_provider_profiles p ON p.identity=d.identity WHERE d.singleton=1;"))
+
+# The server holds its exclusive runtime lock before initializing this default.
+# Preserve an operator's registered choice. New installations must have a default
+# before accepting messages, so their profile commits with each accepted run.
+define provider_registry_initialize with database as Int and profile as Str returning Int:
+    set selected to provider_registry_default(database)
+    set status to archive_list_text(selected and 0)
+    if status equals "found":
+        return 0
+    if not (status equals "end"):
+        return 1
+    set identity to concat("host:" and ep_sha256(profile))
+    if provider_registry_register(database and identity and "Host default" and profile) is not equal to 0:
+        return 1
+    return provider_registry_select(database and identity)
+
+# The browser receives labels and opaque identities only, never helper paths.
+define provider_registry_choices with database as Int returning Str:
+    set statement to archive_prepare(database and "SELECT p.identity,p.label,CASE WHEN d.identity=p.identity THEN 1 ELSE 0 END FROM echo_provider_profiles p LEFT JOIN echo_provider_default d ON d.singleton=1 ORDER BY p.label,p.identity;")
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set output to "{\"status\":\"found\",\"providers\":["
+    set separator to ""
+    set step to ep_sqlite3_step(statement)
+    repeat while step equals 100:
+        set identity to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set label to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set selected to ptr_to_str(ep_sqlite3_column_text(statement and 2))
+        set output to concat(output and concat(separator and concat("{\"identity\":" and provider_quote(identity))))
+        set output to concat(output and concat(",\"label\":" and provider_quote(label)))
+        set output to concat(output and concat(",\"default\":" and concat(selected and "}")))
+        set separator to ","
+        set step to ep_sqlite3_step(statement)
+    set closed to ep_sqlite3_finalize(statement)
+    if step is not equal to 101 or else closed is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    return concat(output and "]}")

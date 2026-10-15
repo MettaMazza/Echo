@@ -1,0 +1,54 @@
+import "../retained_text"
+import "server_events"
+import "http_response"
+
+external define peek_byte with pointer as Int and offset as Int returning Int
+
+# One response owns one stream. Fields: reader, body, decoder, borrowed pointer,
+# byte count, cursor, terminal status.
+# The read size is a caller-selected batching preference, never an event limit.
+define event_stream_create with reader as List and body as List returning List:
+    set stream to create_list()
+    set added to append_list(stream and reader)
+    set added to append_list(stream and body)
+    set added to append_list(stream and server_events_create())
+    set added to append_list(stream and 0)
+    set added to append_list(stream and 0)
+    set added to append_list(stream and 0)
+    set added to append_list(stream and "")
+    return stream
+
+# Returns one event at a time without reading beyond the current HTTP body.
+# Errors and clean transport EOF are sticky. Neither establishes model success.
+define event_stream_next with stream as List and read_size as Int returning List:
+    set terminal to archive_list_text(stream and 6)
+    if string_length(terminal) is greater than 0:
+        return http_failure(terminal)
+    if read_size is less than 1:
+        set changed to set_list(stream and 6 and "error")
+        return http_failure("error")
+    repeat while 1 equals 1:
+        if get_list(stream and 5) equals get_list(stream and 4):
+            set piece to http_body_next(get_list(stream and 0) and get_list(stream and 1) and read_size)
+            set status to archive_list_text(piece and 0)
+            if not (status equals "data"):
+                if status equals "done":
+                    set ended to server_events_end(get_list(stream and 2))
+                    set status to archive_list_text(ended and 0)
+                set changed to set_list(stream and 6 and status)
+                return http_failure(status)
+            set changed to set_list(stream and 3 and get_list(piece and 1))
+            set changed to set_list(stream and 4 and get_list(piece and 2))
+            set changed to set_list(stream and 5 and 0)
+        # The borrowed HTTP buffer stays valid until the next body read.
+        # Read directly instead of crossing dynamic FFI for every byte.
+        set byte to peek_byte(get_list(stream and 3) and get_list(stream and 5))
+        set changed to set_list(stream and 5 and get_list(stream and 5) + 1)
+        set result to server_events_byte(get_list(stream and 2) and byte)
+        set status to archive_list_text(result and 0)
+        if status equals "event":
+            return result
+        if not (status equals "pending"):
+            set changed to set_list(stream and 6 and status)
+            return result
+    return http_failure("error")

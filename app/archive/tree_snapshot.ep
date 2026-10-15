@@ -1,0 +1,173 @@
+import "tree_sidecars"
+import "fs"
+import "../workspace/native_process"
+import "../workspace/files"
+
+define tree_snapshot_realpath with path as Str returning Str:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set pointer to ep_dlcall2(ep_dlsym(library and "realpath") and str_to_ptr(path) and 0)
+    set result to ""
+    if pointer is not equal to 0:
+        set result to concat(ptr_to_str(pointer) and "")
+        set freed to ep_dlcall1(ep_dlsym(library and "free") and pointer)
+    set closed to ep_dlclose(library)
+    return result
+
+# Host-only offline tree backup. The caller must stop all writers first.
+# macOS tar and mtree are upstream dependencies, invoked with explicit argv;
+# all orchestration, failure handling and publication logic remains Ernos.
+define tree_snapshot_command with library as Int and executable as Str and arguments as List and directory as Int and output_path as Str and errors_path as Str returning Int:
+    set output to file_stage_open(library and output_path)
+    set errors to file_stage_open(library and errors_path)
+    if output is less than 0 or else errors is less than 0:
+        if output >= 0:
+            set closed to net_close(output)
+        if errors >= 0:
+            set closed to net_close(errors)
+        return 1
+    set environment to create_list()
+    set added to append_list(environment and "PATH=/usr/bin:/bin:/usr/sbin")
+    set added to append_list(environment and "LC_ALL=C")
+    set added to append_list(environment and "COPYFILE_DISABLE=1")
+    set process to workspace_process_start(executable and arguments and environment and directory and output and errors)
+    set result to 1
+    if process is not equal to 0:
+        set state to 0
+        repeat while state equals 0:
+            set state to workspace_process_poll(process)
+            if state equals 0:
+                set slept to sleep_ms(10)
+        if state equals 1:
+            if get_list(process and 3) equals 0:
+                set result to 0
+            set closed to workspace_process_close(process)
+    set flushed_output to file_stage_finish(library and output)
+    set flushed_errors to file_stage_finish(library and errors)
+    if flushed_output is not equal to 0 or else flushed_errors is not equal to 0:
+        return 1
+    return result
+
+define tree_snapshot_verify_at with library as Int and directory as Int and bundle as Str and audit as Str and label as Str returning Int:
+    set arguments to create_list()
+    set added to append_list(arguments and "-f")
+    set added to append_list(arguments and concat(bundle and "/contents.mtree"))
+    return tree_snapshot_command(library and "/usr/sbin/mtree" and arguments and directory and concat(audit and concat("/" and concat(label and ".out"))) and concat(audit and concat("/" and concat(label and ".err"))))
+
+define tree_snapshot_verify with library as Int and directory as Int and bundle as Str and label as Str returning Int:
+    return tree_snapshot_verify_at(library and directory and bundle and bundle and label)
+
+define tree_archive_extract with library as Int and bundle as Str and target as Int and audit as Str returning Int:
+    set arguments to create_list()
+    set added to append_list(arguments and "-xpf")
+    set added to append_list(arguments and concat(bundle and "/files.tar"))
+    # -p enables metadata flags, so disable translation after that option.
+    set added to append_list(arguments and "--no-mac-metadata")
+    set added to append_list(arguments and "--no-xattrs")
+    set added to append_list(arguments and "--no-acls")
+    set added to append_list(arguments and "--no-fflags")
+    set added to append_list(arguments and "--options=!mac-ext")
+    if tree_snapshot_command(library and "/usr/bin/tar" and arguments and target and concat(audit and "/restore.out") and concat(audit and "/restore.err")) is not equal to 0:
+        return 1
+    if tree_restore_sidecars(library and concat(bundle and "/files.tar") and target) is not equal to 0:
+        return 1
+    if tree_snapshot_verify_at(library and target and bundle and audit and "restore-check") is not equal to 0:
+        return 1
+    return 0
+
+define tree_snapshot with source as Str and bundle as Str and restored as Str returning Int:
+    if string_length(source) equals 0 or else string_length(bundle) equals 0 or else string_length(restored) equals 0:
+        return 1
+    if get_character(source and 0) is not equal to 47 or else get_character(bundle and 0) is not equal to 47 or else get_character(restored and 0) is not equal to 47:
+        return 1
+    # Never let an archive or restore candidate be created inside its source.
+    set canonical_source to tree_snapshot_realpath(source)
+    set bundle_parent to tree_snapshot_realpath(path_dirname(bundle))
+    set restore_parent to tree_snapshot_realpath(path_dirname(restored))
+    if string_length(canonical_source) equals 0 or else string_length(bundle_parent) equals 0 or else string_length(restore_parent) equals 0:
+        return 1
+    set prefix to concat(canonical_source and "/")
+    if bundle_parent equals canonical_source or else restore_parent equals canonical_source:
+        return 1
+    if ptr_to_str(substring(bundle_parent and 0 and string_length(prefix))) equals prefix or else ptr_to_str(substring(restore_parent and 0 and string_length(prefix))) equals prefix:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and source)
+    if directory is less than 0:
+        return 1
+    # New destinations only. Failed candidates remain available for inspection.
+    if ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(bundle) and 448) is not equal to 0 or else ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(restored) and 448) is not equal to 0:
+        return 1
+    set arguments to create_list()
+    set added to append_list(arguments and "-c")
+    set added to append_list(arguments and "-k")
+    set added to append_list(arguments and "type,mode,link,sha256digest")
+    if tree_snapshot_command(library and "/usr/sbin/mtree" and arguments and directory and concat(bundle and "/contents.mtree") and concat(bundle and "/manifest.err")) is not equal to 0:
+        return 1
+    set arguments to create_list()
+    set added to append_list(arguments and "-c")
+    set added to append_list(arguments and "--format=pax")
+    set added to append_list(arguments and "--no-mac-metadata")
+    set added to append_list(arguments and "--no-xattrs")
+    set added to append_list(arguments and "--no-acls")
+    set added to append_list(arguments and "--no-fflags")
+    set added to append_list(arguments and "--options=hdrcharset=BINARY")
+    set added to append_list(arguments and "-f")
+    set added to append_list(arguments and "-")
+    set added to append_list(arguments and ".")
+    if tree_snapshot_command(library and "/usr/bin/tar" and arguments and directory and concat(bundle and "/files.tar") and concat(bundle and "/archive.err")) is not equal to 0:
+        return 1
+    if tree_snapshot_verify(library and directory and bundle and "source-recheck") is not equal to 0:
+        return 1
+    set target to workspace_root_open(library and restored)
+    if target is less than 0:
+        return 1
+    if tree_archive_extract(library and bundle and target and bundle) is not equal to 0:
+        return 1
+    set archive to file_digest_durable(concat(bundle and "/files.tar") and 65536)
+    set manifest to file_digest_durable(concat(bundle and "/contents.mtree") and 65536)
+    if not (ptr_to_str(get_list(archive and 0)) equals "verified") or else not (ptr_to_str(get_list(manifest and 0)) equals "verified"):
+        return 1
+    set receipt to concat("Verified offline tree backup and clean restore.\nArchive SHA256: " and ptr_to_str(get_list(archive and 1)))
+    set receipt to concat(receipt and concat("\nManifest SHA256: " and ptr_to_str(get_list(manifest and 1))))
+    set receipt to concat(receipt and "\nChecked file content digests, types, modes, symlink targets and absence of unexpected entries. Writers must have been stopped by the caller. ACLs, extended attributes and hard-link topology are not certified by this receipt. AppleDouble sidecar files are preserved as ordinary files; automatic macOS metadata translation is disabled.\n")
+    set descriptor to file_stage_open(library and concat(bundle and "/verified.txt"))
+    if descriptor is less than 0:
+        return 1
+    if file_stage_write(library and descriptor and str_to_ptr(receipt) and string_length(receipt)) is not equal to 0 or else file_stage_finish(library and descriptor) is not equal to 0:
+        return 1
+    set bundle_directory to workspace_root_open(library and bundle)
+    if bundle_directory is less than 0 or else file_stage_finish(library and bundle_directory) is not equal to 0:
+        return 1
+    set closed to net_close(directory)
+    set closed to net_close(target)
+    set closed to ep_dlclose(library)
+    return 0
+
+# Recovery depends only on the saved bundle and independently retained hashes.
+# It never modifies the bundle or starts any recovered program.
+define tree_restore_bundle with bundle as Str and archive_hash as Str and manifest_hash as Str and restored as Str returning Int:
+    if string_length(bundle) equals 0 or else string_length(restored) equals 0 or else string_length(archive_hash) is not equal to 64 or else string_length(manifest_hash) is not equal to 64:
+        return 1
+    if get_character(bundle and 0) is not equal to 47 or else get_character(restored and 0) is not equal to 47:
+        return 1
+    set archive to file_digest(concat(bundle and "/files.tar") and 65536)
+    set manifest to file_digest(concat(bundle and "/contents.mtree") and 65536)
+    if not (ptr_to_str(get_list(archive and 0)) equals "verified") or else not (ptr_to_str(get_list(archive and 1)) equals archive_hash) or else not (ptr_to_str(get_list(manifest and 0)) equals "verified") or else not (ptr_to_str(get_list(manifest and 1)) equals manifest_hash):
+        display "Backup hash mismatch; restore refused before creating a destination."
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set audit to concat(restored and ".evidence")
+    if ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(restored) and 448) is not equal to 0 or else ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(audit) and 448) is not equal to 0:
+        return 1
+    set target to workspace_root_open(library and restored)
+    if target is less than 0:
+        return 1
+    set result to tree_archive_extract(library and bundle and target and audit)
+    # Detect replacement or damage during extraction as well as before it.
+    set archive_after to file_digest(concat(bundle and "/files.tar") and 65536)
+    set manifest_after to file_digest(concat(bundle and "/contents.mtree") and 65536)
+    if not (ptr_to_str(get_list(archive_after and 1)) equals archive_hash) or else not (ptr_to_str(get_list(manifest_after and 1)) equals manifest_hash):
+        set result to 1
+    set closed to net_close(target)
+    set closed to ep_dlclose(library)
+    return result

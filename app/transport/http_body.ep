@@ -1,0 +1,194 @@
+import "../retained_text"
+import "http_stream"
+
+define http_stream_line with reader as List returning List:
+    set copy_function to ep_dlsym(get_list(reader and 0) and "memcpy")
+    if copy_function equals 0:
+        return http_failure("error")
+    set builder to create_builder()
+    set byte to create_list()
+    set added to append_list(byte and 0)
+    set carriage to 0
+    repeat while 1 equals 1:
+        set piece to http_stream_take(reader and 1)
+        set status to archive_list_text(piece and 0)
+        if not (status equals "data"):
+            if status equals "eof":
+                return http_failure("incomplete")
+            return http_failure(status)
+        set cleared to set_list(byte and 0 and 0)
+        set copied to ep_dlcall3(copy_function and get_list_data_ptr(byte) and get_list(piece and 1) and 1)
+        set code to get_list(byte and 0)
+        if carriage equals 1:
+            if code is not equal to 10:
+                return http_failure("bad-request")
+            set result to http_failure("line")
+            set added to append_list(result and builder_to_string(builder))
+            return result
+        if code equals 13:
+            set carriage to 1
+        else:
+            if code equals 0 or else code equals 10:
+                return http_failure("bad-request")
+            set added to builder_append(builder and ptr_to_str(get_list_data_ptr(byte)))
+    return http_failure("error")
+
+define http_hexadecimal with text as Str returning Int:
+    if string_length(text) equals 0:
+        return -1
+    set value to 0
+    set position to 0
+    repeat while position is less than string_length(text):
+        set code to to_lower_char(get_character(text and position))
+        set digit to -1
+        if code > 47 and code < 58:
+            set digit to code - 48
+        else if code > 96 and code < 103:
+            set digit to code - 87
+        if digit is less than 0 or else value is greater than (9223372036854775807 - digit) / 16:
+            return -1
+        set value to value * 16 + digit
+        set position to position + 1
+    return value
+
+# Chunk extensions are optional transport metadata. Validate their grammar,
+# then ignore their meaning; they never become application instructions.
+define http_chunk_size with line as Str returning Int:
+    if get_character(line and 0) equals 32 or else get_character(line and 0) equals 9:
+        return -1
+    set semicolon to string_index_of(line and ";")
+    if semicolon is less than 0:
+        return http_hexadecimal(line)
+    set digits to ptr_to_str(string_trim(substring(line and 0 and semicolon)))
+    set size to http_hexadecimal(digits)
+    if size is less than 0:
+        return -1
+    set position to semicolon
+    set length to string_length(line)
+    repeat while position is less than length:
+        if get_character(line and position) is not equal to 59:
+            return -1
+        set position to position + 1
+        repeat while position is less than length and (get_character(line and position) equals 32 or else get_character(line and position) equals 9):
+            set position to position + 1
+        set start to position
+        repeat while position is less than length and http_token(ptr_to_str(substring(line and position and 1))) equals 1:
+            set position to position + 1
+        if position equals start:
+            return -1
+        repeat while position is less than length and (get_character(line and position) equals 32 or else get_character(line and position) equals 9):
+            set position to position + 1
+        if position is less than length and get_character(line and position) equals 61:
+            set position to position + 1
+            repeat while position is less than length and (get_character(line and position) equals 32 or else get_character(line and position) equals 9):
+                set position to position + 1
+            if position is less than length and get_character(line and position) equals 34:
+                set position to position + 1
+                set closed to 0
+                repeat while position is less than length and closed equals 0:
+                    set code to get_character(line and position)
+                    if code equals 34:
+                        set closed to 1
+                    else:
+                        if code equals 92:
+                            set position to position + 1
+                            if position equals length:
+                                return -1
+                            set code to get_character(line and position)
+                        if (code is less than 32 and code is not equal to 9) or else code equals 127:
+                            return -1
+                    set position to position + 1
+                if closed equals 0:
+                    return -1
+            else:
+                set start to position
+                repeat while position is less than length and http_token(ptr_to_str(substring(line and position and 1))) equals 1:
+                    set position to position + 1
+                if start equals position:
+                    return -1
+            repeat while position is less than length and (get_character(line and position) equals 32 or else get_character(line and position) equals 9):
+                set position to position + 1
+    return size
+
+# Fields: framing, remaining bytes, phase, trailer lines. No accumulated body.
+define http_body_create with framing as Str and length as Int returning List:
+    if (not (framing equals "length") and not (framing equals "chunked") and not (framing equals "eof")) or else length is less than 0:
+        return 0
+    set body to create_list()
+    set added to append_list(body and framing)
+    set added to append_list(body and length)
+    set phase to "data"
+    if framing equals "chunked":
+        set phase to "size"
+    set added to append_list(body and phase)
+    set trailers to create_list()
+    set added to append_list(body and trailers)
+    return body
+
+define http_body_next with reader as List and body as List and wanted as Int returning List:
+    if wanted is less than 1:
+        return socket_read_result("error" and 0 and 0)
+    repeat while 1 equals 1:
+        set phase to archive_list_text(body and 2)
+        if phase equals "done":
+            return socket_read_result("done" and 0 and 0)
+        if archive_list_text(body and 0) equals "eof":
+            set piece to http_stream_take(reader and wanted)
+            if archive_list_text(piece and 0) equals "eof":
+                set changed to set_list(body and 2 and "done")
+                return socket_read_result("done" and 0 and 0)
+            return piece
+        if phase equals "data":
+            set remaining to get_list(body and 1)
+            if remaining is greater than 0:
+                set count to wanted
+                if count is greater than remaining:
+                    set count to remaining
+                set piece to http_stream_take(reader and count)
+                if archive_list_text(piece and 0) equals "data":
+                    set changed to set_list(body and 1 and remaining - get_list(piece and 2))
+                else if archive_list_text(piece and 0) equals "eof":
+                    return socket_read_result("incomplete" and 0 and 0)
+                return piece
+            if archive_list_text(body and 0) equals "length":
+                set changed to set_list(body and 2 and "done")
+            else:
+                set changed to set_list(body and 2 and "separator")
+        else:
+            set line_result to http_stream_line(reader)
+            if not (archive_list_text(line_result and 0) equals "line"):
+                return socket_read_result(archive_list_text(line_result and 0) and 0 and 0)
+            set line to archive_list_text(line_result and 1)
+            if phase equals "size":
+                set count to http_chunk_size(line)
+                if count is less than 0:
+                    return socket_read_result("bad-request" and 0 and 0)
+                set changed to set_list(body and 1 and count)
+                if count equals 0:
+                    set changed to set_list(body and 2 and "trailers")
+                else:
+                    set changed to set_list(body and 2 and "data")
+            else if phase equals "separator":
+                if string_length(line) is not equal to 0:
+                    return socket_read_result("bad-request" and 0 and 0)
+                set changed to set_list(body and 2 and "size")
+            else if phase equals "trailers":
+                if string_length(line) equals 0:
+                    set changed to set_list(body and 2 and "done")
+                else:
+                    set colon to string_index_of(line and ":")
+                    if colon is less than 1 or else http_token(ptr_to_str(substring(line and 0 and colon))) equals 0:
+                        return socket_read_result("bad-request" and 0 and 0)
+                    set name to ptr_to_str(string_to_lower(substring(line and 0 and colon)))
+                    if name equals "content-length" or else name equals "transfer-encoding" or else name equals "host":
+                        return socket_read_result("bad-request" and 0 and 0)
+                    set index to colon + 1
+                    repeat while index is less than string_length(line):
+                        set code to get_character(line and index)
+                        if (code is less than 32 and code is not equal to 9) or else code equals 127:
+                            return socket_read_result("bad-request" and 0 and 0)
+                        set index to index + 1
+                    set added to append_list(get_list(body and 3) and line)
+            else:
+                return socket_read_result("error" and 0 and 0)
+    return socket_read_result("error" and 0 and 0)

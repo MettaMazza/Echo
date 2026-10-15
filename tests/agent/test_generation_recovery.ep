@@ -1,0 +1,121 @@
+import "../../app/agent/generation_recovery"
+import "../../app/web/recovery"
+import "../../app/archive/history"
+import "../fixtures/generation_fixture"
+
+define recovery_capture_fixture with database as Int and listener as List and run as Str and delta as Str returning Int:
+    set objective to concat(run and ":user")
+    set request to concat(run and ":request")
+    if archive_append(database and run and objective and "user" and "Remember café." and "fixture") is not equal to 0 or else agent_run_create(database and run and run and objective) is not equal to 0:
+        return 1
+    if run equals "complete":
+        if web_worker_claim(database and run and "original-worker") is not equal to 0:
+            return 1
+    set body to "{\"model\":\"fixture\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Remember café.\"}]}"
+    set payload to concat(agent_event_envelope(run and objective) and concat(",\"request_body\":" and concat(provider_quote(body) and "}")))
+    if archive_append(database and run and request and "model_request" and payload and "fixture") is not equal to 0 or else agent_run_transition(database and run and "ready" and objective and "generating" and request) is not equal to 0:
+        return 1
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    # Intentionally stop between durable stream collection and publication.
+    set response to local_chat_generate(database and run and request and get_list(listener and 2) and "/v1/chat/completions" and body and -1 and 4096)
+    return receive from completed
+
+define main returning Int:
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else agent_run_schema(database) is not equal to 0 or else web_worker_schema(database) is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if recovery_capture_fixture(database and listener and "complete" and "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Saved café.\"},\"finish_reason\":\"stop\"}]}") is not equal to 0:
+        return 1
+    if recovery_capture_fixture(database and listener and "partial" and "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Unfinished café\"},\"finish_reason\":\"length\"}]}") is not equal to 0:
+        return 1
+    if recovery_capture_fixture(database and listener and "tools" and "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"read-original\",\"function\":{\"name\":\"history_read\",\"arguments\":\"{\\\"event\\\":\\\"tools:user\\\",\\\"offset\\\":0,\\\"characters\\\":100}\"}}]},\"finish_reason\":\"tool_calls\"}]}") is not equal to 0:
+        return 1
+    if recovery_missing_fixture(database and "missing" and 0) is not equal to 0 or else recovery_missing_fixture(database and "gap" and 1) is not equal to 0:
+        return 1
+    if recovery_capture_fixture(database and listener and "rollback" and "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"rollback-call\",\"function\":{\"name\":\"history_read\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}") is not equal to 0:
+        return 1
+    if local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set held to compaction_lock_acquire(database and "web-worker:complete" and library)
+    if held is less than 0 or else web_worker_recover_ready(database and "complete" and "original-worker" and "live-replacement" and library) equals 0:
+        return 1
+    if net_close(held) is not equal to 0 or else web_worker_recover_ready(database and "complete" and "stale-worker" and "stale-replacement" and library) equals 0:
+        return 1
+    set untouched to agent_run_read(database and "complete")
+    if not (ptr_to_str(get_list(untouched and 2)) equals "generating"):
+        display "FAIL: unowned recovery published a generation."
+        return 1
+    if web_worker_recover_ready(database and "complete" and "original-worker" and "restored-worker" and library) is not equal to 0 or else web_worker_run(get_argument(1) and "complete" and "restored-worker" and "fixture" and 1 and 20 and 4096) is not equal to 0:
+        display "FAIL: completed archived reply needed a provider."
+        return 1
+    if ep_dlclose(library) is not equal to 0:
+        return 1
+    if not (agent_recover_generation_owned(database and "complete" and "complete:recovery" and "0") equals "completed") or else not (agent_recover_generation_owned(database and "partial" and "partial:recovery" and "0") equals "ready") or else not (agent_recover_generation_owned(database and "tools" and "tools:recovery" and "0") equals "tools"):
+        return 1
+    if not (agent_recover_generation_owned(database and "missing" and "missing:recovery" and "0") equals "ready") or else not (agent_recover_generation_owned(database and "gap" and "gap:recovery" and "0") equals "invalid-archived-stream"):
+        return 1
+    set gap to agent_run_read(database and "gap")
+    if not (ptr_to_str(get_list(gap and 2)) equals "generating"):
+        return 1
+    # Repeated recovery must not republish or queue a second action.
+    if not (agent_recover_generation_owned(database and "complete" and "again" and "0") equals "completed") or else not (agent_recover_generation_owned(database and "tools" and "again-tools" and "0") equals "tools"):
+        return 1
+    set ledger to tool_ledger_read(database and "tools" and "read-original")
+    if ledger equals 0 or else not (ptr_to_str(get_list(ledger and 1)) equals "queued"):
+        return 1
+    if sql_execute(database and "INSERT INTO echo_web_workers(run,worker,status) VALUES('tools','tool-worker','running'); UPDATE echo_tool_calls SET state='running' WHERE run='tools';") is not equal to 0 or else web_worker_protocol(database and "tools" and "tool-worker") is not equal to 0:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if web_worker_recover_ready(database and "tools" and "tool-worker" and "unsafe-tool-replay" and library) equals 0:
+        display "FAIL: an uncertain tool action was resumed."
+        return 1
+    set ledger to tool_ledger_read(database and "tools" and "read-original")
+    if not (ptr_to_str(get_list(ledger and 1)) equals "uncertain"):
+        return 1
+    set request_event to ptr_to_str(get_list(ledger and 3))
+    set payload to concat("{\"run_id\":\"tools\",\"call_id\":\"read-original\",\"request_event\":" and concat(provider_quote(request_event) and ",\"result\":{\"text\":\"Saved original result\"}}"))
+    if archive_append(database and "tools" and concat(request_event and ":result") and "tool_result" and payload and "fixture") is not equal to 0:
+        return 1
+    if web_worker_recover_ready(database and "tools" and "tool-worker" and "saved-result-worker" and library) is not equal to 0:
+        display "FAIL: saved tool result did not reconcile abandoned work."
+        return 1
+    set ledger to tool_ledger_read(database and "tools" and "read-original")
+    if not (ptr_to_str(get_list(ledger and 1)) equals "observed") or else tool_ledger_claim(database and "tools" and "read-original") equals 0:
+        return 1
+    if ep_dlclose(library) is not equal to 0:
+        return 1
+    if sql_execute(database and "CREATE TRIGGER reject_fixture_queue BEFORE INSERT ON echo_tool_calls WHEN NEW.run='rollback' BEGIN SELECT RAISE(ABORT,'fixture queue failure'); END;") is not equal to 0:
+        return 1
+    if not (agent_recover_generation_owned(database and "rollback" and "rollback:recovery" and "0") equals "publication-recovery-required"):
+        return 1
+    set rolled_back to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE session='rollback' AND kind IN ('tool_call','assistant_tool_calls');"))
+    if not (ptr_to_str(get_list(rolled_back and 1)) equals "0") or else sql_execute(database and "DROP TRIGGER reject_fixture_queue;") is not equal to 0:
+        display "FAIL: partial publication survived a queue failure."
+        return 1
+    if not (agent_recover_generation_owned(database and "rollback" and "rollback:retry" and "0") equals "tools"):
+        return 1
+    set counts to history_collect_one(archive_prepare(database and "SELECT (SELECT COUNT(*) FROM echo_events WHERE kind='assistant_final'),(SELECT COUNT(*) FROM echo_events WHERE kind='assistant_tool_calls'),(SELECT COUNT(*) FROM echo_tool_calls),(SELECT COUNT(*) FROM echo_events WHERE session='partial' AND kind='provider_event'),(SELECT COUNT(*) FROM echo_events WHERE session='partial' AND kind='assistant_final');"))
+    if not (ptr_to_str(get_list(counts and 1)) equals "1") or else not (ptr_to_str(get_list(counts and 2)) equals "2") or else not (ptr_to_str(get_list(counts and 3)) equals "2") or else not (ptr_to_str(get_list(counts and 4)) equals "2") or else not (ptr_to_str(get_list(counts and 5)) equals "0"):
+        return 1
+    if archive_verify(database and "complete") is not equal to 0 or else archive_verify(database and "partial") is not equal to 0 or else archive_verify(database and "tools") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: complete response restored without network replay, partial/missing-terminal output retained, event gaps rejected, tool batches queued once, and failed publication fully rolled back before retry."
+    return 0
+
+# Synthetic crash prefixes: one lacks terminal evidence, one has a gap.
+define recovery_missing_fixture with database as Int and run as Str and sequence as Int returning Int:
+    set objective to concat(run and ":user")
+    set request to concat(run and ":request")
+    if archive_append(database and run and objective and "user" and "Crash prefix fixture" and "fixture") is not equal to 0 or else agent_run_create(database and run and run and objective) is not equal to 0:
+        return 1
+    set payload to concat(agent_event_envelope(run and objective) and ",\"request_body\":\"{}\"}")
+    if archive_append(database and run and request and "model_request" and payload and "fixture") is not equal to 0 or else agent_run_transition(database and run and "ready" and objective and "generating" and request) is not equal to 0:
+        return 1
+    set data to "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Uncommitted ending\"},\"finish_reason\":\"stop\"}]}"
+    set event_payload to concat("{\"request_event\":" and provider_quote(request))
+    set event_payload to concat(event_payload and concat(",\"event_type\":\"message\",\"data\":" and concat(provider_quote(data) and "}")))
+    return provider_archive_piece(database and run and request and sequence and "provider_event" and event_payload)

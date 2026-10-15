@@ -1,0 +1,76 @@
+import "../transport/socket_read"
+
+# Result fields: status, stream (1 stdout, 2 stderr), owned bytes, byte count.
+# Caller releases data with socket_release_buffer. EOF descriptors must be
+# closed and replaced with -1 before the next call. A page is a transfer size,
+# never a limit on output length. Binary bytes, including NUL, remain intact.
+# Caller alternates preferred after data to avoid starving either pipe.
+define workspace_output_result with status as Str and stream as Int and pointer as Int and count as Int returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and stream)
+    set added to append_list(result and pointer)
+    set added to append_list(result and count)
+    return result
+
+define workspace_output_next with library as Int and output as Int and errors as Int and cancellation as Int and preferred as Int returning List:
+    if preferred is not equal to 1 and preferred is not equal to 2:
+        return workspace_output_result("error" and 0 and 0 and 0)
+    set poll_function to ep_dlsym(library and "poll")
+    set read_function to ep_dlsym(library and "read")
+    set allocate to ep_dlsym(library and "malloc")
+    set page_function to ep_dlsym(library and "getpagesize")
+    if poll_function equals 0 or else read_function equals 0 or else allocate equals 0 or else page_function equals 0:
+        return workspace_output_result("error" and 0 and 0 and 0)
+    if output is less than 0 and errors is less than 0:
+        return workspace_output_result("complete" and 0 and 0 and 0)
+    repeat while 1 equals 1:
+        set descriptors to create_list()
+        if output is less than 0:
+            set added to append_list(descriptors and 4294967295)
+        else:
+            set added to append_list(descriptors and output + 4294967296)
+        if errors is less than 0:
+            set added to append_list(descriptors and 4294967295)
+        else:
+            set added to append_list(descriptors and errors + 4294967296)
+        if cancellation is less than 0:
+            set added to append_list(descriptors and 4294967295)
+        else:
+            set added to append_list(descriptors and cancellation + 4294967296)
+        set ready to socket_signed_result(ep_dlcall3(poll_function and get_list_data_ptr(descriptors) and 3 and -1))
+        if ready is less than 0:
+            if socket_errno(library) is not equal to 4:
+                return workspace_output_result("error" and 0 and 0 and 0)
+        else:
+            if get_list(descriptors and 2) / 281474976710656 is greater than 0:
+                if (get_list(descriptors and 2) / 281474976710656) modulo 64 is greater than 31:
+                    return workspace_output_result("error" and 0 and 0 and 0)
+                return workspace_output_result("cancelled" and 0 and 0 and 0)
+            set cursor to 0
+            repeat while cursor is less than 2:
+                set index to (cursor + preferred - 1) modulo 2
+                set events to get_list(descriptors and index) / 281474976710656
+                if events is greater than 0:
+                    if events modulo 64 is greater than 31:
+                        return workspace_output_result("error" and index + 1 and 0 and 0)
+                    set capacity to ep_dlcall0(page_function)
+                    if capacity is less than 1:
+                        return workspace_output_result("error" and index + 1 and 0 and 0)
+                    set buffer to ep_dlcall1(allocate and capacity)
+                    if buffer equals 0:
+                        return workspace_output_result("error" and index + 1 and 0 and 0)
+                    set descriptor to output
+                    if index equals 1:
+                        set descriptor to errors
+                    set count to socket_signed_result(ep_dlcall3(read_function and descriptor and buffer and capacity))
+                    if count is greater than 0:
+                        return workspace_output_result("data" and index + 1 and buffer and count)
+                    set failure to socket_errno(library)
+                    set released to socket_release_buffer(library and buffer)
+                    if count equals 0:
+                        return workspace_output_result("eof" and index + 1 and 0 and 0)
+                    if failure is not equal to 4:
+                        return workspace_output_result("error" and index + 1 and 0 and 0)
+                set cursor to cursor + 1
+    return workspace_output_result("error" and 0 and 0 and 0)

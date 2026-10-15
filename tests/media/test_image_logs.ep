@@ -1,0 +1,70 @@
+import "../../app/media/image_logs"
+import "../../app/archive/snapshot"
+
+define main returning Int:
+    if get_argument_count() is not equal to 4 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else tool_ledger_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "home" and "request" and "tool_call" and "{\"run_id\":\"run\",\"call_id\":\"call\"}" and "fixture") is not equal to 0 or else tool_ledger_queue(database and "run" and "call" and "home" and "request") is not equal to 0 or else tool_ledger_claim(database and "run" and "call") is not equal to 0:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_root_open(library and get_argument(2))
+    set descriptor to workspace_file_open(library and root and "binary.log" and 1)
+    set page_function to ep_dlsym(library and "getpagesize")
+    set write_function to ep_dlsym(library and "write")
+    set total to ep_dlcall0(page_function) * 2 + 17
+    set buffer to create_list()
+    set index to 0
+    repeat while index <= total / 8:
+        set added to append_list(buffer and 0)
+        set index to index + 1
+    set index to 0
+    repeat while index is less than total:
+        set changed to poke_byte(get_list_data_ptr(buffer) and index and index modulo 256)
+        set index to index + 1
+    if descriptor is less than 0 or else ep_dlcall3(write_function and descriptor and get_list_data_ptr(buffer) and total) is not equal to total:
+        return 1
+    if image_log_archive(database and "run" and "call" and library and descriptor and "stdout") is not equal to 0:
+        return 1
+    # The completed stream cannot silently be duplicated.
+    if image_log_archive(database and "run" and "call" and library and descriptor and "stdout") equals 0:
+        return 1
+    # Reject the second page: retain the first page, never advertise EOF.
+    if sql_execute(database and "CREATE TRIGGER reject_image_log BEFORE INSERT ON echo_events WHEN NEW.kind='process_output' AND json_extract(NEW.payload,'$.stream')='stderr' AND CAST(json_extract(NEW.payload,'$.offset') AS INTEGER)>0 BEGIN SELECT RAISE(ABORT,'Injected archive failure'); END;") is not equal to 0:
+        return 1
+    if image_log_archive(database and "run" and "call" and library and descriptor and "stderr") equals 0:
+        return 1
+    set partial to history_collect_one(archive_prepare(database and "SELECT COUNT(*),SUM(json_extract(payload,'$.eof')) FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.stream')='stderr';"))
+    if not (ptr_to_str(get_list(partial and 1)) equals "1") or else not (ptr_to_str(get_list(partial and 2)) equals "0"):
+        return 1
+    if archive_snapshot(database and get_argument(3)) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(3))
+    set statement to archive_prepare(database and "SELECT payload FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.stream')='stdout' ORDER BY sequence;")
+    set position to 0
+    set ended to 0
+    repeat while ep_sqlite3_step(statement) equals 100:
+        set tokens to provider_json_tokens(ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        if string_to_int(provider_value(tokens and provider_member(tokens and 0 and "offset"))) is not equal to position:
+            return 1
+        set encoded to provider_value(tokens and provider_member(tokens and 0 and "data"))
+        set index to 0
+        repeat while index is less than string_length(encoded):
+            set high to string_index_of("0123456789abcdef" and substring(encoded and index and 1))
+            set low to string_index_of("0123456789abcdef" and substring(encoded and index + 1 and 1))
+            if high * 16 + low is not equal to position modulo 256:
+                return 1
+            set position to position + 1
+            set index to index + 2
+        if provider_index(tokens and provider_member(tokens and 0 and "eof")) equals "1":
+            set ended to ended + 1
+    if position is not equal to total or else ended is not equal to 1 or else ep_sqlite3_finalize(statement) is not equal to 0 or else archive_verify_all(database) is not equal to 0:
+        return 1
+    set closed to sql_close(database)
+    set closed to net_close(descriptor)
+    set closed to net_close(root)
+    set closed to ep_dlclose(library)
+    display "PASS: multi-page binary image logs survive database backup; exact bytes, offsets, EOF, duplicate rejection and partial archive failure verified."
+    return 0

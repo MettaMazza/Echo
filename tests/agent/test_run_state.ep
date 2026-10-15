@@ -1,0 +1,100 @@
+import "../../app/agent/run_state"
+import "fs"
+
+# Test identities are fixed ASCII fixtures, not unescaped external content.
+define run_fixture_event with database as Int and identity as Str and kind as Str and parent as Str returning Int:
+    set payload to concat("{\"run_id\":\"run-a\",\"parent_event\":\"" and concat(parent and "\"}"))
+    return archive_append(database and "home" and identity and kind and payload and "fixture-time")
+
+define main returning Int:
+    if get_argument_count() is not equal to 2:
+        return 1
+    set path to get_argument(1)
+    if file_exists(path):
+        return 1
+    set database to archive_open(path)
+    if database equals 0 or else agent_run_schema(database) is not equal to 0:
+        return 1
+    if archive_append(database and "home" and "objective" and "user" and "Complete a multi-step task." and "now") is not equal to 0:
+        return 1
+    if agent_run_create(database and "run-a" and "home" and "objective") is not equal to 0:
+        return 1
+    set parent to "objective"
+    set iteration to 0
+    # Forty is a test workload, not a production iteration setting.
+    repeat while iteration is less than 40:
+        set suffix to int_to_string(iteration)
+        set request to concat("request-" and suffix)
+        set calls to concat("calls-" and suffix)
+        set observation to concat("observation-" and suffix)
+        if run_fixture_event(database and request and "model_request" and parent) is not equal to 0:
+            return 1
+        if agent_run_transition(database and "run-a" and "ready" and parent and "generating" and request) is not equal to 0:
+            return 1
+        if agent_run_transition(database and "run-a" and "ready" and parent and "generating" and request) equals 0:
+            return 1
+        if run_fixture_event(database and calls and "assistant_tool_calls" and request) is not equal to 0:
+            return 1
+        if agent_run_transition(database and "run-a" and "generating" and request and "tools" and calls) is not equal to 0:
+            return 1
+        if run_fixture_event(database and observation and "agent_observation" and calls) is not equal to 0:
+            return 1
+        if agent_run_transition(database and "run-a" and "tools" and calls and "ready" and observation) is not equal to 0:
+            return 1
+        set parent to observation
+        set iteration to iteration + 1
+    if sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(path)
+    if database equals 0:
+        return 1
+    if run_fixture_event(database and "final-request" and "model_request" and parent) is not equal to 0:
+        return 1
+    if agent_run_transition(database and "run-a" and "ready" and parent and "generating" and "final-request") is not equal to 0:
+        return 1
+    if agent_run_transition(database and "run-a" and "generating" and "request-0" and "tools" and "calls-0") equals 0:
+        display "FAIL: a stale model response changed the current turn."
+        return 1
+    if archive_append(database and "home" and "pending-tool" and "tool_call" and "{\"run_id\":\"run-a\",\"call_id\":\"pending\"}" and "now") is not equal to 0:
+        return 1
+    if tool_ledger_queue(database and "run-a" and "pending" and "home" and "pending-tool") is not equal to 0:
+        return 1
+    if run_fixture_event(database and "final" and "assistant_final" and "final-request") is not equal to 0:
+        return 1
+    if agent_run_transition(database and "run-a" and "generating" and "final-request" and "completed" and "final") equals 0:
+        display "FAIL: run completed with unresolved tool work."
+        return 1
+    if agent_run_claim_tool(database and "run-a" and "pending") equals 0:
+        display "FAIL: tool dispatched outside the tools phase."
+        return 1
+    if run_fixture_event(database and "pending-calls" and "assistant_tool_calls" and "final-request") is not equal to 0:
+        return 1
+    if agent_run_transition(database and "run-a" and "generating" and "final-request" and "tools" and "pending-calls") is not equal to 0:
+        return 1
+    if agent_run_claim_tool(database and "run-a" and "pending") is not equal to 0:
+        return 1
+    if archive_append(database and "home" and "pending-result" and "tool_result" and "{\"run_id\":\"run-a\",\"call_id\":\"pending\",\"content\":\"Fixture observation\"}" and "now") is not equal to 0:
+        return 1
+    if tool_ledger_observe(database and "run-a" and "pending" and "pending-result") is not equal to 0:
+        return 1
+    if run_fixture_event(database and "pending-observed" and "agent_observation" and "pending-calls") is not equal to 0:
+        return 1
+    if agent_run_transition(database and "run-a" and "tools" and "pending-calls" and "ready" and "pending-observed") is not equal to 0:
+        return 1
+    if run_fixture_event(database and "next-request" and "model_request" and "pending-observed") is not equal to 0:
+        return 1
+    if agent_run_transition(database and "run-a" and "ready" and "pending-observed" and "generating" and "next-request") is not equal to 0:
+        return 1
+    if run_fixture_event(database and "next-final" and "assistant_final" and "next-request") is not equal to 0:
+        return 1
+    if agent_run_transition(database and "run-a" and "generating" and "next-request" and "completed" and "next-final") is not equal to 0:
+        return 1
+    set row to agent_run_read(database and "run-a")
+    if row equals 0 or else not (ptr_to_str(get_list(row and 2)) equals "completed"):
+        return 1
+    if agent_run_transition(database and "run-a" and "completed" and "final" and "ready" and "objective") equals 0:
+        return 1
+    if archive_verify(database and "home") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: forty durable control cycles, restart, stale-response rejection, unresolved-tool completion guard and terminal-state preservation. This is a controller test, not model-driven ReAct acceptance."
+    return 0

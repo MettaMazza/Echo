@@ -1,0 +1,77 @@
+import "../../app/web/run_store"
+import "../../app/agent/runner"
+import "../fixtures/generation_fixture"
+
+define speech_interrupt_fixture with path as Str and mode as Str and writer as Int and completed as Int returning Int:
+    set database to archive_open(path)
+    set status to 1
+    set started to ep_time_now_ms()
+    if database is not equal to 0:
+        repeat while ep_time_now_ms() - started is less than 5000:
+            set row to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='provider_helper_dispatch';"))
+            if ptr_to_str(get_list(row and 0)) equals "found" and ptr_to_str(get_list(row and 1)) equals "1":
+                set status to 0
+                break
+            set slept to sleep_ms(10)
+        if mode equals "revoke" and status equals 0:
+            set status to web_device_revoke(database and "owner")
+        set closed to sql_close(database)
+    if mode equals "stop" or else status is not equal to 0:
+        set closed to net_close(writer)
+    send status to completed
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 6 or else file_exists(get_argument(1)):
+        return 1
+    set configured to set_env("ECHO_SPEECH_ROOT" and get_argument(2))
+    set configured to set_env("ECHO_SPEECH_PROFILE" and get_argument(3))
+    set mode to get_argument(4)
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Control fixture" and "fixture-secret") is not equal to 0:
+        return 1
+    set submitted to web_submit_owned(database and "owner" and "request" and "" and "Run a waiting command, then stop it.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    if web_attachment_register(database and "owner" and session and "audio" and get_argument(5) and "Control audio.wav" and "audio/wav") is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    set arguments to "{\"attachment\":\"audio\",\"language\":\"en\"}"
+    set data to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"execute\",\"function\":{\"name\":\"attachment_transcribe\",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))
+    set generated_done to channel
+    spawn generation_fixture(listener and data and generated_done)
+    set generated to agent_generate_local(database and run and "generation" and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from generated_done
+    if generated is not equal to 0 or else served is not equal to 0:
+        return 1
+    set cancellation to socket_cancellation_create(get_list(listener and 0))
+    set interrupted to channel
+    set monitor_mode to concat(mode and "")
+    spawn speech_interrupt_fixture(get_argument(1) and monitor_mode and get_list(cancellation and 1) and interrupted)
+    set dispatched to agent_tool_step_cancellable(database and run and get_list(cancellation and 0))
+    set checked to receive from interrupted
+    if mode equals "stop" or else checked is not equal to 0:
+        set changed to set_list(cancellation and 1 and -1)
+    if dispatched is not equal to 0 or else checked is not equal to 0:
+        display "FAIL: controlled speech dispatch"
+        return 1
+    set row to agent_run_read(database and run)
+    if not (ptr_to_str(get_list(row and 2)) equals "cancelled"):
+        return 1
+    if not (agent_loop(database and run and "fixture" and 1 and 1 and -1 and 65536) equals "cancelled"):
+        return 1
+    set receipt to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='provider_helper_result' AND json_extract(payload,'$.wait_status')=9;"))
+    if not (ptr_to_str(get_list(receipt and 0)) equals "found") or else not (ptr_to_str(get_list(receipt and 1)) equals "1"):
+        return 1
+    set logs to history_collect_one(archive_prepare(database and "SELECT COUNT(*),COUNT(DISTINCT json_extract(payload,'$.stream')) FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.eof')=1;"))
+    if not (ptr_to_str(get_list(logs and 0)) equals "found") or else not (ptr_to_str(get_list(logs and 1)) equals "2") or else not (ptr_to_str(get_list(logs and 2)) equals "2"):
+        display "FAIL: cancelled helper logs lack complete archived streams"
+        return 1
+    set closed to socket_cancellation_close(cancellation)
+    set closed to local_socket_close(listener)
+    if archive_verify(database and session) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display concat("PASS: " and concat(mode and " after actual launch stopped/reaped speech helper, archived both output streams and cancelled run before another model turn."))
+    return 0

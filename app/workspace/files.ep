@@ -1,0 +1,84 @@
+import "../retained_text"
+import "../archive/file_stage"
+import "../transport/native_open"
+import "../archive/file_text"
+
+# The host supplies the workspace root. Model arguments supply only a relative
+# path below an already opened directory descriptor. Darwin constants below
+# are ABI flags, not file-size or workspace-depth limits.
+define workspace_root_open with library as Int and path as Str returning Int:
+    set open_function to ep_dlsym(library and "open")
+    if open_function equals 0:
+        return -1
+    # O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY | O_CLOEXEC.
+    return socket_signed_result(ep_dlcall2(open_function and str_to_ptr(path) and 554696704))
+
+define workspace_path_parts with path as Str returning List:
+    if string_length(path) equals 0:
+        return 0
+    set parts to string_split(path and "/")
+    set index to 0
+    repeat while index is less than length_list(parts):
+        set part to archive_list_text(parts and index)
+        if string_length(part) equals 0 or else part equals "." or else part equals "..":
+            return 0
+        set index to index + 1
+    return parts
+
+# Regular single-link files only. A FIFO is opened nonblocking and rejected;
+# directories, devices and hard links do not become file tool inputs.
+define workspace_regular_file with library as Int and descriptor as Int returning Int:
+    set inspect to ep_dlsym(library and "fstat")
+    if inspect equals 0:
+        return 0
+    # Darwin arm64 struct stat: 144 bytes; mode at4 and link count at6.
+    set information to create_list()
+    set index to 0
+    repeat while index is less than 18:
+        set added to append_list(information and 0)
+        set index to index + 1
+    if ep_dlcall2(inspect and descriptor and get_list_data_ptr(information)) is not equal to 0:
+        return 0
+    set pointer to get_list_data_ptr(information)
+    set mode to peek_byte(pointer and 4) + peek_byte(pointer and 5) * 256
+    set links to peek_byte(pointer and 6) + peek_byte(pointer and 7) * 256
+    if mode / 4096 is not equal to 8 or else links is not equal to 1:
+        return 0
+    return 1
+
+# create_new=1 means exclusive new regular file, never truncate or overwrite.
+# Intermediate directories must already exist; a separate directory operation
+# will own their creation and durable publication.
+define workspace_file_open with library as Int and root as Int and path as Str and create_new as Int returning Int:
+    if root is less than 0 or else (create_new is not equal to 0 and create_new is not equal to 1):
+        return -1
+    set parts to workspace_path_parts(path)
+    if parts equals 0:
+        return -1
+    set duplicate to ep_dlsym(library and "dup")
+    set open_at to ep_dlsym(library and "openat")
+    if duplicate equals 0 or else open_at equals 0:
+        return -1
+    set parent to socket_signed_result(ep_dlcall1(duplicate and root))
+    if parent is less than 0:
+        return -1
+    set index to 0
+    repeat while index is less than length_list(parts) - 1:
+        # O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC.
+        set child to socket_signed_result(ep_dlcall3(open_at and parent and str_to_ptr(archive_list_text(parts and index)) and 17826048))
+        set closed to net_close(parent)
+        if child is less than 0:
+            return -1
+        set parent to child
+        set index to index + 1
+    set flags to 16777476
+    if create_new equals 1:
+        set flags to 16780034
+    set descriptor to native_open_at(library and parent and archive_list_text(parts and index) and flags and 384)
+    set closed to net_close(parent)
+    if descriptor is less than 0:
+        return -1
+    if workspace_regular_file(library and descriptor) equals 0:
+        set closed to net_close(descriptor)
+        return -1
+    return descriptor

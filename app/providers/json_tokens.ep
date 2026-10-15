@@ -1,0 +1,185 @@
+import "../retained_text"
+import "json_string"
+
+# Tokens retain their original spelling. Numbers never pass through a lossy
+# integer conversion. String decoding is used only after complete validation.
+# Token fields: kind, original start, exclusive end, decoded string or spelling.
+define provider_token with kind as Str and start as Int and finish as Int and value as Str returning List:
+    set token to create_list()
+    set added to append_list(token and kind)
+    set added to append_list(token and start)
+    set added to append_list(token and finish)
+    set added to append_list(token and value)
+    return token
+
+define provider_digit with text as Str and position as Int returning Int:
+    if position is less than 0 or else position >= string_length(text):
+        return 0
+    set code to peek_byte(str_to_ptr(text) and position)
+    if code is greater than 47 and code is less than 58:
+        return 1
+    return 0
+
+define provider_next_token with text as Str and start as Int returning List:
+    set position to start
+    set size to string_length(text)
+    repeat while position is less than size:
+        set code to peek_byte(str_to_ptr(text) and position)
+        if code equals 32 or else code equals 9 or else code equals 10 or else code equals 13:
+            set position to position + 1
+        else:
+            break
+    set start to position
+    if position equals size:
+        return provider_token("end" and start and position and "")
+    set code to peek_byte(str_to_ptr(text) and position)
+    if code equals 123 or else code equals 125 or else code equals 91 or else code equals 93 or else code equals 58 or else code equals 44:
+        set spelling to ptr_to_str(substring(text and position and 1))
+        return provider_token(spelling and start and position + 1 and spelling)
+    if code equals 34:
+        set position to position + 1
+        repeat while position is less than size:
+            set code to peek_byte(str_to_ptr(text) and position)
+            if code equals 34:
+                set parser to create_list()
+                set added to append_list(parser and text)
+                set added to append_list(parser and size)
+                set added to append_list(parser and start)
+                set added to append_list(parser and 0)
+                set node to provider_decode_string(parser)
+                return provider_token("string" and start and position + 1 and ptr_to_str(get_json_value(node)))
+            if code is less than 32:
+                return 0
+            if code equals 92:
+                set position to position + 1
+                if position >= size:
+                    return 0
+                set code to peek_byte(str_to_ptr(text) and position)
+                if code equals 117:
+                    set scalar to provider_hex4(text and position + 1 and size)
+                    if scalar is less than 1:
+                        return 0
+                    set position to position + 4
+                    if scalar is greater than 55295 and scalar is less than 56320:
+                        if position + 6 >= size:
+                            return 0
+                        if peek_byte(str_to_ptr(text) and position + 1) is not equal to 92 or else peek_byte(str_to_ptr(text) and position + 2) is not equal to 117:
+                            return 0
+                        set low to provider_hex4(text and position + 3 and size)
+                        if low is less than 56320 or else low is greater than 57343:
+                            return 0
+                        set position to position + 6
+                    else if scalar is greater than 56319 and scalar is less than 57344:
+                        return 0
+                else if code is not equal to 34 and code is not equal to 92 and code is not equal to 47 and code is not equal to 98 and code is not equal to 102 and code is not equal to 110 and code is not equal to 114 and code is not equal to 116:
+                    return 0
+            set position to position + 1
+        return 0
+    if code equals 45 or else provider_digit(text and position) equals 1:
+        if code equals 45:
+            set position to position + 1
+        if provider_digit(text and position) equals 0:
+            return 0
+        if peek_byte(str_to_ptr(text) and position) equals 48:
+            set position to position + 1
+        else:
+            repeat while provider_digit(text and position) equals 1:
+                set position to position + 1
+        if position is less than size:
+            if peek_byte(str_to_ptr(text) and position) equals 46:
+                set position to position + 1
+                if provider_digit(text and position) equals 0:
+                    return 0
+                repeat while provider_digit(text and position) equals 1:
+                    set position to position + 1
+        if position is less than size:
+            set code to peek_byte(str_to_ptr(text) and position)
+            if code equals 101 or else code equals 69:
+                set position to position + 1
+                if position is less than size:
+                    set code to peek_byte(str_to_ptr(text) and position)
+                    if code equals 43 or else code equals 45:
+                        set position to position + 1
+                if provider_digit(text and position) equals 0:
+                    return 0
+                repeat while provider_digit(text and position) equals 1:
+                    set position to position + 1
+        return provider_token("number" and start and position and ptr_to_str(substring(text and start and position - start)))
+    set count to 0
+    set kind to ""
+    if code equals 116:
+        set count to 4
+        set kind to "true"
+    else if code equals 102:
+        set count to 5
+        set kind to "false"
+    else if code equals 110:
+        set count to 4
+        set kind to "null"
+    if count equals 0 or else position + count is greater than size:
+        return 0
+    if not (ptr_to_str(substring(text and position and count)) equals kind):
+        return 0
+    return provider_token(kind and start and position + count and kind)
+
+# An explicit stack validates grammar without recursion or a fixed depth cap.
+# Empty list is invalid; a successful document has at least one token.
+# UTF-8 validity is established by the transport decoder before this entry.
+define provider_json_tokens with text as Str returning List:
+    set tokens to create_list()
+    set stack to create_list()
+    set added to append_list(stack and 8)
+    set depth to 0
+    set position to 0
+    repeat while 1 equals 1:
+        set token to provider_next_token(text and position)
+        if token equals 0:
+            return 0
+        set kind to archive_list_text(token and 0)
+        set phase to get_list(stack and depth)
+        if kind equals "end":
+            if depth equals 0 and phase equals 9:
+                return tokens
+            return 0
+        set accepted to 0
+        if (phase equals 0 or else phase equals 2) and kind equals "]":
+            set depth to depth - 1
+            set accepted to 1
+        else if (phase equals 3 or else phase equals 7) and kind equals "}":
+            set depth to depth - 1
+            set accepted to 1
+        else if phase equals 2 and kind equals ",":
+            set changed to set_list(stack and depth and 1)
+            set accepted to 1
+        else if phase equals 7 and kind equals ",":
+            set changed to set_list(stack and depth and 4)
+            set accepted to 1
+        else if (phase equals 3 or else phase equals 4) and kind equals "string":
+            set changed to set_list(stack and depth and 5)
+            set accepted to 1
+        else if phase equals 5 and kind equals ":":
+            set changed to set_list(stack and depth and 6)
+            set accepted to 1
+        else if phase equals 0 or else phase equals 1 or else phase equals 6 or else phase equals 8:
+            if kind equals "string" or else kind equals "number" or else kind equals "true" or else kind equals "false" or else kind equals "null" or else kind equals "[" or else kind equals "{":
+                set next_phase to 2
+                if phase equals 6:
+                    set next_phase to 7
+                if phase equals 8:
+                    set next_phase to 9
+                set changed to set_list(stack and depth and next_phase)
+                if kind equals "[" or else kind equals "{":
+                    set depth to depth + 1
+                    set next_phase to 0
+                    if kind equals "{":
+                        set next_phase to 3
+                    if depth equals length_list(stack):
+                        set added to append_list(stack and next_phase)
+                    else:
+                        set changed to set_list(stack and depth and next_phase)
+                set accepted to 1
+        if accepted equals 0 or else depth is less than 0:
+            return 0
+        set added to append_list(tokens and token)
+        set position to get_list(token and 2)
+    return 0

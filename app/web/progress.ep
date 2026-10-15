@@ -1,0 +1,84 @@
+import "../retained_text"
+import "run_store"
+
+# This is display-only draft text. It cannot create tool calls or mark a run
+# complete. The cursor addresses committed original events, and changes of
+# generation reset it, so tool turns cannot concatenate unrelated drafts.
+define web_run_progress with database as Int and run as Str and requested_generation as Str and after as Int returning Str:
+    if after is less than 0:
+        return "{\"status\":\"invalid-cursor\"}"
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return "{\"status\":\"not-found\"}"
+    set state to archive_list_text(row and 2)
+    if not (state equals "generating"):
+        return "{\"status\":\"idle\"}"
+    set generation to archive_list_text(row and 3)
+    set cursor to after
+    if not (generation equals requested_generation):
+        set cursor to 0
+    set prefix to concat(generation and ":provider:")
+    set values to create_list()
+    set added to append_list(values and archive_list_text(row and 0))
+    set added to append_list(values and int_to_string(cursor))
+    set added to append_list(values and prefix)
+    set statement to checkpoint_prepare(database and "SELECT sequence,payload FROM echo_events WHERE session=?1 AND sequence>?2 AND kind='provider_event' AND substr(event,1,length(?3))=?3 ORDER BY sequence;" and values)
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set records to create_list()
+    set failed to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set failed to 1
+            break
+        set record to create_list()
+        set sequence_text to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set original_payload to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set added to append_list(record and sequence_text)
+        set added to append_list(record and original_payload)
+        set added to append_list(records and record)
+    set closed to ep_sqlite3_finalize(statement)
+    if failed is not equal to 0 or else closed is not equal to 0:
+        return "{\"status\":\"progress-error\"}"
+    # Release the read lock before decoding JSON. Each copied record is already
+    # committed and immutable, so concurrent appends cannot change this snapshot.
+    set builder to create_builder()
+    for each record in records:
+        set cursor to http_decimal(archive_list_text(record and 0))
+        set envelope to provider_json_tokens(archive_list_text(record and 1))
+        if envelope equals 0:
+            set failed to 1
+            break
+        set data to provider_value(envelope and provider_member(envelope and 0 and "data"))
+        if not (data equals "[DONE]"):
+            set tokens to provider_json_tokens(data)
+            if tokens equals 0:
+                set failed to 1
+                break
+            set choices_field to provider_member(tokens and 0 and "choices")
+            if choices_field is not equal to -1:
+                if not (provider_kind(tokens and choices_field) equals "["):
+                    set failed to 1
+                    break
+                set choices to provider_items(tokens and choices_field)
+                set index to 0
+                repeat while index is less than length_list(choices):
+                    set choice to get_list(choices and index)
+                    if provider_index(tokens and provider_member(tokens and choice and "index")) equals "0":
+                        set delta to provider_member(tokens and choice and "delta")
+                        set content to provider_member(tokens and delta and "content")
+                        if content is not equal to -1 and not (provider_kind(tokens and content) equals "null"):
+                            if not (provider_kind(tokens and content) equals "string"):
+                                set failed to 1
+                                break
+                            set added to builder_append(builder and provider_value(tokens and content))
+                    set index to index + 1
+    set text to ptr_to_str(builder_to_string(builder))
+    if failed is not equal to 0 or else closed is not equal to 0:
+        return "{\"status\":\"progress-error\"}"
+    set payload to concat("{\"status\":\"draft\",\"generation\":" and provider_quote(generation))
+    set payload to concat(payload and concat(",\"after\":" and int_to_string(cursor)))
+    return concat(payload and concat(",\"text\":" and concat(provider_quote(text) and "}")))

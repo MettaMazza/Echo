@@ -1,0 +1,53 @@
+import "../retained_text"
+import "../archive/file_digest"
+import "../tools/history_tools"
+
+# Frozen branch ancestry, bounded by the exact endpoint being compacted.
+# All original attachment events in that scope must retain matching metadata
+# and flushed original bytes. Generated images use the same attachment store.
+define compaction_attachment_scope returning Str:
+    return "WITH RECURSIVE scopes(session,boundary) AS (SELECT ?1,sequence FROM echo_events WHERE session=?1 AND event=?2 UNION SELECT p.session,p.sequence FROM scopes s JOIN echo_events b ON b.session=s.session AND b.kind='session_branch' AND b.sequence<=s.boundary JOIN echo_events p ON p.event=json_extract(b.payload,'$.endpoint') AND p.session=json_extract(b.payload,'$.source') AND p.digest=json_extract(b.payload,'$.digest') AND CAST(p.sequence AS TEXT)=json_extract(b.payload,'$.sequence') AND p.sequence<b.sequence) "
+
+# Caller supplies a stable database snapshot/transaction. No model text can
+# choose a path. Missing storage is a recoverable failure, never source removal.
+define compaction_attachments_verify with database as Int and session as Str and endpoint as Str returning Str:
+    set end_row to archive_read_event(database and endpoint)
+    if end_row equals 0 or else not (archive_list_text(end_row and 0) equals session):
+        return "invalid-source"
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to session
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    set retained_item_1_1 to endpoint
+    set retained_added to append_list(retained_list_1 and retained_item_1_1)
+    set values to retained_list_1
+    set count to history_collect_one(checkpoint_prepare(database and concat(compaction_attachment_scope() and "SELECT COUNT(DISTINCT e.event) FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary WHERE e.kind='attachment';") and values))
+    if not (archive_list_text(count and 0) equals "found"):
+        return "archive-error"
+    if archive_list_text(count and 1) equals "0":
+        return "verified"
+    set query to concat(compaction_attachment_scope() and "SELECT DISTINCT e.event,e.payload,a.path,a.digest,CAST(a.bytes AS TEXT),a.attachment FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary LEFT JOIN echo_attachments a ON a.event=e.event AND a.session=e.session WHERE e.kind='attachment' ORDER BY e.event;")
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return "attachment-storage-required"
+    set status to "verified"
+    repeat while status equals "verified":
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set status to "archive-error"
+            break
+        set payload to provider_json_tokens(ptr_to_str(ep_sqlite3_column_text(statement and 1)))
+        set path to ptr_to_str(ep_sqlite3_column_text(statement and 2))
+        set digest to ptr_to_str(ep_sqlite3_column_text(statement and 3))
+        set bytes to ptr_to_str(ep_sqlite3_column_text(statement and 4))
+        set identity to ptr_to_str(ep_sqlite3_column_text(statement and 5))
+        if payload equals 0 or else string_length(path) equals 0 or else not (provider_value(payload and provider_member(payload and 0 and "attachment")) equals identity) or else not (provider_value(payload and provider_member(payload and 0 and "sha256")) equals digest) or else not (provider_value(payload and provider_member(payload and 0 and "bytes")) equals bytes):
+            set status to "attachment-metadata-invalid"
+            break
+        set checked to file_digest_durable(path and 65536)
+        if not (archive_list_text(checked and 0) equals "verified") or else not (archive_list_text(checked and 1) equals digest) or else not (int_to_string(get_list(checked and 2)) equals bytes):
+            set status to "attachment-original-unavailable"
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return "archive-error"
+    return status

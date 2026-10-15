@@ -1,0 +1,120 @@
+import "../retained_text"
+import "helper_process"
+import "mlx_request"
+import "../workspace/files"
+import "fs"
+
+# Read the completed helper's exact output through its owned descriptor. The
+# read window derives from file size, never an application receipt-size cap.
+define mlx_helper_output with library as Int and descriptor as Int returning List:
+    set seek to ep_dlsym(library and "lseek")
+    if seek equals 0:
+        return file_text_result("unavailable" and "" and 0)
+    set bytes to ep_dlcall3(seek and descriptor and 0 and 2)
+    if bytes is less than 0 or else ep_dlcall3(seek and descriptor and 0 and 0) is not equal to 0:
+        return file_text_result("seek-failed" and "" and 0)
+    set characters to bytes
+    if characters equals 0:
+        set characters to 1
+    return file_text_descriptor_window(library and descriptor and "" and bytes and 65536 and 0 and characters)
+
+# Host configuration supplies executable paths, model and private spool root.
+# Result: status, prepared wire body, context, input, available output, retained
+# child handle if cleanup requires recovery. Never use the body unless ready.
+define mlx_preflight_result with status as Str and handle as List returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and "")
+    set added to append_list(result and -1)
+    set added to append_list(result and -1)
+    set added to append_list(result and -1)
+    set added to append_list(result and handle)
+    return result
+
+define mlx_preflight_local with database as Int and session as Str and identity as Str and body as Str and helper as Str and interpreter as Str and program as Str and model as Str and spool as Str and reserve as Int and cancellation as Int returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return mlx_preflight_result("platform-error" and 0)
+    set directory to workspace_root_open(library and spool)
+    if directory is less than 3:
+        set closed to ep_dlclose(library)
+        return mlx_preflight_result("spool-unavailable" and 0)
+    set encoded to concat(archive_hash_field(session) and archive_hash_field(identity))
+    set stem to ep_sha256(encoded)
+    set input_name to concat(stem and ".request.json")
+    set output_name to concat(stem and ".count.json")
+    set errors_name to concat(stem and ".errors.txt")
+    set input to workspace_file_open(library and directory and input_name and 1)
+    set output to workspace_file_open(library and directory and output_name and 1)
+    set errors to workspace_file_open(library and directory and errors_name and 1)
+    set result to mlx_preflight_result("spool-failed" and 0)
+    if input >= 3 and output >= 3 and errors >= 3:
+        set written to file_stage_write(library and input and str_to_ptr(body) and string_length(body))
+        set finished to file_stage_finish(library and input)
+        set input to -1
+        if written equals 0 and finished equals 0:
+            set configuration to ptr_to_str(read_file(concat(model and "/config.json")))
+            set request_path to concat(spool and concat("/" and input_name))
+            set retained_list_1 to create_list()
+            set retained_item_1_0 to interpreter
+            set retained_added to append_list(retained_list_1 and retained_item_1_0)
+            set retained_item_1_1 to program
+            set retained_added to append_list(retained_list_1 and retained_item_1_1)
+            set retained_item_1_2 to model
+            set retained_added to append_list(retained_list_1 and retained_item_1_2)
+            set retained_item_1_3 to request_path
+            set retained_added to append_list(retained_list_1 and retained_item_1_3)
+            set arguments to retained_list_1
+            set retained_list_2 to create_list()
+            set retained_item_2_0 to "HF_HUB_OFFLINE=1"
+            set retained_added to append_list(retained_list_2 and retained_item_2_0)
+            set retained_item_2_1 to "TRANSFORMERS_OFFLINE=1"
+            set retained_added to append_list(retained_list_2 and retained_item_2_1)
+            set retained_item_2_2 to "PYTHONNOUSERSITE=1"
+            set retained_added to append_list(retained_list_2 and retained_item_2_2)
+            set retained_item_2_3 to "TOKENIZERS_PARALLELISM=false"
+            set retained_added to append_list(retained_list_2 and retained_item_2_3)
+            set environment to retained_list_2
+            set payload to concat("{\"request_body\":" and provider_quote(body))
+            set payload to concat(payload and concat(",\"configuration\":" and provider_quote(configuration)))
+            set payload to concat(payload and concat(",\"model_directory\":" and provider_quote(model)))
+            set payload to concat(payload and "}")
+            if archive_append(database and session and identity and "provider_preflight_input" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) equals 0:
+                set executed to provider_helper_run(database and session and concat(identity and ":tokenizer") and helper and arguments and environment and directory and output and errors and cancellation)
+                set status to archive_list_text(executed and 0)
+                set result to mlx_preflight_result(status and get_list(executed and 2))
+                if get_list(executed and 2) equals 0:
+                    set count_output to mlx_helper_output(library and output)
+                    set error_output to mlx_helper_output(library and errors)
+                    if not (archive_list_text(count_output and 0) equals "read") or else not (archive_list_text(error_output and 0) equals "read"):
+                        set changed to set_list(result and 0 and "helper-output-unreadable")
+                    else:
+                        set counted to archive_list_text(count_output and 1)
+                        if status equals "complete":
+                            set prepared to mlx_prepare_request(body and configuration and counted and model and reserve)
+                            if archive_list_text(prepared and 0) equals "ready":
+                                set result to prepared
+                                set added to append_list(result and 0)
+                            else:
+                                set result to mlx_preflight_result(archive_list_text(prepared and 0) and 0)
+                        set receipt to concat("{\"decision\":" and provider_quote(archive_list_text(result and 0)))
+                        set receipt to concat(receipt and concat(",\"count_receipt\":" and provider_quote(counted)))
+                        set receipt to concat(receipt and concat(",\"stderr\":" and provider_quote(archive_list_text(error_output and 1))))
+                        set receipt to concat(receipt and concat(",\"wire_body\":" and provider_quote(archive_list_text(result and 1))))
+                        set receipt to concat(receipt and "}")
+                        if archive_append(database and session and concat(identity and ":decision") and "provider_preflight" and receipt and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+                            set changed to set_list(result and 0 and "archive-error")
+            else:
+                set result to mlx_preflight_result("archive-error" and 0)
+    set cleanup to 0
+    if input >= 3:
+        set cleanup to cleanup + net_close(input)
+    if output >= 3:
+        set cleanup to cleanup + net_close(output)
+    if errors >= 3:
+        set cleanup to cleanup + net_close(errors)
+    set cleanup to cleanup + net_close(directory)
+    set cleanup to cleanup + ep_dlclose(library)
+    if cleanup is not equal to 0:
+        set changed to set_list(result and 0 and "cleanup-error")
+    return result

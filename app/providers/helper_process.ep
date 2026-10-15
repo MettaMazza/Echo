@@ -1,0 +1,143 @@
+import "../retained_text"
+import "../workspace/native_process"
+import "../archive/event_store"
+import "archived_stream"
+
+# Host-owned provider helpers only. Explicit argv/environment and descriptors
+# never pass through a shell. No wall-clock deadline or output truncation.
+define provider_helper_cancelled with library as Int and reader as Int returning Int:
+    if reader is less than 0:
+        return 0
+    set function to ep_dlsym(library and "poll")
+    if function equals 0:
+        return -1
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to reader + 4294967296
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    set descriptors to retained_list_1
+    set result to socket_signed_result(ep_dlcall3(function and get_list_data_ptr(descriptors) and 1 and 0))
+    if result is less than 0:
+        if socket_errno(library) equals 4:
+            return 0
+        return -1
+    if result equals 0:
+        return 0
+    set events to get_list(descriptors and 0) / 281474976710656
+    if events modulo 64 is greater than 31:
+        return -1
+    return 1
+
+# Result: status, raw wait status, retained handle if cleanup needs attention.
+# Caller owns descriptors and must archive/validate output before using it.
+define provider_helper_result with status as Str and waited as Int and handle as List returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and waited)
+    set added to append_list(result and handle)
+    return result
+
+# Keep ownership here instead of returning a live handle through recap layers.
+# ECHILD means wait ownership is gone: never signal that possibly reused PID.
+# Other wait/signal failures stay supervised, with an archived diagnostic.
+define provider_helper_wait_owned with database as Int and session as Str and identity as Str and handle as List and cancellation as Int returning List:
+    set library to get_list(handle and 0)
+    set wait_function to ep_dlsym(library and "waitpid")
+    set status to "complete"
+    set waited to -1
+    set reported to 0
+    set idle to channel
+    set retained_list_2 to create_list()
+    set retained_item_2_0 to idle
+    set retained_added to append_list(retained_list_2 and retained_item_2_0)
+    set waits to retained_list_2
+    repeat while 1 equals 1:
+        set retained_list_3 to create_list()
+        set retained_item_3_0 to 0
+        set retained_added to append_list(retained_list_3 and retained_item_3_0)
+        set raw to retained_list_3
+        set observed to socket_signed_result(ep_dlcall3(wait_function and get_list(handle and 1) and get_list_data_ptr(raw) and 1))
+        set failure to 0
+        if observed equals get_list(handle and 1):
+            set waited to get_list(raw and 0)
+            set changed to set_list(handle and 2 and 1)
+            set changed to set_list(handle and 3 and waited)
+            if status equals "complete" and waited is not equal to 0:
+                set status to "helper-failed"
+            break
+        if observed is less than 0:
+            set failure to socket_errno(library)
+            if failure equals 10:
+                set status to "helper-wait-ownership-lost"
+                set changed to set_list(handle and 2 and 2)
+                break
+            if failure equals 4:
+                set failure to 0
+        else if observed is not equal to 0:
+            set failure to -1
+        if observed equals 0:
+            set pending to provider_helper_cancelled(library and cancellation)
+            if pending is not equal to 0:
+                set status to "cancelled"
+                if pending is less than 0:
+                    set status to "cancellation-error"
+                if workspace_process_signal(handle and 9) is not equal to 0:
+                    set failure to socket_errno(library)
+                    if failure equals 3:
+                        set failure to 0
+        if failure is not equal to 0 and reported equals 0:
+            set payload to concat("{\"dispatch\":" and provider_quote(identity))
+            set payload to concat(payload and concat(",\"errno\":" and int_to_string(failure)))
+            set payload to concat(payload and ",\"status\":\"cleanup-pending\"}")
+            set recorded to archive_append(database and session and concat(identity and ":cleanup") and "provider_helper_cleanup" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+            if recorded equals 0:
+                set reported to 1
+        set interval to 10
+        if failure is not equal to 0:
+            set interval to 1000
+        set yielded to select(waits and interval)
+    if ep_dlclose(library) is not equal to 0:
+        set status to "cleanup-error"
+    set changed to set_list(handle and 0 and 0)
+    return provider_helper_result(status and waited and 0)
+
+define provider_helper_run with database as Int and session as Str and identity as Str and executable as Str and arguments as List and environment as List and directory as Int and output as Int and errors as Int and cancellation as Int returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return provider_helper_result("platform-error" and -1 and 0)
+    if ep_dlsym(library and "waitpid") equals 0 or else ep_dlsym(library and "kill") equals 0:
+        set closed to ep_dlclose(library)
+        return provider_helper_result("platform-error" and -1 and 0)
+    set pending to provider_helper_cancelled(library and cancellation)
+    if pending is not equal to 0:
+        set closed to ep_dlclose(library)
+        if pending equals 1:
+            return provider_helper_result("cancelled-before-launch" and -1 and 0)
+        return provider_helper_result("cancellation-error" and -1 and 0)
+    set payload to concat("{\"executable\":" and provider_quote(executable))
+    set payload to concat(payload and ",\"arguments\":[")
+    set index to 0
+    repeat while index is less than length_list(arguments):
+        if index is greater than 0:
+            set payload to concat(payload and ",")
+        set payload to concat(payload and provider_quote(archive_list_text(arguments and index)))
+        set index to index + 1
+    set payload to concat(payload and "]}")
+    if archive_append(database and session and identity and "provider_helper_dispatch" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set closed to ep_dlclose(library)
+        return provider_helper_result("archive-error" and -1 and 0)
+    set handle to workspace_process_start(executable and arguments and environment and directory and output and errors)
+    set status to "launch-failed"
+    set waited to -1
+    if handle is not equal to 0:
+        set terminal to provider_helper_wait_owned(database and session and identity and handle and cancellation)
+        set status to archive_list_text(terminal and 0)
+        set waited to get_list(terminal and 1)
+    set payload to concat("{\"dispatch\":" and provider_quote(identity))
+    set payload to concat(payload and concat(",\"status\":" and provider_quote(status)))
+    set payload to concat(payload and concat(",\"wait_status\":" and int_to_string(waited)))
+    set payload to concat(payload and "}")
+    if archive_append(database and session and concat(identity and ":result") and "provider_helper_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set status to "archive-error"
+    if ep_dlclose(library) is not equal to 0:
+        set status to "cleanup-error"
+    return provider_helper_result(status and waited and 0)

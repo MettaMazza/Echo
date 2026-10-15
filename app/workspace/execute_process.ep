@@ -1,0 +1,113 @@
+import "../retained_text"
+import "sandbox_process"
+import "capture_process"
+import "process_journal"
+
+# Result: status, retained handle (only when cleanup needs attention), raw wait
+# status, persisted stdout bytes, persisted stderr bytes. The caller must retain
+# and reconcile a nonzero handle; never convert cleanup-failed into success.
+define workspace_execution_result with status as Str and handle as List and waited as Int and output_bytes as Int and error_bytes as Int returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and handle)
+    set added to append_list(result and waited)
+    set added to append_list(result and output_bytes)
+    set added to append_list(result and error_bytes)
+    return result
+
+define workspace_process_abort with handle as List returning Int:
+    if get_list(handle and 2) equals 1:
+        return 0
+    if workspace_process_signal(handle and 9) is not equal to 0 and socket_errno(get_list(handle and 0)) is not equal to 3:
+        return 1
+    set state to workspace_process_poll(handle)
+    repeat while state equals 0:
+        set slept to sleep_ms(10)
+        set state to workspace_process_poll(handle)
+    if state is not equal to 1:
+        return 1
+    return 0
+
+# Authenticated dispatcher supplies the owned/pinned directory and host policy.
+# One claimed tool call runs one explicit argv command. No implicit shell,
+# model-controlled environment, execution deadline or output-length limit.
+define workspace_execute_claimed with database as Int and run as Str and call_id as Str and runtime as Str and workspace as Str and directory as Int and executable as Str and arguments as List and environment as List and cancellation as Int returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return workspace_execution_result("unavailable" and 0 and -1 and 0 and 0)
+    set pending to agent_cancellation_pending(library and cancellation)
+    if pending is not equal to 0:
+        set closed to ep_dlclose(library)
+        if pending is less than 0:
+            return workspace_execution_result("cancellation-error" and 0 and -1 and 0 and 0)
+        return workspace_execution_result("cancelled-before-launch" and 0 and -1 and 0 and 0)
+    set output to socket_cancellation_create(library)
+    set errors to socket_cancellation_create(library)
+    if output equals 0 or else errors equals 0:
+        if output is not equal to 0:
+            set closed to socket_cancellation_close(output)
+        if errors is not equal to 0:
+            set closed to socket_cancellation_close(errors)
+        set closed to ep_dlclose(library)
+        return workspace_execution_result("pipe-failed" and 0 and -1 and 0 and 0)
+    set encoded_arguments to "["
+    set index to 0
+    repeat while index is less than length_list(arguments):
+        if index is greater than 0:
+            set encoded_arguments to concat(encoded_arguments and ",")
+        set encoded_arguments to concat(encoded_arguments and provider_quote(archive_list_text(arguments and index)))
+        set index to index + 1
+    set encoded_arguments to concat(encoded_arguments and "]")
+    set description to concat("{\"executable\":" and provider_quote(executable))
+    set description to concat(description and concat(",\"arguments\":" and encoded_arguments))
+    set description to concat(description and concat(",\"workspace\":" and provider_quote(workspace)))
+    set description to concat(description and concat(",\"runtime\":" and provider_quote(runtime)))
+    set description to concat(description and concat(",\"sandbox_sha256\":" and provider_quote(ep_sha256(workspace_sandbox_profile()))))
+    set description to concat(description and ",\"environment\":\"explicit host environment\"}")
+    if workspace_process_reserve(database and run and call_id and description) is not equal to 0:
+        set closed to socket_cancellation_close(output)
+        set closed to socket_cancellation_close(errors)
+        set closed to ep_dlclose(library)
+        return workspace_execution_result("reservation-failed" and 0 and -1 and 0 and 0)
+    set handle to workspace_sandbox_start(runtime and workspace and executable and arguments and environment and directory and get_list(output and 1) and get_list(errors and 1))
+    if handle equals 0:
+        set recorded to workspace_process_spawn_failed(database and run and call_id)
+        set closed to socket_cancellation_close(output)
+        set closed to socket_cancellation_close(errors)
+        set closed to ep_dlclose(library)
+        if recorded is not equal to 0:
+            return workspace_execution_result("persistence-failed" and 0 and -1 and 0 and 0)
+        return workspace_execution_result("native-start-failed" and 0 and -1 and 0 and 0)
+    set status to "complete"
+    if workspace_process_receipt(database and run and call_id and handle and "") is not equal to 0:
+        set status to "persistence-failed"
+    set output_closed to socket_cancel(output)
+    set errors_closed to socket_cancel(errors)
+    if output_closed is not equal to 0 or else errors_closed is not equal to 0:
+        set status to "cleanup-failed"
+    set output_bytes to 0
+    set error_bytes to 0
+    if status equals "complete":
+        set captured to workspace_process_capture(database and run and call_id and handle and get_list(output and 0) and get_list(errors and 0) and cancellation)
+        set changed to set_list(output and 0 and -1)
+        set changed to set_list(errors and 0 and -1)
+        set status to archive_list_text(captured and 0)
+        set output_bytes to get_list(captured and 2)
+        set error_bytes to get_list(captured and 3)
+        if get_list(handle and 2) equals 1:
+            if workspace_process_receipt(database and run and call_id and handle and status) is not equal to 0:
+                set status to "persistence-failed"
+    else:
+        if workspace_process_abort(handle) is not equal to 0:
+            set status to "cleanup-failed"
+    set closed to socket_cancellation_close(output)
+    set errors_closed to socket_cancellation_close(errors)
+    set unloaded to ep_dlclose(library)
+    if closed is not equal to 0 or else errors_closed is not equal to 0 or else unloaded is not equal to 0:
+        set status to "cleanup-failed"
+    if get_list(handle and 2) is not equal to 1:
+        return workspace_execution_result("cleanup-failed" and handle and -1 and output_bytes and error_bytes)
+    set waited to get_list(handle and 3)
+    if workspace_process_close(handle) is not equal to 0:
+        set status to "cleanup-failed"
+    return workspace_execution_result(status and 0 and waited and output_bytes and error_bytes)

@@ -1,0 +1,141 @@
+import "llama_native"
+import "../archive/file_stage"
+import "fs"
+
+# Actual engine callback. State owns all strings/handles for the decode lifetime.
+# Selected tensor only; reject non-F32/non-contiguous storage rather than guessing.
+define research_capture_callback with tensor as Int and ask as Int and state as List returning Int:
+    set library to get_list(state and 0)
+    set system to get_list(state and 1)
+    set name to ptr_to_str(ep_dlcall1(ep_dlsym(library and "ggml_get_name") and tensor))
+    if not (name equals ptr_to_str(get_list(state and 2))):
+        if ask is not equal to 0:
+            return 0
+        return 1
+    if ask is not equal to 0:
+        return 1
+    if get_list(state and 4) is not equal to 0:
+        set changed to set_list(state and 5 and 1)
+        return 0
+    set type_storage to [0]
+    set copied to ep_dlcall3(ep_dlsym(system and "memcpy") and get_list_data_ptr(type_storage) and tensor and 4)
+    if get_list(type_storage and 0) is not equal to 0 or else ep_dlcall1(ep_dlsym(library and "ggml_is_contiguous") and tensor) equals 0:
+        set changed to set_list(state and 5 and 1)
+        return 0
+    # ggml_tensor prefix on this pinned ABI: enum type, aligned buffer pointer,
+    # then four int64 dimensions starting at byte16. Save actual dimensions.
+    set dimensions to research_native_words(4)
+    set copied to ep_dlcall3(ep_dlsym(system and "memcpy") and get_list_data_ptr(dimensions) and tensor + 16 and 32)
+    set bytes to ep_dlcall1(ep_dlsym(library and "ggml_nbytes") and tensor)
+    if bytes is less than 1:
+        set changed to set_list(state and 5 and 1)
+        return 0
+    set storage to ep_dlcall1(ep_dlsym(system and "malloc") and bytes)
+    if storage equals 0:
+        set changed to set_list(state and 5 and 1)
+        return 0
+    set ignored to ep_dlcall4(ep_dlsym(library and "ggml_backend_tensor_get") and tensor and storage and 0 and bytes)
+    set descriptor to file_stage_open(system and ptr_to_str(get_list(state and 3)))
+    set failure to 1
+    if descriptor >= 0:
+        set failure to file_stage_write(system and descriptor and storage and bytes)
+        set closed to file_stage_finish(system and descriptor)
+        set failure to failure + closed
+    set ignored to ep_dlcall1(ep_dlsym(system and "free") and storage)
+    set changed to set_list(state and 4 and 1)
+    set changed to set_list(state and 5 and failure)
+    set changed to set_list(state and 6 and dimensions)
+    set changed to set_list(state and 7 and bytes)
+    if failure is not equal to 0:
+        return 0
+    return 1
+
+define research_capture_run returning Int:
+    if get_argument_count() is not equal to 6:
+        display "Supply native library directory, model, prompt file, selected tensor name and new output path."
+        return 1
+    set directory to get_argument(1)
+    set library to ep_dlopen(concat(directory and "/libllama.dylib"))
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set ffi to research_ffi_open()
+    if library equals 0 or else system equals 0 or else ffi equals 0:
+        return 1
+    set ignored to ep_dlcall1(ep_dlsym(library and "ggml_backend_load_all_from_path") and str_to_ptr(directory))
+    set ignored to ep_dlcall0(ep_dlsym(library and "llama_backend_init"))
+    set pointer to research_ffi_type(ffi and "pointer")
+    set integer to research_ffi_type(ffi and "sint32")
+    set model_type to research_llama_model_type(ffi)
+    set model_offsets to research_ffi_offsets(ffi and model_type)
+    set model_params to research_ffi_invoke(ffi and ep_dlsym(library and "llama_model_default_params") and research_ffi_pointer(model_type) and create_list() and create_list())
+    if model_params equals 0 or else model_offsets equals 0:
+        return 1
+    set base to get_list_data_ptr(model_params)
+    set ignored to research_native_write(system and base + get_list(model_offsets and 2) and -1 and 4)
+    set ignored to research_native_write(system and base + get_list(model_offsets and 4) and 1 and 4)
+    set ignored to research_native_write(system and base + get_list(model_offsets and 5) and 0 and 4)
+    set path to [str_to_ptr(get_argument(2))]
+    set loaded to research_ffi_invoke(ffi and ep_dlsym(library and "llama_model_load_from_file") and pointer and [pointer, research_ffi_pointer(model_type)] and [get_list_data_ptr(path), base])
+    if loaded equals 0 or else get_list(loaded and 0) equals 0:
+        return 1
+    set model to get_list(loaded and 0)
+    set vocab to ep_dlcall1(ep_dlsym(library and "llama_model_get_vocab") and model)
+    set prompt to ptr_to_str(read_file(get_argument(3)))
+    set tokenize to ep_dlsym(library and "llama_tokenize")
+    set required to socket_signed_result(ep_dlcall7(tokenize and vocab and str_to_ptr(prompt) and string_length(prompt) and 0 and 0 and 1 and 1))
+    if required >= 0:
+        return 1
+    set count to 0 - required
+    set tokens to research_native_words((count * 4 + 7) / 8)
+    if socket_signed_result(ep_dlcall7(tokenize and vocab and str_to_ptr(prompt) and string_length(prompt) and get_list_data_ptr(tokens) and count and 1 and 1)) is not equal to count:
+        return 1
+    set context_type to research_llama_context_type(ffi)
+    set offsets to research_ffi_offsets(ffi and context_type)
+    set params to research_ffi_invoke(ffi and ep_dlsym(library and "llama_context_default_params") and research_ffi_pointer(context_type) and create_list() and create_list())
+    if params equals 0 or else offsets equals 0:
+        return 1
+    set state to [library, system, get_argument(4), get_argument(5), 0, 0, 0, 0]
+    set callback to research_capture_callback
+    set base to get_list_data_ptr(params)
+    # Full model context; batch dimensions derive from this finite probe's tokens.
+    set ignored to research_native_write(system and base + get_list(offsets and 0) and 0 and 4)
+    set ignored to research_native_write(system and base + get_list(offsets and 1) and count and 4)
+    set ignored to research_native_write(system and base + get_list(offsets and 2) and count and 4)
+    set ignored to research_native_write(system and base + get_list(offsets and 22) and callback and 8)
+    set ignored to research_native_write(system and base + get_list(offsets and 23) and state and 8)
+    set model_pointer to [model]
+    set created to research_ffi_invoke(ffi and ep_dlsym(library and "llama_init_from_model") and pointer and [pointer, research_ffi_pointer(context_type)] and [get_list_data_ptr(model_pointer), base])
+    if created equals 0 or else get_list(created and 0) equals 0:
+        return 1
+    set context to get_list(created and 0)
+    set batch_type to research_llama_batch_type(ffi)
+    set token_pointer to [get_list_data_ptr(tokens)]
+    set token_count to [count]
+    set batch to research_ffi_invoke(ffi and ep_dlsym(library and "llama_batch_get_one") and research_ffi_pointer(batch_type) and [pointer, integer] and [get_list_data_ptr(token_pointer), get_list_data_ptr(token_count)])
+    set context_pointer to [context]
+    set decoded to research_ffi_invoke(ffi and ep_dlsym(library and "llama_decode") and integer and [pointer, research_ffi_pointer(batch_type)] and [get_list_data_ptr(context_pointer), get_list_data_ptr(batch)])
+    set ignored to ep_dlcall1(ep_dlsym(library and "llama_free") and context)
+    set ignored to ep_dlcall1(ep_dlsym(library and "llama_model_free") and model)
+    if decoded equals 0 or else get_list(decoded and 0) is not equal to 0 or else get_list(state and 4) is not equal to 1 or else get_list(state and 5) is not equal to 0:
+        display "FAIL: native decode/capture did not complete"
+        return 1
+    set dimensions to get_list(state and 6)
+    display "Captured tensor:"
+    display get_argument(4)
+    display "F32 dimensions:"
+    display get_list(dimensions and 0)
+    display get_list(dimensions and 1)
+    display get_list(dimensions and 2)
+    display get_list(dimensions and 3)
+    display "Source token count:"
+    display count
+    set token_path to concat(get_argument(5) and ".tokens.i32")
+    set descriptor to file_stage_open(system and token_path)
+    if descriptor is less than 0 or else file_stage_write(system and descriptor and get_list_data_ptr(tokens) and count * 4) is not equal to 0 or else file_stage_finish(system and descriptor) is not equal to 0:
+        return 1
+    set checked to file_digest(get_argument(5) and 65536)
+    if not (ptr_to_str(get_list(checked and 0)) equals "verified") or else get_list(checked and 2) is not equal to get_list(state and 7):
+        return 1
+    display "Activation SHA256:"
+    display ptr_to_str(get_list(checked and 1))
+    display "PASS: selected real native activation captured from the primary model through an Ernos callback; original source tokens saved."
+    return 0

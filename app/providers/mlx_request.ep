@@ -1,0 +1,104 @@
+import "../retained_text"
+import "context_admission"
+import "llama_metadata"
+
+# Pinned MLX-LM reads native model configuration without a smaller context slot.
+# Extensions require separately verified configuration, never an inferred scale.
+define mlx_context_capacity with configuration as Str returning Int:
+    set tokens to provider_json_tokens(configuration)
+    if tokens equals 0:
+        return -1
+    if provider_unique_objects(tokens) equals 0:
+        return -1
+    set root to provider_member(tokens and 0 and "max_position_embeddings")
+    set text to provider_member(tokens and 0 and "text_config")
+    set nested to provider_member(tokens and text and "max_position_embeddings")
+    set field to root
+    if nested >= 0:
+        set field to nested
+        if root >= 0:
+            if not (provider_index(tokens and root) equals provider_index(tokens and nested)):
+                return -1
+    set capacity to http_decimal(provider_index(tokens and field))
+    if capacity is less than 1:
+        return -1
+    return capacity
+
+# This adapter is MLX-LM text inference. A multimodal weight architecture does
+# not imply that this runtime accepts image/audio/video request parts.
+define mlx_text_request with tokens as List returning Str:
+    set messages to provider_items(tokens and provider_member(tokens and 0 and "messages"))
+    if messages equals 0 or else length_list(messages) equals 0:
+        return "invalid-request"
+    set index to 0
+    repeat while index is less than length_list(messages):
+        set message to get_list(messages and index)
+        set content to provider_member(tokens and message and "content")
+        set kind to provider_kind(tokens and content)
+        if kind equals "[":
+            set parts to provider_items(tokens and content)
+            set part_index to 0
+            repeat while part_index is less than length_list(parts):
+                set part to get_list(parts and part_index)
+                if not (provider_value(tokens and provider_member(tokens and part and "type")) equals "text"):
+                    return "unsupported-input-modality"
+                if not (provider_kind(tokens and provider_member(tokens and part and "text")) equals "string"):
+                    return "invalid-request"
+                set part_index to part_index + 1
+        else if not (kind equals "string" or else kind equals "null" or else kind equals "missing"):
+            return "invalid-request"
+        set index to index + 1
+    return "ready"
+
+# Return status, exact wire body, context, input count and generation allowance.
+# Caller archives original and wire body with tokenizer/configuration provenance.
+# Explicit caller caps are rejected here, never silently replaced or duplicated.
+define mlx_prepare_request with body as Str and configuration as Str and counted as Str and model as Str and reserve as Int returning List:
+    set result to create_list()
+    set added to append_list(result and "invalid-request")
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0:
+        return result
+    if provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return result
+    if not (provider_kind(tokens and provider_member(tokens and 0 and "stream")) equals "true"):
+        return result
+    if not (provider_kind(tokens and provider_member(tokens and 0 and "model")) equals "string") or else not (provider_value(tokens and provider_member(tokens and 0 and "model")) equals model):
+        return result
+    if provider_member(tokens and 0 and "max_tokens") >= 0 or else provider_member(tokens and 0 and "max_completion_tokens") >= 0:
+        set changed to set_list(result and 0 and "explicit-output-policy-required")
+        return result
+    set status to mlx_text_request(tokens)
+    if not (status equals "ready"):
+        set changed to set_list(result and 0 and status)
+        return result
+    set receipt to provider_json_tokens(counted)
+    if receipt equals 0:
+        set changed to set_list(result and 0 and "invalid-token-receipt")
+        return result
+    if provider_unique_objects(receipt) equals 0 or else not (provider_value(receipt and provider_member(receipt and 0 and "request_sha256")) equals ep_sha256(body)) or else not (provider_value(receipt and provider_member(receipt and 0 and "configuration_sha256")) equals ep_sha256(configuration)):
+        set changed to set_list(result and 0 and "stale-token-receipt")
+        return result
+    if not (provider_value(receipt and provider_member(receipt and 0 and "model_directory")) equals model):
+        set changed to set_list(result and 0 and "tokenizer-identity-mismatch")
+        return result
+    set capacity to mlx_context_capacity(configuration)
+    set input to llama_input_count(counted)
+    set decision to provider_context_admission(capacity and capacity and input and -1 and reserve)
+    set status to archive_list_text(decision and 0)
+    set changed to set_list(result and 0 and status)
+    if not (status equals "ready"):
+        return result
+    set available to get_list(decision and 4)
+    set closing to get_list(tokens and length_list(tokens) - 1)
+    set position to get_list(closing and 1)
+    set prefix to ptr_to_str(substring(body and 0 and position))
+    set suffix to ptr_to_str(substring(body and position and string_length(body) - position))
+    set wire to concat(prefix and ",\"max_completion_tokens\":")
+    set wire to concat(wire and int_to_string(available))
+    set wire to concat(wire and suffix)
+    set added to append_list(result and wire)
+    set added to append_list(result and capacity)
+    set added to append_list(result and input)
+    set added to append_list(result and available)
+    return result

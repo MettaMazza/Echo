@@ -1,0 +1,104 @@
+import "../../app/web/routes"
+import "os"
+import "fs"
+
+# Exercise the actual authenticated HTTP route through a native socket reader.
+define recovery_route with config as List and target as Str and body as Str returning List:
+    set listener to local_socket_listen(0)
+    set client to net_connect("127.0.0.1" and get_list(listener and 2))
+    set accepted to local_socket_accept(listener)
+    set wire to concat("POST " and concat(target and " HTTP/1.1\r\nHost: 127.0.0.1:8123\r\nOrigin: http://127.0.0.1:8123\r\nX-Echo-Token: route-fixture-secret\r\nContent-Type: application/json\r\nContent-Length: "))
+    set wire to concat(wire and concat(int_to_string(string_length(body)) and concat("\r\n\r\n" and body)))
+    set sent to socket_write_all(get_list(listener and 0) and client and -1 and str_to_ptr(wire) and string_length(wire))
+    set reader to http_stream_create(get_list(listener and 0) and accepted and -1)
+    set request to http_stream_head(reader)
+    set reply to web_route(reader and request and 8123 and config)
+    set closed to http_stream_release(reader)
+    set closed to net_close(accepted)
+    set closed to net_close(client)
+    set closed to local_socket_close(listener)
+    return reply
+
+define recovery_await with database as Int and run as Str returning Int:
+    set started to ep_time_now_ms()
+    repeat while ep_time_now_ms() - started is less than 120000:
+        set tokens to provider_json_tokens(web_worker_status(database and run))
+        set state to provider_value(tokens and provider_member(tokens and 0 and "worker_status"))
+        if state equals "completed":
+            return 0
+        if not (state equals "running"):
+            display concat("Unexpected worker state: " and state)
+            return 1
+        set waited to sleep_ms(20)
+    display "Test observation deadline exceeded."
+    return 1
+
+define main returning Int:
+    if get_argument_count() is not equal to 4 and get_argument_count() is not equal to 5:
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_worker_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "route-invite") is not equal to 0 or else web_device_pair(database and "route-invite" and "owner" and "Route fixture" and "route-fixture-secret") is not equal to 0:
+        return 1
+    set config to create_list()
+    set added to append_list(config and get_argument(1))
+    set added to append_list(config and get_argument(2))
+    set added to append_list(config and http_decimal(get_argument(3)))
+    set added to append_list(config and 2048)
+    set added to append_list(config and 65536)
+    if get_argument_count() equals 5:
+        set added to append_list(config and "")
+        set added to append_list(config and "")
+        set added to append_list(config and 0)
+        set added to append_list(config and ptr_to_str(read_file(get_argument(4))))
+    set profile to web_config_provider(config)
+    if provider_registry_register(database and "selected" and "Selected local model" and profile) is not equal to 0:
+        return 2
+    set choices to recovery_route(config and "/api/providers" and "{}")
+    if not (ptr_to_str(get_list(choices and 0)) equals "200 OK") or else string_contains(ptr_to_str(get_list(choices and 1)) and "Selected local model") equals 0 or else string_contains(ptr_to_str(get_list(choices and 1)) and "tokenizer_helper") is not equal to 0:
+        return 3
+    set details to recovery_route(config and "/api/providers" and "{\"identity\":\"selected\"}")
+    if not (ptr_to_str(get_list(details and 0)) equals "200 OK") or else string_contains(ptr_to_str(get_list(details and 1)) and "supported_context") equals 0 or else string_contains(ptr_to_str(get_list(details and 1)) and "interpreter_library") is not equal to 0:
+        return 4
+    set missing to recovery_route(config and "/api/providers" and "{\"identity\":\"missing\"}")
+    if not (ptr_to_str(get_list(missing and 0)) equals "404 Not Found"):
+        return 5
+    set malformed to recovery_route(config and "/api/providers" and "{\"identity\":{\"port\":8081}}")
+    if not (ptr_to_str(get_list(malformed and 0)) equals "400 Bad Request"):
+        return 6
+    # Durable original submission with deliberately no worker claim.
+    set submitted to web_submit_owned(database and "owner" and "route-original" and "" and "Reply with exactly ROUTE_RECOVERED.")
+    if not (ptr_to_str(get_list(submitted and 0)) equals "accepted"):
+        return 1
+    set source to concat(ptr_to_str(get_list(submitted and 1)) and "")
+    set body to "{\"submission\":\"route-original\",\"message\":\"Reply with exactly ROUTE_RECOVERED.\"}"
+    set reply to recovery_route(config and "/api/runs" and body)
+    if not (ptr_to_str(get_list(reply and 0)) equals "202 Accepted"):
+        display ptr_to_str(get_list(reply and 1))
+        return 1
+    set retry to recovery_route(config and "/api/runs" and body)
+    if not (ptr_to_str(get_list(retry and 0)) equals "200 OK") or else recovery_await(database and "route-original") is not equal to 0:
+        return 1
+    set revised to web_revision(database and "owner" and source and "route-original:user" and "route-edit" and "edit" and "Reply with exactly REVISION_RECOVERED.")
+    if not (ptr_to_str(get_list(revised and 0)) equals "accepted"):
+        return 1
+    set body to concat("{\"source\":" and provider_quote(source))
+    set body to concat(body and ",\"user_event\":\"route-original:user\",\"identity\":\"route-edit\",\"mode\":\"edit\",\"text\":\"Reply with exactly REVISION_RECOVERED.\"}")
+    set reply to recovery_route(config and "/api/session-revise" and body)
+    if not (ptr_to_str(get_list(reply and 0)) equals "202 Accepted"):
+        display ptr_to_str(get_list(reply and 1))
+        return 1
+    set retry to recovery_route(config and "/api/session-revise" and body)
+    if not (ptr_to_str(get_list(retry and 0)) equals "200 OK") or else recovery_await(database and "revision:route-edit") is not equal to 0:
+        return 1
+    set transcript to web_session_transcript(database and "branch:route-edit")
+    if string_contains(transcript and "REVISION_RECOVERED") equals 0 or else string_contains(transcript and "ROUTE_RECOVERED") is not equal to 0:
+        return 1
+    set counts to history_collect_one(archive_prepare(database and "SELECT (SELECT COUNT(*) FROM echo_web_workers),(SELECT COUNT(*) FROM echo_events WHERE kind='user'),(SELECT COUNT(*) FROM echo_events WHERE kind='assistant_final');"))
+    if not (ptr_to_str(get_list(counts and 1)) equals "2") or else not (ptr_to_str(get_list(counts and 2)) equals "2") or else not (ptr_to_str(get_list(counts and 3)) equals "2"):
+        return 1
+    if archive_verify(database and source) is not equal to 0 or else archive_verify(database and "branch:route-edit") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: HTTP retries launched two previously unclaimed submissions, ordinary and revision; duplicate requests started no extra worker; both real model turns completed with immutable originals."
+    return 0

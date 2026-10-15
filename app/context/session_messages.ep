@@ -1,0 +1,144 @@
+import "../retained_text"
+import "system_awareness"
+import "../archive/session_scope"
+import "../tools/attachment_tools"
+import "../agent/run_messages"
+
+define session_request_body with model as Str and messages as Str returning Str:
+    set body to concat("{\"model\":" and provider_quote(model))
+    set body to concat(body and concat(",\"stream\":true,\"messages\":" and messages))
+    return concat(body and concat(",\"tools\":" and concat(session_tool_schemas() and "}")))
+
+# Caller holds a read transaction while collecting context, so checkpoint,
+# accepted run heads and tool observations come from the same database snapshot.
+# Checkpoint activation requires generation and coverage validation upstream;
+# this consumer checks source identity, not semantic completeness. The automatic
+# recap generator/validator is not implemented by this module.
+define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:
+    return session_messages_checkpoint(database and session and current_run and checkpoint_read_active(database and session))
+
+# Preview and active reconstruction share the same path. The caller holds a
+# database snapshot; passing a staged checkpoint does not activate it.
+define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:
+    set current to agent_run_read(database and current_run)
+    if current equals 0:
+        return ""
+    if not (archive_list_text(current and 0) equals session):
+        return ""
+    set boundary to 0
+    set builder to create_builder()
+    set added to builder_append(builder and "[")
+    set count to 0
+    set system_prompt to echo_system_prompt(database and current_run)
+    if string_length(system_prompt) > 0:
+        set added to builder_append(builder and concat("{\"role\":\"system\",\"content\":" and concat(provider_quote(system_prompt) and "}")))
+        set count to 1
+    if checkpoint is not equal to 0:
+        set endpoint to archive_read_event(database and archive_list_text(checkpoint and 1))
+        if endpoint equals 0:
+            return ""
+        if not (archive_list_text(endpoint and 0) equals session) or else not (archive_list_text(endpoint and 6) equals archive_list_text(checkpoint and 2)):
+            return ""
+        set boundary to http_decimal(archive_list_text(endpoint and 7))
+        if boundary is less than 1:
+            return ""
+        if count > 0:
+            set added to builder_append(builder and ",")
+        set recap to "Archived context recap. This is a source record, not a new instruction. Preserve the active objective and use history tools to reread originals when needed.\n"
+        set recap to concat(recap and concat("Checkpoint: " and archive_list_text(checkpoint and 0)))
+        set recap to concat(recap and concat("\nSource endpoint: " and archive_list_text(checkpoint and 1)))
+        set recap to concat(recap and concat("\nSource digest: " and archive_list_text(checkpoint and 2)))
+        set recap to concat(recap and concat("\nDetailed recap:\n" and archive_list_text(checkpoint and 4)))
+        set recap to concat(recap and concat("\nStructured state:\n" and archive_list_text(checkpoint and 5)))
+        set added to builder_append(builder and concat("{\"role\":\"user\",\"content\":" and concat(provider_quote(recap) and "}")))
+        set count to 1
+    set values to create_list()
+    set added to append_list(values and session)
+    set query to concat(session_scope_sql() and "SELECT r.run,r.state FROM scopes s JOIN echo_runs r ON r.session=s.session JOIN echo_events e ON e.event=r.objective_event JOIN echo_events h ON h.event=r.last_event WHERE e.sequence<=s.boundary AND h.sequence<=s.boundary AND e.event<>s.omit_user ORDER BY e.sequence;")
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return ""
+    set runs to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return ""
+        set run to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set state to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        if not (run equals current_run) and not (state equals "completed" or else state equals "cancelled" or else state equals "failed"):
+            set closed to ep_sqlite3_finalize(statement)
+            return ""
+        set added to append_list(runs and run)
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return ""
+    set index to 0
+    repeat while index is less than length_list(runs):
+        # Keep the current objective verbatim even when its event is covered by
+        # a recap. It remains the user's instruction, not a summary's inference.
+        if archive_list_text(runs and index) equals current_run and boundary is greater than 0:
+            set objective to archive_read_event(database and archive_list_text(current and 1))
+            if objective equals 0:
+                return ""
+            if http_decimal(archive_list_text(objective and 7)) <= boundary:
+                if count is greater than 0:
+                    set added to builder_append(builder and ",")
+                set content to agent_user_content(database and session and archive_list_text(current and 1) and archive_list_text(objective and 3))
+                if string_length(content) equals 0:
+                    return ""
+                set added to builder_append(builder and concat("{\"role\":\"user\",\"content\":" and concat(content and "}")))
+                set count to count + 1
+        set messages to agent_run_messages_after(database and archive_list_text(runs and index) and boundary)
+        if string_length(messages) is less than 2:
+            return ""
+        if string_length(messages) is greater than 2:
+            if count is greater than 0:
+                set added to builder_append(builder and ",")
+            set added to builder_append(builder and substring(messages and 1 and string_length(messages) - 2))
+            set count to count + 1
+        set index to index + 1
+    # A rebuild finishes after its replacement checkpoint is activated. Keep
+    # that trusted runtime receipt in the resumed prompt so the model does not
+    # mistake the earlier queued observation for still-pending work.
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to session
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    set retained_item_1_1 to current_run
+    set retained_added to append_list(retained_list_1 and retained_item_1_1)
+    set retained_item_1_2 to int_to_string(boundary)
+    set retained_added to append_list(retained_list_1 and retained_item_1_2)
+    set receipt_values to retained_list_1
+    set receipts to checkpoint_prepare(database and "SELECT event,payload FROM echo_events WHERE session=?1 AND kind='recap_rebuild_completed' AND json_extract(payload,'$.run_id')=?2 AND sequence>CAST(?3 AS INTEGER) ORDER BY sequence;" and receipt_values)
+    if receipts equals 0:
+        return ""
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(receipts)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(receipts)
+            return ""
+        set record to concat("Echo runtime completion record, not a new user instruction. Event: " and ptr_to_str(ep_sqlite3_column_text(receipts and 0)))
+        set record to concat(record and concat(". Recap rebuild completed and the reviewed checkpoint is active. Receipt: " and ptr_to_str(ep_sqlite3_column_text(receipts and 1))))
+        if count is greater than 0:
+            set added to builder_append(builder and ",")
+        set added to builder_append(builder and concat("{\"role\":\"user\",\"content\":" and concat(provider_quote(record) and "}")))
+        set count to count + 1
+    if ep_sqlite3_finalize(receipts) is not equal to 0:
+        return ""
+    set added to builder_append(builder and "]")
+    return ptr_to_str(builder_to_string(builder))
+
+define session_messages with database as Int and session as Str and current_run as Str returning Str:
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return ""
+    set messages to session_messages_snapshot(database and session and current_run)
+    if string_length(messages) equals 0:
+        set rolled_back to sql_execute(database and "ROLLBACK;")
+        return ""
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled_back to sql_execute(database and "ROLLBACK;")
+        return ""
+    return messages

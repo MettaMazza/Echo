@@ -1,0 +1,97 @@
+# The one-batch stop below is a finite synthetic test workload, not a recorder
+# limit. Production capture ends only on user stop or an explicit failure.
+define recorder_test_note with text:
+    set output to document.getElementById("recorder-result")
+    set output.textContent to text
+    return 0
+
+define recorder_test_start with event:
+    set button to document.getElementById("recorder-start")
+    set button.disabled to true
+    set recorder to null
+    set metadata to null
+    set wave to null
+    set decoded_samples to null
+    set context to null
+    set link to null
+    set stop_requested to false
+    set recovery_rejected to false
+    set recovery_probe to null
+    set recovery_catch to null
+    set owner to window.localStorage.getItem("echo.device") || "controller-test-owner"
+    set session to window.localStorage.getItem("echo.session") || "controller-test-session"
+    set recorder to echo_recorder_create(owner and session and true and given text:
+        recorder_test_note(text)
+        if recorder && recorder.saved >= 1 && not stop_requested:
+            set stop_requested to true
+            set recovery_probe to echo_audio_recover(recorder.database and recorder.identity and recorder.owner)
+            set recovery_catch to get_list(recovery_probe and "catch")
+            recovery_catch.call(recovery_probe and given error:
+                set recovery_rejected to true
+            ).then(given ignored:
+                echo_recorder_stop(recorder)
+            )
+    )
+    set checked to recorder.done.then(given identity:
+        return echo_audio_read(recorder.database and identity and recorder.owner and null)
+    ).then(given saved:
+        set metadata to saved.record
+        if not recovery_rejected || metadata.state != "ready" || metadata.frames < metadata.rate || recorder.pending.length != 0 || recorder.saved != recorder.received:
+            return Promise.reject("Capture did not finish with every received chunk committed")
+        return echo_audio_saved_wave(recorder.database and recorder.identity and recorder.owner)
+    ).then(given saved_wave:
+        set wave to saved_wave
+        return wave.arrayBuffer()
+    ).then(given bytes:
+        set context to Reflect.construct(AudioContext and Array())
+        return context.decodeAudioData(bytes).then(given decoded:
+            set decoded_samples to decoded.getChannelData(0)
+            context.close()
+            if decoded.length != metadata.frames:
+                return Promise.reject("Packaged recording lost frames")
+            for each sample in decoded_samples:
+                if sample != 0.25:
+                    return Promise.reject("Packaged recording changed sample values")
+            return true
+        )
+    ).then(given valid:
+        recorder.database.close()
+        return echo_audio_store_open()
+    ).then(given database:
+        set recorder.database to database
+        return echo_audio_saved_wave(database and recorder.identity and recorder.owner)
+    ).then(given recovered:
+        if recovered.size != wave.size:
+            return Promise.reject("Reopened recording size changed")
+        recorder.database.close()
+        set link to document.getElementById("recorder-download")
+        set link.href to URL.createObjectURL(recovered)
+        set link.hidden to false
+        recorder_test_note("PASS: real AudioWorklet → committed chunks → seal → WAV decode → close/reopen packaging. " + metadata.frames + " exact samples in " + metadata.chunks + " chunks. Recording " + recorder.identity + ". Synthetic input, not microphone acceptance.")
+        set button.disabled to false
+    )
+    set catcher to get_list(checked and "catch")
+    catcher.call(checked and given error:
+        recorder_test_note("FAIL: " + error)
+        set button.disabled to false
+    )
+    return 0
+
+define recorder_test_load with paths and index:
+    if index == paths.length:
+        set button to document.getElementById("recorder-start")
+        set button.disabled to false
+        button.addEventListener("click" and recorder_test_start)
+        recorder_test_note("Ready")
+        return 0
+    set script to document.createElement("script")
+    set script.src to get_list(paths and index)
+    set script.onload to given event:
+        recorder_test_load(paths and index + 1)
+    document.head.appendChild(script)
+    return 0
+
+define main:
+    set document.body.innerHTML to "<main><h1>Echo recoverable capture acceptance</h1><p>Explicit synthetic signal. Stops after a saved batch and verifies original samples.</p><button id='recorder-start' disabled>Test capture and recovery</button><pre id='recorder-result'>Loading local modules…</pre><a id='recorder-download' download='Synthetic recording.wav' hidden>Download verified recording</a></main>"
+    recorder_test_load(["/assets/audio-wave.js", "/assets/audio-store.js", "/assets/audio-recorder.js"] and 0)
+    return 0

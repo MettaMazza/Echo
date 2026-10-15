@@ -1,0 +1,92 @@
+import "../../app/transport/socket_write"
+
+define drain_binary with library as Int and descriptor as Int and expected as Int and expected_count as Int and completed as Int returning Int:
+    set total to 0
+    set compare_function to ep_dlsym(library and "memcmp")
+    if compare_function equals 0:
+        send -1 to completed
+        return 1
+    repeat while 1 equals 1:
+        set chunk to socket_read_chunk(library and descriptor and -1)
+        set status to ptr_to_str(get_list(chunk and 0))
+        if status equals "eof":
+            send total to completed
+            return 0
+        if not (status equals "data"):
+            send -1 to completed
+            return 1
+        set count to get_list(chunk and 2)
+        set buffer to get_list(chunk and 1)
+        if count is greater than expected_count - total:
+            set released to socket_release_buffer(library and buffer)
+            send -1 to completed
+            return 1
+        set compared to socket_signed_result(ep_dlcall3(compare_function and buffer and expected + total and count))
+        set released to socket_release_buffer(library and buffer)
+        if compared is not equal to 0 or else released is not equal to 0:
+            send -1 to completed
+            return 1
+        set total to total + count
+    return 1
+
+define cancel_writer with writer as Int and completed as Int returning Int:
+    set slept to sleep_ms(100)
+    set result to net_close(writer)
+    send result to completed
+    return 0
+
+define main returning Int:
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set library to get_list(listener and 0)
+    set allocate_function to ep_dlsym(library and "calloc")
+    if allocate_function equals 0:
+        return 1
+    # An 8 MiB all-zero fixture exceeds socket buffers and exercises binary data.
+    set count to 8388608
+    set payload to ep_dlcall2(allocate_function and count and 1)
+    if payload equals 0:
+        return 1
+    set client to net_connect("127.0.0.1" and get_list(listener and 2))
+    set accepted to local_socket_accept(listener)
+    if client is less than 0 or else accepted is less than 0:
+        return 1
+    set completed to channel
+    spawn drain_binary(library and accepted and payload and count and completed)
+    set result to socket_write_all(library and client and -1 and payload and count)
+    if not (ptr_to_str(get_list(result and 0)) equals "sent") or else get_list(result and 1) is not equal to count:
+        return 1
+    if net_close(client) is not equal to 0:
+        return 1
+    set received to receive from completed
+    if received is not equal to count:
+        return 1
+    if net_close(accepted) is not equal to 0:
+        return 1
+    # A connected peer deliberately does not read. Cancellation must interrupt
+    # backpressure without requiring that peer to close or consume any bytes.
+    set client to net_connect("127.0.0.1" and get_list(listener and 2))
+    set accepted to local_socket_accept(listener)
+    if client is less than 0 or else accepted is less than 0:
+        return 1
+    set pair to socket_cancellation_create(library)
+    if pair equals 0:
+        return 1
+    set completed to channel
+    spawn cancel_writer(get_list(pair and 1) and completed)
+    set result to socket_write_all(library and client and get_list(pair and 0) and payload and count)
+    set closed to receive from completed
+    set changed to set_list(pair and 1 and -1)
+    if closed is not equal to 0 or else not (ptr_to_str(get_list(result and 0)) equals "cancelled"):
+        return 1
+    if get_list(result and 1) is less than 1 or else get_list(result and 1) is greater than count - 1:
+        return 1
+    display "Bytes sent before cancellation under backpressure:"
+    display get_list(result and 1)
+    if socket_cancellation_close(pair) is not equal to 0 or else net_close(client) is not equal to 0 or else net_close(accepted) is not equal to 0:
+        return 1
+    if socket_release_buffer(library and payload) is not equal to 0 or else local_socket_close(listener) is not equal to 0:
+        return 1
+    display "PASS: complete 8 MiB binary transfer and cancellation during a partial write to a non-reading peer."
+    return 0

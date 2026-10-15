@@ -1,0 +1,44 @@
+import "../../app/providers/llama_preflight"
+import "../fixtures/json_fixture"
+
+define modality_reply with body as Str returning Str:
+    return concat("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " and concat(int_to_string(string_length(body)) and concat("\r\nConnection: close\r\n\r\n" and body)))
+
+define modality_fixture with listener as List and completed as Int returning Int:
+    set step to channel
+    set models to "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":4096,\"n_ctx_train\":4096}}]}"
+    spawn json_fixture(listener and "GET" and "/v1/models" and "" and modality_reply(models) and step)
+    set first to receive from step
+    set props to "{\"default_generation_settings\":{\"n_ctx\":4096,\"params\":{\"n_predict\":-1}},\"modalities\":{\"vision\":false}}"
+    set step to channel
+    spawn json_fixture(listener and "GET" and "/props" and "" and modality_reply(props) and step)
+    set second to receive from step
+    set closed to local_socket_close(listener)
+    send first + second + closed to completed
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 2:
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set completed to channel
+    spawn modality_fixture(listener and completed)
+    set body to "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,fixture\"}}]}]}"
+    set decision to llama_preflight(database and "session" and "check" and get_list(listener and 2) and body and 1 and -1 and 65536)
+    set fixture to receive from completed
+    if fixture is not equal to 0 or else not (ptr_to_str(get_list(decision and 0)) equals "unsupported-input-vision"):
+        return 1
+    set record to archive_read_event(database and "check")
+    set tokens to provider_json_tokens(ptr_to_str(get_list(record and 3)))
+    set responses to provider_items(tokens and provider_member(tokens and 0 and "responses"))
+    if not (provider_value(tokens and provider_member(tokens and get_list(responses and 2) and "status")) equals "not-requested") or else not (provider_value(tokens and provider_member(tokens and 0 and "request_body")) equals body):
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: actual metadata HTTP exchange rejects unsupported image input before token counting, with exact archived request and endpoint evidence."
+    return 0

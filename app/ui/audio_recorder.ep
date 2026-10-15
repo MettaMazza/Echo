@@ -1,0 +1,222 @@
+# Capture controller shared by microphone UI and explicitly synthetic tests.
+# The journal owns committed samples. No transcription or upload is implied.
+define echo_recorder_release with recorder:
+    if recorder.stream:
+        for each track in recorder.stream.getTracks():
+            track.stop()
+    if recorder.source:
+        recorder.source.disconnect()
+    if recorder.node:
+        recorder.node.disconnect()
+    if recorder.context.state != "closed":
+        recorder.context.close()
+    return 0
+
+define echo_recorder_fail with recorder and error:
+    set recorder.failed to true
+    set recorder.state to "failed"
+    echo_recorder_release(recorder)
+    recorder.notify("Recording stopped: " + error + ". Committed chunks remain recoverable; uncommitted audio is not confirmed saved.")
+    recorder.reject(error)
+    return 0
+
+define echo_recorder_chunk with recorder and samples:
+    set sequence to recorder.received
+    set recorder.received to sequence + 1
+    # Retain pending bytes in memory until their transaction commits. A storage
+    # error stops capture instead of discarding samples and claiming success.
+    recorder.pending.push(samples)
+    set recorder.queue to recorder.queue.then(given ignored:
+        return echo_audio_append(recorder.database and recorder.identity and recorder.owner and sequence and samples)
+    ).then(given saved:
+        recorder.pending.shift()
+        set recorder.saved to recorder.saved + 1
+        recorder.notify("Recording: " + recorder.saved + " audio batches saved locally.")
+    )
+    set catcher to get_list(recorder.queue and "catch")
+    catcher.call(recorder.queue and given error:
+        if not recorder.failed:
+            echo_recorder_fail(recorder and error)
+    )
+    return 0
+
+define echo_recorder_finish with recorder:
+    echo_recorder_release(recorder)
+    if recorder.failed:
+        return 0
+    set recorder.state to "saving"
+    set finished to recorder.queue.then(given ignored:
+        return echo_audio_seal(recorder.database and recorder.identity and recorder.owner and recorder.received)
+    ).then(given identity:
+        set recorder.state to "ready"
+        recorder.notify("Recording saved locally. Ready to attach to its conversation.")
+        recorder.resolve(identity)
+    )
+    set catcher to get_list(finished and "catch")
+    catcher.call(finished and given error:
+        echo_recorder_fail(recorder and error)
+    )
+    return 0
+
+define echo_recorder_stop with recorder:
+    if recorder.state == "starting":
+        set recorder.cancelled to true
+        echo_recorder_fail(recorder and "Cancelled before recording started")
+    else if recorder.state == "recording":
+        set recorder.state to "stopping"
+        recorder.node.port.postMessage("stop")
+    return recorder.done
+
+# Returns immediately, allowing cancellation while a permission request waits.
+# The synthetic switch is for a labelled test harness, never the chat UI.
+define echo_recorder_create with owner and session and synthetic and notify:
+    set recorder to Object()
+    set recorder.identity to window.crypto.randomUUID()
+    set recorder.owner to owner
+    set recorder.session to session
+    set recorder.context to Reflect.construct(AudioContext and Array())
+    set recorder.state to "starting"
+    set recorder.notify to notify
+    set recorder.queue to Promise.resolve()
+    set recorder.received to 0
+    set recorder.saved to 0
+    set recorder.pending to Array()
+    set recorder.failed to false
+    set recorder.cancelled to false
+    set executor to given resolve and reject:
+        set recorder.resolve to resolve
+        set recorder.reject to reject
+    set recorder.done to Reflect.construct(Promise and [executor])
+    set catcher to get_list(recorder.done and "catch")
+    catcher.call(recorder.done and given ignored:
+        return 0
+    )
+    if not navigator.locks:
+        echo_recorder_fail(recorder and "This browser does not support safe recording ownership")
+        return recorder
+    set lock_options to Object()
+    set lock_options.ifAvailable to true
+    set lease to navigator.locks.request("echo-audio:" + recorder.identity and lock_options and given lock:
+        if not lock || recorder.cancelled:
+            echo_recorder_fail(recorder and "Recording ownership unavailable or cancelled")
+            return 0
+        echo_recorder_initialize(recorder and synthetic)
+        return recorder.done
+    )
+    set catcher to get_list(lease and "catch")
+    catcher.call(lease and given error:
+        if not recorder.failed:
+            echo_recorder_fail(recorder and error)
+    )
+    return recorder
+
+define echo_recorder_initialize with recorder and synthetic:
+    set options to Object()
+    set options.audio to true
+    set settings to Object()
+    set recorder.ready to recorder.context.audioWorklet.addModule("/assets/audio-capture.js").then(given ignored:
+        if recorder.cancelled:
+            return Promise.reject("Capture cancelled")
+        if synthetic:
+            set settings.source to "synthetic constant signal"
+            return null
+        recorder.notify("Waiting for microphone permission or device. Stop recording cancels this request; recording has not started.")
+        return navigator.mediaDevices.getUserMedia(options)
+    ).then(given stream:
+        set recorder.stream to stream
+        if recorder.cancelled:
+            return Promise.reject("Capture cancelled")
+        if stream:
+            set settings to get_list(stream.getAudioTracks() and 0).getSettings()
+        return echo_audio_store_open()
+    ).then(given database:
+        set recorder.database to database
+        if recorder.cancelled:
+            return Promise.reject("Capture cancelled")
+        return echo_audio_create(database and recorder.identity and recorder.owner and recorder.session and recorder.context.sampleRate and settings)
+    ).then(given created:
+        if recorder.cancelled:
+            return Promise.reject("Capture cancelled")
+        set options to Object()
+        set options.channelCount to 1
+        set options.channelCountMode to "explicit"
+        set recorder.node to Reflect.construct(AudioWorkletNode and [recorder.context, "echo-capture", options])
+        set recorder.node.port.onmessage to given event:
+            if event.data == "ended":
+                echo_recorder_finish(recorder)
+            else if not recorder.failed:
+                echo_recorder_chunk(recorder and event.data)
+        set recorder.node.onprocessorerror to given event:
+            echo_recorder_fail(recorder and "Audio processor failed")
+        recorder.node.connect(recorder.context.destination)
+        if synthetic:
+            set recorder.source to recorder.context.createConstantSource()
+            set recorder.source.offset.value to 0.25
+            recorder.source.connect(recorder.node)
+            recorder.source.start()
+        else:
+            set recorder.source to recorder.context.createMediaStreamSource(recorder.stream)
+            recorder.source.connect(recorder.node)
+        return recorder.context.resume()
+    ).then(given ignored:
+        if recorder.cancelled:
+            return Promise.reject("Capture cancelled")
+        set recorder.state to "recording"
+        recorder.notify("Recording. Audio is saved in this browser as chunks arrive.")
+        return recorder
+    )
+    set catcher to get_list(recorder.ready and "catch")
+    catcher.call(recorder.ready and given error:
+        echo_recorder_fail(recorder and error)
+    )
+    return recorder
+
+# Recovery may seal saved chunks only while no live capture owns the record.
+# A browser crash releases its Web Lock; no wall-clock lease expiry is guessed.
+define echo_audio_recover with database and identity and owner:
+    if not navigator.locks:
+        return Promise.reject("Safe recording recovery is unavailable in this browser")
+    set options to Object()
+    set options.ifAvailable to true
+    return navigator.locks.request("echo-audio:" + identity and options and given lock:
+        if not lock:
+            return Promise.reject("This recording is still active in another tab")
+        return echo_audio_read(database and identity and owner and null).then(given saved:
+            if saved.record.state == "recording":
+                return echo_audio_seal(database and identity and owner and saved.record.chunks)
+            if saved.record.state != "ready":
+                return Promise.reject("Recording is not available for recovery")
+            return identity
+        )
+    )
+
+# Freeze the saved metadata, read sequentially, and verify the total before
+# packaging. An unfinished recording must first be explicitly recovered/sealed.
+define echo_audio_saved_wave with database and identity and owner:
+    set metadata to null
+    set parts to Array()
+    set options to Object()
+    set options.type to "audio/wav"
+    set frames to 0
+    set sequence to 0
+    set step to null
+    set step to given ignored:
+        if sequence == metadata.chunks:
+            if frames != metadata.frames:
+                return Promise.reject("Recording sample count mismatch")
+            return Reflect.construct(Blob and [parts, options])
+        return echo_audio_read(database and identity and owner and sequence).then(given saved:
+            if saved.record.state != "ready" || saved.record.frames != metadata.frames || saved.record.chunks != metadata.chunks:
+                return Promise.reject("Recording changed during packaging")
+            parts.push(Reflect.construct(Blob and [[echo_wave_samples(saved.chunk)]]))
+            set frames to frames + saved.chunk.length
+            set sequence to sequence + 1
+            return step(null)
+        )
+    return echo_audio_read(database and identity and owner and null).then(given saved:
+        set metadata to saved.record
+        if metadata.state != "ready":
+            return Promise.reject("Recording must be sealed before packaging")
+        parts.push(echo_wave_header(metadata.frames and metadata.rate))
+        return step(null)
+    )

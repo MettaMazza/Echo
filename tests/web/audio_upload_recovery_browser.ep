@@ -1,0 +1,103 @@
+# Build with the production client source, renaming its main to
+# echo_client_main before concatenating this test. All production upload and
+# recording functions remain unchanged. Run only against a fixture database.
+define recovery_test_note with text:
+    set output to document.getElementById("recovery-test-result")
+    set output.textContent to text
+    return 0
+
+define recovery_test_prepare with send_body:
+    set database to null
+    set record to null
+    set identity to window.crypto.randomUUID()
+    set owner to window.localStorage.getItem("echo.device")
+    set payload to Object()
+    set upload to null
+    set samples to Reflect.construct(Float32Array and [[0, 0.25, -0.5, 1]])
+    set operation to echo_ensure_session().then(given session:
+        set payload.session to session
+        set payload.name to "Recording " + identity + ".wav"
+        set payload.media_type to "audio/wav"
+        return echo_audio_store_open()
+    ).then(given opened:
+        set database to opened
+        return echo_audio_create(database and identity and owner and payload.session and 48000 and Object())
+    ).then(given created:
+        return echo_audio_append(database and identity and owner and 0 and samples)
+    ).then(given appended:
+        return echo_audio_seal(database and identity and owner and 1)
+    ).then(given sealed:
+        return echo_api("/api/upload-prepare" and payload)
+    ).then(given prepared:
+        if prepared.status != "prepared":
+            return Promise.reject("Prepare failed: " + prepared.status)
+        set upload to prepared.upload
+        return echo_audio_bind_upload(database and identity and owner and "" and upload)
+    ).then(given bound:
+        window.localStorage.setItem("echo.recovery-test" and identity)
+        return echo_audio_read(database and identity and owner and null)
+    ).then(given saved:
+        set record to saved.record
+        if send_body:
+            return echo_audio_upload_body(database and record and owner and upload)
+        return true
+    ).then(given ignored:
+        database.close()
+        recovery_test_note("STAGED " + identity + " upload " + upload + "; body sent=" + send_body + ". Local confirmation deliberately omitted. Reload this page, then Resume recovery.")
+    )
+    set catcher to get_list(operation and "catch")
+    catcher.call(operation and given error:
+        if database:
+            database.close()
+        recovery_test_note("FAIL: " + error)
+    )
+    return 0
+
+define recovery_test_resume with event:
+    set database to null
+    set record to null
+    set owner to window.localStorage.getItem("echo.device")
+    set identity to window.localStorage.getItem("echo.recovery-test")
+    set operation to echo_audio_store_open().then(given opened:
+        set database to opened
+        return echo_audio_read(database and identity and owner and null)
+    ).then(given saved:
+        set record to saved.record
+        if record.saved_attachment || not record.pending_upload || record.upload_attempts.length != 1:
+            return Promise.reject("Expected one pending upload without local confirmation")
+        return echo_audio_attach(database and record and owner)
+    ).then(given attachment:
+        if attachment != record.pending_upload:
+            return Promise.reject("Recovery changed the upload identity")
+        return echo_audio_read(database and identity and owner and null)
+    ).then(given saved:
+        if saved.record.saved_attachment != record.pending_upload || saved.record.upload_attempts.length != 1 || saved.record.frames != 4:
+            return Promise.reject("Recovery did not retain the original receipt and samples")
+        return echo_audio_read(database and identity and owner and 0)
+    ).then(given saved:
+        if saved.chunk.length != 4 || get_list(saved.chunk and 1) != 0.25 || get_list(saved.chunk and 2) != -0.5 || get_list(saved.chunk and 3) != 1:
+            return Promise.reject("Recovery copy changed")
+        database.close()
+        recovery_test_note("PASS: after page reload, recovered original upload " + record.pending_upload + " with one attempt, confirmed local receipt and all four original samples retained. Recording " + identity)
+    )
+    set catcher to get_list(operation and "catch")
+    catcher.call(operation and given error:
+        if database:
+            database.close()
+        recovery_test_note("FAIL: " + error)
+    )
+    return 0
+
+define main:
+    echo_client_main()
+    set panel to document.createElement("section")
+    set panel.innerHTML to "<h2>Upload recovery acceptance fixture</h2><button id='recovery-before'>Stage before body</button><button id='recovery-after'>Stage after body</button><button id='recovery-resume'>Resume recovery</button><pre id='recovery-test-result' style='white-space:pre-wrap'>Wait for local service connection before starting. Synthetic samples only; no microphone.</pre>"
+    document.getElementById("workspace").prepend(panel)
+    document.getElementById("recovery-before").addEventListener("click" and given event:
+        recovery_test_prepare(false)
+    )
+    document.getElementById("recovery-after").addEventListener("click" and given event:
+        recovery_test_prepare(true)
+    )
+    document.getElementById("recovery-resume").addEventListener("click" and recovery_test_resume)
+    return 0

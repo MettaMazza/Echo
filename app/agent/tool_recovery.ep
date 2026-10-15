@@ -1,0 +1,48 @@
+import "../retained_text"
+import "run_state"
+
+# Caller owns the native run lock and has verified the abandoned worker claim.
+# Recover only original saved results. Missing outcomes never authorize replay.
+define agent_recover_tools_owned with database as Int and run as Str returning Int:
+    set row to agent_run_read(database and run)
+    if row equals 0 or else archive_verify(database and archive_list_text(row and 0)) is not equal to 0:
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set values to create_list()
+    set added to append_list(values and run)
+    set statement to checkpoint_prepare(database and "SELECT t.call_id,t.state,COALESCE(e.event,'') FROM echo_tool_calls t LEFT JOIN echo_events e ON e.event=t.request_event||':result' AND e.session=t.session AND e.kind='tool_result' AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.run_id') END=t.run AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.call_id') END=t.call_id AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.request_event') END=t.request_event WHERE t.run=? AND t.state IN ('running','uncertain');" and values)
+    if statement equals 0:
+        return archive_rollback(database)
+    set pending to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return archive_rollback(database)
+        set item to create_list()
+        set index to 0
+        repeat while index is less than 3:
+            set added to append_list(item and concat(ptr_to_str(ep_sqlite3_column_text(statement and index)) and ""))
+            set index to index + 1
+        set added to append_list(pending and item)
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return archive_rollback(database)
+    set index to 0
+    repeat while index is less than length_list(pending):
+        set item to get_list(pending and index)
+        set call_id to archive_list_text(item and 0)
+        set result_event to archive_list_text(item and 2)
+        if string_length(result_event) is greater than 0:
+            if tool_ledger_observe(database and run and call_id and result_event) is not equal to 0:
+                return archive_rollback(database)
+        else:
+            if archive_list_text(item and 1) equals "running":
+                if tool_ledger_interrupt(database and run and call_id) is not equal to 0:
+                    return archive_rollback(database)
+        set index to index + 1
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0

@@ -1,0 +1,121 @@
+import "../retained_text"
+import "../agent/run_messages"
+
+define recap_source_record with row as List returning Str:
+    set record to concat("{\"event\":" and provider_quote(archive_list_text(row and 1)))
+    set record to concat(record and concat(",\"kind\":" and provider_quote(archive_list_text(row and 2))))
+    set record to concat(record and concat(",\"sequence\":" and archive_list_text(row and 7)))
+    set record to concat(record and concat(",\"digest\":" and provider_quote(archive_list_text(row and 6))))
+    return concat(record and concat(",\"original_payload\":" and concat(provider_quote(archive_list_text(row and 3)) and "}")))
+
+# Read one consistent view of accepted run ancestry through a frozen endpoint.
+# Transport copies and nested model requests stay in the original archive but
+# are not repeated as conversational evidence. Tool originals retain identities.
+define recap_sources_snapshot with database as Int and session as Str and endpoint as Str returning Str:
+    set end_row to archive_read_event(database and endpoint)
+    if end_row equals 0:
+        return ""
+    if not (archive_list_text(end_row and 0) equals session):
+        return ""
+    set boundary to http_decimal(archive_list_text(end_row and 7))
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and int_to_string(boundary))
+    set query to concat(session_scope_sql() and "SELECT r.run FROM scopes s JOIN echo_runs r ON r.session=s.session JOIN echo_events e ON e.event=r.objective_event JOIN echo_events h ON h.event=r.last_event WHERE e.sequence<=?2 AND e.sequence<=s.boundary AND h.sequence<=s.boundary AND e.event<>s.omit_user ORDER BY e.sequence;")
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return ""
+    set runs to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return ""
+        set run to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set added to append_list(runs and concat(run and ""))
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return ""
+    set builder to create_builder()
+    set count to 0
+    set added to builder_append(builder and concat("{\"source_end\":" and provider_quote(endpoint)))
+    set added to builder_append(builder and concat(",\"source_digest\":" and provider_quote(archive_list_text(end_row and 6))))
+    set added to builder_append(builder and ",\"records\":[")
+    set run_index to 0
+    repeat while run_index is less than length_list(runs):
+        set run to archive_list_text(runs and run_index)
+        set run_record to agent_run_read(database and run)
+        if run_record equals 0:
+            return ""
+        set run_session to archive_list_text(run_record and 0)
+        set lineage to agent_run_lineage(database and run)
+        if lineage equals 0:
+            set discarded to builder_to_string(builder)
+            return ""
+        set index to length_list(lineage) - 1
+        repeat while index >= 0:
+            set row to get_list(lineage and index)
+            set kind to archive_list_text(row and 2)
+            set sequence to http_decimal(archive_list_text(row and 7))
+            if sequence <= boundary and (kind equals "user" or else kind equals "assistant_final" or else kind equals "assistant_tool_calls" or else kind equals "agent_cancelled" or else kind equals "agent_failure"):
+                if count is greater than 0:
+                    set added to builder_append(builder and ",")
+                set added to builder_append(builder and recap_source_record(row))
+                set count to count + 1
+                if kind equals "assistant_tool_calls":
+                    set tokens to provider_json_tokens(archive_list_text(row and 3))
+                    if tokens equals 0:
+                        set discarded to builder_to_string(builder)
+                        return ""
+                    set calls to provider_items(tokens and provider_member(tokens and 0 and "tool_calls"))
+                    if calls equals 0:
+                        set discarded to builder_to_string(builder)
+                        return ""
+                    set call_index to 0
+                    repeat while call_index is less than length_list(calls):
+                        set call_event to provider_value(tokens and get_list(calls and call_index))
+                        set call_row to archive_read_event(database and call_event)
+                        if call_row equals 0:
+                            set discarded to builder_to_string(builder)
+                            return ""
+                        if not (archive_list_text(call_row and 0) equals run_session) or else http_decimal(archive_list_text(call_row and 7)) is greater than boundary:
+                            set discarded to builder_to_string(builder)
+                            return ""
+                        set added to builder_append(builder and concat("," and recap_source_record(call_row)))
+                        set call_tokens to provider_json_tokens(archive_list_text(call_row and 3))
+                        if call_tokens equals 0:
+                            set discarded to builder_to_string(builder)
+                            return ""
+                        set call_id to provider_value(call_tokens and provider_member(call_tokens and 0 and "call_id"))
+                        set ledger to tool_ledger_read(database and run and call_id)
+                        if ledger equals 0:
+                            set discarded to builder_to_string(builder)
+                            return ""
+                        if archive_list_text(ledger and 1) equals "observed":
+                            set result to archive_read_event(database and archive_list_text(ledger and 4))
+                            if result equals 0:
+                                set discarded to builder_to_string(builder)
+                                return ""
+                            if http_decimal(archive_list_text(result and 7)) <= boundary:
+                                if not (archive_list_text(result and 0) equals run_session):
+                                    set discarded to builder_to_string(builder)
+                                    return ""
+                                set added to builder_append(builder and concat("," and recap_source_record(result)))
+                        set call_index to call_index + 1
+            set index to index - 1
+        set run_index to run_index + 1
+    set added to builder_append(builder and "]}")
+    return ptr_to_str(builder_to_string(builder))
+
+define recap_sources with database as Int and session as Str and endpoint as Str returning Str:
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return ""
+    if archive_verify(database and session) is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return ""
+    set result to recap_sources_snapshot(database and session and endpoint)
+    if string_length(result) equals 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return ""
+    return result

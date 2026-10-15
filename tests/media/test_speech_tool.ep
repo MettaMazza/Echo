@@ -1,0 +1,67 @@
+import "../../app/agent/runner"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is not equal to 5 or else file_exists(get_argument(1)):
+        return 1
+    set configured to set_env("ECHO_SPEECH_PROFILE" and get_argument(2))
+    set configured to set_env("ECHO_SPEECH_ROOT" and get_argument(3))
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 2
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Speech integration" and "fixture-secret") is not equal to 0:
+        return 3
+    set submitted to web_submit_owned(database and "owner" and "request" and "" and "Transcribe the attached audio locally and archive the result.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    if web_attachment_register(database and "owner" and session and "audio" and get_argument(4) and "Spoken acceptance.wav" and "audio/wav") is not equal to 0:
+        return 12
+    if not (ptr_to_str(get_list(speech_request_source(database and "foreign-session" and "{\"attachment\":\"audio\",\"language\":\"en\"}") and 0)) equals "end"):
+        return 13
+    if not (ptr_to_str(get_list(speech_request_source(database and session and "{\"attachment\":\"audio\",\"language\":\"--help\"}") and 0)) equals "invalid-language"):
+        return 14
+    set listener to local_socket_listen(0)
+    set arguments to "{\"attachment\":\"audio\",\"language\":\"en\"}"
+    set data to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"generate\",\"function\":{\"name\":\"attachment_transcribe\",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))
+    set completed to channel
+    spawn generation_fixture(listener and data and completed)
+    set generated to agent_generate_local(database and run and "generation" and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    if generated is not equal to 0 or else served is not equal to 0:
+        return 4
+    if agent_tool_step(database and run) is not equal to 0:
+        display "FAIL: dispatch"
+        return 5
+    set row to history_collect_one(archive_prepare(database and "SELECT json_extract(payload,'$.result.status'),json_extract(payload,'$.result.attachment') FROM echo_events WHERE kind='tool_result';"))
+    if not (ptr_to_str(get_list(row and 0)) equals "found") or else not (ptr_to_str(get_list(row and 1)) equals "complete"):
+        if ptr_to_str(get_list(row and 0)) equals "found":
+            display ptr_to_str(get_list(row and 1))
+        return 6
+    set attachment to ptr_to_str(get_list(row and 2))
+    set own to web_attachment_owned(database and "owner" and attachment)
+    set foreign to web_attachment_owned(database and "foreign" and attachment)
+    if not (ptr_to_str(get_list(own and 0)) equals "found") or else not (ptr_to_str(get_list(foreign and 0)) equals "end"):
+        return 7
+    set transcript to ptr_to_str(read_file(ptr_to_str(get_list(own and 1))))
+    display transcript
+    if string_contains(transcript and "purple") equals 0 or else string_contains(transcript and "seven") equals 0:
+        display "FAIL: expected spoken facts absent"
+        return 15
+    set original to file_digest(get_argument(4) and 65536)
+    set registered to web_attachment_owned(database and "owner" and "audio")
+    if not (ptr_to_str(get_list(original and 1)) equals ptr_to_str(get_list(registered and 4))):
+        return 16
+    display ptr_to_str(get_list(own and 1))
+    if agent_tool_step(database and run) is not equal to 0:
+        return 8
+    set row to agent_run_read(database and run)
+    if not (ptr_to_str(get_list(row and 2)) equals "ready"):
+        return 9
+    if not (speech_tool_execute(database and run and "generate" and -1) equals "{\"status\":\"not-authorized\"}"):
+        return 10
+    set counts to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='provider_helper_dispatch';"))
+    if not (ptr_to_str(get_list(counts and 1)) equals "1") or else archive_verify(database and session) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 11
+    set closed to local_socket_close(listener)
+    display "PASS: scripted tool call dispatched actual local speech runtime; spoken facts recovered; original audio hash retained; transcript owned; foreign source/read and option injection rejected; redispatch refused; run returned to ready; archive verified. This is not microphone/browser/reply-playback acceptance."
+    return 0

@@ -1,0 +1,73 @@
+import "../../app/agent/runner"
+import "fs"
+
+define switch_wait_provider with profile as Str returning Int:
+    set tokens to provider_json_tokens(profile)
+    set port to http_decimal(provider_index(tokens and provider_member(tokens and 0 and "port")))
+    set idle to channel
+    set waits to [idle]
+    repeat while 1 equals 1:
+        set response to local_json_request(port and "GET" and "/health" and "" and -1 and 65536)
+        if ptr_to_str(get_list(response and 0)) equals "ready":
+            set health to provider_json_tokens(ptr_to_str(get_list(response and 2)))
+            if provider_value(health and provider_member(health and 0 and "status")) equals "ok":
+                return 0
+        # The operator supervises the real loading process. This is a polling
+        # interval, not a provider deadline or a model context/output limit.
+        set yielded to select(waits and 1000)
+    return 1
+
+define switch_turn with database as Int and run as Str and prompt as Str and profile as Str and expected as Str and reserve as Int and batch as Int returning Int:
+    if switch_wait_provider(profile) is not equal to 0:
+        return 1
+    set objective to concat(run and ":user")
+    if archive_append(database and "switch-session" and objective and "user" and prompt and "live-provider-switch") is not equal to 0 or else agent_run_create(database and run and "switch-session" and objective) is not equal to 0:
+        return 1
+    set status to agent_loop_provider(database and run and profile and reserve and -1 and batch)
+    if not (status equals "completed"):
+        display status
+        return 2
+    set row to agent_run_read(database and run)
+    set final to archive_read_event(database and ptr_to_str(get_list(row and 3)))
+    set tokens to provider_json_tokens(ptr_to_str(get_list(final and 3)))
+    set content to string_trim(provider_value(tokens and provider_member(tokens and 0 and "content")))
+    display concat(run and concat(": " and content))
+    if not (content equals expected) or else not (agent_provider_read(database and run) equals profile):
+        return 3
+    return archive_verify(database and "switch-session")
+
+# Two genuinely different local runtimes, three turns in one archive, storage
+# reopened between turns. Models must apply a correction after switching back.
+define main returning Int:
+    if get_argument_count() is not equal to 6 or else file_exists(get_argument(1)):
+        display "Supply fresh archive, first profile, second profile, output reserve and I/O batch."
+        return 1
+    set first to ptr_to_str(read_file(get_argument(2)))
+    set second to ptr_to_str(read_file(get_argument(3)))
+    set first_tokens to provider_json_tokens(first)
+    set second_tokens to provider_json_tokens(second)
+    if first_tokens equals 0 or else second_tokens equals 0:
+        return 1
+    if provider_value(first_tokens and provider_member(first_tokens and 0 and "adapter")) equals provider_value(second_tokens and provider_member(second_tokens and 0 and "adapter")):
+        display "This qualification requires two different runtime adapters."
+        return 1
+    set reserve to http_decimal(get_argument(4))
+    set batch to http_decimal(get_argument(5))
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else agent_run_schema(database) is not equal to 0 or else checkpoint_schema(database) is not equal to 0:
+        return 2
+    if switch_turn(database and "first" and "For this test, the current project marker is AMBER_1952. Remember it. Reply with exactly AMBER_1952 and nothing else." and first and "AMBER_1952" and reserve and batch) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 3
+    set database to archive_open(get_argument(1))
+    if switch_turn(database and "second" and "Correction: replace the previous project marker with COBALT_8426. Reply with the previous marker, then a space, then the new marker, and nothing else." and second and "AMBER_1952 COBALT_8426" and reserve and batch) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 4
+    set database to archive_open(get_argument(1))
+    if switch_turn(database and "third" and "What is the current project marker after my correction? Reply with only that marker." and first and "COBALT_8426" and reserve and batch) is not equal to 0:
+        return 5
+    set counts to history_collect_one(archive_prepare(database and "SELECT (SELECT COUNT(DISTINCT json_extract(payload,'$.adapter')) FROM echo_events WHERE kind='run_provider_profile'),(SELECT COUNT(*) FROM echo_events WHERE kind='provider_preflight' AND json_extract(payload,'$.decision')='ready'),(SELECT COUNT(*) FROM echo_events WHERE kind='user'),(SELECT COUNT(*) FROM echo_events WHERE kind='assistant_final');"))
+    if not (ptr_to_str(get_list(counts and 1)) equals "2") or else not (ptr_to_str(get_list(counts and 2)) equals "3") or else not (ptr_to_str(get_list(counts and 3)) equals "3") or else not (ptr_to_str(get_list(counts and 4)) equals "3"):
+        return 6
+    if archive_verify(database and "switch-session") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 7
+    display "PASS: two real runtime adapters, three freshly preflighted turns, original messages preserved across reopen, correction retained after switching back. Short-context qualification only."
+    return 0

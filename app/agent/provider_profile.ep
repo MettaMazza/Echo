@@ -1,0 +1,58 @@
+import "../retained_text"
+import "run_state"
+import "../providers/prepare"
+
+# The host binds a profile before the first model request. An existing binding
+# is immutable: explicit new selection belongs to a new run, never a retry.
+# Return 0 exact binding, 2 conflicting binding, 1 invalid state/storage error.
+define agent_provider_bind with database as Int and run as Str and profile as Str returning Int:
+    if not (provider_profile_status(profile) equals "ready"):
+        return 1
+    set tokens to provider_json_tokens(profile)
+    if tokens equals 0:
+        return 1
+    if provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return archive_rollback(database)
+    set identity to concat(run and ":provider-profile")
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to identity
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    set values to retained_list_1
+    set statement to checkpoint_prepare(database and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and values)
+    if statement equals 0:
+        return archive_rollback(database)
+    set step to ep_sqlite3_step(statement)
+    if step equals 100:
+        set saved_session to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set saved_kind to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set saved_profile to ptr_to_str(ep_sqlite3_column_text(statement and 2))
+        set closed to ep_sqlite3_finalize(statement)
+        if closed is not equal to 0 or else not (saved_session equals archive_list_text(row and 0)) or else not (saved_kind equals "run_provider_profile"):
+            return archive_rollback(database)
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return archive_rollback(database)
+        if saved_profile equals profile:
+            return 0
+        return 2
+    set closed to ep_sqlite3_finalize(statement)
+    if step is not equal to 101 or else closed is not equal to 0 or else not (archive_list_text(row and 2) equals "ready") or else not (archive_list_text(row and 1) equals archive_list_text(row and 3)):
+        return archive_rollback(database)
+    if archive_append_pending(database and archive_list_text(row and 0) and identity and "run_provider_profile" and profile and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+define agent_provider_read with database as Int and run as Str returning Str:
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return ""
+    set event to archive_read_event(database and concat(run and ":provider-profile"))
+    if event equals 0:
+        return ""
+    if not (archive_list_text(event and 0) equals archive_list_text(row and 0)) or else not (archive_list_text(event and 2) equals "run_provider_profile"):
+        return ""
+    return archive_list_text(event and 3)

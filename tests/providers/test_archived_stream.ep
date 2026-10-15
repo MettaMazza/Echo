@@ -1,0 +1,88 @@
+import "../../app/providers/archived_stream"
+import "../../app/transport/socket_write"
+
+define archived_fixture_sender with library as Int and descriptor as Int and completed as Int returning Int:
+    set body to "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hé🌍\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+    set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: " and int_to_string(string_length(body)))
+    set wire to concat(wire and concat("\r\n\r\n" and body))
+    set sent to socket_write_all(library and descriptor and -1 and str_to_ptr(wire) and string_length(wire))
+    set failure to 0
+    if not (ptr_to_str(get_list(sent and 0)) equals "sent"):
+        set failure to 1
+    set closed to net_close(descriptor)
+    send failure + closed to completed
+    return 0
+
+define main returning Int:
+    if get_argument_count() is less than 2:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0:
+        return 1
+    if archive_append(database and "session" and "request" and "model_request" and "{\"run_id\":\"run\"}" and "fixture") is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set client to net_connect("127.0.0.1" and get_list(listener and 2))
+    set accepted to local_socket_accept(listener)
+    if client is less than 0 or else accepted is less than 0:
+        return 1
+    set completed to channel
+    spawn archived_fixture_sender(get_list(listener and 0) and client and completed)
+    set reader to http_stream_create(get_list(listener and 0) and accepted and -1)
+    set head to http_response_head(reader and "POST")
+    if not (ptr_to_str(get_list(head and 0)) equals "ready") or else get_list(head and 1) is not equal to 200:
+        return 1
+    set body to http_body_create(ptr_to_str(get_list(head and 2)) and get_list(head and 3))
+    set result to provider_collect_events(reader and body and database and "session" and "request" and 65536)
+    if not (ptr_to_str(get_list(result and 0)) equals "complete"):
+        display "FAIL: collection."
+        return 1
+    set state to get_list(result and 1)
+    set choice to get_list(get_list(state and 0) and 0)
+    if not (ptr_to_str(get_list(choice and 1)) equals "hé🌍"):
+        return 1
+    set sent to receive from completed
+    if sent is not equal to 0 or else http_stream_release(reader) is not equal to 0 or else net_close(accepted) is not equal to 0:
+        return 1
+    # Reusing an attempt ID must fail at the first archive commit, before its
+    # repeated content can enter a fresh assembler or become duplicate work.
+    set client to net_connect("127.0.0.1" and get_list(listener and 2))
+    set accepted to local_socket_accept(listener)
+    if client is less than 0 or else accepted is less than 0:
+        return 1
+    set completed to channel
+    spawn archived_fixture_sender(get_list(listener and 0) and client and completed)
+    set reader to http_stream_create(get_list(listener and 0) and accepted and -1)
+    set head to http_response_head(reader and "POST")
+    if not (ptr_to_str(get_list(head and 0)) equals "ready"):
+        return 1
+    set body to http_body_create(ptr_to_str(get_list(head and 2)) and get_list(head and 3))
+    set rejected to provider_collect_events(reader and body and database and "session" and "request" and 65536)
+    if not (ptr_to_str(get_list(rejected and 0)) equals "archive-error"):
+        return 1
+    set state to get_list(rejected and 1)
+    if length_list(get_list(state and 0)) is not equal to 0:
+        display "FAIL: response mutated before durable commit."
+        return 1
+    set sent to receive from completed
+    if sent is not equal to 0 or else http_stream_release(reader) is not equal to 0 or else net_close(accepted) is not equal to 0 or else local_socket_close(listener) is not equal to 0:
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(path)
+    set first to archive_read_event(database and "request:provider:0")
+    set done to archive_read_event(database and "request:provider:1")
+    set ended to archive_read_event(database and "request:provider:2")
+    if first equals 0 or else done equals 0 or else ended equals 0:
+        return 1
+    set tokens to provider_json_tokens(ptr_to_str(get_list(first and 3)))
+    set original to provider_value(tokens and provider_member(tokens and 0 and "data"))
+    if not (original equals "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hé🌍\"},\"finish_reason\":\"stop\"}]}"):
+        return 1
+    if not (ptr_to_str(get_list(ended and 2)) equals "provider_stream_end") or else archive_verify(database and "session") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: live HTTP response to decoder to archive to assembly; originals and terminal evidence survive reopen; duplicate attempt fails before assembly; hashes verify."
+    return 0

@@ -1,0 +1,86 @@
+import "../retained_text"
+import "progress"
+
+# The route authenticates device ownership before calling this reader. Run and
+# session are joined here too; provider records must belong to this run's request.
+# Paging is chosen by the caller. Original records are never changed or clipped.
+define web_run_trace with database as Int and run as Str and after as Int and events as Int returning Str:
+    if after < 0 or else events < 1:
+        return "{\"status\":\"invalid-cursor\"}"
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return "{\"status\":\"not-found\"}"
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to archive_list_text(row and 0)
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    set retained_item_1_1 to run
+    set retained_added to append_list(retained_list_1 and retained_item_1_1)
+    set retained_item_1_2 to int_to_string(after)
+    set retained_added to append_list(retained_list_1 and retained_item_1_2)
+    set retained_item_1_3 to int_to_string(events)
+    set retained_added to append_list(retained_list_1 and retained_item_1_3)
+    set values to retained_list_1
+    set query to "SELECT e.sequence,e.kind,e.payload,e.event FROM echo_events e WHERE e.session=?1 AND e.sequence>CAST(?3 AS INTEGER) AND json_valid(e.payload) AND ((e.kind IN ('model_request','tool_call','tool_result','worker_recovery','agent_observation','assistant_final') AND json_extract(e.payload,'$.run_id')=?2) OR (e.kind='provider_event' AND json_extract(e.payload,'$.request_event') IN (SELECT m.event FROM echo_events m WHERE m.session=?1 AND m.kind='model_request' AND json_valid(m.payload) AND json_extract(m.payload,'$.run_id')=?2))) ORDER BY e.sequence LIMIT CAST(?4 AS INTEGER);"
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set builder to create_builder()
+    set added to builder_append(builder and "{\"status\":\"found\",\"entries\":[")
+    set cursor to after
+    set scanned to 0
+    set count to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"database-error\"}"
+        set scanned to scanned + 1
+        set cursor to http_decimal(ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        set kind to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set payload to ptr_to_str(ep_sqlite3_column_text(statement and 2))
+        set identity to ptr_to_str(ep_sqlite3_column_text(statement and 3))
+        set text to ""
+        if kind equals "model_request":
+            set text to "Requesting the next model response."
+        else if kind equals "assistant_final":
+            set text to "Reply completed and archived."
+        else if kind equals "agent_observation":
+            set text to "Tool results saved; continuing the agent loop."
+        else if kind equals "provider_event":
+            set envelope to provider_json_tokens(payload)
+            set data to provider_value(envelope and provider_member(envelope and 0 and "data"))
+            if not (data equals "[DONE]"):
+                set tokens to provider_json_tokens(data)
+                if tokens is not equal to 0:
+                    set choices to provider_items(tokens and provider_member(tokens and 0 and "choices"))
+                    if choices is not equal to 0:
+                        for each choice in choices:
+                            if provider_index(tokens and provider_member(tokens and choice and "index")) equals "0":
+                                set delta to provider_member(tokens and choice and "delta")
+                                set reasoning to provider_member(tokens and delta and "reasoning_content")
+                                if provider_kind(tokens and reasoning) equals "string":
+                                    set text to concat(text and provider_value(tokens and reasoning))
+                                else:
+                                    set reasoning to provider_member(tokens and delta and "reasoning")
+                                    if provider_kind(tokens and reasoning) equals "string":
+                                        set text to concat(text and provider_value(tokens and reasoning))
+            set kind to "model_reasoning"
+        else:
+            set text to payload
+        if string_length(text) > 0:
+            if count > 0:
+                set added to builder_append(builder and ",")
+            set added to builder_append(builder and concat("{\"event\":" and provider_quote(identity)))
+            set added to builder_append(builder and concat(",\"kind\":" and provider_quote(kind)))
+            set added to builder_append(builder and concat(",\"text\":" and concat(provider_quote(text) and "}")))
+            set count to count + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    set added to builder_append(builder and concat("],\"after\":" and int_to_string(cursor)))
+    set more to "false"
+    if scanned equals events:
+        set more to "true"
+    set added to builder_append(builder and concat(",\"more\":" and concat(more and "}")))
+    return ptr_to_str(builder_to_string(builder))

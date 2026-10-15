@@ -1,0 +1,51 @@
+import "../../app/agent/runner"
+import "fs"
+
+# Verify the recorded search-then-read qualification task, not model self-report.
+# Expected counts belong to this test workload; the agent has no turn ceiling.
+define main returning Int:
+    if get_argument_count() is not equal to 5:
+        display "Supply archive, run, expected marker and exact provider profile file."
+        return 1
+    set database to archive_open(get_argument(1))
+    set run to get_argument(2)
+    set profile to ptr_to_str(read_file(get_argument(4)))
+    set row to agent_run_read(database and run)
+    if row equals 0 or else not (ptr_to_str(get_list(row and 2)) equals "completed") or else not (agent_provider_read(database and run) equals profile):
+        return 2
+    set session to concat(ptr_to_str(get_list(row and 0)) and "")
+    set objective to concat(ptr_to_str(get_list(row and 1)) and "")
+    set final to archive_read_event(database and ptr_to_str(get_list(row and 3)))
+    set tokens to provider_json_tokens(ptr_to_str(get_list(final and 3)))
+    set content to provider_value(tokens and provider_member(tokens and 0 and "content"))
+    if string_contains(content and get_argument(3)) equals 0 or else string_contains(content and objective) equals 0:
+        return 3
+    set values to [run]
+    set statement to checkpoint_prepare(database and "SELECT json_extract(c.payload,'$.name'),json_extract(o.payload,'$.result.status'),json_extract(o.payload,'$.result.event'),json_extract(o.payload,'$.result.text'),t.state FROM echo_tool_calls t JOIN echo_events c ON c.event=t.request_event JOIN echo_events o ON o.event=t.result_event WHERE t.run=? ORDER BY c.sequence;" and values)
+    if statement equals 0:
+        return 4
+    set names to ["history_search", "history_read"]
+    set index to 0
+    repeat while index is less than length_list(names):
+        if ep_sqlite3_step(statement) is not equal to 100:
+            return 4
+        if not (ptr_to_str(ep_sqlite3_column_text(statement and 0)) equals ptr_to_str(get_list(names and index))) or else not (ptr_to_str(ep_sqlite3_column_text(statement and 1)) equals "found") or else not (ptr_to_str(ep_sqlite3_column_text(statement and 2)) equals objective) or else not (ptr_to_str(ep_sqlite3_column_text(statement and 4)) equals "observed"):
+            return 5
+        if index equals 1 and string_contains(ptr_to_str(ep_sqlite3_column_text(statement and 3)) and get_argument(3)) equals 0:
+            return 6
+        set index to index + 1
+    if archive_finish(statement and 101) is not equal to 0 or else archive_verify(database and session) is not equal to 0:
+        return 7
+    set before to history_boundary(database and session)
+    set boundary to concat(ptr_to_str(get_list(before and 1)) and "")
+    if sql_close(database) is not equal to 0:
+        return 8
+    set database to archive_open(get_argument(1))
+    if not (agent_loop_provider(database and run and profile and 1 and -1 and 65536) equals "completed"):
+        return 9
+    set after to history_boundary(database and session)
+    if not (ptr_to_str(get_list(after and 1)) equals boundary) or else archive_verify(database and session) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 10
+    display content
+    display "PASS: actual search and read observations, correct source identity in final answer, immutable provider binding, archive hashes and reopen without replay."
+    return 0

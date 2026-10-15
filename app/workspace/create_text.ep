@@ -1,0 +1,61 @@
+import "../retained_text"
+import "directories"
+
+external define ep_uuid_v4
+
+# Publish a fully flushed new file with Darwin RENAME_EXCL. Parent directories
+# must exist. Existing destinations are never replaced. Temporary files may
+# survive process failure and need recovery; they are not completion receipts.
+define workspace_create_text with library as Int and root as Int and path as Str and text as Str returning Str:
+    set parts to workspace_path_parts(path)
+    if root is less than 0 or else parts equals 0:
+        return "invalid-arguments"
+    set duplicate to ep_dlsym(library and "dup")
+    set publish to ep_dlsym(library and "renameatx_np")
+    set remove_file to ep_dlsym(library and "unlinkat")
+    set flush to ep_dlsym(library and "fsync")
+    if duplicate equals 0 or else publish equals 0 or else remove_file equals 0 or else flush equals 0:
+        return "unavailable"
+    set parent to -1
+    if length_list(parts) equals 1:
+        set parent to socket_signed_result(ep_dlcall1(duplicate and root))
+    else:
+        set parent_path to ""
+        set index to 0
+        repeat while index is less than length_list(parts) - 1:
+            if index is greater than 0:
+                set parent_path to concat(parent_path and "/")
+            set parent_path to concat(parent_path and archive_list_text(parts and index))
+            set index to index + 1
+        set parent to workspace_directory_open(library and root and parent_path and 0)
+    if parent is less than 0:
+        return "parent-unavailable"
+    set temporary to concat(".echo-pending-" and ptr_to_str(ep_uuid_v4()))
+    set descriptor to workspace_file_open(library and parent and temporary and 1)
+    if descriptor is less than 0:
+        set closed to net_close(parent)
+        return "stage-failed"
+    set written to file_stage_write(library and descriptor and str_to_ptr(text) and string_length(text))
+    set finished to file_stage_finish(library and descriptor)
+    if written is not equal to 0 or else finished is not equal to 0:
+        set removed to ep_dlcall3(remove_file and parent and str_to_ptr(temporary) and 0)
+        set closed to net_close(parent)
+        return "write-failed"
+    set name to ptr_to_str(get_list(parts and length_list(parts) - 1))
+    set renamed to socket_signed_result(ep_dlcall5(publish and parent and str_to_ptr(temporary) and parent and str_to_ptr(name) and 4))
+    if renamed is not equal to 0:
+        set reason to socket_errno(library)
+        set removed to ep_dlcall3(remove_file and parent and str_to_ptr(temporary) and 0)
+        set closed to net_close(parent)
+        if reason equals 17:
+            return "already-exists"
+        # Do not replace this with ordinary rename: workspace subprocesses can
+        # create the destination concurrently and do not honor host reservations.
+        if reason equals 45:
+            return "publication-unsupported-filesystem"
+        return "publish-failed"
+    set flushed to socket_signed_result(ep_dlcall1(flush and parent))
+    set closed to net_close(parent)
+    if flushed is not equal to 0 or else closed is not equal to 0:
+        return "publication-uncertain"
+    return "created"

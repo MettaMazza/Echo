@@ -1,0 +1,50 @@
+import "../retained_text"
+import "../media/speech_tool"
+
+# Idempotent direct speech of an owned, immutable assistant message. This uses
+# the existing speech executor and tool ledger without another model turn.
+define web_message_speak with database as Int and device as Str and source as Str returning Str:
+    set retained_list_1 to create_list()
+    set retained_item_1_0 to device
+    set retained_added to append_list(retained_list_1 and retained_item_1_0)
+    set retained_item_1_1 to source
+    set retained_added to append_list(retained_list_1 and retained_item_1_1)
+    set values to retained_list_1
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT e.session,json_extract(e.payload,'$.content') FROM echo_events e JOIN echo_session_owners o ON o.session=e.session JOIN echo_devices d ON d.device=o.device WHERE e.event=?2 AND e.kind='assistant_final' AND d.device=?1 AND d.revoked=0;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "{\"status\":\"not-found\"}"
+    set session to archive_list_text(row and 1)
+    set text to archive_list_text(row and 2)
+    set job to concat("message-speech:plain-v1:" and ep_sha256(source))
+    set request to concat(job and ":request")
+    set existing to tool_ledger_read(database and job and "speak")
+    if existing equals 0:
+        set arguments to concat("{\"text\":" and concat(provider_quote(text) and "}"))
+        set payload to concat("{\"run_id\":" and provider_quote(job))
+        set payload to concat(payload and concat(",\"speech_source\":" and provider_quote(source)))
+        set payload to concat(payload and concat(",\"call_id\":\"speak\",\"name\":\"speech_synthesize\",\"arguments\":" and concat(provider_quote(arguments) and "}")))
+        if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+            return "{\"status\":\"busy\"}"
+        if archive_append_pending(database and session and request and "tool_call" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else tool_ledger_queue(database and job and "speak" and session and request) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+            set rolled to archive_rollback(database)
+    if tool_ledger_claim(database and job and "speak") equals 0:
+        set result to speech_tool_execute(database and job and "speak" and -1)
+        if string_length(result) equals 0:
+            set interrupted to tool_ledger_interrupt(database and job and "speak")
+            return "{\"status\":\"speech-interrupted\"}"
+        set payload to concat("{\"run_id\":" and provider_quote(job))
+        set payload to concat(payload and concat(",\"call_id\":\"speak\",\"request_event\":" and provider_quote(request)))
+        set payload to concat(payload and concat(",\"result\":" and concat(result and "}")))
+        set event to concat(request and ":result")
+        if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+            return "{\"status\":\"speech-interrupted\"}"
+        if archive_append_pending(database and session and event and "tool_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else tool_ledger_observe(database and job and "speak" and event) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+            set rolled to archive_rollback(database)
+            return "{\"status\":\"speech-interrupted\"}"
+    set retained_list_2 to create_list()
+    set retained_item_2_0 to job
+    set retained_added to append_list(retained_list_2 and retained_item_2_0)
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(e.payload,'$.result') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run=?1 AND t.call_id='speak' AND t.state='observed';" and retained_list_2))
+    if archive_list_text(saved and 0) equals "found":
+        return archive_list_text(saved and 1)
+    return "{\"status\":\"speech-in-progress-or-interrupted\"}"

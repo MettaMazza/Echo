@@ -1,0 +1,87 @@
+import "../retained_text"
+import "http_body"
+
+# The HTTP status remains separate from transport success. A parsed 500 response
+# is not a successful model answer. Caller handles interim statuses explicitly.
+# Fields: ready, numeric status, framing, length, header pairs.
+define http_response_head with reader as List and method as Str returning List:
+    set first to http_stream_line(reader)
+    if not (archive_list_text(first and 0) equals "line"):
+        return first
+    set line to archive_list_text(first and 1)
+    if string_length(line) is less than 13:
+        return http_failure("bad-response")
+    set version to ptr_to_str(substring(line and 0 and 8))
+    if (not (version equals "HTTP/1.1") and not (version equals "HTTP/1.0")) or else get_character(line and 8) is not equal to 32 or else get_character(line and 12) is not equal to 32:
+        return http_failure("bad-response")
+    set status to http_decimal(ptr_to_str(substring(line and 9 and 3)))
+    if status is less than 100 or else status is greater than 599:
+        return http_failure("bad-response")
+    set index to 13
+    repeat while index is less than string_length(line):
+        set code to get_character(line and index)
+        if (code is less than 32 and code is not equal to 9) or else code equals 127:
+            return http_failure("bad-response")
+        set index to index + 1
+    set headers to create_list()
+    set length to -1
+    set transfer to ""
+    set finished to 0
+    repeat while finished equals 0:
+        set next_line to http_stream_line(reader)
+        if not (archive_list_text(next_line and 0) equals "line"):
+            return next_line
+        set line to archive_list_text(next_line and 1)
+        if string_length(line) equals 0:
+            set finished to 1
+        else:
+            set colon to string_index_of(line and ":")
+            if colon is less than 1 or else http_token(ptr_to_str(substring(line and 0 and colon))) equals 0:
+                return http_failure("bad-response")
+            set name to ptr_to_str(string_to_lower(substring(line and 0 and colon)))
+            set value to ptr_to_str(substring(line and colon + 1 and string_length(line) - colon - 1))
+            set index to 0
+            repeat while index is less than string_length(value):
+                set code to get_character(value and index)
+                if (code is less than 32 and code is not equal to 9) or else code equals 127:
+                    return http_failure("bad-response")
+                set index to index + 1
+            set value to ptr_to_str(string_trim(value))
+            if name equals "content-length":
+                set parsed to http_decimal(value)
+                if parsed is less than 0 or else (length is not equal to -1 and length is not equal to parsed):
+                    return http_failure("bad-response")
+                set length to parsed
+            if name equals "transfer-encoding":
+                if string_length(transfer) is greater than 0 or else string_length(value) equals 0:
+                    return http_failure("bad-response")
+                set transfer to ptr_to_str(string_to_lower(value))
+            if name equals "content-encoding":
+                if not (ptr_to_str(string_to_lower(value)) equals "identity"):
+                    return http_failure("unsupported-content-encoding")
+            set pair to create_list()
+            set added to append_list(pair and name)
+            set added to append_list(pair and value)
+            set added to append_list(headers and pair)
+    if string_length(transfer) is greater than 0 and length is not equal to -1:
+        return http_failure("bad-response")
+    set framing to "eof"
+    if length is not equal to -1:
+        set framing to "length"
+    if string_length(transfer) is greater than 0:
+        if not (transfer equals "chunked"):
+            return http_failure("unsupported-transfer")
+        set framing to "chunked"
+    if length equals -1:
+        set length to 0
+    if method equals "HEAD" or else status is less than 200 or else status equals 204 or else status equals 304:
+        set framing to "length"
+        set length to 0
+    if status equals 101:
+        return http_failure("unsupported-upgrade")
+    set result to http_failure("ready")
+    set added to append_list(result and status)
+    set added to append_list(result and framing)
+    set added to append_list(result and length)
+    set added to append_list(result and headers)
+    return result

@@ -1,0 +1,61 @@
+import "../../app/web/http_api"
+
+define api_sender with library as Int and descriptor as Int and wire as Str and completed as Int returning Int:
+    set sent to socket_write_all(library and descriptor and -1 and str_to_ptr(wire) and string_length(wire))
+    set failure to 0
+    if not (ptr_to_str(get_list(sent and 0)) equals "sent"):
+        set failure to 1
+    set closed to net_close(descriptor)
+    send failure + closed to completed
+    return 0
+
+define main returning Int:
+    if get_argument_count() is less than 2:
+        return 1
+    set header to "POST /api/runs HTTP/1.1\r\nHost: 127.0.0.1:8123\r\nOrigin: http://127.0.0.1:8123\r\nX-Echo-Token: fixture-token\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n"
+    set request to http_parse_head(header)
+    if web_authorized(request and 8123 and "fixture-token" and 1) is not equal to 1 or else web_authorized(request and 8123 and "wrong" and 1) is not equal to 0 or else web_authorized(request and 8124 and "fixture-token" and 1) is not equal to 0:
+        return 1
+    set foreign to http_parse_head("POST /api/runs HTTP/1.1\r\nHost: 127.0.0.1:8123\r\nOrigin: https://foreign.example\r\nX-Echo-Token: fixture-token\r\n\r\n")
+    set duplicate to http_parse_head("POST /api/runs HTTP/1.1\r\nHost: 127.0.0.1:8123\r\nOrigin: http://127.0.0.1:8123\r\nX-Echo-Token: fixture-token\r\nX-Echo-Token: fixture-token\r\n\r\n")
+    set absent to http_parse_head("POST /api/runs HTTP/1.1\r\nHost: 127.0.0.1:8123\r\nX-Echo-Token: fixture-token\r\n\r\n")
+    if web_authorized(foreign and 8123 and "fixture-token" and 1) is not equal to 0 or else web_authorized(duplicate and 8123 and "fixture-token" and 1) is not equal to 0 or else web_authorized(absent and 8123 and "fixture-token" and 1) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    set secure to http_parse_head("POST /api/runs HTTP/1.1\r\nHost: 127.0.0.1:8123\r\nOrigin: https://echo.local:8443\r\nX-Echo-Token: fixture-token\r\n\r\n")
+    if web_authorized_origin(secure and 8123 and "fixture-token" and 1 and "https://echo.local:8443") is not equal to 1:
+        return 1
+    if web_authorized_origin(secure and 8123 and "fixture-token" and 1 and "https://other.local:8443") is not equal to 0 or else web_authorized_origin(request and 8123 and "fixture-token" and 1 and "https://echo.local:8443") is not equal to 1 or else web_authorized_origin(foreign and 8123 and "fixture-token" and 1 and "https://echo.local:8443") is not equal to 0:
+        return 1
+    if web_https_origin_valid("https://echo.local:8443") is not equal to 1 or else web_https_origin_valid("https://192.168.1.240:8444") is not equal to 1 or else web_https_origin_valid("http://echo.local") is not equal to 0 or else web_https_origin_valid("https://echo.local/path") is not equal to 0 or else web_https_origin_valid("https://echo.local:65536") is not equal to 0 or else web_https_origin_valid("https://echo.local\nother") is not equal to 0:
+        return 1
+    if database equals 0 or else web_run_schema(database) is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set client to net_connect("127.0.0.1" and get_list(listener and 2))
+    set accepted to local_socket_accept(listener)
+    set json to "{\"submission\":\"browser-request\",\"message\":\"café 🌍\"}"
+    set wire to concat("POST /api/runs HTTP/1.1\r\nHost: 127.0.0.1:8123\r\nOrigin: http://127.0.0.1:8123\r\nX-Echo-Token: fixture-token\r\nContent-Type: application/json\r\nContent-Length: " and int_to_string(string_length(json)))
+    set wire to concat(wire and concat("\r\n\r\n" and json))
+    set completed to channel
+    spawn api_sender(get_list(listener and 0) and client and wire and completed)
+    set reader to http_stream_create(get_list(listener and 0) and accepted and -1)
+    set request to http_stream_head(reader)
+    if web_authorized(request and 8123 and "fixture-token" and 1) is not equal to 1:
+        return 1
+    set parsed to web_read_json(reader and request and 1)
+    if not (ptr_to_str(get_list(parsed and 0)) equals "ready") or else not (ptr_to_str(get_list(parsed and 1)) equals json):
+        return 1
+    set submitted to web_submit_json(database and get_list(parsed and 2))
+    if not (ptr_to_str(get_list(submitted and 0)) equals "accepted"):
+        return 1
+    set event to archive_read_event(database and "browser-request:user")
+    if event equals 0 or else not (ptr_to_str(get_list(event and 3)) equals "café 🌍"):
+        return 1
+    set sent to receive from completed
+    if sent is not equal to 0 or else http_stream_release(reader) is not equal to 0 or else net_close(accepted) is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: local Host/origin/token checks, foreign/missing/duplicate credential rejection, byte-split JSON body and exact durable Unicode submission."
+    return 0

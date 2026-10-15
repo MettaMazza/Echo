@@ -1,0 +1,80 @@
+import "../context/checkpoint"
+
+# The runner persists original tool-call and result events before referring to
+# them here. State changes are atomic, and only one worker can claim a call.
+define tool_ledger_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_tool_calls (run TEXT NOT NULL, call_id TEXT NOT NULL, session TEXT NOT NULL, request_event TEXT NOT NULL UNIQUE REFERENCES echo_events(event), state TEXT NOT NULL CHECK(state IN ('queued','running','uncertain','observed')), result_event TEXT UNIQUE REFERENCES echo_events(event), reconciliation_event TEXT REFERENCES echo_events(event), PRIMARY KEY(run,call_id)); CREATE TRIGGER IF NOT EXISTS echo_tool_identity_immutable BEFORE UPDATE OF run,call_id,session,request_event ON echo_tool_calls BEGIN SELECT RAISE(ABORT,'Tool identity is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_tool_result_immutable BEFORE UPDATE ON echo_tool_calls WHEN OLD.state='observed' BEGIN SELECT RAISE(ABORT,'Observed tool result is immutable'); END;")
+
+define tool_ledger_change with database as Int and query as Str and values as List returning Int:
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return 1
+    if ep_sqlite3_step(statement) is not equal to 100:
+        set finished to ep_sqlite3_finalize(statement)
+        return 1
+    return archive_finish(statement and 101)
+
+define tool_ledger_identity with run as Str and call_id as Str returning List:
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and call_id)
+    return values
+
+define tool_ledger_queue with database as Int and run as Str and call_id as Str and session as Str and request_event as Str returning Int:
+    if string_length(run) equals 0 or else string_length(call_id) equals 0:
+        return 1
+    set values to tool_ledger_identity(run and call_id)
+    set added to append_list(values and session)
+    set added to append_list(values and request_event)
+    set added to append_list(values and call_id)
+    set query to "INSERT INTO echo_tool_calls(run,call_id,session,request_event,state) SELECT ?,?,e.session,e.event,'queued' FROM echo_events e WHERE e.session=? AND e.event=? AND e.kind='tool_call' AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.call_id') END=? AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.run_id') END=?1 RETURNING call_id;"
+    return tool_ledger_change(database and query and values)
+
+define tool_ledger_claim with database as Int and run as Str and call_id as Str returning Int:
+    set values to tool_ledger_identity(run and call_id)
+    return tool_ledger_change(database and "UPDATE echo_tool_calls SET state='running' WHERE run=? AND call_id=? AND state='queued' RETURNING call_id;" and values)
+
+# Invoke only after the owning worker/process is confirmed dead. An interrupted
+# side effect may have happened even though its result was never recorded.
+define tool_ledger_interrupt with database as Int and run as Str and call_id as Str returning Int:
+    set values to tool_ledger_identity(run and call_id)
+    return tool_ledger_change(database and "UPDATE echo_tool_calls SET state='uncertain' WHERE run=? AND call_id=? AND state='running' RETURNING call_id;" and values)
+
+# A real persisted result can resolve running or uncertain work. Its session and
+# call identity must match; another call's observation cannot close this call.
+define tool_ledger_observe with database as Int and run as Str and call_id as Str and result_event as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and result_event)
+    set added to append_list(values and run)
+    set added to append_list(values and call_id)
+    set query to "UPDATE echo_tool_calls SET state='observed',result_event=? WHERE run=? AND call_id=? AND state IN ('running','uncertain') AND EXISTS (SELECT 1 FROM echo_events e WHERE e.event=?1 AND e.session=echo_tool_calls.session AND e.kind='tool_result' AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.call_id') END=echo_tool_calls.call_id AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.run_id') END=echo_tool_calls.run) RETURNING call_id;"
+    return tool_ledger_change(database and query and values)
+
+# Requeue requires a persisted reconciliation observation from the tool adapter.
+# This API records the evidence; the adapter must actually verify its claim.
+define tool_ledger_confirm_not_executed with database as Int and run as Str and call_id as Str and evidence_event as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and evidence_event)
+    set added to append_list(values and run)
+    set added to append_list(values and call_id)
+    set query to "UPDATE echo_tool_calls SET state='queued',reconciliation_event=? WHERE run=? AND call_id=? AND state='uncertain' AND EXISTS (SELECT 1 FROM echo_events e WHERE e.event=?1 AND e.session=echo_tool_calls.session AND e.kind='tool_reconciliation' AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.call_id') END=echo_tool_calls.call_id AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.run_id') END=echo_tool_calls.run AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.outcome') END='verified_not_executed') RETURNING call_id;"
+    return tool_ledger_change(database and query and values)
+
+define tool_ledger_read with database as Int and run as Str and call_id as Str returning List:
+    set values to tool_ledger_identity(run and call_id)
+    set statement to checkpoint_prepare(database and "SELECT state,session,request_event,COALESCE(result_event,''),COALESCE(reconciliation_event,'') FROM echo_tool_calls WHERE run=? AND call_id=?;" and values)
+    if statement equals 0:
+        return 0
+    if ep_sqlite3_step(statement) is not equal to 100:
+        set finished to ep_sqlite3_finalize(statement)
+        return 0
+    set row to create_list()
+    set added to append_list(row and "found")
+    set position to 0
+    repeat while position is less than 5:
+        set value to ptr_to_str(ep_sqlite3_column_text(statement and position))
+        set added to append_list(row and concat(value and ""))
+        set position to position + 1
+    if archive_finish(statement and 101) is not equal to 0:
+        return 0
+    return row

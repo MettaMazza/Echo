@@ -1,0 +1,56 @@
+import "../../app/web/worker"
+import "../../app/archive/snapshot"
+
+define main returning Int:
+    if get_argument_count() is not equal to 4:
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_worker_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Backup fixture" and "fixture-secret") is not equal to 0:
+        return 1
+    set submitted to web_submit_owned(database and "owner" and "submission" and "" and "Preserve café and device ownership.")
+    if not (ptr_to_str(get_list(submitted and 0)) equals "accepted"):
+        return 1
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    if web_worker_claim(database and run and "worker") is not equal to 0 or else web_cancel_request(database and "owner" and run) is not equal to 0:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set owner to archive_runtime_lock(database and library)
+    if owner is less than 0:
+        return 1
+    if archive_snapshot(database and get_argument(2)) is not equal to 0:
+        return 1
+    # Later source changes must not leak into the consistent snapshot.
+    if sql_execute(database and "UPDATE echo_devices SET revoked=1 WHERE device='owner';") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    if archive_restore(get_argument(2) and get_argument(3)) is not equal to 0:
+        return 1
+    set restored to archive_open(get_argument(3))
+    if restored equals 0 or else not (web_device_authenticate(restored and "fixture-secret") equals "owner") or else web_device_session_allowed(restored and "owner" and session) is not equal to 1 or else web_device_session_allowed(restored and "foreign" and session) is not equal to 0:
+        return 1
+    if archive_runtime_lock(restored and library) >= 0:
+        display "FAIL: restored copy acquired a live source runtime lock."
+        return 1
+    if net_close(owner) is not equal to 0:
+        return 1
+    set replacement to archive_runtime_lock(restored and library)
+    if replacement is less than 0 or else net_close(replacement) is not equal to 0 or else ep_dlclose(library) is not equal to 0:
+        return 1
+    set state to agent_run_read(restored and run)
+    if state equals 0 or else not (ptr_to_str(get_list(state and 2)) equals "ready"):
+        return 1
+    set row to history_collect_one(archive_prepare(restored and "SELECT (SELECT COUNT(*) FROM echo_cancel_requests),(SELECT COUNT(*) FROM echo_worker_lock_protocol),(SELECT COUNT(*) FROM echo_web_workers WHERE worker='worker' AND status='running');"))
+    if not (ptr_to_str(get_list(row and 1)) equals "1") or else not (ptr_to_str(get_list(row and 2)) equals "1") or else not (ptr_to_str(get_list(row and 3)) equals "1"):
+        return 1
+    if archive_verify_all(restored) is not equal to 0:
+        return 1
+    # Disposable corruption: integrity_check alone does not catch broken FKs.
+    if sql_execute(restored and "PRAGMA foreign_keys=OFF; INSERT INTO echo_cancel_requests(run,device) VALUES('missing-run','missing-device');") is not equal to 0 or else archive_verify_all(restored) equals 0:
+        display "FAIL: broken application references passed verification."
+        return 1
+    if sql_close(restored) is not equal to 0:
+        return 1
+    display "PASS: clean database restore preserved identity, ownership, pending cancellation and worker claims; later source revocation excluded. No worker was started."
+    return 0
