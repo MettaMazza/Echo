@@ -1,0 +1,19 @@
+# Local Kokoro speech
+
+Echo uses Kokoro-82M v1.0, the full-precision ONNX model, through kokoro-onnx 0.6.1. The selected voice is `bm_fable`, British male Fable, with language `en-gb`. The requested spelling `AM_fable` is not an official Kokoro voice identifier.
+
+Model and voice files live under `models/Kokoro-82M-v1.0` on One Touch. The isolated dependency environment runs internally at `~/.echo/kokoro-env`; the short path avoids an eSpeak data-path failure reproduced with the original longer workspace path. Echo's orchestration is plain-English Ernos in `app/kokoro_speak.ep` and `app/media/voice_request.ep`. No authored Python application code is used. The native helper calls the installed upstream library through the existing CPython bridge.
+
+The host voice profile selects the executable, interpreter library, interpreter, model file, voices file, voice and language. A separate process handles each speech request in its private job directory. Input is a text file, never shell interpolation. Output is a 24 kHz mono PCM16 WAV saved as an owned attachment. The existing cancellation, archive and device authorization checks remain in force. Use Speak beside Copy, Branch and Regenerate on an assistant reply. This sends the saved message event to `/api/speak`; the server reads the immutable original text and invokes Kokoro directly, without an LLM turn. The generated audio appears within that reply with native playback, seeking, volume and download controls. It persists through the archived source-event association. Repeated requests reuse the same result. Audio produced by the agent speech tool also appears inline. Playback does not autoplay.
+
+The model and voices were downloaded from the official kokoro-onnx `model-files-v1.0` release. Model voice definitions: https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md . Runtime source: https://github.com/thewh1teagle/kokoro-onnx . Upstream packages retain their own licences.
+
+Validation: native helper generated a nonempty WAV; the existing `test_voice_tool.ep` integration test passed with Kokoro, including actual Whisper recognition of the spoken facts, private attachment ownership, rejection of redispatch and archive verification. Local evidence is in `evidence/kokoro-acceptance/verification.json` and `evidence/kokoro-integration.log`. These are local validation records, not a claim that every possible text or pronunciation has been tested.
+
+Live browser validation also completed: the actual MLX agent called speech_synthesize, received the saved WAV and completed its answer. Files & voice showed the audio attachment; Play audio opened the player with a 4.437333-second duration. The Thinking panel displayed the actual tool call, result and provider-emitted reasoning.
+
+Direct-message validation: `tests/media/test_message_speech.ep` uses actual Kokoro, rejects a foreign device, verifies identical replay with one process dispatch, checks the durable message/audio association and verifies the archive. Speech requests interrupted before result recording retain an unresolved ledger claim rather than silently duplicating generation.
+
+Each assistant message has its own Thinking disclosure before its answer. It loads that run’s archived traces in pages on expansion. The current run also refreshes while generating. Older replies retain their own panels after a new answer and after refresh; no model trace is invented when a provider does not emit one.
+
+Speech presentation now uses plain-v1: Markdown emphasis, headings and quote markers are silent; link labels remain, link destinations and fenced code are omitted, and inline code loses its delimiters. Original messages remain unchanged. Result records retain both original and spoken-text hashes. The versioned message-speech job identity generates corrected audio instead of reusing an older formatted-text clip. Repeated requests for the same version remain idempotent.
