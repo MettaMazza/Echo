@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-15T22:56:06.230436+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-15T22:59:43.814540+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -937,9 +937,9 @@ Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/agent/runne
 
 ## tests/media/test_speech_text.ep
 
-[Source](../../tests/media/test_speech_text.ep) · 15 lines · 1025 bytes
+[Source](../../tests/media/test_speech_text.ep) · 21 lines · 1290 bytes
 
-SHA-256: `c983cd64332485f162f08a50dea0cb626c80c07e05e2c2210fd5d64497bd15ea`
+SHA-256: `bbfed6c547f79897199ef445b1f7626e07df509ab5b807cfdc35c1c8de8de3e0`
 
 
 Imports: ../../app/media/speech_text → app/media/speech_text.ep

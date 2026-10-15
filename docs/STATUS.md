@@ -33,3 +33,5 @@ Training, model weight updates, connected research interfaces, vector steering i
 ## Latest speech and failure checks
 
 Formatted-message Kokoro synthesis passed with original archive integrity, foreign-device rejection and idempotent audio reuse. The speech text filter has an Ernos regression fixture. Another 1,200 overlapping authenticated reads passed with durable diagnostics enabled. Deliberately killed request and model-worker processes produced signal records; the listener survived and interrupted generation returned to a retryable saved state. Evidence: `speech-plain-integration.log`, `speech-diagnostics-stress.log`, `speech-diagnostics-fault-checks.json`. Source indexes have been regenerated from every current application/test file.
+
+The service owner was also fault-tested: a SIGKILL listener exit was durably recorded and a replacement listener returned HTTP 200 (`speech-diagnostics-supervisor.json`). Publication has replaced the existing private GitHub repository contents in logical commits while preserving its earlier history. Public visibility is still pending; the connector has no visibility-setting operation and the browser session is signed out.

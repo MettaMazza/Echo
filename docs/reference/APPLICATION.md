@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-15T22:56:06.230436+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-15T22:59:43.814540+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1375,9 +1375,9 @@ Imports: ../retained_text → app/retained_text.ep, ../tools/history_tools → a
 
 ## app/media/speech_text.ep
 
-[Source](../../app/media/speech_text.ep) · 63 lines · 3324 bytes
+[Source](../../app/media/speech_text.ep) · 93 lines · 5139 bytes
 
-SHA-256: `a2f0a8f5db622ff606ad7639fd04aa212119fd807fd5c6198791d14ec629c5bc`
+SHA-256: `96b3d5a6c5ba1435609b6ffdfe085f3fc4062032d8c7f063b402ccdbc8daeaf6`
 
 > Speech is a derived presentation. The original archived message stays intact.
 > Markdown structure is silent; link labels and inline code remain readable.
