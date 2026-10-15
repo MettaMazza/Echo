@@ -8,7 +8,7 @@ ErnosDecent reference: https://github.com/MettaMazza/ErnosDecent at `4ef202c5a92
 
 ## Runtime dependencies
 
-The installation uses llama.cpp b11429, mlx-lm/MLX with a local tokenizer helper, Caddy 2.11.7, SQLite, Apple/macOS native libraries and Clang. Image generation uses stable-diffusion.cpp; speech transcription uses whisper.cpp; speech synthesis uses the configured macOS voice runtime. Browser formatting uses locally served third-party assets. The forensic dependency inventory records available versions, source identities and hashes; where a version is unknown it remains unknown rather than guessed.
+The installation uses llama.cpp b11429, mlx-lm/MLX with a local tokenizer helper, Caddy 2.11.7, SQLite, Apple/macOS native libraries and Clang. Image generation uses stable-diffusion.cpp; speech transcription uses whisper.cpp; speech synthesis uses Kokoro-82M ONNX with kokoro-onnx and the bm_fable voice; see KOKORO.md. Browser formatting uses locally served third-party assets. The forensic dependency inventory records available versions, source identities and hashes; where a version is unknown it remains unknown rather than guessed.
 
 Model directories currently include Qwen3.5-35B-A3B MLX 4-bit and Qwen3.8-Flash-Next Q8_0 GGUF plus its projector. Model filenames and metadata are not independent proof of quality, capacity or native modality support. Model weights and their licenses remain separate acquisitions and are not included here.
 

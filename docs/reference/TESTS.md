@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-15T22:59:43.814540+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-15T23:40:53.205878+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1140,6 +1140,19 @@ Imports: ../../app/agent/runner → app/agent/runner.ep, fs → standard library
 - Line 4: `define switch_wait_provider with profile as Str returning Int:`
 - Line 20: `define switch_turn with database as Int and run as Str and prompt as Str and profile as Str and expected as Str and reserve as Int and batch as Int returning Int:`
 - Line 41: `define main returning Int:`
+
+## tests/providers/test_live_unified_image.ep
+
+[Source](../../tests/providers/test_live_unified_image.ep) · 38 lines · 2550 bytes
+
+SHA-256: `d896a430ef04bb4c4e28eea5ff3c9655f554a57c940a0ad7af8a2b7472e8e021`
+
+> Live regression: one selected multimodal model answers actual image pixels
+> without recording or switching to another provider.
+
+Imports: ../../app/agent/runner → app/agent/runner.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency
+
+- Line 7: `define main returning Int:`
 
 ## tests/providers/test_llama_metadata.ep
 

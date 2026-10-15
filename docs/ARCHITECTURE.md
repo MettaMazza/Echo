@@ -22,7 +22,7 @@
 | `workspace` | Session roots, safe relative paths, exclusive file creation and sandboxed command execution | No general host filesystem or network authority |
 | `media` | Locally configured image generation, transcription and speech jobs | A configured runtime is not proof of a successful operation |
 | `ui` | Responsive chat, drafts, history, rendering, media controls and Thinking panel | Model/tool text is rendered as source data, not executable HTML |
-| `lifecycle` | Explicit executable/cwd/argv/environment launch profiles | Launcher is not a restart supervisor or portable installer |
+| `lifecycle` | Explicit executable/cwd/argv/environment launch profiles | Profile launcher is distinct from the server’s --supervise process owner; portable installation remains unqualified |
 | `research` | Host-native activation capture, interventions, vector validation and comparisons | Host CLI research is separate from model-callable agent tools |
 
 Root-level `app/*.ep` files are host commands and qualification entry points. Their exact signatures, imports and definitions are indexed in the complete source reference.

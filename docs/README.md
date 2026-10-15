@@ -17,3 +17,16 @@
 - [Release and incident verification](forensics/release-verification.json)
 
 The generated reference covers every application and test source file, including command-line entry points, browser modules, diagnostic programs and fixtures. A listed test is not automatically a passing test. Original runtime records remain local and are identified by path/hash in the catalogue.
+
+## Current implementation notes
+
+- [Unified multimodal model](UNIFIED-MULTIMODAL.md)
+- [Prompt inheritance and technical adaptations](PROMPT-MIGRATION.md)
+- [Attachments and repair history](ATTACHMENT-REPAIR.md)
+- [Kokoro speech and persistent trace panels](KOKORO.md)
+- [Maintainer handover and documentation updates](MAINTAINING.md)
+- [Publication and retained-history review](PUBLICATION.md)
+- [Dependency-ordered Phase Two plan](../phase2.md)
+
+- [Supporting configuration, compiler and planning inventory](forensics/repository-manifest.json)
+- [Exact model tool schemas](reference/TOOL-SCHEMAS.json)

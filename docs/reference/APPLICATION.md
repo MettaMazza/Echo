@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-15T22:59:43.814540+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-15T23:40:53.205878+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -138,20 +138,21 @@ Imports: tool_ledger → app/agent/tool_ledger.ep
 
 ## app/agent/runner.ep
 
-[Source](../../app/agent/runner.ep) · 90 lines · 5287 bytes
+[Source](../../app/agent/runner.ep) · 95 lines · 5597 bytes
 
-SHA-256: `73350576e590a4092e542a8351c16c4d2d68dcf7e4432dc4622db41f63a3c69a`
+SHA-256: `f3a9412097275c606d87334672b0639792bc8c362636401e6f78da166d8fc11f`
 
 > The model/tool loop has no iteration limit. Non-ready preflight decisions are
 > Capacity triggers archived recap/review/activation before resuming this run.
 > Configuration and unresolved recap failures return explicitly, never truncate.
+> Replay an already recorded historical route only; never select another model for new image input.
 
 Imports: ../retained_text → app/retained_text.ep, control → app/agent/control.ep, provider_profile → app/agent/provider_profile.ep, ../context/compact → app/context/compact.ep
 
 - Line 6: `define agent_loop_inner_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
 - Line 62: `define agent_loop_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
-- Line 84: `define agent_loop_inner with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
-- Line 88: `define agent_loop with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
+- Line 89: `define agent_loop_inner with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
+- Line 93: `define agent_loop with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
 
 ## app/agent/tool_dispatch.ep
 
@@ -1197,9 +1198,9 @@ Imports: ../retained_text → app/retained_text.ep, system_awareness → app/con
 
 ## app/context/system_awareness.ep
 
-[Source](../../app/context/system_awareness.ep) · 53 lines · 4019 bytes
+[Source](../../app/context/system_awareness.ep) · 60 lines · 4395 bytes
 
-SHA-256: `5d8cf5233528284c4be22ba4023b52a82023e3eefc8d1c6a1561e60b0d360e49`
+SHA-256: `745513838bde887b5897e782e574d9b54ece0d1c4edc5a658d6882a20209ae3c`
 
 > Only operator-controlled files enter the system role. Conversation content,
 > attachments and tool observations never select identity or architecture files.
@@ -1210,8 +1211,8 @@ SHA-256: `5d8cf5233528284c4be22ba4023b52a82023e3eefc8d1c6a1561e60b0d360e49`
 Imports: ../retained_text → app/retained_text.ep, ../agent/provider_profile → app/agent/provider_profile.ep, ../providers/status → app/providers/status.ep, fs → standard library or compiler dependency
 
 - Line 8: `define echo_system_prompt with database as Int and run as Str returning Str:`
-- Line 34: `define echo_system_inspect with database as Int and run as Str and arguments as Str returning Str:`
-- Line 52: `define echo_system_schema returning Str:`
+- Line 38: `define echo_system_inspect with database as Int and run as Str and arguments as Str returning Str:`
+- Line 59: `define echo_system_schema returning Str:`
 
 ## app/device_admin.ep
 
@@ -1762,9 +1763,9 @@ Imports:
 
 ## app/providers/prepare.ep
 
-[Source](../../app/providers/prepare.ep) · 121 lines · 7578 bytes
+[Source](../../app/providers/prepare.ep) · 124 lines · 7788 bytes
 
-SHA-256: `0648d395c3fcb58b8363b84ce95fcace4522697b6430ed8e804f11e4964e6277`
+SHA-256: `1471594177846874c85972bfe0861025888265602d86171007166d8ef05f446d`
 
 > Stable adapter result: status, loaded context, supported context, exact input,
 > output room, wire body, endpoint, port, retained helper handle.
@@ -1781,9 +1782,9 @@ Imports: ../retained_text → app/retained_text.ep, llama_preflight → app/prov
 
 ## app/providers/registry.ep
 
-[Source](../../app/providers/registry.ep) · 95 lines · 6285 bytes
+[Source](../../app/providers/registry.ep) · 95 lines · 6626 bytes
 
-SHA-256: `ed9030b09ba457265189e70885b2a7e617b1cd1b068efb90b73663bb7ff83f2e`
+SHA-256: `124532aacb9e45f46a613971a8e7998bb193bca9ad7b04649aa6eca437139db5`
 
 > Only the local administrator registers executable profiles. Browser selections
 > refer to these immutable identities; they never supply paths or commands.
@@ -2701,13 +2702,15 @@ Imports:
 
 ## app/ui/client.ep
 
-[Source](../../app/ui/client.ep) · 2283 lines · 100233 bytes
+[Source](../../app/ui/client.ep) · 2389 lines · 105213 bytes
 
-SHA-256: `fc6a8fcbe367d6a8dc953a73ec8d946e134c4db130dbb91be8238b7dc164849a`
+SHA-256: `ed35f45d5b23f6080776f8f0cf167b778ee0feea36640a18b36272b205865cc3`
 
 > Keep the newest turn visible without pulling readers away from older messages.
 > Authored in Ernos; the browser program is generated by the reference compiler.
 > Original message text is retained; assistant formatting escapes raw HTML.
+> Authenticated original bytes produce a thumbnail; no credential-bearing URL.
+> Keep pending attachments visible even when Files & voice is collapsed.
 > Bind each button to its own saved message, not a loop-scoped variable.
 > Bind a separate copy action to each rendered block. Copy reads code text,
 > never labels or markup, and never executes the model's program.
@@ -2734,75 +2737,78 @@ Imports:
 - Line 43: `define echo_error with error:`
 - Line 48: `define echo_catch with promise:`
 - Line 53: `define echo_api with path and payload:`
-- Line 83: `define echo_message_source with file:`
-- Line 109: `define echo_copy_message with message:`
-- Line 124: `define echo_branch_button with message:`
-- Line 160: `define echo_revision_start with message and mode and text:`
-- Line 195: `define echo_regenerate_button with message:`
-- Line 205: `define echo_edit_button with message:`
-- Line 252: `define echo_code_controls with block:`
-- Line 275: `define echo_format_response with element and original:`
-- Line 291: `define echo_inline_audio with file and owner:`
-- Line 336: `define echo_speak_button with message and article:`
-- Line 370: `define echo_render_message with message:`
-- Line 407: `define echo_history_page with before and marker:`
-- Line 434: `define echo_history_render with result and before and marker:`
-- Line 471: `define echo_history:`
-- Line 479: `define echo_open_session with session:`
-- Line 506: `define echo_session_rename with session:`
-- Line 566: `define echo_session_button with session:`
-- Line 580: `define echo_sessions:`
-- Line 604: `define echo_thinking_panel with run:`
-- Line 631: `define echo_trace_load with panel:`
-- Line 675: `define echo_trace_clear_floating:`
-- Line 683: `define echo_trace_refresh:`
-- Line 694: `define echo_poll:`
-- Line 748: `define echo_clear_draft:`
-- Line 758: `define echo_draft:`
-- Line 787: `define echo_reconcile_pending:`
-- Line 814: `define echo_send with event:`
-- Line 868: `define echo_new_chat with event:`
-- Line 903: `define echo_stop with event:`
-- Line 915: `define echo_retry with event:`
-- Line 932: `define echo_pair with event:`
-- Line 957: `define echo_export:`
-- Line 989: `define echo_verified_attachment with file:`
-- Line 1020: `define echo_download_attachment with file:`
-- Line 1049: `define echo_image_supported with file:`
-- Line 1052: `define echo_release_image:`
-- Line 1062: `define echo_open_attachment with file:`
-- Line 1070: `define echo_preview_audio with file:`
-- Line 1131: `define echo_preview_image with file:`
-- Line 1192: `define echo_read_source with file:`
-- Line 1245: `define echo_open_source with file:`
-- Line 1327: `define echo_selected_files:`
-- Line 1338: `define echo_file_choice with file:`
-- Line 1360: `define echo_attachments:`
-- Line 1409: `define echo_ensure_session:`
-- Line 1428: `define echo_upload_file with event:`
-- Line 1434: `define echo_upload_one with file:`
-- Line 1454: `define echo_upload_prepared with file and identity:`
-- Line 1473: `define echo_upload_files with originals:`
-- Line 1503: `define echo_drag_files with event:`
-- Line 1513: `define echo_drop_files with event:`
-- Line 1518: `define echo_paste_files with event:`
-- Line 1527: `define echo_attachment_inputs:`
-- Line 1534: `define escapeHTML with str:`
-- Line 1548: `define renderAiInlineMarkdown with text:`
-- Line 1568: `define echo_table_cells with line:`
-- Line 1597: `define echo_table_row with cells and alignments and heading:`
-- Line 1609: `define echo_markdown_table with lines and start:`
-- Line 1646: `define renderAiMarkdown with inputText:`
-- Line 1769: `define echo_open_recap:`
-- Line 1893: `define echo_theme_apply:`
-- Line 1901: `define echo_theme_setup:`
-- Line 1925: `define echo_suggestion with label and prompt and container:`
-- Line 1938: `define echo_polish_layout:`
-- Line 1993: `define main:`
-- Line 2182: `define echo_capability_label with value:`
-- Line 2189: `define echo_provider_picker:`
-- Line 2235: `define echo_provider_details with provider:`
-- Line 2263: `define echo_provider_refresh with identity:`
+- Line 84: `define echo_attachment_thumbnail with file:`
+- Line 117: `define echo_pending_attachments:`
+- Line 144: `define echo_remove_attachment with file and item:`
+- Line 168: `define echo_message_source with file:`
+- Line 196: `define echo_copy_message with message:`
+- Line 211: `define echo_branch_button with message:`
+- Line 247: `define echo_revision_start with message and mode and text:`
+- Line 282: `define echo_regenerate_button with message:`
+- Line 292: `define echo_edit_button with message:`
+- Line 339: `define echo_code_controls with block:`
+- Line 362: `define echo_format_response with element and original:`
+- Line 378: `define echo_inline_audio with file and owner:`
+- Line 423: `define echo_speak_button with message and article:`
+- Line 457: `define echo_render_message with message:`
+- Line 498: `define echo_history_page with before and marker:`
+- Line 525: `define echo_history_render with result and before and marker:`
+- Line 562: `define echo_history:`
+- Line 570: `define echo_open_session with session:`
+- Line 597: `define echo_session_rename with session:`
+- Line 657: `define echo_session_button with session:`
+- Line 671: `define echo_sessions:`
+- Line 695: `define echo_thinking_panel with run:`
+- Line 722: `define echo_trace_load with panel:`
+- Line 766: `define echo_trace_clear_floating:`
+- Line 774: `define echo_trace_refresh:`
+- Line 785: `define echo_poll:`
+- Line 839: `define echo_clear_draft:`
+- Line 849: `define echo_draft:`
+- Line 878: `define echo_reconcile_pending:`
+- Line 905: `define echo_send with event:`
+- Line 959: `define echo_new_chat with event:`
+- Line 994: `define echo_stop with event:`
+- Line 1006: `define echo_retry with event:`
+- Line 1023: `define echo_pair with event:`
+- Line 1048: `define echo_export:`
+- Line 1080: `define echo_verified_attachment with file:`
+- Line 1111: `define echo_download_attachment with file:`
+- Line 1140: `define echo_image_supported with file:`
+- Line 1143: `define echo_release_image:`
+- Line 1153: `define echo_open_attachment with file:`
+- Line 1161: `define echo_preview_audio with file:`
+- Line 1222: `define echo_preview_image with file:`
+- Line 1283: `define echo_read_source with file:`
+- Line 1336: `define echo_open_source with file:`
+- Line 1418: `define echo_selected_files:`
+- Line 1429: `define echo_file_choice with file:`
+- Line 1452: `define echo_attachments:`
+- Line 1511: `define echo_ensure_session:`
+- Line 1530: `define echo_upload_file with event:`
+- Line 1536: `define echo_upload_one with file:`
+- Line 1560: `define echo_upload_prepared with file and identity:`
+- Line 1579: `define echo_upload_files with originals:`
+- Line 1609: `define echo_drag_files with event:`
+- Line 1619: `define echo_drop_files with event:`
+- Line 1624: `define echo_paste_files with event:`
+- Line 1633: `define echo_attachment_inputs:`
+- Line 1640: `define escapeHTML with str:`
+- Line 1654: `define renderAiInlineMarkdown with text:`
+- Line 1674: `define echo_table_cells with line:`
+- Line 1703: `define echo_table_row with cells and alignments and heading:`
+- Line 1715: `define echo_markdown_table with lines and start:`
+- Line 1752: `define renderAiMarkdown with inputText:`
+- Line 1875: `define echo_open_recap:`
+- Line 1999: `define echo_theme_apply:`
+- Line 2007: `define echo_theme_setup:`
+- Line 2031: `define echo_suggestion with label and prompt and container:`
+- Line 2044: `define echo_polish_layout:`
+- Line 2099: `define main:`
+- Line 2288: `define echo_capability_label with value:`
+- Line 2295: `define echo_provider_picker:`
+- Line 2341: `define echo_provider_details with provider:`
+- Line 2369: `define echo_provider_refresh with identity:`
 
 ## app/ui/layout.ep
 
@@ -3158,9 +3164,9 @@ Imports: ../retained_text → app/retained_text.ep, ../tools/history_tools → a
 
 ## app/web/trace.ep
 
-[Source](../../app/web/trace.ep) · 86 lines · 5444 bytes
+[Source](../../app/web/trace.ep) · 89 lines · 5773 bytes
 
-SHA-256: `5a2109746e1d6ea27cf0c052a9d990b9e83da97bf84048f984d8500f7cd9c5b6`
+SHA-256: `2ab297c45a38ebb189efeb8e422af590060b263d6a540f4a09f5a1a303760fed`
 
 > The route authenticates device ownership before calling this reader. Run and
 > session are joined here too; provider records must belong to this run's request.

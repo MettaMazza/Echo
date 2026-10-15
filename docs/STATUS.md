@@ -1,4 +1,4 @@
-# Current status — 15 October 2026
+# Current status — 16 October 2026
 
 This is a dated snapshot, not a permanent health assertion. Runtime observations and checks are recorded in `forensics/release-verification.json`; file identities are in `forensics/source-manifest.json`. Older plans, logs and handovers retain their original claims and must be read chronologically.
 
@@ -12,7 +12,7 @@ Conversation originals remain in SQLite while reviewed, source-linked recaps red
 
 ## Identity restoration
 
-The private Echo identity has NOT been imported. ErnosDecent selects `config/personas/echo.txt` or `config/personal_identity.txt`, which are absent from the public reference checkout. The generic ErnOS persona was not substituted. The host can supply the original through `ECHO_IDENTITY_FILE`; wording is prepended intact, with technical architecture guidance in a separate block. A labelled fixture passed verbatim preservation through compaction. That does not prove that the missing real identity was installed. The complete My Brain continuity collection and SFT research records are not connected to this installation.
+The ErnosDecent kernel, personas, epistemic and philosophical frameworks, runtime policies and rights charter are now installed verbatim with a separate technical adaptation block. The original user-supplied Echo handover is included unchanged. The actual live provider request and compaction/reopen preservation passed verification. The separate gitignored private identity file remains absent; the complete My Brain collection and SFT archive are not connected. See [PROMPT-MIGRATION.md](PROMPT-MIGRATION.md) for exact scope and evidence.
 
 ## Incident and recovery
 
@@ -35,3 +35,7 @@ Training, model weight updates, connected research interfaces, vector steering i
 Formatted-message Kokoro synthesis passed with original archive integrity, foreign-device rejection and idempotent audio reuse. The speech text filter has an Ernos regression fixture. Another 1,200 overlapping authenticated reads passed with durable diagnostics enabled. Deliberately killed request and model-worker processes produced signal records; the listener survived and interrupted generation returned to a retryable saved state. Evidence: `speech-plain-integration.log`, `speech-diagnostics-stress.log`, `speech-diagnostics-fault-checks.json`. Source indexes have been regenerated from every current application/test file.
 
 The service owner was also fault-tested: a SIGKILL listener exit was durably recorded and a replacement listener returned HTTP 200 (`speech-diagnostics-supervisor.json`). Publication has replaced the existing private GitHub repository contents in logical commits while preserving its earlier history. Public visibility is still pending; the connector has no visibility-setting operation and the browser session is signed out.
+
+## Unified multimodal default correction
+
+The active default now uses the same local Qwen 3.8 llama.cpp model for text, images and tool loops. The text-only MLX endpoint is retired from new chat selections, and automatic image model switching has been removed. Actual three-turn text/image/history-tool acceptance confirmed one model identity throughout. See [UNIFIED-MULTIMODAL.md](UNIFIED-MULTIMODAL.md).

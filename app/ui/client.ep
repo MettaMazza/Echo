@@ -80,6 +80,91 @@ define echo_api with path and payload:
         )
     )
 
+# Authenticated original bytes produce a thumbnail; no credential-bearing URL.
+define echo_attachment_thumbnail with file:
+    set holder to document.createElement("div")
+    set holder.className to "attachment-thumbnail"
+    set preview to document.createElement("img")
+    set preview.alt to file.name
+    set preview.style.maxWidth to "100%"
+    set preview.style.width to "240px"
+    set preview.style.maxHeight to "220px"
+    set preview.style.objectFit to "contain"
+    set preview.style.borderRadius to "12px"
+    set preview.loading to "lazy"
+    holder.appendChild(preview)
+    set loaded to echo_verified_attachment(file).then(given bytes:
+        set options to Object()
+        set options.type to file.media_type
+        set blob to Reflect.construct(Blob and [[bytes], options])
+        set address to URL.createObjectURL(blob)
+        preview.addEventListener("load" and given ignored:
+            URL.revokeObjectURL(address)
+        )
+        preview.addEventListener("error" and given ignored:
+            URL.revokeObjectURL(address)
+            set holder.textContent to "Preview unavailable: " + file.name
+        )
+        set preview.src to address
+    )
+    set failed to get_list(loaded and "catch")
+    failed.call(loaded and given error:
+        set holder.textContent to "Preview unavailable: " + error
+    )
+    return holder
+
+# Keep pending attachments visible even when Files & voice is collapsed.
+define echo_pending_attachments:
+    set strip to document.getElementById("pending-attachments")
+    if not strip:
+        set strip to document.createElement("div")
+        set strip.id to "pending-attachments"
+        set strip.style.display to "flex"
+        set strip.style.flexWrap to "wrap"
+        set strip.style.gap to "8px"
+        strip.setAttribute("aria-label" and "Attachments ready to send")
+        set composer to document.getElementById("message")
+        composer.parentNode.insertBefore(strip and composer)
+    set strip.textContent to ""
+    set selected to echo_selected_files()
+    for each file in window.echoAttachmentFiles || Array():
+        if selected.includes(file.attachment):
+            set card to document.createElement("div")
+            set card.style.maxWidth to "160px"
+            if echo_image_supported(file):
+                card.appendChild(echo_attachment_thumbnail(file))
+            set label to document.createElement("span")
+            set label.textContent to file.name
+            set label.style.overflowWrap to "anywhere"
+            card.appendChild(label)
+            card.appendChild(echo_remove_attachment(file and card))
+            strip.appendChild(card)
+    return 0
+
+define echo_remove_attachment with file and item:
+    set button to document.createElement("button")
+    set button.type to "button"
+    set button.textContent to "Remove"
+    button.setAttribute("aria-label" and "Remove " + file.name + " from attachments")
+    button.addEventListener("click" and given ignored:
+        if window.echoBusy || window.echoUploading || window.localStorage.getItem("echo.pending"):
+            echo_note("Wait for the current submission before removing its attachments.")
+            return 0
+        set selected to echo_selected_files().filter(given identity:
+            return identity != file.attachment
+        )
+        window.localStorage.setItem("echo.files:" + window.echoSession and JSON.stringify(selected))
+        set hidden to JSON.parse(window.localStorage.getItem("echo.hidden-files:" + window.echoSession) || "[]")
+        if not hidden.includes(file.attachment):
+            hidden.push(file.attachment)
+        window.localStorage.setItem("echo.hidden-files:" + window.echoSession and JSON.stringify(hidden))
+        item.remove()
+        echo_pending_attachments()
+        echo_attachments()
+        echo_note("Attachment removed from the picker and next message. Previously sent originals remain in conversation history.")
+    )
+    return button
+
 define echo_message_source with file:
     set source to document.createElement("div")
     set source_label to document.createElement("span")
@@ -89,16 +174,18 @@ define echo_message_source with file:
         if file.page != "":
             set source_label.textContent to source_label.textContent + " · page " + (BigInt(file.page) + BigInt(1)).toString()
     source.appendChild(source_label)
+    if echo_image_supported(file):
+        source.appendChild(echo_attachment_thumbnail(file))
     set read to document.createElement("button")
     set read.type to "button"
-    set read.textContent to "Open attached source: " + file.name
+    set read.textContent to "Open"
     read.addEventListener("click" and given ignored:
         echo_open_attachment(file)
     )
     source.appendChild(read)
     set download to document.createElement("button")
     set download.type to "button"
-    set download.textContent to "Download attached source: " + file.name
+    set download.textContent to "Download"
     download.addEventListener("click" and given ignored:
         echo_download_attachment(file)
     )
@@ -397,11 +484,15 @@ define echo_render_message with message:
         else:
             article.appendChild(echo_message_source(file))
     if message.source_reads && message.source_reads.length > 0:
-        set source_heading to document.createElement("p")
-        set source_heading.textContent to "Sources read during this task"
-        article.appendChild(source_heading)
+        set source_panel to document.createElement("details")
+        set source_panel.className to "sources-read"
+        set source_heading to document.createElement("summary")
+        set source_heading.textContent to "Sources read (" + message.source_reads.length + ")"
+        set source_heading.style.cursor to "pointer"
+        source_panel.appendChild(source_heading)
         for each file in message.source_reads:
-            article.appendChild(echo_message_source(file))
+            source_panel.appendChild(echo_message_source(file))
+        article.appendChild(source_panel)
     return article
 
 define echo_history_page with before and marker:
@@ -1353,6 +1444,7 @@ define echo_file_choice with file:
         if file_checkbox.checked:
             selected.push(file.attachment)
         window.localStorage.setItem("echo.files:" + window.echoSession and JSON.stringify(selected))
+        echo_pending_attachments()
     )
     choice_label.appendChild(file_checkbox)
     return choice_label
@@ -1365,6 +1457,8 @@ define echo_attachments:
     set list to document.getElementById("attachment-list")
     set list.textContent to ""
     set status to document.getElementById("attachment-status")
+    set window.echoAttachmentFiles to Array()
+    echo_pending_attachments()
     if not window.echoSession:
         set status.textContent to "Choose files, drop them here, or paste an image into your message."
         return 0
@@ -1379,24 +1473,32 @@ define echo_attachments:
         if result.status != "found":
             return Promise.reject(result.status)
         set list.textContent to ""
+        set window.echoAttachmentFiles to result.attachments
+        echo_pending_attachments()
+        set hidden to JSON.parse(window.localStorage.getItem("echo.hidden-files:" + window.echoSession) || "[]")
         for each file in result.attachments:
+            if hidden.includes(file.attachment):
+                continue
             set item to document.createElement("li")
             set item.textContent to file.name + " · " + file.bytes + " bytes"
             item.appendChild(echo_file_choice(file))
+            if echo_image_supported(file):
+                item.appendChild(echo_attachment_thumbnail(file))
+            item.appendChild(echo_remove_attachment(file and item))
             set download to document.createElement("button")
             set download.type to "button"
-            set download.textContent to "Download " + file.name
+            set download.textContent to "Download"
             download.addEventListener("click" and given ignored:
                 echo_download_attachment(file)
             )
             item.appendChild(download)
             set read to document.createElement("button")
             set read.type to "button"
-            set read.textContent to "Read text: " + file.name
+            set read.textContent to "Open"
             if echo_image_supported(file):
-                set read.textContent to "Preview image: " + file.name
+                set read.textContent to "Open image"
             if file.media_type.slice(0 and 6) == "audio/":
-                set read.textContent to "Play audio: " + file.name
+                set read.textContent to "Play audio"
             read.addEventListener("click" and given ignored:
                 echo_open_attachment(file)
             )
@@ -1446,8 +1548,12 @@ define echo_upload_one with file:
             return Promise.reject(prepared.status)
         return echo_upload_prepared(file and prepared.upload)
     ).then(given result:
+        set selected to echo_selected_files()
+        if not selected.includes(result.attachment):
+            selected.push(result.attachment)
+        window.localStorage.setItem("echo.files:" + window.echoSession and JSON.stringify(selected))
         echo_attachments()
-        set status.textContent to "Saved " + file.name + ". Select it for your next message."
+        set status.textContent to "Attached " + file.name + ". Ready to send."
         return result
     )
 

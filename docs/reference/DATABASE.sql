@@ -20,6 +20,8 @@ CREATE TABLE echo_provider_default(singleton INTEGER PRIMARY KEY CHECK(singleton
 
 CREATE TABLE echo_provider_profiles(identity TEXT PRIMARY KEY,label TEXT NOT NULL,profile TEXT NOT NULL);
 
+CREATE TABLE echo_provider_retirements(identity TEXT PRIMARY KEY REFERENCES echo_provider_profiles(identity),reason TEXT NOT NULL);
+
 CREATE TABLE echo_runs (run TEXT PRIMARY KEY, session TEXT NOT NULL, objective_event TEXT NOT NULL REFERENCES echo_events(event), state TEXT NOT NULL CHECK(state IN ('ready','generating','tools','waiting','failed','cancelled','completed')), last_event TEXT NOT NULL REFERENCES echo_events(event));
 
 CREATE TABLE echo_runtime_anchor(identity INTEGER PRIMARY KEY CHECK(identity=1),path TEXT NOT NULL);
