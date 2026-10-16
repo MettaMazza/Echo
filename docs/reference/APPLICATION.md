@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T05:17:19.734718+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:20:50.388258+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1384,6 +1384,30 @@ Imports: migrations → app/lifecycle/migrations.ep
 - Line 13: `define operation_read with database as Int and scope as Str and identity as Str returning List:`
 - Line 19: `define operation_reserve with database as Int and scope as Str and identity as Str and principal as Str and kind as Str and request as Str returning Str:`
 - Line 54: `define operation_transition with database as Int and scope as Str and identity as Str and revision as Int and state as Str and stage as Str and cause as Str and effects as Str and diagnostic as Str and recovery as Str and result as Str returning Str:`
+
+## app/lifecycle/protected_path.ep
+
+[Source](../../app/lifecycle/protected_path.ep) · 89 lines · 4414 bytes
+
+SHA-256: `c4454c46c17308e1bc8b224cc16b151ffbf4d010372d332fd4552c86b79fb8da`
+
+> Darwin arm64 ABI inspection of an already-open inode. Controller installation
+> uses root-owned paths with no extended ACL grants and no group/other writes.
+> Reject an unreadable ACL rather than interpreting it as an empty ACL.
+> uid_t occupies bytes16..19 in the installed Darwin struct stat.
+> Darwin returns ENOENT for an absent extended ACL on an existing
+> open inode. Other errors, including unsupported ACLs, fail closed.
+> Darwin returns0 for an entry, -1 when no first entry exists. An installed
+> controller tree deliberately has no ACL entries, including inherited ones.
+> Every ancestor is checked through a retained descriptor. Never trust a secure
+> leaf inside a replaceable directory, follow symlinks, or accept special files.
+> The returned descriptor pins the inspected inode; the caller must use/close it.
+> O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC.
+
+Imports: ../workspace/files → app/workspace/files.ep
+
+- Line 6: `define protected_inode_owned with library as Int and descriptor as Int and directory as Int returning Int:`
+- Line 56: `define protected_path_open with library as Int and path as Str and directory as Int returning Int:`
 
 ## app/lifecycle/service_profile.ep
 

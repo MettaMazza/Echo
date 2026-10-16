@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T05:17:19.734718+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:20:50.388258+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -962,6 +962,19 @@ SHA-256: `169df1237f8869713a8d006e510deddae7b16e4838cccd7740239ef37bc9cca8`
 Imports: ../../app/lifecycle/operations → app/lifecycle/operations.ep, fs → standard library or compiler dependency
 
 - Line 4: `define main returning Int:`
+
+## tests/lifecycle/test_protected_path.ep
+
+[Source](../../tests/lifecycle/test_protected_path.ep) · 32 lines · 1653 bytes
+
+SHA-256: `8c974c463defcdf07dd04f7157e1f74f62e9b4fc41a58999d351f093d0e3b8bc`
+
+> Read-only qualification against the host's actual trusted OS paths and the
+> current user-owned checkout. This test never grants privileges or changes ACLs.
+
+Imports: ../../app/lifecycle/protected_path → app/lifecycle/protected_path.ep
+
+- Line 5: `define main returning Int:`
 
 ## tests/lifecycle/test_service.ep
 

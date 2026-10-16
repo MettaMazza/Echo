@@ -1,0 +1,89 @@
+import "../workspace/files"
+
+# Darwin arm64 ABI inspection of an already-open inode. Controller installation
+# uses root-owned paths with no extended ACL grants and no group/other writes.
+# Reject an unreadable ACL rather than interpreting it as an empty ACL.
+define protected_inode_owned with library as Int and descriptor as Int and directory as Int returning Int:
+    if descriptor < 0 or else not (ptr_to_str(arch_name()) equals "arm64"):
+        return 0
+    set inspect to ep_dlsym(library and "fstat")
+    set acl_read to ep_dlsym(library and "acl_get_fd_np")
+    set acl_valid_function to ep_dlsym(library and "acl_valid")
+    set acl_entry to ep_dlsym(library and "acl_get_entry")
+    set acl_release to ep_dlsym(library and "acl_free")
+    if inspect equals 0 or else acl_read equals 0 or else acl_valid_function equals 0 or else acl_entry equals 0 or else acl_release equals 0:
+        return 0
+    set information to create_list()
+    set index to 0
+    repeat while index < 18:
+        set added to append_list(information and 0)
+        set index to index + 1
+    set pointer to get_list_data_ptr(information)
+    if ep_dlcall2(inspect and descriptor and pointer) is not equal to 0:
+        return 0
+    set mode to peek_byte(pointer and 4) + peek_byte(pointer and 5) * 256
+    set kind to 8
+    if directory equals 1:
+        set kind to 4
+    if mode / 4096 is not equal to kind or else (mode / 16) % 2 is not equal to 0 or else (mode / 2) % 2 is not equal to 0:
+        return 0
+    # uid_t occupies bytes16..19 in the installed Darwin struct stat.
+    set index to 16
+    repeat while index < 20:
+        if peek_byte(pointer and index) is not equal to 0:
+            return 0
+        set index to index + 1
+    if directory equals 0 and (peek_byte(pointer and 6) + peek_byte(pointer and 7) * 256) is not equal to 1:
+        return 0
+    set acl to ep_dlcall2(acl_read and descriptor and 256)
+    if acl equals 0:
+        # Darwin returns ENOENT for an absent extended ACL on an existing
+        # open inode. Other errors, including unsupported ACLs, fail closed.
+        return socket_errno(library) equals 2
+    set valid to ep_dlcall1(acl_valid_function and acl)
+    set entry to [0]
+    set found to ep_dlcall3(acl_entry and acl and 0 and get_list_data_ptr(entry))
+    set released to ep_dlcall1(acl_release and acl)
+    # Darwin returns0 for an entry, -1 when no first entry exists. An installed
+    # controller tree deliberately has no ACL entries, including inherited ones.
+    if valid is not equal to 0 or else socket_signed_result(found) is not equal to -1 or else released is not equal to 0:
+        return 0
+    return 1
+
+# Every ancestor is checked through a retained descriptor. Never trust a secure
+# leaf inside a replaceable directory, follow symlinks, or accept special files.
+# The returned descriptor pins the inspected inode; the caller must use/close it.
+define protected_path_open with library as Int and path as Str and directory as Int returning Int:
+    if string_length(path) < 2 or else get_character(path and 0) is not equal to 47 or else not (directory equals 0 or else directory equals 1):
+        return -1
+    set parts to workspace_path_parts(ptr_to_str(substring(path and 1 and string_length(path) - 1)))
+    if parts equals 0:
+        return -1
+    set parent to workspace_root_open(library and "/")
+    if parent < 0:
+        return -1
+    if protected_inode_owned(library and parent and 1) equals 0:
+        set closed to net_close(parent)
+        return -1
+    set open_at to ep_dlsym(library and "openat")
+    if open_at equals 0:
+        set closed to net_close(parent)
+        return -1
+    set index to 0
+    repeat while index < length_list(parts):
+        set is_directory to 1
+        set flags to 17826048
+        if index equals length_list(parts) - 1 and directory equals 0:
+            set is_directory to 0
+            # O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC.
+            set flags to 16777476
+        set child to socket_signed_result(ep_dlcall3(open_at and parent and str_to_ptr(archive_list_text(parts and index)) and flags))
+        set closed to net_close(parent)
+        if child < 0:
+            return -1
+        if protected_inode_owned(library and child and is_directory) equals 0:
+            set closed to net_close(child)
+            return -1
+        set parent to child
+        set index to index + 1
+    return parent
