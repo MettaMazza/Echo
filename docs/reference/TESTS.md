@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:11:20.905495+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:18:29.288765+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1712,11 +1712,22 @@ Imports: ../../app/rights/observer_parser → app/rights/observer_parser.ep
 - Line 3: `define observer_fixture_assert with raw as Str and parsed as Str and verdict as Str returning Int:`
 - Line 11: `define main returning Int:`
 
+## tests/security/test_operation_execute.ep
+
+[Source](../../tests/security/test_operation_execute.ep) · 70 lines · 4807 bytes
+
+SHA-256: `4a58c4adabf4bf13c5e29d06d9c9359adc32cc91aba9e9287fc853150c0d4c12`
+
+
+Imports: ../../app/rights/operation_execute → app/rights/operation_execute.ep
+
+- Line 3: `define main returning Int:`
+
 ## tests/security/test_operation_prepare.ep
 
-[Source](../../tests/security/test_operation_prepare.ep) · 59 lines · 5899 bytes
+[Source](../../tests/security/test_operation_prepare.ep) · 61 lines · 6218 bytes
 
-SHA-256: `78b16a8099abe87a01e88ab85945ae161cee015692340123b5eb482c8653e61b`
+SHA-256: `7a8729abcdce85ca017d121079cf17aa66d303ff058c378bbb854357b8f2fe32`
 
 > Run on a consistent copy containing the completed live review decision only.
 

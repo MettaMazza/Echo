@@ -1,6 +1,14 @@
 import "decision_gate"
 import "exchange"
 
+# One disclosed proposal authorizes one operation identity. Reapplication after
+# rollback requires a new proposal and fresh decisions, not replay of old intent.
+define protected_operation_schema with database as Int returning Str:
+    set prior to protected_steward_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 14 and "protected-operation-identity" and "CREATE UNIQUE INDEX echo_one_operation_per_proposal ON echo_events(json_extract(payload,'$.proposal')) WHERE kind='protected_operation_prepared';")
+
 # A controller-owned operation namespace keeps deployment evidence distinct
 # from chat history. It is not writable through model tools or HTTP routes.
 define protected_operation_session with identity as Str returning Str:
@@ -38,6 +46,9 @@ define protected_operation_prepare with database as Int and charter as Str and r
         return "independent-recovery-required"
     if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
         return "writer-lock-unavailable"
+    set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='index' AND name='echo_one_operation_per_proposal';"))
+    if not (archive_list_text(schema and 0) equals "found"):
+        return migration_fail(database and "operation-schema-required")
     set decision to protected_decision_check(database and charter and run and proposal and audit_request and policy and policy_digest)
     if not (decision equals "decisions-satisfied"):
         return migration_fail(database and decision)
@@ -99,6 +110,11 @@ define protected_operation_prepare with database as Int and charter as Str and r
             return migration_fail(database and "operation-identity-conflict")
         set result to "already-prepared"
     else if archive_list_text(existing and 0) equals "end":
+        set binding to create_list()
+        set added to append_list(binding and proposal)
+        set used to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE kind='protected_operation_prepared' AND json_extract(payload,'$.proposal')=?;" and binding))
+        if not (archive_list_text(used and 0) equals "end"):
+            return migration_fail(database and "proposal-already-bound")
         if archive_append_pending(database and session and event and "protected_operation_prepared" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
             return migration_fail(database and "operation-save-failed")
     else:

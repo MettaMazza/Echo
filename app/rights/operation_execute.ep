@@ -1,0 +1,110 @@
+import "operation_state"
+
+define protected_operation_bindings with database as Int and charter as Str and payload as Str and inventory as Str and inventory_digest as Str and policy as Str returning Str:
+    set tokens to provider_json_tokens(payload)
+    set run to provider_value(tokens and provider_member(tokens and 0 and "run"))
+    set proposal to provider_value(tokens and provider_member(tokens and 0 and "proposal"))
+    set audit to provider_value(tokens and provider_member(tokens and 0 and "audit_request"))
+    set policy_digest to provider_value(tokens and provider_member(tokens and 0 and "policy_digest"))
+    set decision to protected_decision_check(database and charter and run and proposal and audit and policy and policy_digest)
+    if not (decision equals "decisions-satisfied"):
+        return decision
+    set original to protected_proposal_read(database and run and proposal)
+    set review to protected_review_latest(database and run and proposal)
+    if not (archive_list_text(original and 0) equals "found") or else not (archive_list_text(review and 0) equals "found") or else not (archive_list_text(original and 2) equals provider_value(tokens and provider_member(tokens and 0 and "manifest_digest"))) or else not (ep_sha256(archive_list_text(review and 2)) equals provider_value(tokens and provider_member(tokens and 0 and "review_digest"))):
+        return "operation-review-changed"
+    if not (inventory_digest equals provider_value(tokens and provider_member(tokens and 0 and "inventory_digest"))) or else protected_inventory_matches(charter and inventory and inventory_digest and archive_list_text(original and 1)) equals 0:
+        return "operation-inventory-changed"
+    set values to create_list()
+    set added to append_list(values and proposal)
+    set steward to history_collect_one(checkpoint_prepare(database and "SELECT receipt_digest FROM echo_protected_steward WHERE proposal=? ORDER BY previous_revision DESC LIMIT 1;" and values))
+    if not (archive_list_text(steward and 0) equals "found") or else not (archive_list_text(steward and 1) equals provider_value(tokens and provider_member(tokens and 0 and "steward_digest"))):
+        return "operation-steward-changed"
+    return "bindings-current"
+
+# Observation is read-only. Unknown or mixed bytes never authorize a retry.
+define protected_operation_observe with payload as Str returning Str:
+    set tokens to provider_json_tokens(payload)
+    set directory to provider_value(tokens and provider_member(tokens and 0 and "directory"))
+    set target to concat(directory and concat("/" and provider_value(tokens and provider_member(tokens and 0 and "target"))))
+    set stage to concat(directory and concat("/" and provider_value(tokens and provider_member(tokens and 0 and "stage"))))
+    set recovery to provider_value(tokens and provider_member(tokens and 0 and "recovery"))
+    if protected_operation_regular(target) equals 0 or else protected_operation_regular(stage) equals 0 or else protected_operation_regular(recovery) equals 0:
+        return "unknown"
+    set before_hash to provider_value(tokens and provider_member(tokens and 0 and "before_sha256"))
+    set after_hash to provider_value(tokens and provider_member(tokens and 0 and "after_sha256"))
+    set original to file_digest_durable(recovery and 65536)
+    set current to file_digest_durable(target and 65536)
+    set candidate to file_digest_durable(stage and 65536)
+    if not (archive_list_text(original and 0) equals "verified") or else not (archive_list_text(current and 0) equals "verified") or else not (archive_list_text(candidate and 0) equals "verified") or else not (archive_list_text(original and 1) equals before_hash):
+        return "unknown"
+    if archive_list_text(current and 1) equals before_hash and archive_list_text(candidate and 1) equals after_hash:
+        return "before"
+    if archive_list_text(current and 1) equals after_hash and archive_list_text(candidate and 1) equals before_hash:
+        return "after"
+    return "unknown"
+
+# Host controller entry only. Intent commits before the filesystem side effect;
+# current authorization is checked again in a second writer transaction.
+define protected_operation_apply with database as Int and charter as Str and identity as Str and inventory as Str and inventory_digest as Str and policy as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set operation to protected_operation_read(database and identity)
+    if not (archive_list_text(operation and 0) equals "prepared"):
+        return migration_fail(database and concat("operation-state:" and archive_list_text(operation and 0)))
+    set payload to archive_list_text(operation and 1)
+    set checked to protected_operation_bindings(database and charter and payload and inventory and inventory_digest and policy)
+    if not (checked equals "bindings-current"):
+        return migration_fail(database and checked)
+    if not (protected_operation_observe(payload) equals "before"):
+        return migration_fail(database and "operation-preimage-or-recovery-changed")
+    if protected_operation_record(database and identity and payload and "applying" and "Durable intent recorded; exchange outcome must be verified before completion.") is not equal to 0:
+        return migration_fail(database and "intent-save-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "intent-commit-failed")
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "intent-saved-reconciliation-required"
+    set current to protected_operation_read(database and identity)
+    if not (archive_list_text(current and 0) equals "applying") or else not (archive_list_text(current and 1) equals payload):
+        return migration_fail(database and "operation-state-changed")
+    set checked to protected_operation_bindings(database and charter and payload and inventory and inventory_digest and policy)
+    if not (checked equals "bindings-current"):
+        return migration_fail(database and concat("intent-saved:" and checked))
+    if not (protected_operation_observe(payload) equals "before"):
+        return migration_fail(database and "intent-saved-reconciliation-required")
+    set tokens to provider_json_tokens(payload)
+    set result to protected_exchange(provider_value(tokens and provider_member(tokens and 0 and "directory")) and provider_value(tokens and provider_member(tokens and 0 and "target")) and provider_value(tokens and provider_member(tokens and 0 and "stage")) and provider_value(tokens and provider_member(tokens and 0 and "before_sha256")) and provider_value(tokens and provider_member(tokens and 0 and "after_sha256")))
+    set phase to "uncertain"
+    if (result equals "exchanged" or else result equals "already-exchanged") and protected_operation_observe(payload) equals "after":
+        set phase to "applied"
+    if protected_operation_record(database and identity and payload and phase and result) is not equal to 0:
+        return migration_fail(database and "exchange-outcome-uncommitted-reconcile")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "exchange-outcome-uncommitted-reconcile")
+    return phase
+
+# Reconciliation never exchanges files. A crash after intent cannot cause a
+# blind POST/re-execution: only the exact observed state is recorded.
+define protected_operation_reconcile with database as Int and identity as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set operation to protected_operation_read(database and identity)
+    set state to archive_list_text(operation and 0)
+    if not (state equals "applying" or else state equals "uncertain" or else state equals "applied" or else state equals "not-applied"):
+        return migration_fail(database and concat("operation-state:" and state))
+    set payload to archive_list_text(operation and 1)
+    set observed to protected_operation_observe(payload)
+    set phase to "uncertain"
+    if observed equals "before":
+        set phase to "not-applied"
+    else if observed equals "after":
+        set phase to "applied"
+    if state equals "applied" or else state equals "not-applied":
+        if not (phase equals state):
+            return migration_fail(database and "terminal-operation-files-changed")
+    else if not (phase equals state):
+        if protected_operation_record(database and identity and payload and phase and concat("Restart reconciliation observed file state: " and observed)) is not equal to 0:
+            return migration_fail(database and "reconciliation-save-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "reconciliation-commit-failed")
+    return phase

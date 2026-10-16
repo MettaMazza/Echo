@@ -1,0 +1,64 @@
+import "operation_prepare"
+
+# Original preparation and every transition share an independently verifiable
+# operation chain. Caller keeps a writer transaction while acting on this state.
+define protected_operation_read with database as Int and identity as Str returning List:
+    set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='index' AND name='echo_one_operation_per_proposal';"))
+    if not (archive_list_text(schema and 0) equals "found"):
+        return history_status("operation-schema-required")
+    set session to protected_operation_session(identity)
+    if archive_verify(database and session) is not equal to 0:
+        return history_status("operation-integrity-failed")
+    set prepared to archive_read_event(database and concat(session and ":prepared"))
+    if prepared equals 0 or else not (archive_list_text(prepared and 0) equals session) or else not (archive_list_text(prepared and 2) equals "protected_operation_prepared"):
+        return history_status("operation-missing")
+    set payload to archive_list_text(prepared and 3)
+    set parsed to provider_json_tokens(payload)
+    if parsed equals 0 or else provider_unique_objects(parsed) equals 0 or else not (provider_value(parsed and provider_member(parsed and 0 and "identity")) equals identity):
+        return history_status("operation-invalid")
+    set values to create_list()
+    set added to append_list(values and session)
+    set statement to checkpoint_prepare(database and "SELECT event,kind,payload FROM echo_events WHERE session=? ORDER BY sequence;" and values)
+    if statement equals 0:
+        return history_status("operation-read-failed")
+    set state to "initial"
+    repeat while 1 equals 1:
+        set row to ep_sqlite3_step(statement)
+        if row equals 101:
+            break
+        if row is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return history_status("operation-read-failed")
+        set event to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set kind to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set transition to provider_json_tokens(ptr_to_str(ep_sqlite3_column_text(statement and 2)))
+        set next to ""
+        if state equals "initial" and kind equals "protected_operation_prepared" and event equals concat(session and ":prepared"):
+            set next to "prepared"
+        else:
+            set phase to provider_value(transition and provider_member(transition and 0 and "phase"))
+            if kind equals "protected_operation_transition" and event equals concat(session and concat(":" and phase)) and provider_value(transition and provider_member(transition and 0 and "prepared_digest")) equals ep_sha256(payload):
+                if state equals "prepared" and phase equals "applying":
+                    set next to phase
+                else if (state equals "applying" or else state equals "uncertain") and (phase equals "applied" or else phase equals "not-applied" or else phase equals "uncertain"):
+                    set next to phase
+        if transition equals 0 or else provider_unique_objects(transition) equals 0 or else string_length(next) equals 0:
+            set closed to ep_sqlite3_finalize(statement)
+            return history_status("operation-transition-invalid")
+        set state to next
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return history_status("operation-read-failed")
+    set result to history_status(state)
+    set added to append_list(result and payload)
+    return result
+
+# Internal transition writer; caller owns the transaction and has validated
+# state and physical effects. This primitive grants no execution authority.
+define protected_operation_record with database as Int and identity as Str and prepared as Str and phase as Str and detail as Str returning Int:
+    if sqlite3_get_autocommit(database) is not equal to 0:
+        return 1
+    set payload to concat("{\"prepared_digest\":" and provider_quote(ep_sha256(prepared)))
+    set payload to concat(payload and concat(",\"phase\":" and provider_quote(phase)))
+    set payload to concat(payload and concat(",\"detail\":" and concat(provider_quote(detail) and "}")))
+    set session to protected_operation_session(identity)
+    return archive_append_pending(database and session and concat(session and concat(":" and phase)) and "protected_operation_transition" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))

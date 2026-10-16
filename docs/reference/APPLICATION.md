@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:11:20.905495+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:18:29.288765+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2442,12 +2442,33 @@ Imports: ../providers/archived_stream → app/providers/archived_stream.ep
 - Line 6: `define protected_observer_result with parsed as Int and verdict as Str and reason as Str returning Str:`
 - Line 11: `define protected_observer_parse with raw as Str returning Str:`
 
+## app/rights/operation_execute.ep
+
+[Source](../../app/rights/operation_execute.ep) · 110 lines · 8939 bytes
+
+SHA-256: `0fb7204f5032ba0acb71d75b73b50ab32bec1e6f5221ab9facdb8b7f838bc800`
+
+> Observation is read-only. Unknown or mixed bytes never authorize a retry.
+> Host controller entry only. Intent commits before the filesystem side effect;
+> current authorization is checked again in a second writer transaction.
+> Reconciliation never exchanges files. A crash after intent cannot cause a
+> blind POST/re-execution: only the exact observed state is recorded.
+
+Imports: operation_state → app/rights/operation_state.ep
+
+- Line 3: `define protected_operation_bindings with database as Int and charter as Str and payload as Str and inventory as Str and inventory_digest as Str and policy as Str returning Str:`
+- Line 26: `define protected_operation_observe with payload as Str returning Str:`
+- Line 49: `define protected_operation_apply with database as Int and charter as Str and identity as Str and inventory as Str and inventory_digest as Str and policy as Str returning Str:`
+- Line 88: `define protected_operation_reconcile with database as Int and identity as Str returning Str:`
+
 ## app/rights/operation_prepare.ep
 
-[Source](../../app/rights/operation_prepare.ep) · 108 lines · 7613 bytes
+[Source](../../app/rights/operation_prepare.ep) · 124 lines · 8952 bytes
 
-SHA-256: `7086fef745c2b5a8e51478a0e480db28b239b0aadd5153ba2cbb8d91b1f3a058`
+SHA-256: `20103e9e27388f36422a79b57cf50f483524fb28b9d5e3042d72abe76fca68fb`
 
+> One disclosed proposal authorizes one operation identity. Reapplication after
+> rollback requires a new proposal and fresh decisions, not replay of old intent.
 > A controller-owned operation namespace keeps deployment evidence distinct
 > from chat history. It is not writable through model tools or HTTP routes.
 > Preparing records the exact authorized inputs. It does not mutate a target.
@@ -2455,9 +2476,26 @@ SHA-256: `7086fef745c2b5a8e51478a0e480db28b239b0aadd5153ba2cbb8d91b1f3a058`
 
 Imports: decision_gate → app/rights/decision_gate.ep, exchange → app/rights/exchange.ep
 
-- Line 6: `define protected_operation_session with identity as Str returning Str:`
-- Line 9: `define protected_operation_regular with path as Str returning Int:`
-- Line 28: `define protected_operation_prepare with database as Int and charter as Str and run as Str and proposal as Str and identity as Str and inventory as Str and inventory_digest as Str and directory as Str and target as Str and stage as Str and recovery as Str and audit_request as Str and policy as Str and policy_digest as Str returning Str:`
+- Line 6: `define protected_operation_schema with database as Int returning Str:`
+- Line 14: `define protected_operation_session with identity as Str returning Str:`
+- Line 17: `define protected_operation_regular with path as Str returning Int:`
+- Line 36: `define protected_operation_prepare with database as Int and charter as Str and run as Str and proposal as Str and identity as Str and inventory as Str and inventory_digest as Str and directory as Str and target as Str and stage as Str and recovery as Str and audit_request as Str and policy as Str and policy_digest as Str returning Str:`
+
+## app/rights/operation_state.ep
+
+[Source](../../app/rights/operation_state.ep) · 64 lines · 4516 bytes
+
+SHA-256: `f2a69125859badca1ef4c01c1cdafff845ad34ae96810656d10767607fae8ebf`
+
+> Original preparation and every transition share an independently verifiable
+> operation chain. Caller keeps a writer transaction while acting on this state.
+> Internal transition writer; caller owns the transaction and has validated
+> state and physical effects. This primitive grants no execution authority.
+
+Imports: operation_prepare → app/rights/operation_prepare.ep
+
+- Line 5: `define protected_operation_read with database as Int and identity as Str returning List:`
+- Line 57: `define protected_operation_record with database as Int and identity as Str and prepared as Str and phase as Str and detail as Str returning Int:`
 
 ## app/rights/proposals.ep
 
