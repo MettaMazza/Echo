@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T10:22:44.393389+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:30:04.142539+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -177,19 +177,19 @@ Imports: ../retained_text → app/retained_text.ep, control → app/agent/contro
 
 ## app/agent/tool_dispatch.ep
 
-[Source](../../app/agent/tool_dispatch.ep) · 138 lines · 10539 bytes
+[Source](../../app/agent/tool_dispatch.ep) · 141 lines · 10759 bytes
 
-SHA-256: `c262c86d5b405819f4ebebad1fea9474892d50e5d234975e40cec70c9b475ed3`
+SHA-256: `ae3a38ce9acf639f824f0f20bfcff3758c376984bfdc6881ec44ad768a72b9c4`
 
 > One invocation executes at most the next cursor item. The enclosing run loops
 > until the ledger is observed; this is scheduling granularity, not a turn cap.
 > Do not advance another queued action past an unresolved earlier effect.
 > Existing direct callers have no external cancellation descriptor.
 
-Imports: ../tools/continuity_tools → app/tools/continuity_tools.ep, ../tools/scratchpad → app/tools/scratchpad.ep, ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
+Imports: ../tools/tool_discovery → app/tools/tool_discovery.ep, ../tools/continuity_tools → app/tools/continuity_tools.ep, ../tools/scratchpad → app/tools/scratchpad.ep, ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
 
-- Line 18: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
-- Line 137: `define agent_tool_step with database as Int and run as Str returning Int:`
+- Line 19: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
+- Line 140: `define agent_tool_step with database as Int and run as Str returning Int:`
 
 ## app/agent/tool_ledger.ep
 
@@ -1229,9 +1229,9 @@ Imports: ../context/echo_labels → app/context/echo_labels.ep, ../retained_text
 
 ## app/context/session_messages.ep
 
-[Source](../../app/context/session_messages.ep) · 185 lines · 12258 bytes
+[Source](../../app/context/session_messages.ep) · 190 lines · 13205 bytes
 
-SHA-256: `a573d235e29fb4cc75fea0862b9508d279c958aba6589d9028d28b6c99e08781`
+SHA-256: `a2fa90d95406ac78305f9add7db501ea5dafcac63bd6e5f000b620bc0c83b0d4`
 
 > Admin-only schemas are selected from frozen initiating authority. Dispatch
 > repeats the check; advertising a schema is never itself permission.
@@ -1251,10 +1251,11 @@ SHA-256: `a573d235e29fb4cc75fea0862b9508d279c958aba6589d9028d28b6c99e08781`
 Imports: ../tools/continuity_tools → app/tools/continuity_tools.ep, ../retained_text → app/retained_text.ep, system_awareness → app/context/system_awareness.ep, ../archive/session_scope → app/archive/session_scope.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../memory/automatic_context → app/memory/automatic_context.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../agent/run_messages → app/agent/run_messages.ep
 
 - Line 13: `define session_request_body with model as Str and messages as Str returning Str:`
-- Line 20: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
-- Line 50: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
-- Line 55: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
-- Line 175: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
+- Line 20: `define session_tool_schemas_owned with database as Int and run as Str returning Str:`
+- Line 44: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
+- Line 55: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
+- Line 60: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
+- Line 180: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
 
 ## app/context/system_awareness.ep
 
@@ -3239,9 +3240,9 @@ Imports: group_gate → app/security/group_gate.ep, node_gate → app/security/n
 
 ## app/security/tool_policy.ep
 
-[Source](../../app/security/tool_policy.ep) · 56 lines · 3622 bytes
+[Source](../../app/security/tool_policy.ep) · 58 lines · 3729 bytes
 
-SHA-256: `87645c80392ae18799cf1ef3ae85adcc11bed54b359b4b08cdbc61f3764b7a4b`
+SHA-256: `b66f7ed44997b368d784827260dc8afc7409cb67e0429ea600703f1d970adc4d`
 
 > Classification is explicit. A newly registered name is not automatically a
 > safe tool. Dynamic tools must later obtain an independently verified manifest.
@@ -3254,8 +3255,8 @@ SHA-256: `87645c80392ae18799cf1ef3ae85adcc11bed54b359b4b08cdbc61f3764b7a4b`
 Imports: tool_authority → app/security/tool_authority.ep
 
 - Line 6: `define tool_capability with name as Str returning Str:`
-- Line 37: `define capability_role with capability as Str returning Str:`
-- Line 46: `define tool_policy_allows with database as Int and run as Str and call_id as Str and name as Str returning Int:`
+- Line 39: `define capability_role with capability as Str returning Str:`
+- Line 48: `define tool_policy_allows with database as Int and run as Str and call_id as Str and name as Str returning Int:`
 
 ## app/server.ep
 
@@ -3538,6 +3539,21 @@ SHA-256: `93acb408fae1a8e119d665c751665244ab98bcc396b790c477c2df3a5fc2a9ca`
 Imports: memory_tools → app/tools/memory_tools.ep
 
 - Line 5: `define scratchpad_execute with database as Int and run as Str and arguments as Str returning Str:`
+
+## app/tools/tool_discovery.ep
+
+[Source](../../app/tools/tool_discovery.ep) · 58 lines · 4044 bytes
+
+SHA-256: `816d22ce68cbc8cb2f321972b0d48d5c9be66f7b3cd6e3b2a5f720cdc10e0fcc`
+
+> Discovery observes the same authority-filtered schemas used for inference.
+> A cursor is bound to the exact catalog; changed permissions never silently
+> splice pages from two different tool sets. Dispatch still rechecks each call.
+
+Imports: ../context/session_messages → app/context/session_messages.ep
+
+- Line 6: `define tool_discovery_snapshot with database as Int and run as Str and arguments as Str returning Str:`
+- Line 51: `define tool_discovery_execute with database as Int and run as Str and arguments as Str returning Str:`
 
 ## app/tools/workspace_tools.ep
 

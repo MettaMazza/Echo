@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T10:22:44.393389+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:30:04.142539+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1023,6 +1023,19 @@ SHA-256: `1a6432a974511b6e4c0c8f7bd2234c4e91b261ee5a608634fdbba104d4e0f4e6`
 Imports: ../../app/lifecycle/controller_launch → app/lifecycle/controller_launch.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/lifecycle/test_controller_launch_privileged.ep
+
+[Source](../../tests/lifecycle/test_controller_launch_privileged.ep) · 63 lines · 4167 bytes
+
+SHA-256: `283ed74facd106718fac36517bd441a90af8b07fb050c0ea37f8d949fd8bd387`
+
+> The installed copy is an inert probe. It never starts a service or opens
+> Echo's real archive. Its only write is inside the dedicated staged bundle.
+
+Imports: ../../app/lifecycle/controller_launch → app/lifecycle/controller_launch.ep, ../../app/workspace/native_process → app/workspace/native_process.ep, fs → standard library or compiler dependency
+
+- Line 7: `define main returning Int:`
 
 ## tests/lifecycle/test_guardian_readiness.ep
 
@@ -2461,6 +2474,17 @@ SHA-256: `ae7c9e75a02f1f4009bd7235ea2c08a08824f0ef3d8111e1cb71b21a1229961f`
 Imports: ../../app/agent/run_messages → app/agent/run_messages.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/tools/test_tool_discovery.ep
+
+[Source](../../tests/tools/test_tool_discovery.ep) · 71 lines · 5537 bytes
+
+SHA-256: `b3d5488777edf39d188e4dc741fa94a1aa4e28a9fd756c28641ec97edafd994a`
+
+
+Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../../app/tools/tool_discovery → app/tools/tool_discovery.ep, ../../app/agent/tool_dispatch → app/agent/tool_dispatch.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 6: `define main returning Int:`
 
 ## tests/transport/test_event_stream.ep
 

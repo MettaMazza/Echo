@@ -1,0 +1,58 @@
+import "../context/session_messages"
+
+# Discovery observes the same authority-filtered schemas used for inference.
+# A cursor is bound to the exact catalog; changed permissions never silently
+# splice pages from two different tool sets. Dispatch still rechecks each call.
+define tool_discovery_snapshot with database as Int and run as Str and arguments as Str returning Str:
+    if agent_run_read(database and run) equals 0 or else run_authority_allows(database and run and "user") equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "query" or else key equals "after" or else key equals "catalog_digest"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set query_field to provider_member(tokens and 0 and "query")
+    set digest_field to provider_member(tokens and 0 and "catalog_digest")
+    set after to history_tool_integer(tokens and "after")
+    if not (provider_kind(tokens and query_field) equals "string") or else not (provider_kind(tokens and digest_field) equals "string") or else after < 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set schemas to session_tool_schemas_owned(database and run)
+    set digest to ep_sha256(schemas)
+    set requested_digest to provider_value(tokens and digest_field)
+    if (after > 0 or else string_length(requested_digest) > 0) and not (requested_digest equals digest):
+        return "{\"status\":\"catalog-changed\",\"recovery\":\"Restart discovery at after=0 with an empty catalog_digest.\"}"
+    set catalog to provider_json_tokens(schemas)
+    set items to provider_items(catalog and 0)
+    if items equals 0:
+        return "{\"status\":\"catalog-unavailable\"}"
+    set query to provider_value(tokens and query_field)
+    set index to after
+    repeat while index < length_list(items):
+        set entry to get_list(items and index)
+        set function to provider_member(catalog and entry and "function")
+        set name to provider_value(catalog and provider_member(catalog and function and "name"))
+        set description to provider_value(catalog and provider_member(catalog and function and "description"))
+        if string_length(query) equals 0 or else string_contains(concat(name and concat(" " and description)) and query) equals 1:
+            set schema to agent_json_source(schemas and catalog and entry)
+            set output to concat("{\"status\":\"found\",\"catalog\":\"loaded-builtins\",\"catalog_digest\":" and provider_quote(digest))
+            set output to concat(output and concat(",\"next_after\":" and int_to_string(index + 1)))
+            set output to concat(output and concat(",\"capability\":" and provider_quote(tool_capability(name))))
+            set output to concat(output and concat(",\"schema_digest\":" and provider_quote(ep_sha256(schema))))
+            return concat(output and concat(",\"schema\":" and concat(schema and "}")))
+        set index to index + 1
+    return concat("{\"status\":\"end\",\"catalog\":\"loaded-builtins\",\"catalog_digest\":" and concat(provider_quote(digest) and "}"))
+
+define tool_discovery_execute with database as Int and run as Str and arguments as Str returning Str:
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    set result to tool_discovery_snapshot(database and run and arguments)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"database-error\"}"
+    return result
