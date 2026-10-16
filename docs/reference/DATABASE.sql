@@ -1,5 +1,13 @@
 CREATE INDEX echo_events_session ON echo_events(session,sequence);
 
+CREATE INDEX echo_memory_object ON echo_memory_claims(principal,object,sequence);
+
+CREATE UNIQUE INDEX echo_memory_single_successor ON echo_memory_claims(supersedes) WHERE supersedes IS NOT NULL;
+
+CREATE INDEX echo_memory_subject ON echo_memory_claims(principal,subject,predicate,sequence);
+
+CREATE INDEX echo_memory_visibility_claim ON echo_memory_visibility(claim,sequence);
+
 CREATE INDEX echo_operations_scope ON echo_operations(scope,identity,revision);
 
 CREATE TABLE echo_account_link_events(identity TEXT PRIMARY KEY,platform TEXT NOT NULL,subject TEXT NOT NULL,previous_principal TEXT NOT NULL,previous_revoked INTEGER NOT NULL,principal TEXT NOT NULL REFERENCES echo_principals(identity),revoked INTEGER NOT NULL CHECK(revoked IN (0,1)),actor TEXT NOT NULL,reason TEXT NOT NULL,occurred TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')));
@@ -19,6 +27,12 @@ CREATE TABLE echo_device_link_events(identity TEXT PRIMARY KEY,device TEXT NOT N
 CREATE TABLE echo_devices(device TEXT PRIMARY KEY,name TEXT NOT NULL,credential_hash TEXT NOT NULL UNIQUE,revoked INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE echo_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL, event TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, payload TEXT NOT NULL, occurred TEXT NOT NULL, previous TEXT NOT NULL, digest TEXT NOT NULL);
+
+CREATE TABLE echo_memory_claims(sequence INTEGER PRIMARY KEY AUTOINCREMENT,identity TEXT NOT NULL UNIQUE,principal TEXT NOT NULL REFERENCES echo_principals(identity),kind TEXT NOT NULL CHECK(kind IN ('semantic','episodic')),subject TEXT NOT NULL REFERENCES echo_memory_nodes(identity),predicate TEXT NOT NULL,object TEXT NOT NULL REFERENCES echo_memory_nodes(identity),evidence TEXT NOT NULL CHECK(evidence IN ('source-account','inference','tool-observation')),source_event TEXT NOT NULL REFERENCES echo_events(event),source_digest TEXT NOT NULL,event_time TEXT NOT NULL,valid_until TEXT NOT NULL,supersedes TEXT REFERENCES echo_memory_claims(identity),recorded_at TEXT NOT NULL,canonical TEXT NOT NULL);
+
+CREATE TABLE echo_memory_nodes(identity TEXT PRIMARY KEY,principal TEXT NOT NULL REFERENCES echo_principals(identity),name TEXT NOT NULL,UNIQUE(principal,name));
+
+CREATE TABLE echo_memory_visibility(sequence INTEGER PRIMARY KEY AUTOINCREMENT,identity TEXT NOT NULL UNIQUE,claim TEXT NOT NULL REFERENCES echo_memory_claims(identity),principal TEXT NOT NULL REFERENCES echo_principals(identity),previous_revision INTEGER NOT NULL CHECK(previous_revision>=0),state TEXT NOT NULL CHECK(state IN ('visible','forgotten')),reason TEXT NOT NULL,run TEXT NOT NULL REFERENCES echo_runs(run),recorded_at TEXT NOT NULL);
 
 CREATE TABLE echo_operations (identity TEXT NOT NULL, scope TEXT NOT NULL, principal TEXT NOT NULL, kind TEXT NOT NULL, request_digest TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>=0), state TEXT NOT NULL CHECK(state IN ('queued','running','uncertain','succeeded','failed')), stage TEXT NOT NULL, cause TEXT NOT NULL, effects TEXT NOT NULL CHECK(effects IN ('none','unknown','confirmed')), diagnostic TEXT NOT NULL, recovery TEXT NOT NULL, result TEXT NOT NULL, occurred TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')), PRIMARY KEY(identity,revision));
 
@@ -91,6 +105,18 @@ CREATE TRIGGER echo_device_principal AFTER INSERT ON echo_devices BEGIN INSERT I
 CREATE TRIGGER echo_events_no_delete BEFORE DELETE ON echo_events BEGIN SELECT RAISE(ABORT,'Original events are immutable'); END;
 
 CREATE TRIGGER echo_events_no_update BEFORE UPDATE ON echo_events BEGIN SELECT RAISE(ABORT,'Original events are immutable'); END;
+
+CREATE TRIGGER echo_memory_claims_no_delete BEFORE DELETE ON echo_memory_claims BEGIN SELECT RAISE(ABORT,'Memory assertion history is immutable'); END;
+
+CREATE TRIGGER echo_memory_claims_no_update BEFORE UPDATE ON echo_memory_claims BEGIN SELECT RAISE(ABORT,'Memory assertion history is immutable'); END;
+
+CREATE TRIGGER echo_memory_nodes_no_delete BEFORE DELETE ON echo_memory_nodes BEGIN SELECT RAISE(ABORT,'Memory node identity is immutable'); END;
+
+CREATE TRIGGER echo_memory_nodes_no_update BEFORE UPDATE ON echo_memory_nodes BEGIN SELECT RAISE(ABORT,'Memory node identity is immutable'); END;
+
+CREATE TRIGGER echo_memory_visibility_no_delete BEFORE DELETE ON echo_memory_visibility BEGIN SELECT RAISE(ABORT,'Memory lifecycle history is immutable'); END;
+
+CREATE TRIGGER echo_memory_visibility_no_update BEFORE UPDATE ON echo_memory_visibility BEGIN SELECT RAISE(ABORT,'Memory lifecycle history is immutable'); END;
 
 CREATE TRIGGER echo_migrations_no_delete BEFORE DELETE ON echo_schema_migrations BEGIN SELECT RAISE(ABORT,'Migration receipts are immutable'); END;
 
