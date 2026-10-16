@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T06:21:40.383108+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T06:27:59.402570+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1196,9 +1196,9 @@ Imports: ../retained_text → app/retained_text.ep, ../agent/run_messages → ap
 
 ## app/context/session_messages.ep
 
-[Source](../../app/context/session_messages.ep) · 173 lines · 11447 bytes
+[Source](../../app/context/session_messages.ep) · 173 lines · 11575 bytes
 
-SHA-256: `e7785ce816c03e7adfdae616d17f7bff75e24c8b8d13ba4141b14c6810e8e380`
+SHA-256: `e2a32b2046e90028e876a4e97cce3a352f071478e6a2401cfe0048937d67d90a`
 
 > Admin-only schemas are selected from frozen initiating authority. Dispatch
 > repeats the check; advertising a schema is never itself permission.
@@ -2833,9 +2833,9 @@ Imports: accounts → app/security/accounts.ep
 
 ## app/security/group_gate.ep
 
-[Source](../../app/security/group_gate.ep) · 32 lines · 3514 bytes
+[Source](../../app/security/group_gate.ep) · 53 lines · 5649 bytes
 
-SHA-256: `b6769b310fd8c4320486ddcf98f3be5f7a34a42029f393e400c98a4002ce4c66`
+SHA-256: `1dd08c9233883e7cc418e13df7b93a7a8f0119739216c3ddbf4c9bfb9151fa1f`
 
 > SQL expressions are supplied only by internal callers, never request data.
 > This clause supplements private ownership only for a recorded initiating run.
@@ -2843,12 +2843,29 @@ SHA-256: `b6769b310fd8c4320486ddcf98f3be5f7a34a42029f393e400c98a4002ce4c66`
 > run and tool authority. This never substitutes for those permission checks.
 > Current group workspace access is separate from private ownership. Historical
 > audience segments remain archived but cannot accept fresh workspace actions.
+> A private run keeps its existing policy. A shared privileged result requires
+> every recipient to have held admin authority when the run was admitted, with
+> unchanged role/revocation revisions now. Missing snapshots never grant access.
 
 Imports: ../archive/history → app/archive/history.ep
 
 - Line 5: `define group_run_scope_sql with database as Int and run_expression as Str and session_expression as Str and device_expression as Str returning Str:`
 - Line 16: `define group_run_session_allows with database as Int and run as Str and session as Str returning Int:`
 - Line 26: `define group_device_session_sql with database as Int and session_expression as Str and device_expression as Str returning Str:`
+- Line 37: `define group_privileged_audience_allows with database as Int and run as Str returning Int:`
+
+## app/security/group_output_policy.ep
+
+[Source](../../app/security/group_output_policy.ep) · 9 lines · 1603 bytes
+
+SHA-256: `a9ae828cdc2c66561d826e75a171c683d398d993d8bfb4d8f9445341c50c4cef`
+
+> No retrospective role snapshots: older group runs remain unable to publish
+> privileged host/rights results into a shared audience without this evidence.
+
+Imports: group_runs → app/security/group_runs.ep
+
+- Line 5: `define group_output_schema with database as Int returning Str:`
 
 ## app/security/group_runs.ep
 
@@ -3033,9 +3050,9 @@ Imports: group_gate → app/security/group_gate.ep, node_gate → app/security/n
 
 ## app/security/tool_policy.ep
 
-[Source](../../app/security/tool_policy.ep) · 52 lines · 3142 bytes
+[Source](../../app/security/tool_policy.ep) · 54 lines · 3255 bytes
 
-SHA-256: `d4acd118df02af49e941b69b3529a10ff3489b64085b376fbd0830a49a52fa94`
+SHA-256: `d7578e103c8e9784489a942825cea493dced0776adf597e6db9b301f9aefbc8e`
 
 > Classification is explicit. A newly registered name is not automatically a
 > safe tool. Dynamic tools must later obtain an independently verified manifest.
@@ -3175,16 +3192,16 @@ Imports: ../workspace/guardian_receipt → app/workspace/guardian_receipt.ep, ..
 
 ## app/tools/execution_output.ep
 
-[Source](../../app/tools/execution_output.ep) · 53 lines · 4176 bytes
+[Source](../../app/tools/execution_output.ep) · 56 lines · 4553 bytes
 
-SHA-256: `ba05206e44b2b1bf73ab8d7232cc013b07ad4e55a280f309b27d0db35f1bf9f5`
+SHA-256: `f94fc81114de77532dd3eb585797196f1c4bc9720f819c873496cfc250213390`
 
 > Traverse only original output records, excluding model requests and later
 > search/read copies. Session comes from the current run, never from arguments.
 
-Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep
+Imports: ../security/group_gate → app/security/group_gate.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep
 
-- Line 7: `define execution_output_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 8: `define execution_output_execute with database as Int and session as Str and arguments as Str returning Str:`
 
 ## app/tools/execution_tool.ep
 

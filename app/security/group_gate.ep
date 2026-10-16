@@ -30,3 +30,24 @@ define group_device_session_sql with database as Int and session_expression as S
     set clause to concat("EXISTS(SELECT 1 FROM echo_group_sessions gs JOIN echo_group_audiences ga ON ga.group_id=gs.group_id AND ga.revision=gs.revision JOIN echo_principal_devices gb ON gb.principal=ga.principal JOIN echo_devices gd ON gd.device=gb.device JOIN echo_principals gp ON gp.identity=ga.principal WHERE gs.session=" and session_expression)
     set clause to concat(clause and concat(" AND gd.device=" and device_expression))
     return concat(clause and " AND gd.revoked=0 AND gp.revoked=0 AND gs.revision=(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=gs.group_id) AND (SELECT state FROM echo_group_membership WHERE group_id=gs.group_id AND principal=ga.principal ORDER BY revision DESC LIMIT 1)='joined')")
+
+# A private run keeps its existing policy. A shared privileged result requires
+# every recipient to have held admin authority when the run was admitted, with
+# unchanged role/revocation revisions now. Missing snapshots never grant access.
+define group_privileged_audience_allows with database as Int and run as Str returning Int:
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_group_run_origins';"))
+    if archive_list_text(installed and 0) equals "end":
+        return 1
+    if not (archive_list_text(installed and 0) equals "found"):
+        return 0
+    set values to [run]
+    set origin to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_group_run_origins WHERE run=?;" and values))
+    if archive_list_text(origin and 0) equals "end":
+        return 1
+    if not (archive_list_text(origin and 0) equals "found") or else group_run_session_allows(database and run and archive_list_text(origin and 1)) equals 0:
+        return 0
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_group_run_recipients';"))
+    if not (archive_list_text(installed and 0) equals "found"):
+        return 0
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT g.run FROM echo_group_run_origins g JOIN echo_group_sessions s ON s.session=g.session WHERE g.run=?1 AND EXISTS(SELECT 1 FROM echo_group_run_recipients WHERE run=g.run) AND NOT EXISTS(SELECT 1 FROM echo_group_audiences a WHERE a.group_id=s.group_id AND a.revision=s.revision AND NOT EXISTS(SELECT 1 FROM echo_group_run_recipients v JOIN echo_principals p ON p.identity=v.principal WHERE v.run=g.run AND v.principal=a.principal AND v.role IN ('admin','steward') AND p.role=v.role AND p.revoked=0 AND v.role_revision=(SELECT COUNT(*) FROM echo_authority_events WHERE principal=v.principal) AND v.revocation_revision=(SELECT COUNT(*) FROM echo_principal_revocations WHERE principal=v.principal)));" and values))
+    return archive_list_text(row and 0) equals "found"

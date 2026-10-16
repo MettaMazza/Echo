@@ -1,0 +1,41 @@
+import "../../app/security/group_runs"
+import "../../app/tools/execution_output"
+
+# Read the retained actual live group process output on a disposable DB copy.
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else not file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    set original to history_collect_one(archive_prepare(database and "SELECT t.call_id FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run='second' AND json_extract(e.payload,'$.name')='workspace_execute';"))
+    if not (archive_list_text(original and 0) equals "found"):
+        return 2
+    set prefix to concat("{\"run_id\":\"second\",\"call_id\":" and concat(provider_quote(archive_list_text(original and 1)) and ",\"stream\":\"stdout\",\"after\":"))
+    set cursor to 0
+    set bytes to 0
+    repeat while 1 equals 1:
+        set response to execution_output_execute(database and "shared" and concat(prefix and concat(int_to_string(cursor) and "}")))
+        set tokens to provider_json_tokens(response)
+        set status to provider_value(tokens and provider_member(tokens and 0 and "status"))
+        if status equals "end":
+            break
+        if not (status equals "found"):
+            display response
+            return 3
+        set sequence to http_decimal(provider_value(tokens and provider_member(tokens and 0 and "sequence")))
+        if sequence <= cursor:
+            return 4
+        set cursor to sequence
+        set bytes to bytes + http_decimal(provider_value(tokens and provider_member(tokens and 0 and "bytes")))
+    if bytes is not equal to 26:
+        return 5
+    set arguments to concat(prefix and "0}")
+    set denied to provider_json_tokens(execution_output_execute(database and "session:private-canary" and arguments))
+    if not (provider_value(denied and provider_member(denied and 0 and "status")) equals "not-authorized"):
+        return 6
+    if not (group_change(database and "b" and "output-test-leave" and "live-group" and "device:b" and "left" and 3) equals "recorded"):
+        return 7
+    set denied to provider_json_tokens(execution_output_execute(database and "shared" and arguments))
+    if not (provider_value(denied and provider_member(denied and 0 and "status")) equals "not-authorized") or else sql_close(database) is not equal to 0:
+        return 8
+    display "PASS: complete original stdout pagination through EOF, exact 26-byte count, wrong-session denial and stale-audience denial."
+    return 0

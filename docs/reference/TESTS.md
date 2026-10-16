@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T06:21:40.383108+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T06:27:59.402570+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1666,6 +1666,30 @@ SHA-256: `e697cfa5864818805ab27e091334c07e83e7a20c714af8171b309dbd110c4531`
 Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency, ../../app/security/tool_authority → app/security/tool_authority.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
 - Line 10: `define main returning Int:`
+
+## tests/security/test_group_output_policy.ep
+
+[Source](../../tests/security/test_group_output_policy.ep) · 55 lines · 5719 bytes
+
+SHA-256: `fb33dda5d0633ddd6c02f849d05638cdc71a98fbddfcef7240808d5f722aeee0`
+
+
+Imports: ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 7: `define audience_fixture_run with database as Int and identity as Str and path as Str returning Int:`
+- Line 21: `define main returning Int:`
+
+## tests/security/test_group_output_read.ep
+
+[Source](../../tests/security/test_group_output_read.ep) · 41 lines · 2532 bytes
+
+SHA-256: `df3ec0873bd778397c1d746fc0dd1e8cff7125f903698724f090e56b8f558133`
+
+> Read the retained actual live group process output on a disposable DB copy.
+
+Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app/tools/execution_output → app/tools/execution_output.ep
+
+- Line 5: `define main returning Int:`
 
 ## tests/security/test_group_runs.ep
 
