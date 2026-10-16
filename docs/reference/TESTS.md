@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T10:09:41.163131+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:17:21.337220+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1875,15 +1875,15 @@ Imports: ../../app/security/group_route → app/security/group_route.ep, ../../a
 
 ## tests/security/test_group_output_policy.ep
 
-[Source](../../tests/security/test_group_output_policy.ep) · 102 lines · 9459 bytes
+[Source](../../tests/security/test_group_output_policy.ep) · 108 lines · 9934 bytes
 
-SHA-256: `0c2761a60d362cce852accee7838c480d5a3770bdc9d6251d9b3ccf3d381c733`
+SHA-256: `4c08ace968326bee97e28f4e8a1669ed6a69fa2c0dfaf04183e03f70b57bbc8c`
 
 
-Imports: ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/context/recap_sources → app/context/recap_sources.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+Imports: ../../app/web/export → app/web/export.ep, ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/context/recap_sources → app/context/recap_sources.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
-- Line 8: `define audience_fixture_run with database as Int and identity as Str and path as Str returning Int:`
-- Line 22: `define main returning Int:`
+- Line 9: `define audience_fixture_run with database as Int and identity as Str and path as Str returning Int:`
+- Line 23: `define main returning Int:`
 
 ## tests/security/test_group_output_read.ep
 
@@ -3018,6 +3018,17 @@ SHA-256: `267991eb44e36ff9695e339e5235035005a0bba189f6e13fe1acd7c5bf3b62c8`
 > must not be silently routed to that new segment by the browser endpoint.
 
 Imports: ../../app/web/groups → app/web/groups.ep, ../../app/security/group_output_policy → app/security/group_output_policy.ep
+
+- Line 4: `define main returning Int:`
+
+## tests/web/test_group_export.ep
+
+[Source](../../tests/web/test_group_export.ep) · 45 lines · 3882 bytes
+
+SHA-256: `1dd2ed08a01f130598c585b2d37327f7dea99139b56ef6613b0f10c88e5f82fb`
+
+
+Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../../app/web/export → app/web/export.ep
 
 - Line 4: `define main returning Int:`
 
