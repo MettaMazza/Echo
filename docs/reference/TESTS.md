@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:57:26.805173+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:03:19.944968+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -832,6 +832,19 @@ SHA-256: `49c5b6cf689e5ca1eb0487549314e22dbe2944bffc0da9ec6deca7cf7953b888`
 Imports: ../../app/context/session_messages → app/context/session_messages.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/fixtures/echo_http_client.ep
+
+[Source](../../tests/fixtures/echo_http_client.ep) · 75 lines · 4639 bytes
+
+SHA-256: `07f8f2f7df5e82a8e11df5329763cc1d93ccb089832d823254ce0975a283127c`
+
+> Loopback acceptance fixture only; credentials are supplied by its caller.
+
+Imports: ../../app/providers/local_json → app/providers/local_json.ep
+
+- Line 4: `define fixture_echo_exchange with reader as List and method as Str and port as Int and path as Str and body as Str and credential as Str and read_size as Int returning List:`
+- Line 56: `define fixture_echo_request with port as Int and path as Str and body as Str and credential as Str returning List:`
 
 ## tests/fixtures/generation_fixture.ep
 
@@ -2219,6 +2232,19 @@ Imports: ../../app/web/worker → app/web/worker.ep, fs → standard library or 
 
 - Line 6: `define main returning Int:`
 
+## tests/web/prepare_guardian_devices.ep
+
+[Source](../../tests/web/prepare_guardian_devices.ep) · 31 lines · 1685 bytes
+
+SHA-256: `d4767303ce3cfc3e3e74aae481605ba435d7b8798cf54a097691fff44659c7cc`
+
+> Host-only acceptance setup. Random credentials are written only to the
+> operator-supplied private file, never printed or embedded in the repository.
+
+Imports: ../../app/web/run_store → app/web/run_store.ep, fs → standard library or compiler dependency
+
+- Line 6: `define main returning Int:`
+
 ## tests/web/provision_crash_probe.ep
 
 [Source](../../tests/web/provision_crash_probe.ep) · 20 lines · 906 bytes
@@ -2473,6 +2499,17 @@ SHA-256: `1963298ce1e1715e1756db62075838e851878680be8ff12569e51a0dbf4a74b2`
 Imports: ../../app/web/worker → app/web/worker.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/web/test_live_guardian_server.ep
+
+[Source](../../tests/web/test_live_guardian_server.ep) · 55 lines · 3683 bytes
+
+SHA-256: `d0a1ad4432e3adcb8256ea78ee808cdd82f7ef016609229033b90fa697aac10a`
+
+
+Imports: ../fixtures/echo_http_client → tests/fixtures/echo_http_client.ep, ../../app/web/run_store → app/web/run_store.ep, fs → standard library or compiler dependency
+
+- Line 5: `define main returning Int:`
 
 ## tests/web/test_pdf_attachment.ep
 

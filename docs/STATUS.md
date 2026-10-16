@@ -49,3 +49,7 @@ The active default now uses the same local Qwen 3.8 llama.cpp model for text, im
 ## Phase Two implementation started — 16 October 2026
 
 Maria authorised the full end-to-end goal. The source integration map, requirement ledger, native backup/restore verification and separately tested transactional migration foundation are in [Phase Two progress](phase2/PROGRESS.md). Production is on schema 10 with immutable private session ownership, queued authority checks, explicit tool policy, admin host text reads cross-session source recall, private evidence-linked facts/episodes and auditable derived-memory withdrawal/restoration. The Codex-addressed handover was removed from the private prompt bundle, and the changing run identifier was removed from the stable system prefix; cache reuse was measured. Other final identity/philosophy changes still require the joint review at step 29. My Brain import was explicitly excluded; other continuity sources remain in scope. Phase Two is active, not complete.
+
+## Guardian execution update — 16 October 2026
+
+The current host now runs the guardian-backed server on schema 10. An authenticated production conversation exercised the local model, a real command, durable guardian/exit records and final reply; a second device was denied access. Temporary test credentials were revoked. A consistent pre-cutover backup and executable/prompt/browser hashes are retained privately. This update does not deploy the schema-15 emergency controls or establish completion of Phase Two.

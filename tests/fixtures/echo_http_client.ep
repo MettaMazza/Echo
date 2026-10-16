@@ -1,0 +1,75 @@
+import "../../app/providers/local_json"
+
+# Loopback acceptance fixture only; credentials are supplied by its caller.
+define fixture_echo_exchange with reader as List and method as Str and port as Int and path as Str and body as Str and credential as Str and read_size as Int returning List:
+    set wire to concat(method and concat(" " and concat(path and " HTTP/1.1\r\nHost: 127.0.0.1:")))
+    set wire to concat(wire and int_to_string(port))
+    set wire to concat(wire and concat("\r\nOrigin: http://127.0.0.1:" and int_to_string(port)))
+    set wire to concat(wire and concat("\r\nX-Echo-Token: " and credential))
+    set wire to concat(wire and "\r\nAccept: application/json\r\nContent-Type: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\nContent-Length: ")
+    set wire to concat(wire and concat(int_to_string(string_length(body)) and concat("\r\n\r\n" and body)))
+    set sent to socket_write_all(get_list(reader and 0) and get_list(reader and 1) and get_list(reader and 2) and str_to_ptr(wire) and string_length(wire))
+    if not (archive_list_text(sent and 0) equals "sent"):
+        return local_json_result(archive_list_text(sent and 0) and 0 and "")
+    set head to http_response_head(reader and method)
+    repeat while archive_list_text(head and 0) equals "ready":
+        if get_list(head and 1) >= 200:
+            break
+        set head to http_response_head(reader and method)
+    if not (archive_list_text(head and 0) equals "ready"):
+        return local_json_result(archive_list_text(head and 0) and 0 and "")
+    set code to get_list(head and 1)
+    set framed to http_body_create(archive_list_text(head and 2) and get_list(head and 3))
+    set builder to create_builder()
+    set copy to ep_dlsym(get_list(reader and 0) and "memcpy")
+    set byte to create_list()
+    set added to append_list(byte and 0)
+    if copy equals 0:
+        return local_json_result("error" and code and "")
+    repeat while 1 equals 1:
+        set piece to http_body_next(reader and framed and read_size)
+        set status to archive_list_text(piece and 0)
+        if status equals "done":
+            break
+        if not (status equals "data"):
+            return local_json_result(status and code and ptr_to_str(builder_to_string(builder)))
+        set index to 0
+        repeat while index is less than get_list(piece and 2):
+            set cleared to set_list(byte and 0 and 0)
+            set copied to ep_dlcall3(copy and get_list_data_ptr(byte) and get_list(piece and 1) + index and 1)
+            if get_list(byte and 0) equals 0:
+                return local_json_result("invalid-json" and code and ptr_to_str(builder_to_string(builder)))
+            set added to builder_append(builder and ptr_to_str(get_list_data_ptr(byte)))
+            set index to index + 1
+    set text to ptr_to_str(builder_to_string(builder))
+    if code is not equal to 200 and code is not equal to 202:
+        return local_json_result("http-error" and code and text)
+    if provider_valid_utf8(text) equals 0:
+        return local_json_result("invalid-json" and code and text)
+    set tokens to provider_json_tokens(text)
+    if tokens equals 0:
+        return local_json_result("invalid-json" and code and text)
+    if provider_unique_objects(tokens) equals 0:
+        return local_json_result("invalid-json" and code and text)
+    return local_json_result("ready" and code and text)
+
+define fixture_echo_request with port as Int and path as Str and body as Str and credential as Str returning List:
+    set method to "POST"
+    set cancellation_reader to -1
+    set read_size to 65536
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return local_json_result("platform-error" and 0 and "")
+    set connection to local_socket_connect(library and port and cancellation_reader)
+    if not (archive_list_text(connection and 0) equals "connected"):
+        set closed to ep_dlclose(library)
+        return local_json_result(archive_list_text(connection and 0) and 0 and "")
+    set descriptor to get_list(connection and 1)
+    set reader to http_stream_create(library and descriptor and cancellation_reader)
+    set result to fixture_echo_exchange(reader and method and port and path and body and credential and read_size)
+    set released to http_stream_release(reader)
+    set closed to net_close(descriptor)
+    set unloaded to ep_dlclose(library)
+    if released is not equal to 0 or else closed is not equal to 0 or else unloaded is not equal to 0:
+        return local_json_result("cleanup-error" and get_list(result and 1) and archive_list_text(result and 2))
+    return result

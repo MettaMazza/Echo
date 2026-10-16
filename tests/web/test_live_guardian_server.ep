@@ -1,0 +1,55 @@
+import "../fixtures/echo_http_client"
+import "../../app/web/run_store"
+import "fs"
+
+define main returning Int:
+    if not (get_argument_count() equals 3 or else get_argument_count() equals 4):
+        return 1
+    set credential_a to "fixture-secret-a"
+    set credential_b to "fixture-secret-b"
+    if get_argument_count() equals 4:
+        set credentials to provider_json_tokens(ptr_to_str(read_file(get_argument(3))))
+        set credential_a to provider_value(credentials and provider_member(credentials and 0 and "credential_a"))
+        set credential_b to provider_value(credentials and provider_member(credentials and 0 and "credential_b"))
+        if string_length(credential_a) equals 0 or else string_length(credential_b) equals 0:
+            return 9
+    set port to http_decimal(get_argument(1))
+    set database to archive_open(get_argument(2))
+    set identity to concat("guardian-live-" and agent_identity())
+    set marker to concat("EchoGuardian-" and agent_identity())
+    set message to concat("Acceptance test: use workspace_execute to run /bin/echo with exactly one argument, " and concat(marker and ". Read the actual command result and reply with that exact marker. Do not substitute another tool or simulate execution."))
+    set payload to concat("{\"submission\":" and provider_quote(identity))
+    set payload to concat(payload and concat(",\"message\":" and concat(provider_quote(message) and "}")))
+    set submitted to fixture_echo_request(port and "/api/runs" and payload and credential_a)
+    if not (archive_list_text(submitted and 0) equals "ready"):
+        display archive_list_text(submitted and 2)
+        return 2
+    set query to concat("{\"run\":" and concat(provider_quote(identity) and "}"))
+    set forbidden to fixture_echo_request(port and "/api/run" and query and credential_b)
+    if get_list(forbidden and 1) is not equal to 404:
+        return 3
+    display concat("Accepted live run: " and identity)
+    repeat while 1 equals 1:
+        set response to fixture_echo_request(port and "/api/run" and query and credential_a)
+        if not (archive_list_text(response and 0) equals "ready"):
+            return 4
+        set tokens to provider_json_tokens(archive_list_text(response and 2))
+        set state to provider_value(tokens and provider_member(tokens and 0 and "state"))
+        if state equals "completed":
+            if string_contains(provider_value(tokens and provider_member(tokens and 0 and "text")) and marker) equals 0:
+                return 5
+            break
+        if state equals "cancelled" or else state equals "failed":
+            display archive_list_text(response and 2)
+            return 6
+        set slept to sleep_ms(1000)
+    set values to [identity]
+    set receipts to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='execution_guardian_result' AND json_extract(payload,'$.run_id')=?;" and values))
+    set exits to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='process_finished' AND json_extract(payload,'$.run_id')=? AND json_extract(payload,'$.wait_status')='0';" and values))
+    if not (archive_list_text(receipts and 1) equals "1") or else not (archive_list_text(exits and 1) equals "1"):
+        return 7
+    set row to agent_run_read(database and identity)
+    if archive_verify(database and archive_list_text(row and 0)) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 8
+    display "PASS: authenticated HTTP submission, live local model tool call, guardian-owned command, durable exit/result, final response and foreign-device denial."
+    return 0
