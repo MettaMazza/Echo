@@ -1,6 +1,8 @@
 import "../../app/tools/tool_registry"
 import "../../app/web/run_store"
 import "fs"
+import "../../app/agent/tool_dispatch"
+import "../fixtures/generation_fixture"
 
 define main returning Int:
     if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)):
@@ -37,6 +39,41 @@ define main returning Int:
     set guest to web_submit_owned(database and "guest" and "guest-run" and "" and "Author tool.")
     if not (tool_candidate_save(database and "guest-run" and manifest) equals "not-authorized") or else not (tool_candidate_save(database and "missing" and manifest) equals "not-authorized"):
         return 8
+    if not (tool_candidate_save(database and "admin-run" and manifest) equals "discovery-evidence-required"):
+        return 20
+    set listener to local_socket_listen(0)
+    set arguments to "{\"query\":\"history_read\",\"after\":0,\"catalog_digest\":\"\"}"
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"discover\",\"function\":{\"name\":\"tool_search\",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set generated to agent_generate_local(database and "admin-run" and "discovery-request" and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    if generated is not equal to 0 or else served is not equal to 0 or else agent_tool_step(database and "admin-run") is not equal to 0:
+        return 21
+    set closed to local_socket_close(listener)
+    set manifest to ptr_to_str(string_replace(manifest and "\"discovery_receipts\": []" and "\"discovery_receipts\": [\"discovery-request:call:0:result\"]"))
+    set other to web_submit_owned(database and "admin" and "other-run" and "" and "Separate authoring run.")
+    if not (tool_candidate_save(database and "other-run" and manifest) equals "discovery-receipt-not-observed-for-run"):
+        return 22
+    set missing to ptr_to_str(string_replace(manifest and "discovery-request:call:0:result" and "nonexistent"))
+    if not (tool_candidate_save(database and "admin-run" and missing) equals "discovery-receipt-not-observed-for-run"):
+        return 23
+    set duplicate to ptr_to_str(string_replace(manifest and "\"discovery-request:call:0:result\"" and "\"discovery-request:call:0:result\",\"discovery-request:call:0:result\""))
+    if not (tool_candidate_save(database and "admin-run" and duplicate) equals "duplicate-discovery-receipt"):
+        return 24
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set set_environment to ep_dlsym(library and "setenv")
+    set old_root to ptr_to_str(get_env("ECHO_WORKSPACE_ROOT"))
+    set new_root to "/private/tmp/echo-catalog-change-only"
+    if string_length(old_root) > 0:
+        set new_root to ""
+    if ep_dlcall3(set_environment and str_to_ptr("ECHO_WORKSPACE_ROOT") and str_to_ptr(new_root) and 1) is not equal to 0:
+        return 25
+    set changed to tool_candidate_save(database and "admin-run" and manifest)
+    set restored to ep_dlcall3(set_environment and str_to_ptr("ECHO_WORKSPACE_ROOT") and str_to_ptr(old_root) and 1)
+    set released to ep_dlclose(library)
+    if not (changed equals "discovery-catalog-changed-or-result-invalid") or else restored is not equal to 0:
+        return 26
     if not (tool_candidate_save(database and "admin-run" and manifest) equals "candidate-saved-not-activated") or else not (tool_candidate_save(database and "admin-run" and manifest) equals "candidate-already-saved-not-activated"):
         return 9
     if not (tool_candidate_save(database and "admin-run" and concat(manifest and " ")) equals "version-conflict"):
@@ -54,7 +91,14 @@ define main returning Int:
     set saved to history_collect_one(archive_prepare(database and "SELECT manifest,digest,(SELECT COUNT(*) FROM echo_tool_candidates) FROM echo_tool_candidates WHERE version=1;"))
     if not (archive_list_text(saved and 1) equals manifest) or else not (archive_list_text(saved and 2) equals ep_sha256(manifest)) or else not (archive_list_text(saved and 3) equals "2"):
         return 14
+    set damaged_version to ptr_to_str(string_replace(manifest and "\"version\": 1" and "\"version\": 3"))
+    if sql_execute(database and "DROP TRIGGER echo_events_no_update; UPDATE echo_events SET payload=payload||' ' WHERE event='discovery-request:call:0:result';") is not equal to 0:
+        return 27
+    if not (tool_candidate_save(database and "admin-run" and damaged_version) equals "discovery-archive-invalid"):
+        return 28
+    if sql_execute(database and "UPDATE echo_events SET payload=substr(payload,1,length(payload)-1) WHERE event='discovery-request:call:0:result'; CREATE TRIGGER echo_events_no_update BEFORE UPDATE ON echo_events BEGIN SELECT RAISE(ABORT,'Original events are immutable'); END;") is not equal to 0:
+        return 29
     if not (principal_host_revocation(database and "revoke" and "device:admin" and 1 and "fixture") equals "recorded") or else not (tool_candidate_save(database and "admin-run" and manifest) equals "not-authorized"):
         return 15
-    display "PASS: candidate manifests persist exact bytes and hashes, reject builtin shadowing, enforce author authority, retain immutable versions, survive reopen and deny revocation. Candidates are not activated tools."
+    display "PASS: candidate manifests persist exact bytes and hashes, reject builtin shadowing, enforce author authority, retain immutable versions, survive reopen and deny revocation. Discovery requires observed same-run results, intact provenance and an unchanged catalog. Candidates are not activated tools."
     return sql_close(database)

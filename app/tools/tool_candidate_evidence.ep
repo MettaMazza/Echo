@@ -1,0 +1,44 @@
+import "tool_discovery"
+
+# Validate actual loaded-catalog observations, not model-authored assertions.
+# The caller holds its writer transaction through candidate persistence. Dormant
+# catalog coverage and semantic composition evaluation are additional gates.
+define tool_candidate_loaded_evidence with database as Int and run as Str and manifest as Str returning Str:
+    set tokens to provider_json_tokens(manifest)
+    set receipts to provider_items(tokens and provider_member(tokens and 0 and "discovery_receipts"))
+    if receipts equals 0 or else length_list(receipts) equals 0:
+        return "discovery-evidence-required"
+    set seen to create_list()
+    for each receipt in receipts:
+        set identity to provider_value(tokens and receipt)
+        for each previous in seen:
+            if ptr_to_str(previous) equals identity:
+                return "duplicate-discovery-receipt"
+        set added to append_list(seen and identity)
+        set values to create_list()
+        set added to append_list(values and run)
+        set added to append_list(values and identity)
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT t.session,q.payload,e.payload,t.call_id,t.request_event FROM echo_tool_calls t JOIN echo_runs r ON r.run=t.run AND r.session=t.session JOIN echo_events q ON q.event=t.request_event AND q.session=t.session JOIN echo_events e ON e.event=t.result_event AND e.session=t.session WHERE t.run=?1 AND t.result_event=?2 AND t.state='observed' AND q.kind='tool_call' AND e.kind='tool_result' AND q.sequence<e.sequence;" and values))
+        if not (archive_list_text(row and 0) equals "found"):
+            return "discovery-receipt-not-observed-for-run"
+        if tool_policy_allows(database and run and archive_list_text(row and 4) and "tool_search") equals 0:
+            return "discovery-authority-changed"
+        if archive_verify(database and archive_list_text(row and 1)) is not equal to 0:
+            return "discovery-archive-invalid"
+        set request to provider_json_tokens(archive_list_text(row and 2))
+        if not (provider_value(request and provider_member(request and 0 and "name")) equals "tool_search") or else not (provider_value(request and provider_member(request and 0 and "run_id")) equals run) or else not (provider_value(request and provider_member(request and 0 and "call_id")) equals archive_list_text(row and 4)):
+            return "discovery-request-mismatch"
+        set arguments to provider_value(request and provider_member(request and 0 and "arguments"))
+        set replayed to tool_discovery_snapshot(database and run and arguments)
+        set replay_tokens to provider_json_tokens(replayed)
+        set status to provider_value(replay_tokens and provider_member(replay_tokens and 0 and "status"))
+        if not (status equals "found" or else status equals "end"):
+            return "discovery-catalog-unavailable"
+        set result_text to archive_list_text(row and 3)
+        set result to provider_json_tokens(result_text)
+        if not (provider_value(result and provider_member(result and 0 and "run_id")) equals run) or else not (provider_value(result and provider_member(result and 0 and "call_id")) equals archive_list_text(row and 4)) or else not (provider_value(result and provider_member(result and 0 and "request_event")) equals archive_list_text(row and 5)):
+            return "discovery-result-mismatch"
+        set original to agent_json_source(result_text and result and provider_member(result and 0 and "result"))
+        if not (original equals replayed):
+            return "discovery-catalog-changed-or-result-invalid"
+    return "loaded-discovery-verified"

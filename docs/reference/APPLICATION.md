@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T10:45:00.254905+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:49:05.032724+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -3563,6 +3563,20 @@ Imports: memory_tools → app/tools/memory_tools.ep
 
 - Line 5: `define scratchpad_execute with database as Int and run as Str and arguments as Str returning Str:`
 
+## app/tools/tool_candidate_evidence.ep
+
+[Source](../../app/tools/tool_candidate_evidence.ep) · 44 lines · 3685 bytes
+
+SHA-256: `7e97c847f63971f6f2ce421fef17c3f6d384edb4c4cc5fb2f4a2518a1c4e5b12`
+
+> Validate actual loaded-catalog observations, not model-authored assertions.
+> The caller holds its writer transaction through candidate persistence. Dormant
+> catalog coverage and semantic composition evaluation are additional gates.
+
+Imports: tool_discovery → app/tools/tool_discovery.ep
+
+- Line 6: `define tool_candidate_loaded_evidence with database as Int and run as Str and manifest as Str returning Str:`
+
 ## app/tools/tool_discovery.ep
 
 [Source](../../app/tools/tool_discovery.ep) · 58 lines · 4044 bytes
@@ -3580,9 +3594,9 @@ Imports: ../context/session_messages → app/context/session_messages.ep
 
 ## app/tools/tool_registry.ep
 
-[Source](../../app/tools/tool_registry.ep) · 114 lines · 7332 bytes
+[Source](../../app/tools/tool_registry.ep) · 118 lines · 7573 bytes
 
-SHA-256: `ab380189dbf6faee02ba96944ef40349be54daec2f94ab10fc50376cbc629bf7`
+SHA-256: `39cdfd72cf270e77c397d17a4018372c076ab331f0d8386f24d564f0e17f6b09`
 
 > Candidate persistence is not registration or execution authority. Evaluation,
 > dependency verification and activation consume these immutable exact bytes.
@@ -3590,12 +3604,12 @@ SHA-256: `ab380189dbf6faee02ba96944ef40349be54daec2f94ab10fc50376cbc629bf7`
 > The authoring run owns its draft. Exact retries preserve its original receipt;
 > changed bytes require a new version. No evaluator claim is trusted here.
 
-Imports: ../security/group_speech → app/security/group_speech.ep, ../security/tool_policy → app/security/tool_policy.ep, ../providers/archived_stream → app/providers/archived_stream.ep
+Imports: ../security/group_speech → app/security/group_speech.ep, ../security/tool_policy → app/security/tool_policy.ep, ../providers/archived_stream → app/providers/archived_stream.ep, tool_candidate_evidence → app/tools/tool_candidate_evidence.ep
 
-- Line 7: `define tool_registry_schema with database as Int returning Str:`
-- Line 13: `define tool_candidate_name_valid with name as Str returning Int:`
-- Line 25: `define tool_candidate_manifest_valid with manifest as Str returning Int:`
-- Line 86: `define tool_candidate_save with database as Int and run as Str and manifest as Str returning Str:`
+- Line 8: `define tool_registry_schema with database as Int returning Str:`
+- Line 14: `define tool_candidate_name_valid with name as Str returning Int:`
+- Line 26: `define tool_candidate_manifest_valid with manifest as Str returning Int:`
+- Line 87: `define tool_candidate_save with database as Int and run as Str and manifest as Str returning Str:`
 
 ## app/tools/workspace_tools.ep
 
