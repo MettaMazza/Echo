@@ -36,11 +36,11 @@ define web_group_list with database as Int and device as Str returning Str:
     if string_length(principal) equals 0:
         return "{\"status\":\"not-found\"}"
     set values to [principal]
-    set statement to checkpoint_prepare(database and "SELECT json_object('group',g.identity,'creator',g.creator,'state',m.state,'revision',(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity)) FROM echo_groups g JOIN echo_group_membership m ON m.group_id=g.identity AND m.principal=?1 WHERE g.platform='browser' AND g.server='local' AND g.channel=g.identity AND m.revision=(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity AND principal=?1) AND m.state IN ('joined','invited') ORDER BY g.identity;" and values)
+    set statement to checkpoint_prepare(database and "SELECT json_object('group',g.identity,'creator',g.creator,'state',m.state,'revision',(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity),'members',json(CASE WHEN m.state='joined' THEN (SELECT json_group_array(json_object('principal',v.principal,'state',v.state)) FROM echo_group_membership v WHERE v.group_id=g.identity AND v.revision=(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity AND principal=v.principal) AND v.state IN ('joined','invited')) ELSE '[]' END)) FROM echo_groups g JOIN echo_group_membership m ON m.group_id=g.identity AND m.principal=?1 WHERE g.platform='browser' AND g.server='local' AND g.channel=g.identity AND m.revision=(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity AND principal=?1) AND m.state IN ('joined','invited') ORDER BY g.identity;" and values)
     if statement equals 0:
         return "{\"status\":\"database-error\"}"
     set builder to create_builder()
-    set added to builder_append(builder and "{\"status\":\"found\",\"groups\":[")
+    set added to builder_append(builder and concat("{\"status\":\"found\",\"principal\":" and concat(provider_quote(principal) and ",\"groups\":[")))
     set count to 0
     repeat while 1 equals 1:
         set step to ep_sqlite3_step(statement)
@@ -79,7 +79,11 @@ define web_group_manage with database as Int and device as Str and action as Str
             set route to group_route(database and device and identity and "browser" and "local" and identity)
             set status to archive_list_text(route and 0)
             if status equals "routed":
-                return concat("{\"status\":\"routed\",\"session\":" and concat(provider_quote(archive_list_text(route and 1)) and concat(",\"revision\":" and concat(archive_list_text(route and 2) and "}"))))
+                set values to [archive_list_text(route and 1)]
+                set latest to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE((SELECT r.run FROM echo_runs r JOIN echo_events e ON e.event=r.objective_event WHERE r.session=?1 ORDER BY e.sequence DESC LIMIT 1),'');" and values))
+                if not (archive_list_text(latest and 0) equals "found"):
+                    return "{\"status\":\"database-error\"}"
+                return concat("{\"status\":\"routed\",\"session\":" and concat(provider_quote(archive_list_text(route and 1)) and concat(",\"revision\":" and concat(archive_list_text(route and 2) and concat(",\"run\":" and concat(provider_quote(archive_list_text(latest and 1)) and "}"))))))
         else if action equals "change":
             if web_group_fields(tokens and ["group","operation","member","state","previous"]) equals 0:
                 return "{\"status\":\"invalid-request\"}"
@@ -92,7 +96,7 @@ define web_group_manage with database as Int and device as Str and action as Str
     return concat("{\"status\":" and concat(provider_quote(status) and "}"))
 
 define web_group_submit with database as Int and device as Str and tokens as List returning List:
-    if web_group_ready(database) equals 0 or else web_group_fields(tokens and ["group","submission","message","attachments"]) equals 0:
+    if web_group_ready(database) equals 0 or else web_group_fields(tokens and ["group","submission","message","attachments","session"]) equals 0:
         return web_submit_result("invalid-request" and "" and "" and 0)
     set group to provider_member(tokens and 0 and "group")
     set submission to provider_member(tokens and 0 and "submission")
@@ -115,6 +119,15 @@ define web_group_submit with database as Int and device as Str and tokens as Lis
                 return web_submit_result("invalid-request" and "" and "" and 0)
             set added to append_list(attachments and provider_value(tokens and item))
             set index to index + 1
+    set expected to provider_member(tokens and 0 and "session")
+    if expected is not equal to -1:
+        if not (provider_kind(tokens and expected) equals "string"):
+            return web_submit_result("invalid-request" and "" and "" and 0)
+        set session to provider_value(tokens and expected)
+        set status to group_run_submit_attachments(database and device and provider_value(tokens and submission) and session and "browser" and "local" and identity and provider_value(tokens and message) and attachments)
+        if status equals "accepted" or else status equals "already-accepted":
+            return web_submit_result("accepted" and session and provider_value(tokens and submission) and status equals "accepted")
+        return web_submit_result(status and "" and "" and 0)
     set result to group_route_submit_files(database and device and identity and "browser" and "local" and identity and provider_value(tokens and submission) and provider_value(tokens and message) and attachments)
     set status to archive_list_text(result and 0)
     if status equals "accepted" or else status equals "already-accepted":

@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T08:36:34.586895+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:47:50.366703+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -2516,6 +2516,21 @@ Imports: ../../app/web/run_store → app/web/run_store.ep
 
 - Line 3: `define main returning Int:`
 
+## tests/web/group_controls_browser.ep
+
+[Source](../../tests/web/group_controls_browser.ep) · 11 lines · 535 bytes
+
+SHA-256: `96cec0e19589676cc9819a56ed98af1d32247dc8831b7b7056630d0668cdcb56`
+
+> Link after client.ep with its main renamed to echo_application_main.
+> Use only the disposable database seeded by test_group_controls PATH seed.
+> Separate tabs hold independent runtime credentials; this fixture clears the
+> test origin's storage on load and is never an installable production client.
+
+Imports:
+
+- Line 5: `define main:`
+
 ## tests/web/group_speaker_browser.ep
 
 [Source](../../tests/web/group_speaker_browser.ep) · 23 lines · 1435 bytes
@@ -2798,6 +2813,19 @@ SHA-256: `fc1b0274e9bb845f127d371a1148babc2f1eea45d20cba46605e162c924c2e97`
 Imports: ../fixtures/echo_http_client → tests/fixtures/echo_http_client.ep, ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/web/groups → app/web/groups.ep, ../../app/web/worker → app/web/worker.ep
 
 - Line 7: `define main returning Int:`
+
+## tests/web/test_group_controls.ep
+
+[Source](../../tests/web/test_group_controls.ep) · 66 lines · 5156 bytes
+
+SHA-256: `f90b769a0d7da3e35746faf78f389e3837c859461c8b05a2177026a7b6656a01`
+
+> Even an invitation changes the frozen audience revision. A prepared draft
+> must not be silently routed to that new segment by the browser endpoint.
+
+Imports: ../../app/web/groups → app/web/groups.ep, ../../app/security/group_output_policy → app/security/group_output_policy.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/web/test_history_pages.ep
 

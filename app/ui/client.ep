@@ -71,7 +71,7 @@ define echo_busy with busy:
     set fresh.disabled to busy
     set picker to document.getElementById("provider-picker")
     if picker:
-        set picker.disabled to busy || not (not window.localStorage.getItem("echo.pending"))
+        set picker.disabled to busy || window.echoGroup || not (not window.localStorage.getItem("echo.pending"))
     set stop_button to document.getElementById("stop")
     set stop_button.disabled to window.echoReadOnly || not (window.echoCanStop && window.echoRun && window.echoToken)
     set retry_button to document.getElementById("retry")
@@ -80,7 +80,7 @@ define echo_busy with busy:
     set revision_button.hidden to not window.localStorage.getItem("echo.revision.pending")
     set revision_button.disabled to busy || not window.echoToken || not (not window.localStorage.getItem("echo.pending"))
     set export_button to document.getElementById("export-session")
-    set export_button.disabled to not window.echoToken || not window.echoSession
+    set export_button.disabled to not window.echoToken || not window.echoSession || window.echoGroup
     set attachment_input to document.getElementById("attachment-file")
     set attachment_input.disabled to busy || not window.echoToken
     for each file_checkbox in document.querySelectorAll(".attachment-file_checkbox"):
@@ -311,7 +311,7 @@ define echo_revision_start with message and mode and text:
     else:
         set query.identity to window.crypto.randomUUID()
         set picker to document.getElementById("provider-picker")
-        if picker && picker.value:
+        if picker && picker.value && not window.echoGroup:
             set query.provider to picker.value
         window.localStorage.setItem("echo.revision.pending" and JSON.stringify(query))
     echo_busy(true)
@@ -523,10 +523,11 @@ define echo_render_message with message:
     article.appendChild(text)
     article.appendChild(echo_copy_message(message))
     if message.role == "assistant":
-        article.appendChild(echo_branch_button(message))
-        article.appendChild(echo_regenerate_button(message))
-        article.appendChild(echo_speak_button(message and article))
-    else:
+        if not window.echoGroup:
+            article.appendChild(echo_branch_button(message))
+            article.appendChild(echo_regenerate_button(message))
+            article.appendChild(echo_speak_button(message and article))
+    else if not window.echoGroup:
         article.appendChild(echo_edit_button(message))
     for each file in message.attachments || Array():
         if file.media_type && file.media_type.slice(0 and 6) == "audio/":
@@ -600,6 +601,8 @@ define echo_history_render with result and before and marker:
         set older.disabled to false
         set welcome.hidden to transcript.childElementCount > 0
         set session_label.textContent to "Current conversation"
+        if window.echoGroup:
+            set session_label.textContent to "Shared · " + window.echoGroup
         if before != "0":
             set workspace.scrollTop to previous_top + workspace.scrollHeight - previous_height
         else if window.echoFollowLatest:
@@ -678,6 +681,8 @@ define echo_open_session with session:
         echo_note("Resolve the interrupted submission before changing conversations.")
         return 0
     set window.echoFollowLatest to true
+    set window.echoGroup to session.group || ""
+    window.localStorage.setItem("echo.group" and window.echoGroup)
     set window.echoSession to session.session
     set input to document.getElementById("message")
     set input.value to window.localStorage.getItem("echo.composer:" + session.session) || ""
@@ -904,9 +909,9 @@ define echo_poll:
         if result.status != "found":
             return Promise.reject(result.status)
         set window.echoCompactionUnknownRun to ""
-        set window.echoCanStop to result.state != "completed" && result.state != "cancelled" && result.state != "failed"
+        set window.echoCanStop to result.can_control != false && result.state != "completed" && result.state != "cancelled" && result.state != "failed"
         set window.echoRetryWorker to ""
-        if result.retry_allowed:
+        if result.retry_allowed && result.can_control != false:
             set window.echoRetryWorker to result.worker
         if result.state == "completed":
             echo_clear_draft()
@@ -923,7 +928,7 @@ define echo_poll:
             echo_busy(false)
         else if result.worker_status != "running" && result.worker_status != "not-started":
             echo_note("Run needs attention: " + result.worker_status)
-            if result.retry_allowed:
+            if result.retry_allowed && result.can_control != false:
                 echo_note("Run paused: " + result.worker_status + ". Retry continues this task from saved work.")
             echo_history()
             echo_busy(false)
@@ -990,6 +995,13 @@ define echo_draft:
         return 0
     )
 
+# A saved shared submission always returns to its recorded group and segment.
+# Provider selection belongs to private chats until shared-provider policy exists.
+define echo_submit_payload with payload:
+    if payload.group:
+        return echo_api("/api/group-submit" and payload)
+    return echo_api("/api/runs" and payload)
+
 # Reuse the durable submission identity to reconcile a lost response. Never
 # discard a newer composer draft or invent a second submission for old work.
 define echo_reconcile_pending:
@@ -999,13 +1011,15 @@ define echo_reconcile_pending:
     set saved to JSON.parse(pending)
     echo_busy(true)
     echo_note("Checking the earlier submission; your new draft is kept…")
-    return echo_api("/api/runs" and saved).then(given result:
+    return echo_submit_payload(saved).then(given result:
         if result.status != "accepted":
             return Promise.reject(result.status)
         set input to document.getElementById("message")
         window.localStorage.removeItem("echo.composer:" + (saved.session || "new"))
         if input.value == saved.message:
             set input.value to ""
+        set window.echoGroup to saved.group || ""
+        window.localStorage.setItem("echo.group" and window.echoGroup)
         set window.echoSession to result.session
         set window.echoRun to result.run
         window.localStorage.setItem("echo.session" and result.session)
@@ -1047,14 +1061,16 @@ define echo_send with event:
         set payload.message to text
         set payload.session to window.echoSession || ""
         set payload.attachments to echo_selected_files()
+        if window.echoGroup:
+            set payload.group to window.echoGroup
         set picker to document.getElementById("provider-picker")
-        if picker && picker.value:
+        if picker && picker.value && not window.echoGroup:
             set payload.provider to picker.value
         window.localStorage.setItem("echo.pending" and JSON.stringify(payload))
     set window.echoFollowLatest to true
     echo_busy(true)
     echo_note("Saving your message…")
-    set sent to echo_api("/api/runs" and payload).then(given result:
+    set sent to echo_submit_payload(payload).then(given result:
         if result.status != "accepted":
             return Promise.reject(result.status)
         set window.echoSession to result.session
@@ -1084,6 +1100,8 @@ define echo_new_chat with event:
     if not window.echoReadOnly && window.localStorage.getItem("echo.pending"):
         echo_note("Resolve the interrupted submission before starting a new conversation.")
         return 0
+    set window.echoGroup to ""
+    window.localStorage.removeItem("echo.group")
     set window.echoSession to ""
     set input to document.getElementById("message")
     set input.value to window.localStorage.getItem("echo.composer:new") || ""
@@ -1151,6 +1169,7 @@ define echo_pair with event:
         set invitation.value to ""
         # A new identity must not inherit the previous identity's selected work.
         window.localStorage.removeItem("echo.session")
+        window.localStorage.removeItem("echo.group")
         window.localStorage.removeItem("echo.run")
         window.localStorage.removeItem("echo.pending")
         window.localStorage.removeItem("echo.session-create")
@@ -2282,6 +2301,7 @@ define main:
     set window.echoBusy to false
     set window.echoRetryWorker to ""
     set window.echoToken to window.localStorage.getItem("echo.credential") || ""
+    set window.echoGroup to window.localStorage.getItem("echo.group") || ""
     set window.echoSession to window.localStorage.getItem("echo.session") || ""
     set window.echoRun to window.localStorage.getItem("echo.run") || ""
     set input to document.getElementById("message")
@@ -2418,6 +2438,8 @@ define main:
         echo_history()
         echo_poll()
         echo_sessions()
+        echo_groups_setup()
+        echo_groups_refresh()
         if not window.echoReadOnly:
             echo_provider_picker()
     )
@@ -2531,4 +2553,182 @@ define echo_provider_refresh with identity:
         if window.echoProviderDetailsIdentity == identity && details:
             set details.textContent to "Selected model details unavailable: " + error
     )
+    return 0
+
+# Shared conversation selection, explicit invitations and membership controls.
+define echo_group_action with path and payload and button:
+    if window.echoReadOnly || window.echoBusy || window.echoUploading || window.localStorage.getItem("echo.pending"):
+        echo_note("Finish or resolve the current submission before changing groups.")
+        return Promise.resolve(null)
+    set button.disabled to true
+    set request to echo_api(path and payload).then(given result:
+        echo_groups_refresh()
+        set button.disabled to false
+        echo_note("Group updated. Open the group to use its current membership.")
+        return result
+    )
+    set catcher to get_list(request and "catch")
+    catcher.call(request and given error:
+        set button.disabled to false
+        echo_note("Group change failed: " + error + ". Retry keeps the same operation; refresh to see current membership.")
+    )
+    return request
+
+define echo_group_member_button with group and member and state and title:
+    set button to document.createElement("button")
+    set button.type to "button"
+    set button.textContent to title
+    set button.disabled to window.echoReadOnly
+    set payload to Object()
+    set payload.group to group.group
+    set payload.operation to window.crypto.randomUUID()
+    set payload.member to member
+    set payload.state to state
+    set payload.previous to group.revision
+    button.addEventListener("click" and given ignored:
+        echo_group_action("/api/group-change" and payload and button)
+    )
+    return button
+
+define echo_group_open with group:
+    if window.echoBusy || window.echoUploading || window.localStorage.getItem("echo.pending"):
+        echo_note("Finish or resolve the current submission before changing conversations.")
+        return 0
+    set query to Object()
+    set query.group to group.group
+    set pending to echo_api("/api/group-open" and query).then(given result:
+        if result.status != "routed":
+            return Promise.reject(result.status)
+        set result.group to group.group
+        echo_open_session(result)
+        echo_note("Shared with this group’s current members. Membership changes start a new segment; earlier records stay saved.")
+        return 0
+    )
+    echo_catch(pending)
+    return 0
+
+define echo_group_row with group and principal:
+    set row to document.createElement("details")
+    set title to document.createElement("summary")
+    set title.textContent to group.group
+    if group.state == "invited":
+        set title.textContent to group.group + " · Invitation"
+    row.appendChild(title)
+    if group.state == "invited":
+        row.appendChild(echo_group_member_button(group and principal and "joined" and "Accept invitation"))
+        row.appendChild(echo_group_member_button(group and principal and "left" and "Decline"))
+        return row
+    set open_button to document.createElement("button")
+    set open_button.type to "button"
+    set open_button.textContent to "Open shared conversation"
+    set open_button.disabled to window.echoReadOnly
+    open_button.addEventListener("click" and given ignored:
+        echo_group_open(group)
+    )
+    row.appendChild(open_button)
+    set members to document.createElement("ul")
+    for each member in group.members || Array():
+        set item to document.createElement("li")
+        set label to document.createElement("span")
+        set label.textContent to member.principal + " · " + member.state
+        item.appendChild(label)
+        if group.creator == principal && member.principal != principal:
+            item.appendChild(echo_group_member_button(group and member.principal and "removed" and "Remove"))
+        members.appendChild(item)
+    row.appendChild(members)
+    set invite_form to document.createElement("form")
+    set label to document.createElement("label")
+    set label.textContent to "Invite by principal ID"
+    set input to document.createElement("input")
+    set input.type to "text"
+    set input.required to true
+    label.appendChild(input)
+    invite_form.appendChild(label)
+    set invite to document.createElement("button")
+    set invite.type to "submit"
+    set invite.textContent to "Invite"
+    set invite.disabled to window.echoReadOnly
+    invite_form.appendChild(invite)
+    set pending to null
+    invite_form.addEventListener("submit" and given event:
+        event.preventDefault()
+        if not pending:
+            set pending to Object()
+            set pending.group to group.group
+            set pending.operation to window.crypto.randomUUID()
+            set pending.member to input.value.trim()
+            set pending.state to "invited"
+            set pending.previous to group.revision
+        if pending.member != input.value.trim():
+            echo_note("Retry the original invitation or refresh before changing its recipient.")
+            return 0
+        echo_group_action("/api/group-change" and pending and invite)
+    )
+    row.appendChild(invite_form)
+    row.appendChild(echo_group_member_button(group and principal and "left" and "Leave group"))
+    return row
+
+define echo_groups_refresh:
+    set list to document.getElementById("group-list")
+    if not list || not window.echoToken:
+        return 0
+    set request to echo_api("/api/groups" and Object()).then(given result:
+        if result.status != "found":
+            return Promise.reject(result.status)
+        set list.textContent to ""
+        set identity to document.createElement("p")
+        set identity.textContent to "Your principal ID: " + result.principal
+        list.appendChild(identity)
+        for each group in result.groups:
+            list.appendChild(echo_group_row(group and result.principal))
+        if result.groups.length == 0:
+            set empty to document.createElement("p")
+            set empty.textContent to "No shared conversations or invitations yet."
+            list.appendChild(empty)
+        return 0
+    )
+    set catcher to get_list(request and "catch")
+    catcher.call(request and given error:
+        set list.textContent to "Shared conversations unavailable: " + error
+    )
+    return 0
+
+define echo_groups_setup:
+    if document.getElementById("group-list"):
+        return 0
+    set panel to document.createElement("details")
+    set title to document.createElement("summary")
+    set title.textContent to "Shared conversations"
+    panel.appendChild(title)
+    set refresh to document.createElement("button")
+    set refresh.type to "button"
+    set refresh.textContent to "Refresh groups and invitations"
+    refresh.addEventListener("click" and echo_groups_refresh)
+    panel.appendChild(refresh)
+    set form to document.createElement("form")
+    set label to document.createElement("label")
+    set label.textContent to "New group name (unique on this Mac)"
+    set name to document.createElement("input")
+    set name.type to "text"
+    set name.required to true
+    label.appendChild(name)
+    form.appendChild(label)
+    set create_button to document.createElement("button")
+    set create_button.type to "submit"
+    set create_button.textContent to "Create group"
+    set create_button.disabled to window.echoReadOnly
+    form.appendChild(create_button)
+    form.addEventListener("submit" and given event:
+        event.preventDefault()
+        set payload to Object()
+        set payload.group to name.value.trim()
+        if not payload.group:
+            return 0
+        echo_group_action("/api/group-create" and payload and create_button)
+    )
+    panel.appendChild(form)
+    set list to document.createElement("div")
+    set list.id to "group-list"
+    panel.appendChild(list)
+    document.getElementById("history-sidebar").appendChild(panel)
     return 0

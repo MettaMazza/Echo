@@ -1,16 +1,16 @@
 # Shared browser HTTP integration
 
-This is candidate implementation, not a deployed group interface. The production archive remains schema 10. A separately seeded schema-20 archive and isolated server are used for acceptance. The server source now accepts archive versions through 20; it does not migrate production automatically.
+This is candidate implementation with live browser evidence, not a deployed group interface. The production archive remains schema 10. A separately seeded schema-20 archive and isolated server are used for acceptance. The server source now accepts archive versions through 20; it does not migrate production automatically.
 
 All endpoints use the existing bearer-device authentication and exact Origin/Host checks. Browser-created groups use the fixed `browser` / `local` namespace; the channel identifier equals the group identifier. Request data cannot select Discord or another connector's namespace. Membership grants no administrator role.
 
 | Endpoint | Request | Behavior |
 |---|---|---|
 | `/api/group-create` | `group` | Create an idempotent group owned by the authenticated principal. |
-| `/api/groups` | Empty object | List only this principal's joined groups and invitations, with current revision. |
+| `/api/groups` | Empty object | List only this principal's joined groups and invitations, with current revision and caller principal. Joined members see the current joined/invited roster; invitees receive no roster. |
 | `/api/group-change` | `group`, `operation`, `member`, `state`, `previous` | Apply an exact-retry membership change against the current revision. An invitation does not grant access; the invited principal accepts their own join. Creator removal and self-departure retain immutable history. |
-| `/api/group-open` | `group` | Resolve/create the segment for the current audience. |
-| `/api/group-submit` | `group`, `submission`, `message`, optional `attachments` | Bind sender, selected sources and current audience; claim and launch the normal isolated worker. |
+| `/api/group-open` | `group` | Resolve/create the segment for the current audience and report its latest run. |
+| `/api/group-submit` | `group`, `submission`, `message`, optional `attachments`, optional `session` | Bind sender, selected sources and current audience; claim and launch the normal isolated worker. The UI supplies its selected session, so membership changes reject a prepared draft rather than silently rerouting it. |
 
 The existing session, status, progress, trace and compaction routes admit authenticated recorded group members. Read transactions keep the audience check and returned text in one database snapshot. Attachment routes use the independently tested group scope. Private ownership checks remain separate; branch/revise/export behavior is not implicitly widened by this change.
 
@@ -18,4 +18,6 @@ Only the exact initiating device may claim, retry or cancel a shared run. Being 
 
 A ready run with a saved cancellation request and no worker claim now becomes cancelled without starting inference. Running workers retain their normal cancellation monitor; this path does not declare an active process stopped.
 
-Browser transcripts now expose immutable recorded_sender metadata for shared user messages; the renderer displays the recorded principal as literal text. Private messages retain the You label and Echo replies retain Echo. Native tests cover spoofed text, principal relinking and private-history compatibility; an actual browser fixture covers sender labels and literal markup. The frontend group picker, invitation controls, historical segment navigation and membership-change experience remain to be built and tested. Discord delivery, shared export/revision semantics, repeated group compaction and physical-device acceptance remain separate requirements.
+Browser transcripts now expose immutable recorded_sender metadata for shared user messages; the renderer displays the recorded principal as literal text. Private messages retain the You label and Echo replies retain Echo. Native tests cover spoofed text, principal relinking and private-history compatibility; an actual browser fixture covers sender labels and literal markup. The candidate sidebar now creates groups, lists invitations, accepts/declines them, lists members, invites by principal ID, removes members as creator, leaves and opens current shared segments. Group selection is persisted separately from private conversations; saved submissions select the original group endpoint and retain their session. Native tests and an actual two-principal browser/model exchange pass. The status response exposes can_control; another member can observe without receiving Stop or Retry controls. Private-only branch/edit/export/speech controls are withheld for group sessions until shared semantics are implemented. Historical segment navigation, automatic discovery of newly started shared runs, stale pending submission recovery after membership changes and the remaining shared-media/revision experience are not finished. Discord delivery, shared export/revision semantics, repeated group compaction and physical-device acceptance remain separate requirements.
+
+Reproduce the disposable browser fixture by seeding a new archive with `test_group_controls PATH seed`, renaming client.ep main to echo_application_main, appending tests/web/group_controls_browser.ep and emitting JavaScript. Use only a separate test origin/server; the fixture clears that origin’s storage and supplies synthetic credentials. Open / as a and /#b as b. This fixture is never a production client. Evidence is retained privately in evidence/phase2/group-controls-verification.json and group-controls-browser-receipt.sqlite.
