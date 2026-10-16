@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:44:41.069039+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:48:43.028321+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -2786,6 +2786,19 @@ SHA-256: `6f6c4709d05f4229fb7896985623e3e228a0f397ed615e09ce29d4ab5da18282`
 Imports: ../../app/workspace/native_process → app/workspace/native_process.ep, ../../app/workspace/files → app/workspace/files.ep, fs → standard library or compiler dependency
 
 - Line 5: `define main returning Int:`
+
+## tests/workspace/test_process_guard.ep
+
+[Source](../../tests/workspace/test_process_guard.ep) · 50 lines · 2645 bytes
+
+SHA-256: `844ffa8e42a1937d4734401133fc670d0ff3681915cf4917ab95170615d86561`
+
+> The owner deliberately SIGKILLs itself only after the guardian's real child
+> is running. An external test driver checks the guardian's waitpid receipt.
+
+Imports: ../../app/workspace/process_guard → app/workspace/process_guard.ep, ../../app/workspace/files → app/workspace/files.ep, fs → standard library or compiler dependency
+
+- Line 7: `define main returning Int:`
 
 ## tests/workspace/test_process_journal.ep
 

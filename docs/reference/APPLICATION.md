@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:44:41.069039+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:48:43.028321+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -4149,9 +4149,9 @@ Imports: ../retained_text → app/retained_text.ep, ../archive/file_stage → ap
 
 ## app/workspace/native_process.ep
 
-[Source](../../app/workspace/native_process.ep) · 134 lines · 7195 bytes
+[Source](../../app/workspace/native_process.ep) · 141 lines · 7795 bytes
 
-SHA-256: `5196ee60d40d682543f47074e36e36020a67918f816b16557b7a3ad32b332df5`
+SHA-256: `2cb09774808f93521dc41819feecbfbc49fcad937b0858bfbbd2573dc9051cbd`
 
 > Host-only Darwin process primitive. Callers supply explicit argv/environment,
 > already opened output descriptors, and a working-directory descriptor.
@@ -4159,6 +4159,8 @@ SHA-256: `5196ee60d40d682543f47074e36e36020a67918f816b16557b7a3ad32b332df5`
 > The command tool must launch through the separately qualified sandbox.
 > Stdout/stderr go directly to owned descriptors, without a string buffer cap.
 > Handle fields: library, child PID, reaped flag, raw wait status.
+> A trusted guardian may inherit only this private owner-liveness descriptor as
+> fd 3. Ordinary commands keep the original no-extra-descriptor contract.
 > CLOEXEC_DEFAULT closes every unmentioned descriptor. A new process group
 > allows cancellation of ordinary descendants, not just their parent.
 > 0 running, 1 reaped, -1 error. Owner calls until reaped, then closes handle.
@@ -4168,9 +4170,10 @@ SHA-256: `5196ee60d40d682543f47074e36e36020a67918f816b16557b7a3ad32b332df5`
 Imports: ../retained_text → app/retained_text.ep, ../transport/socket_read → app/transport/socket_read.ep
 
 - Line 10: `define workspace_process_start with executable as Str and arguments as List and environment as List and directory as Int and output as Int and errors as Int returning List:`
-- Line 96: `define workspace_process_poll with handle as List returning Int:`
-- Line 120: `define workspace_process_signal with handle as List and signal as Int returning Int:`
-- Line 129: `define workspace_process_close with handle as List returning Int:`
+- Line 15: `define workspace_process_start_owned with executable as Str and arguments as List and environment as List and directory as Int and output as Int and errors as Int and owner as Int returning List:`
+- Line 103: `define workspace_process_poll with handle as List returning Int:`
+- Line 127: `define workspace_process_signal with handle as List and signal as Int returning Int:`
+- Line 136: `define workspace_process_close with handle as List returning Int:`
 
 ## app/workspace/output_archive.ep
 
@@ -4189,6 +4192,22 @@ Imports: ../retained_text → app/retained_text.ep, ../agent/tool_ledger → app
 - Line 6: `external define peek_byte with pointer and offset returning Int`
 - Line 7: `external define poke_byte with pointer and offset and value returning Int`
 - Line 13: `define workspace_output_record with database as Int and run as Str and call_id as Str and event as Str and stream as Str and pointer as Int and bytes as Int and ended as Int returning Int:`
+
+## app/workspace/process_guard.ep
+
+[Source](../../app/workspace/process_guard.ep) · 27 lines · 1611 bytes
+
+SHA-256: `e63f7f0626e1c2018c68e1176a11bb4e9d85bf66f1f91ead788d7500f1279ce6`
+
+> A dedicated native guardian owns the child handle and the read end of a
+> private owner pipe. The owner alone keeps the writer. The command never
+> inherits either end. Owner death therefore wakes this guardian without PID
+> lookup, process-name matching or an execution lifetime limit.
+> Monitoring cadence, never a deadline for the command.
+
+Imports: execute_process → app/workspace/execute_process.ep
+
+- Line 7: `define workspace_guard_owned with handle as List and owner as Int returning List:`
 
 ## app/workspace/process_journal.ep
 
