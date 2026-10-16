@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T03:57:20.599685+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:03:02.220496+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1733,6 +1733,21 @@ SHA-256: `c0194c8fe87263027587b8b55ddb394586d13934070b438ea0e81a49fca240ec`
 Imports: ../../app/web/uploads → app/web/uploads.ep, ../../app/web/cancellation → app/web/cancellation.ep, ../../app/web/message_speech → app/web/message_speech.ep, ../../app/memory/session_ownership → app/memory/session_ownership.ep
 
 - Line 6: `define main returning Int:`
+
+## tests/security/test_protected_exchange.ep
+
+[Source](../../tests/security/test_protected_exchange.ep) · 79 lines · 5216 bytes
+
+SHA-256: `fcf0b6c11aec1a2bab1c77f35fb99c34f6d239c69667bf918daa092ebaf00789`
+
+> Files and metadata are independently prepared by the host fixture. Preserve
+> them at both paths so host inspection can verify the exact round trip.
+> Installed Darwin stat layout: mode/links, inode, uid/gid, mtime and flags.
+
+Imports: ../../app/rights/exchange → app/rights/exchange.ep
+
+- Line 5: `define exchange_fixture_identity with path as Str returning Str:`
+- Line 26: `define main returning Int:`
 
 ## tests/security/test_protected_files.ep
 

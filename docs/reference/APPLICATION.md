@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T03:57:20.599685+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:03:02.220496+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2338,6 +2338,26 @@ Imports: steward → app/rights/steward.ep, observer_evidence → app/rights/obs
 - Line 4: `external define sqlite3_get_autocommit with database as Int returning Int`
 - Line 9: `define protected_decision_rule with classification as Str and decision as Str and risk as Str returning Str:`
 - Line 33: `define protected_decision_check with database as Int and charter as Str and run as Str and proposal as Str and audit_request as Str and audit_policy as Str and audit_policy_digest as Str returning Str:`
+
+## app/rights/exchange.ep
+
+[Source](../../app/rights/exchange.ep) · 76 lines · 5005 bytes
+
+SHA-256: `5c268c57c9801329878d4c807c1a8a26156c53e3c0baf333d6d4cfa0d88bf09e`
+
+> Private controller-owned directory only. This filesystem primitive does not
+> grant authorization. Caller must durably prepare an operation and verify all
+> decision/inventory/recovery gates before invoking it. No public tool exposes it.
+> Swapping existing inodes retains the original bytes and metadata at stage;
+> rollback uses the same primitive with the two expected digests reversed.
+> Darwin LOCK_EX | LOCK_NB. Closing parent releases this process's lock.
+> Darwin RENAME_SWAP=2, verified against the installed SDK. Never
+> fall back to a pair of renames: that would introduce a missing target.
+
+Imports: staging → app/rights/staging.ep
+
+- Line 8: `define protected_exchange_locked with library as Int and parent as Int and directory as Str and target as Str and stage as Str and before_hash as Str and after_hash as Str returning Str:`
+- Line 57: `define protected_exchange with directory as Str and target as Str and stage as Str and before_hash as Str and after_hash as Str returning Str:`
 
 ## app/rights/files.ep
 

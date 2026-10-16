@@ -1,0 +1,76 @@
+import "staging"
+
+# Private controller-owned directory only. This filesystem primitive does not
+# grant authorization. Caller must durably prepare an operation and verify all
+# decision/inventory/recovery gates before invoking it. No public tool exposes it.
+# Swapping existing inodes retains the original bytes and metadata at stage;
+# rollback uses the same primitive with the two expected digests reversed.
+define protected_exchange_locked with library as Int and parent as Int and directory as Str and target as Str and stage as Str and before_hash as Str and after_hash as Str returning Str:
+    set lock_function to ep_dlsym(library and "flock")
+    set exchange to ep_dlsym(library and "renameatx_np")
+    set flush to ep_dlsym(library and "fsync")
+    if lock_function equals 0 or else exchange equals 0 or else flush equals 0:
+        return "exchange-unavailable"
+    # Darwin LOCK_EX | LOCK_NB. Closing parent releases this process's lock.
+    if socket_signed_result(ep_dlcall2(lock_function and parent and 6)) is not equal to 0:
+        return "exchange-busy"
+    set original to workspace_file_open(library and parent and target and 0)
+    set candidate to workspace_file_open(library and parent and stage and 0)
+    if original < 0 or else candidate < 0:
+        if original >= 0:
+            set closed to net_close(original)
+        if candidate >= 0:
+            set closed to net_close(candidate)
+        return "exchange-files-invalid"
+    set closed_original to net_close(original)
+    set closed_candidate to net_close(candidate)
+    if closed_original is not equal to 0 or else closed_candidate is not equal to 0:
+        return "exchange-close-failed"
+    set target_path to concat(directory and concat("/" and target))
+    set stage_path to concat(directory and concat("/" and stage))
+    set current to file_digest_durable(target_path and 65536)
+    set staged to file_digest_durable(stage_path and 65536)
+    if not (archive_list_text(current and 0) equals "verified") or else not (archive_list_text(staged and 0) equals "verified"):
+        return "exchange-files-unverified"
+    set already to 0
+    if archive_list_text(current and 1) equals after_hash and archive_list_text(staged and 1) equals before_hash:
+        set already to 1
+    else if not (archive_list_text(current and 1) equals before_hash) or else not (archive_list_text(staged and 1) equals after_hash):
+        return "exchange-preimage-mismatch"
+    if already equals 0:
+        # Darwin RENAME_SWAP=2, verified against the installed SDK. Never
+        # fall back to a pair of renames: that would introduce a missing target.
+        if socket_signed_result(ep_dlcall5(exchange and parent and str_to_ptr(stage) and parent and str_to_ptr(target) and 2)) is not equal to 0:
+            if socket_errno(library) equals 45:
+                return "exchange-unsupported-filesystem"
+            return "exchange-failed"
+    if socket_signed_result(ep_dlcall1(flush and parent)) is not equal to 0:
+        return "exchange-uncertain"
+    set current to file_digest_durable(target_path and 65536)
+    set recovery to file_digest_durable(stage_path and 65536)
+    if not (archive_list_text(current and 0) equals "verified") or else not (archive_list_text(recovery and 0) equals "verified") or else not (archive_list_text(current and 1) equals after_hash) or else not (archive_list_text(recovery and 1) equals before_hash):
+        return "exchange-uncertain"
+    if already equals 1:
+        return "already-exchanged"
+    return "exchanged"
+
+define protected_exchange with directory as Str and target as Str and stage as Str and before_hash as Str and after_hash as Str returning Str:
+    if string_length(directory) < 2 or else get_character(directory and 0) is not equal to 47 or else workspace_path_parts(ptr_to_str(substring(directory and 1 and string_length(directory) - 1))) equals 0 or else target equals stage or else before_hash equals after_hash or else protected_digest_valid(before_hash) equals 0 or else protected_digest_valid(after_hash) equals 0:
+        return "invalid-exchange"
+    set target_parts to workspace_path_parts(target)
+    set stage_parts to workspace_path_parts(stage)
+    if target_parts equals 0 or else stage_parts equals 0 or else length_list(target_parts) is not equal to 1 or else length_list(stage_parts) is not equal to 1:
+        return "invalid-exchange"
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "exchange-unavailable"
+    set parent to workspace_root_open(library and directory)
+    if parent < 0:
+        set closed to ep_dlclose(library)
+        return "exchange-directory-unavailable"
+    set result to protected_exchange_locked(library and parent and directory and target and stage and before_hash and after_hash)
+    set closed to net_close(parent)
+    set released to ep_dlclose(library)
+    if closed is not equal to 0 or else released is not equal to 0:
+        return "exchange-uncertain"
+    return result
