@@ -6,13 +6,21 @@ Authorised 16 October 2026. Goal remains active. No Phase Two feature is complet
 
 The plan has 32 dependency-ordered steps. REQUIREMENTS.json contains 413 requirement, carry-forward and acceptance-check rows; these are not 413 dependencies. Its statuses have not yet been comprehensively reconciled with the implementation evidence and must not be used as a completion percentage. No overall percentage is asserted here.
 
-Current production remains on schema10. Its verified releases include principal/admin and private-memory boundaries, native process guardian recovery and the compaction progress UI. Later candidate schemas11–19 contain protected-change and group work; their existence does not mean those features are deployed.
+Current production remains on schema10. Its verified releases include principal/admin and private-memory boundaries, native process guardian recovery and the compaction progress UI. Later candidate schemas11–20 contain protected-change and group work; their existence does not mean those features are deployed.
 
 The latest group work now has an integrated native primary-model test: two authenticated users, preserved sender attribution, history tool execution, completed replies and private-canary exclusion. Browser/Discord group routing, shared workspace/output policy and full group compaction acceptance remain incomplete. The next implementation work is integrating those remaining surfaces; no group UI release is claimed.
 
 Discord, Gmail, the complete recursive code/weight improvement workflow, generated-tool lifecycle, optional external-provider qualification and final installer/performance/device acceptance have not been delivered in full. Joint final prompt review with Maria remains required near closure.
 
 Use FOUNDATION-VERIFICATION.json and the dated records below for scoped evidence. Older records preserve the history of what was tested at that point; later deployment records supersede older statements that the same component was not deployed. File counts, compilations and isolated fixture tests are not full-step acceptance.
+
+## Automatic recall repair — 16 October
+
+Deployed `server_phase2_memory` on the existing schema10 archive after a consistent backup. Corrected `memory_search` pagination with explicit continuation arguments. Added incremental source-backed extraction across owned sessions, automatic graph recall, semantic/episodic/workflow records, visibility-aware context, and durable import/failure receipts. The current session is not re-extracted on every turn, preserving warm conversation caching. Identity and philosophical wording remain unchanged. The only private bundle edits replace two repeated obsolete technical memory descriptions; operator-requested conversation guidance is supplied separately by the runtime.
+
+Native tests cover restart, idempotence, ownership isolation, forgotten-claim exclusion, exact-quote grounding and invalid-reference rejection. A private real-history copy produced 28 memory records from 180 original events. A fresh model response recognised the owner and previous corrections. Its follow-up reused 27,246 cached tokens, processed 29 new prompt tokens in 293 ms and generated in 1,582 ms without another extraction. A separate live-model fixture automatically learned and recalled another user's identity, shared milestone and file workflow. Actual production HTTP acceptance also passed: a separate test principal automatically recalled an earlier name and unique project identifier; foreign-device access returned 404 and both temporary credentials were revoked. Neither these tests nor the prompt change establishes universal model behavioural adherence.
+
+Private evidence: `evidence/phase2/automatic-memory-verification.json`. Source-level documentation: `docs/AUTOMATIC-MEMORY.md`.
 
 ## Historical implementation and qualification records
 

@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T06:27:59.402570+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T07:07:33.651408+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1610,6 +1610,17 @@ Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/ac
 
 - Line 4: `define main returning Int:`
 
+## tests/security/test_automatic_memory.ep
+
+[Source](../../tests/security/test_automatic_memory.ep) · 56 lines · 5000 bytes
+
+SHA-256: `fad90361aa304ce8b543a86d53d29aef51ad265b9bec8dc7272271f158d4dc1f`
+
+
+Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/memory/automatic → app/memory/automatic.ep, ../../app/context/session_messages → app/context/session_messages.ep, ../../app/memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep
+
+- Line 6: `define main returning Int:`
+
 ## tests/security/test_charter.ep
 
 [Source](../../tests/security/test_charter.ep) · 22 lines · 1490 bytes
@@ -1796,6 +1807,18 @@ Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/t
 - Line 7: `define knowledge_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
 - Line 27: `define main returning Int:`
 
+## tests/security/test_live_automatic_memory.ep
+
+[Source](../../tests/security/test_live_automatic_memory.ep) · 17 lines · 1005 bytes
+
+SHA-256: `7219bd103ed10a8bf9e3036bb78019c4027ad1676349287328b0932b40691978`
+
+> The supplied database must be an isolated copy, never the running archive.
+
+Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/runner → app/agent/runner.ep
+
+- Line 5: `define main returning Int:`
+
 ## tests/security/test_live_group_conversation.ep
 
 [Source](../../tests/security/test_live_group_conversation.ep) · 58 lines · 5206 bytes
@@ -1820,6 +1843,28 @@ Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app
 - Line 6: `define live_group_finish with database as Int and run as Str and model as Str and port as Int returning Int:`
 - Line 31: `define verify_live_workspace with database as Int returning Int:`
 - Line 40: `define main returning Int:`
+
+## tests/security/test_live_memory_cycle.ep
+
+[Source](../../tests/security/test_live_memory_cycle.ep) · 31 lines · 2164 bytes
+
+SHA-256: `9b8948d458583e13c72709d2c6644060dbf6b85498b3b4ae6af7314a9f6e4d00`
+
+
+Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/runner → app/agent/runner.ep, ../../app/memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep
+
+- Line 5: `define main returning Int:`
+
+## tests/security/test_live_memory_followup.ep
+
+[Source](../../tests/security/test_live_memory_followup.ep) · 17 lines · 915 bytes
+
+SHA-256: `9b810fe2b9789968820b700a0fd3327735232dc1afa0b7bc876ed349a6a4cb7b`
+
+
+Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/runner → app/agent/runner.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/security/test_live_observer.ep
 
@@ -1876,9 +1921,9 @@ Imports: ../../app/rights/review_upgrade → app/rights/review_upgrade.ep, ../..
 
 ## tests/security/test_memory_tools.ep
 
-[Source](../../tests/security/test_memory_tools.ep) · 57 lines · 4612 bytes
+[Source](../../tests/security/test_memory_tools.ep) · 63 lines · 5368 bytes
 
-SHA-256: `2d74b555a34a218dd02c6954330422f828ba3a81979144088d815d95c59d9f55`
+SHA-256: `0fe200a44b9d18bba562b6451977af7d893672edf7e7b5940f9d6c80fbc320a3`
 
 > Exercise the real streaming parser, durable queued request and dispatcher.
 
@@ -2686,6 +2731,17 @@ SHA-256: `d0a1ad4432e3adcb8256ea78ee808cdd82f7ef016609229033b90fa697aac10a`
 
 
 Imports: ../fixtures/echo_http_client → tests/fixtures/echo_http_client.ep, ../../app/web/run_store → app/web/run_store.ep, fs → standard library or compiler dependency
+
+- Line 5: `define main returning Int:`
+
+## tests/web/test_live_memory_server.ep
+
+[Source](../../tests/web/test_live_memory_server.ep) · 55 lines · 3587 bytes
+
+SHA-256: `3cf0de35d0d6c604d47beb860902c60b642f59b813e6f2f9d799f35aef285bbc`
+
+
+Imports: ../fixtures/echo_http_client → tests/fixtures/echo_http_client.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/agent/control → app/agent/control.ep
 
 - Line 5: `define main returning Int:`
 

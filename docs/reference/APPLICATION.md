@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T06:27:59.402570+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T07:07:33.651408+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -156,21 +156,24 @@ Imports: tool_ledger → app/agent/tool_ledger.ep
 
 ## app/agent/runner.ep
 
-[Source](../../app/agent/runner.ep) · 99 lines · 5823 bytes
+[Source](../../app/agent/runner.ep) · 108 lines · 6765 bytes
 
-SHA-256: `c485cdc4094d69889767f9edcfbed8c23e898e2eb195394d08fbe5371ba337ce`
+SHA-256: `1d9ca5f52ed61fa6823860cddc18cb568a8b56a55b5156562a3527b7676e2973`
 
 > The model/tool loop has no iteration limit. Non-ready preflight decisions are
 > Capacity triggers archived recap/review/activation before resuming this run.
 > Configuration and unresolved recap failures return explicitly, never truncate.
 > Replay an already recorded historical route only; never select another model for new image input.
+> Extraction failure must not lock the user out of ordinary chat. The
+> context records the gap; original-source recall remains available and
+> unindexed sources will be retried on the next turn.
 
-Imports: ../retained_text → app/retained_text.ep, control → app/agent/control.ep, provider_profile → app/agent/provider_profile.ep, ../context/compact → app/context/compact.ep
+Imports: ../retained_text → app/retained_text.ep, control → app/agent/control.ep, provider_profile → app/agent/provider_profile.ep, ../context/compact → app/context/compact.ep, ../memory/automatic → app/memory/automatic.ep
 
-- Line 6: `define agent_loop_inner_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
-- Line 66: `define agent_loop_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
-- Line 93: `define agent_loop_inner with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
-- Line 97: `define agent_loop with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
+- Line 7: `define agent_loop_inner_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
+- Line 67: `define agent_loop_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
+- Line 102: `define agent_loop_inner with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
+- Line 106: `define agent_loop with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
 
 ## app/agent/tool_dispatch.ep
 
@@ -1196,9 +1199,9 @@ Imports: ../retained_text → app/retained_text.ep, ../agent/run_messages → ap
 
 ## app/context/session_messages.ep
 
-[Source](../../app/context/session_messages.ep) · 173 lines · 11575 bytes
+[Source](../../app/context/session_messages.ep) · 180 lines · 11947 bytes
 
-SHA-256: `e2a32b2046e90028e876a4e97cce3a352f071478e6a2401cfe0048937d67d90a`
+SHA-256: `974ea93b1598b4c3675c6291a15a190a1e7fa1026708963c7f9fe203d4d9abbc`
 
 > Admin-only schemas are selected from frozen initiating authority. Dispatch
 > repeats the check; advertising a schema is never itself permission.
@@ -1215,19 +1218,19 @@ SHA-256: `e2a32b2046e90028e876a4e97cce3a352f071478e6a2401cfe0048937d67d90a`
 > that trusted runtime receipt in the resumed prompt so the model does not
 > mistake the earlier queued observation for still-pending work.
 
-Imports: ../retained_text → app/retained_text.ep, system_awareness → app/context/system_awareness.ep, ../archive/session_scope → app/archive/session_scope.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../agent/run_messages → app/agent/run_messages.ep
+Imports: ../retained_text → app/retained_text.ep, system_awareness → app/context/system_awareness.ep, ../archive/session_scope → app/archive/session_scope.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../memory/automatic_context → app/memory/automatic_context.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../agent/run_messages → app/agent/run_messages.ep
 
-- Line 11: `define session_request_body with model as Str and messages as Str returning Str:`
-- Line 18: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
-- Line 46: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
-- Line 51: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
-- Line 163: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
+- Line 12: `define session_request_body with model as Str and messages as Str returning Str:`
+- Line 19: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
+- Line 47: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
+- Line 52: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
+- Line 170: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
 
 ## app/context/system_awareness.ep
 
-[Source](../../app/context/system_awareness.ep) · 62 lines · 4564 bytes
+[Source](../../app/context/system_awareness.ep) · 63 lines · 6003 bytes
 
-SHA-256: `770dedc65049f0bb18543ec05dad82c10b1036b9d931af4ab2e86576556ee510`
+SHA-256: `51c39838b0cad1ff68c75a7c58e187abfc3a547c0d3ea945ebfcec806d43ca61`
 
 > Only operator-controlled files enter the system role. Conversation content,
 > attachments and tool observations never select identity or architecture files.
@@ -1239,8 +1242,8 @@ SHA-256: `770dedc65049f0bb18543ec05dad82c10b1036b9d931af4ab2e86576556ee510`
 Imports: ../retained_text → app/retained_text.ep, ../agent/provider_profile → app/agent/provider_profile.ep, ../providers/status → app/providers/status.ep, ../security/run_authority → app/security/run_authority.ep, fs → standard library or compiler dependency
 
 - Line 9: `define echo_system_prompt with database as Int and run as Str returning Str:`
-- Line 39: `define echo_system_inspect with database as Int and run as Str and arguments as Str returning Str:`
-- Line 61: `define echo_system_schema returning Str:`
+- Line 40: `define echo_system_inspect with database as Int and run as Str and arguments as Str returning Str:`
+- Line 62: `define echo_system_schema returning Str:`
 
 ## app/device_admin.ep
 
@@ -1330,6 +1333,20 @@ SHA-256: `22773f01ef0a1ca617872c5e39b96e18724d676692539e9f238d730ddf088218`
 Imports: web/http_api → app/web/http_api.ep, fs → standard library or compiler dependency
 
 - Line 6: `define main returning Int:`
+
+## app/import_memory.ep
+
+[Source](../../app/import_memory.ep) · 29 lines · 1344 bytes
+
+SHA-256: `d3d40337a59bb087bcd1dfb63d4d13528087c669e71238fa13ea5f5bb2b193f2`
+
+> Operator backfill from an already generated, private extraction receipt.
+> The normal source/quote/owner checks still apply; this never imports SQL or
+> transfers another principal's records. Originals must already exist locally.
+
+Imports: memory/automatic → app/memory/automatic.ep, fs → standard library or compiler dependency
+
+- Line 7: `define main returning Int:`
 
 ## app/kokoro_speak.ep
 
@@ -1611,6 +1628,45 @@ Imports: session_ownership → app/memory/session_ownership.ep, ../archive/histo
 - Line 20: `define memory_archive_boundary with database as Int and run as Str returning List:`
 - Line 33: `define memory_archive_next with database as Int and run as Str and literal as Str and after_sequence as Int and through_sequence as Int returning List:`
 - Line 51: `define memory_archive_read with database as Int and run as Str and event as Str and offset as Int and characters as Int returning List:`
+
+## app/memory/automatic.ep
+
+[Source](../../app/memory/automatic.ep) · 253 lines · 18213 bytes
+
+SHA-256: `93b403dcef0cebdf3c43d9aae4f9718c8dfe315785e5a113b74d8c25789e9e22`
+
+> Private, incremental extraction. Only accepted conversation events before the
+> current objective are eligible. Receipts prevent repeated ingestion after a
+> restart; forgetting an extracted assertion does not cause it to be relearnt.
+> Models sometimes abbreviate a quote despite the extraction instruction. Do
+> not store that invented quotation or discard every valid memory in the batch.
+> Retain the whole original source as an episodic record instead. Identical
+> fallbacks deduplicate in knowledge_record. The strict save validator remains.
+> Validate every quote and source before writing any claim. A partial write can
+> safely retry because knowledge_record is content-addressed and idempotent.
+
+Imports: knowledge → app/memory/knowledge.ep, ../agent/control → app/agent/control.ep, ../providers/prepare → app/providers/prepare.ep, ../providers/local_chat → app/providers/local_chat.ep
+
+- Line 9: `define memory_pending with database as Int and run as Str returning List:`
+- Line 32: `define memory_source_text with row as List returning Str:`
+- Line 42: `define memory_ground_extraction with database as Int and run as Str and sources as List and start as Int and count as Int and response as Str returning Str:`
+- Line 92: `define memory_extract_body with database as Int and model as Str and sources as List and start as Int and count as Int returning Str:`
+- Line 115: `define memory_extract_save with database as Int and run as Str and sources as List and start as Int and count as Int and response as Str returning Str:`
+- Line 187: `define memory_prepare with database as Int and run as Str and profile as Str and reserve as Int and cancellation as Int and read_size as Int returning Str:`
+
+## app/memory/automatic_context.ep
+
+[Source](../../app/memory/automatic_context.ep) · 31 lines · 4157 bytes
+
+SHA-256: `e7518dba6af8bc6c8f59bdae0be73ecb8cccda0ff24a3f64d46339cdef2bc529`
+
+> Derived memory remains data in a user-role context record. It cannot grant
+> permissions or replace the installed identity. Visibility and ownership are
+> rechecked on every reconstruction, including after forget and revocation.
+
+Imports: knowledge → app/memory/knowledge.ep
+
+- Line 6: `define memory_context with database as Int and run as Str returning Str:`
 
 ## app/memory/knowledge.ep
 
@@ -3273,16 +3329,16 @@ Imports: ../memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep, ..
 
 ## app/tools/memory_tools.ep
 
-[Source](../../app/tools/memory_tools.ep) · 83 lines · 6784 bytes
+[Source](../../app/tools/memory_tools.ep) · 91 lines · 7565 bytes
 
-SHA-256: `0f4fba2963a876345fbfe792553392a0881fbc28e99488b1a10ccf951d824a9a`
+SHA-256: `cd635de98252aa842de0d743c1c27cb6203d774e5c8838fd1259ff64dc134abf`
 
 > Identity and arguments come from the immutable queued call, never model scope fields.
 
 Imports: ../memory/archive_recall → app/memory/archive_recall.ep, ../security/tool_policy → app/security/tool_policy.ep, history_tools → app/tools/history_tools.ep
 
 - Line 6: `define memory_tool_execute with database as Int and run as Str and call_id as Str and name as Str returning Str:`
-- Line 82: `define memory_tool_schemas returning Str:`
+- Line 90: `define memory_tool_schemas returning Str:`
 
 ## app/tools/protected_tools.ep
 
@@ -3922,9 +3978,9 @@ Imports: archive/export_verify → app/archive/export_verify.ep, fs → standard
 
 ## app/web/activity.ep
 
-[Source](../../app/web/activity.ep) · 95 lines · 6337 bytes
+[Source](../../app/web/activity.ep) · 98 lines · 6899 bytes
 
-SHA-256: `36561fa801c2544035f40a96cef638fc9125ce9ce4287ec130bb57c49563bbf9`
+SHA-256: `601c53dc844d341e56560079888910d27f9010a3eb4115070825265c7f9434d1`
 
 > Read-only status derived from committed work belonging to this run and its
 > current head. Do not infer progress percentages, expose model draft recaps,
@@ -3935,7 +3991,7 @@ SHA-256: `36561fa801c2544035f40a96cef638fc9125ce9ce4287ec130bb57c49563bbf9`
 Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_store.ep
 
 - Line 7: `define web_run_activity with database as Int and run as Str returning Str:`
-- Line 84: `define web_run_compaction with database as Int and run as Str returning Str:`
+- Line 87: `define web_run_compaction with database as Int and run as Str returning Str:`
 
 ## app/web/attachments.ep
 
