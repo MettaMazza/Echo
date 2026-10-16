@@ -1,0 +1,57 @@
+import "../../app/security/group_output_policy"
+import "../../app/security/group_route"
+import "../../app/web/attachments"
+import "../../app/agent/tool_recovery"
+import "../../app/context/session_messages"
+
+define live_group_finish with database as Int and run as Str and model as Str and port as Int returning Int:
+    if agent_provider_bind(database and run and provider_llama_profile(model and port)) is not equal to 0:
+        return 1
+    set generation to 0
+    repeat while 1 equals 1:
+        set row to agent_run_read(database and run)
+        set state to archive_list_text(row and 2)
+        if state equals "completed":
+            return 0
+        if state equals "ready":
+            set generation to generation + 1
+            set messages to session_messages(database and archive_list_text(row and 0) and run)
+            if string_length(messages) equals 0:
+                return 2
+            set body to session_request_body_owned(database and run and model and messages)
+            if agent_generate_local(database and run and concat(run and concat(":generation:" and int_to_string(generation))) and body and port and "/v1/chat/completions" and -1 and 65536 and "0") is not equal to 0:
+                return 3
+        else if state equals "tools":
+            if agent_tool_step(database and run) is not equal to 0:
+                return 4
+        else:
+            display concat("Unexpected durable state: " and state)
+            return 5
+    return 6
+
+define main returning Int:
+    if get_argument_count() is not equal to 4 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0 or else not (group_output_schema(database) equals "applied"):
+        return 2
+    for each name in ["a","b","c"]:
+        set device to ptr_to_str(name)
+        if web_pairing_invite(database and device) is not equal to 0 or else web_device_pair(database and device and device and device and concat(device and "-secret")) is not equal to 0:
+            return 3
+    if not (group_create(database and "a" and "g" and "browser" and "local" and "g" and "g") equals "created") or else not (group_change(database and "a" and "invite-b" and "g" and "device:b" and "invited" and 1) equals "recorded") or else not (group_change(database and "b" and "join-b" and "g" and "device:b" and "joined" and 2) equals "recorded") or else not (group_session_create(database and "a" and "shared" and "g" and "browser" and "local" and "g" and 3) equals "created"):
+        return 4
+    set created to workspace_tool_execute_device(database and "a" and "shared" and "{\"path\":\"shared.ep\",\"text\":\"display 42\"}" and "create")
+    if string_contains(created and "created") equals 0 or else not (group_run_submit(database and "b" and "publish" and "shared" and "browser" and "local" and "g" and "Publish shared.ep from this shared workspace with attach_file, using media_type text/plain. The other participant created it for this test. Then reply briefly that the file is attached. Do not merely describe the file or use other tools.") equals "accepted"):
+        return 5
+    if live_group_finish(database and "publish" and get_argument(3) and string_to_int(get_argument(2))) is not equal to 0:
+        return 6
+    set row to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.attachment') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event JOIN echo_events q ON q.event=t.request_event WHERE json_extract(q.payload,'$.name')='attach_file' AND json_extract(e.payload,'$.result.status')='complete';"))
+    set attachment to archive_list_text(row and 1)
+    set saved to web_attachment_owned(database and "b" and attachment)
+    if not (archive_list_text(saved and 0) equals "found") or else not (ptr_to_str(read_file(archive_list_text(saved and 1))) equals "display 42"):
+        return 7
+    if not (archive_list_text(web_attachment_owned(database and "a" and attachment) and 0) equals "found") or else not (archive_list_text(web_attachment_owned(database and "c" and attachment) and 0) equals "end") or else string_contains(web_message_audio(database and "shared" and "publish" and "unused") and attachment) equals 0:
+        return 8
+    display "PASS: primary local model published the shared workspace file through attach_file; both members can retrieve exact bytes and reply listing includes it; outsider denied."
+    return sql_close(database)

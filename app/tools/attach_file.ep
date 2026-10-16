@@ -32,6 +32,9 @@ define attach_copy with library as Int and input as Int and path as Str returnin
     return status
 
 define attach_file_execute with database as Int and session as Str and arguments as Str returning Str:
+    return attach_file_execute_device(database and "" and session and arguments and "" and "")
+
+define attach_file_execute_device with database as Int and trusted_device as Str and session as Str and arguments as Str and run as Str and call_id as Str returning Str:
     set tokens to provider_json_tokens(arguments)
     if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
         return "{\"status\":\"invalid-arguments\"}"
@@ -53,9 +56,13 @@ define attach_file_execute with database as Int and session as Str and arguments
         return "{\"status\":\"invalid-path\"}"
     set values to create_list()
     set added to append_list(values and session)
-    set owner to history_collect_one(checkpoint_prepare(database and "SELECT device FROM echo_session_owners WHERE session=?;" and values))
-    set device to archive_list_text(owner and 1)
-    if not (archive_list_text(owner and 0) equals "found") or else web_device_session_allowed(database and device and session) is not equal to 1:
+    set device to trusted_device
+    if string_length(device) equals 0:
+        set owner to history_collect_one(checkpoint_prepare(database and "SELECT device FROM echo_session_owners WHERE session=?;" and values))
+        if not (archive_list_text(owner and 0) equals "found"):
+            return "{\"status\":\"not-authorized\"}"
+        set device to archive_list_text(owner and 1)
+    if web_attachment_session_allowed(database and device and session and 1) is not equal to 1:
         return "{\"status\":\"not-authorized\"}"
     set restored to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE name='echo_attachment_restore_receipt';"))
     if not (archive_list_text(restored and 0) equals "end"):
@@ -81,7 +88,7 @@ define attach_file_execute with database as Int and session as Str and arguments
     set closed to ep_dlclose(library)
     if copied is not equal to 0:
         return "{\"status\":\"copy-failed\",\"recovery\":\"Check local storage availability and retry. No attachment was published.\"}"
-    if web_attachment_register(database and device and session and identity and destination and archive_list_text(parts and length_list(parts) - 1) and provider_value(tokens and media_field)) is not equal to 0:
+    if web_attachment_register_call(database and device and session and identity and destination and archive_list_text(parts and length_list(parts) - 1) and provider_value(tokens and media_field) and run and call_id) is not equal to 0:
         return "{\"status\":\"registration-failed\",\"recovery\":\"The staged copy remains on disk; inspect the server log before retrying.\"}"
     set saved to web_attachment_owned(database and device and identity)
     if not (archive_list_text(saved and 0) equals "found"):
@@ -89,3 +96,17 @@ define attach_file_execute with database as Int and session as Str and arguments
     set result to concat("{\"status\":\"complete\",\"attachment\":" and provider_quote(identity))
     set result to concat(result and concat(",\"event\":" and provider_quote(archive_list_text(saved and 7))))
     return concat(result and concat(",\"sha256\":" and concat(provider_quote(archive_list_text(saved and 4)) and ",\"instruction\":\"This file is attached to your reply and will appear in the chat with preview or download controls.\"}")))
+
+# The dispatcher supplies a queued call, never a model-selected device/session.
+define attach_file_execute_owned with database as Int and run as Str and call_id as Str returning Str:
+    set values to [run,call_id]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT t.session,a.device,e.payload FROM echo_tool_calls t JOIN echo_tool_authority a ON a.run=t.run AND a.call_id=t.call_id JOIN echo_events e ON e.event=t.request_event AND e.session=t.session WHERE t.run=?1 AND t.call_id=?2 AND t.state='running' AND e.kind='tool_call';" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(archive_list_text(row and 3))
+    if not (provider_value(tokens and provider_member(tokens and 0 and "name")) equals "attach_file") or else tool_policy_allows(database and run and call_id and "attach_file") equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set result to attach_file_execute_device(database and archive_list_text(row and 2) and archive_list_text(row and 1) and provider_value(tokens and provider_member(tokens and 0 and "arguments")) and run and call_id)
+    if tool_policy_allows(database and run and call_id and "attach_file") equals 0:
+        return "{\"status\":\"authorization-changed\",\"effects\":\"publication-may-have-completed\",\"recovery\":\"inspect-retained-attachment-events-after-authorized-review\"}"
+    return result

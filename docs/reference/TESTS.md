@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T09:06:23.073736+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T09:16:00.526164+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1704,6 +1704,21 @@ Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/a
 
 - Line 10: `define main returning Int:`
 
+## tests/security/test_group_attach_file.ep
+
+[Source](../../tests/security/test_group_attach_file.ep) · 79 lines · 6808 bytes
+
+SHA-256: `7dafeb681c16106a03d434c4c59cc24a5a065b0058e4f5e506c650c6bc63feaa`
+
+> Exercise the real streaming parser, durable queued request and dispatcher.
+> A claimed call stages a file, then authority changes while membership
+> still permits ordinary reads/writes. Publication must reject that epoch.
+
+Imports: ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 8: `define recall_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
+- Line 28: `define main returning Int:`
+
 ## tests/security/test_group_attachments.ep
 
 [Source](../../tests/security/test_group_attachments.ep) · 90 lines · 7665 bytes
@@ -1904,6 +1919,18 @@ Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app
 
 - Line 6: `define live_group_finish with database as Int and run as Str and model as Str and port as Int returning Int:`
 - Line 31: `define main returning Int:`
+
+## tests/security/test_live_group_publication.ep
+
+[Source](../../tests/security/test_live_group_publication.ep) · 57 lines · 4583 bytes
+
+SHA-256: `5743f6c19eca9638b262c69166c77610f6d8e4d08f1d22cddb613c725a00b1ba`
+
+
+Imports: ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/security/group_route → app/security/group_route.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/context/session_messages → app/context/session_messages.ep
+
+- Line 7: `define live_group_finish with database as Int and run as Str and model as Str and port as Int returning Int:`
+- Line 32: `define main returning Int:`
 
 ## tests/security/test_live_group_workspace.ep
 

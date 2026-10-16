@@ -1,0 +1,79 @@
+import "../../app/security/group_output_policy"
+import "../../app/web/attachments"
+import "../../app/agent/tool_recovery"
+import "../../app/agent/run_messages"
+import "../fixtures/generation_fixture"
+
+# Exercise the real streaming parser, durable queued request and dispatcher.
+define recall_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":" and provider_quote(call_id))
+    set delta to concat(delta and concat(",\"function\":{\"name\":" and provider_quote(name)))
+    set delta to concat(delta and concat(",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}")))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set body to session_request_body_owned(database and run and "fixture" and agent_run_messages(database and run))
+    if provider_json_tokens(body) equals 0:
+        return 2
+    set generated to agent_generate_local(database and run and request and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 3
+    if agent_tool_step(database and run) is not equal to 0 or else agent_tool_step(database and run) is not equal to 0:
+        return 4
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0 or else not (group_output_schema(database) equals "applied"):
+        return 2
+    for each name in ["a","b","c"]:
+        set device to ptr_to_str(name)
+        if web_pairing_invite(database and device) is not equal to 0 or else web_device_pair(database and device and device and device and concat(device and "-secret")) is not equal to 0:
+            return 3
+    if not (group_create(database and "a" and "g" and "browser" and "local" and "g" and "g") equals "created") or else not (group_change(database and "a" and "invite-b" and "g" and "device:b" and "invited" and 1) equals "recorded") or else not (group_change(database and "b" and "join-b" and "g" and "device:b" and "joined" and 2) equals "recorded") or else not (group_session_create(database and "a" and "shared" and "g" and "browser" and "local" and "g" and 3) equals "created"):
+        return 4
+    set created to workspace_tool_execute_device(database and "a" and "shared" and "{\"path\":\"shared.ep\",\"text\":\"display 42\"}" and "create")
+    if string_contains(created and "created") equals 0 or else not (group_run_submit(database and "b" and "publish" and "shared" and "browser" and "local" and "g" and "Publish the shared program") equals "accepted"):
+        return 5
+    if recall_fixture_call(database and "publish" and "publish-request" and "attach" and "attach_file" and "{\"path\":\"shared.ep\",\"media_type\":\"text/plain\"}") is not equal to 0:
+        return 6
+    set row to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.attachment') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='attach';"))
+    set attachment to archive_list_text(row and 1)
+    set saved to web_attachment_owned(database and "b" and attachment)
+    if not (archive_list_text(saved and 0) equals "found") or else not (ptr_to_str(read_file(archive_list_text(saved and 1))) equals "display 42"):
+        return 7
+    if not (archive_list_text(web_attachment_owned(database and "a" and attachment) and 0) equals "found") or else not (archive_list_text(web_attachment_owned(database and "c" and attachment) and 0) equals "end") or else string_contains(web_message_audio(database and "shared" and "publish" and "unused") and attachment) equals 0:
+        return 8
+    # A claimed call stages a file, then authority changes while membership
+    # still permits ordinary reads/writes. Publication must reject that epoch.
+    set request to "{\"run_id\":\"publish\",\"call_id\":\"guard\",\"name\":\"attach_file\",\"arguments\":\"{\\\"path\\\":\\\"shared.ep\\\",\\\"media_type\\\":\\\"text/plain\\\"}\"}"
+    if archive_append(database and "shared" and "guard-request" and "tool_call" and request and "fixture") is not equal to 0 or else tool_ledger_queue(database and "publish" and "guard" and "shared" and "guard-request") is not equal to 0 or else tool_ledger_claim(database and "publish" and "guard") is not equal to 0:
+        return 9
+    set path to concat(get_env("ECHO_ATTACHMENT_ROOT") and "/guard.txt")
+    set written to write_file(path and "guarded staged bytes")
+    if not (archive_list_text(file_digest(path and 65536) and 0) equals "verified"):
+        return 17
+    if web_attachment_register_call(database and "a" and "shared" and "wrong-device" and path and "guard.txt" and "text/plain" and "publish" and "guard") equals 0:
+        return 10
+    if not (principal_host_role(database and "promote-b" and "device:b" and "admin" and "Fixture") equals "recorded") or else web_attachment_session_allowed(database and "b" and "shared" and 1) is not equal to 1:
+        return 11
+    if web_attachment_register_call(database and "b" and "shared" and "stale-authority" and path and "guard.txt" and "text/plain" and "publish" and "guard") equals 0:
+        return 12
+    set check to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_attachments WHERE attachment IN ('wrong-device','stale-authority');"))
+    if not (archive_list_text(check and 1) equals "0"):
+        return 13
+    if not (group_change(database and "a" and "remove-b" and "g" and "device:b" and "removed" and 3) equals "recorded") or else not (archive_list_text(web_attachment_owned(database and "b" and attachment) and 0) equals "end"):
+        return 14
+    if sql_close(database) is not equal to 0:
+        return 15
+    set database to archive_open(get_argument(1))
+    if not (archive_list_text(web_attachment_owned(database and "b" and attachment) and 0) equals "end") or else not (archive_list_text(web_attachment_owned(database and "a" and attachment) and 0) equals "found"):
+        return 16
+    display "PASS: actual shared attachment dispatch, immutable file bytes, reply attachment listing, both members/outsider boundary, exact calling device, changed authority before publication, departure and reopen."
+    return sql_close(database)
+

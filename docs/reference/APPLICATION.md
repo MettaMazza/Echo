@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T09:06:23.073736+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T09:16:00.526164+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -177,9 +177,9 @@ Imports: ../retained_text → app/retained_text.ep, control → app/agent/contro
 
 ## app/agent/tool_dispatch.ep
 
-[Source](../../app/agent/tool_dispatch.ep) · 136 lines · 10316 bytes
+[Source](../../app/agent/tool_dispatch.ep) · 138 lines · 10539 bytes
 
-SHA-256: `1f7139e7e9af2b697bbceea425b5ec93ae347cf16d8066acff2d567803a98263`
+SHA-256: `c262c86d5b405819f4ebebad1fea9474892d50e5d234975e40cec70c9b475ed3`
 
 > One invocation executes at most the next cursor item. The enclosing run loops
 > until the ledger is observed; this is scheduling granularity, not a turn cap.
@@ -189,7 +189,7 @@ SHA-256: `1f7139e7e9af2b697bbceea425b5ec93ae347cf16d8066acff2d567803a98263`
 Imports: ../tools/continuity_tools → app/tools/continuity_tools.ep, ../tools/scratchpad → app/tools/scratchpad.ep, ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
 
 - Line 18: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
-- Line 135: `define agent_tool_step with database as Int and run as Str returning Int:`
+- Line 137: `define agent_tool_step with database as Int and run as Str returning Int:`
 
 ## app/agent/tool_ledger.ep
 
@@ -3239,17 +3239,20 @@ Imports: lifecycle/service_profile → app/lifecycle/service_profile.ep, fs → 
 
 ## app/tools/attach_file.ep
 
-[Source](../../app/tools/attach_file.ep) · 91 lines · 5477 bytes
+[Source](../../app/tools/attach_file.ep) · 112 lines · 7397 bytes
 
-SHA-256: `a9d43bb8c7ef50b3b0ed70394da1968c2ad17131abe0c736f98c5623bb77dcde`
+SHA-256: `e53372cab0b9161f9c08b068f3ae78a2eb847e170e205d38be6bcb203879ef98`
 
 > Copy the opened, confined source descriptor into an immutable host-owned
 > attachment. No shell, absolute source path, symlink or size ceiling.
+> The dispatcher supplies a queued call, never a model-selected device/session.
 
 Imports: workspace_tools → app/tools/workspace_tools.ep, ../web/attachments → app/web/attachments.ep
 
 - Line 6: `define attach_copy with library as Int and input as Int and path as Str returning Int:`
 - Line 34: `define attach_file_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 37: `define attach_file_execute_device with database as Int and trusted_device as Str and session as Str and arguments as Str and run as Str and call_id as Str returning Str:`
+- Line 101: `define attach_file_execute_owned with database as Int and run as Str and call_id as Str returning Str:`
 
 ## app/tools/attachment_image.ep
 
@@ -4133,9 +4136,9 @@ Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_st
 
 ## app/web/attachments.ep
 
-[Source](../../app/web/attachments.ep) · 122 lines · 9194 bytes
+[Source](../../app/web/attachments.ep) · 133 lines · 10466 bytes
 
-SHA-256: `46aa23f7b9812d9ace8818be21a261b5185f5941421050e34554fdc1c9d79585`
+SHA-256: `7f891d68c3e32ad09dc7cb18a2972d93adbf4d28264eb785044d69fe50a9c858`
 
 > Session IDs are opaque references, not authority. Shared reads require this
 > authenticated principal in the recorded audience and still joined now;
@@ -4143,6 +4146,9 @@ SHA-256: `46aa23f7b9812d9ace8818be21a261b5185f5941421050e34554fdc1c9d79585`
 > Host-only storage primitive. Path must be a closed, exclusively owned staging
 > file; browser names are metadata, never filesystem paths. Publication and
 > ownership recheck commit with the original attachment event.
+> Tool-generated publication can bind the exact running call. The check shares
+> the writer transaction with registration, so changed authority cannot publish
+> a staged file merely because the device still belongs to the session.
 > Resolve only through ownership joins; never expose host paths over HTTP.
 
 Imports: ../security/group_history → app/security/group_history.ep, ../retained_text → app/retained_text.ep, run_store → app/web/run_store.ep, ../archive/file_digest → app/archive/file_digest.ep
@@ -4150,10 +4156,11 @@ Imports: ../security/group_history → app/security/group_history.ep, ../retaine
 - Line 6: `define web_attachment_schema with database as Int returning Int:`
 - Line 13: `define web_attachment_session_allowed with database as Int and device as Str and session as Str and writing as Int returning Int:`
 - Line 28: `define web_attachment_register with database as Int and device as Str and session as Str and attachment as Str and path as Str and name as Str and media_type as Str returning Int:`
-- Line 64: `define web_attachment_owned_snapshot with database as Int and device as Str and attachment as Str returning List:`
-- Line 73: `define web_attachment_owned with database as Int and device as Str and attachment as Str returning List:`
-- Line 83: `define web_attachment_list_snapshot with database as Int and device as Str and session as Str returning Str:`
-- Line 114: `define web_attachment_list with database as Int and device as Str and session as Str returning Str:`
+- Line 34: `define web_attachment_register_call with database as Int and device as Str and session as Str and attachment as Str and path as Str and name as Str and media_type as Str and run as Str and call_id as Str returning Int:`
+- Line 75: `define web_attachment_owned_snapshot with database as Int and device as Str and attachment as Str returning List:`
+- Line 84: `define web_attachment_owned with database as Int and device as Str and attachment as Str returning List:`
+- Line 94: `define web_attachment_list_snapshot with database as Int and device as Str and session as Str returning Str:`
+- Line 125: `define web_attachment_list with database as Int and device as Str and session as Str returning Str:`
 
 ## app/web/branches.ep
 
