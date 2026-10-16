@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T08:29:42.063490+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:36:34.586895+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1535,7 +1535,7 @@ SHA-256: `0d42afa5a92522cb938def3653fdd930db01925757734401eb7183420a25f96b`
 > Verifies the existing compiler's named-function ABI for native research
 > callbacks. No compiler changes or generated-code edits.
 
-Imports: 
+Imports:
 
 - Line 3: `define research_callback_probe with tensor as Int and ask as Int and user_data as Int returning Int:`
 - Line 6: `define main returning Int:`
@@ -1801,9 +1801,9 @@ Imports: ../../app/security/group_sessions → app/security/group_sessions.ep, .
 
 ## tests/security/test_group_speakers.ep
 
-[Source](../../tests/security/test_group_speakers.ep) · 58 lines · 4341 bytes
+[Source](../../tests/security/test_group_speakers.ep) · 73 lines · 5784 bytes
 
-SHA-256: `f00670b0fafdff2895e4f546522d4fa4bf4d67b0fc43e97dac67fc0d9ef2af74`
+SHA-256: `4b88f93abda5719ba5ce30a7e70a9726650828584e256b5b461a860f6c160f0e`
 
 
 Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/context/recap_sources → app/context/recap_sources.ep
@@ -2434,7 +2434,7 @@ SHA-256: `61c0460992270646a12539d809d0a11e585acc21bfb9b01967e7d857d5a572d3`
 > Browser fixture linked with client.ep after renaming its application main.
 > It exercises the real echo_api path with gateway and truncated-body failures.
 
-Imports: 
+Imports:
 
 - Line 3: `define main:`
 
@@ -2447,7 +2447,7 @@ SHA-256: `103c857efc34540ba870c20cd37d563c824648133c8734a6d1ce63461ed674e3`
 > Actual browser acceptance harness. Synthetic input is explicitly labelled;
 > microphone is a separate user-initiated path, never silently substituted.
 
-Imports: 
+Imports:
 
 - Line 3: `define capture_test_note with text:`
 - Line 8: `define capture_test_controls with busy:`
@@ -2466,7 +2466,7 @@ SHA-256: `ce9bf4a39281e857d068fbdef705b3811a906ae1373c03d79fa7abd7324fdc30`
 > The one-batch stop below is a finite synthetic test workload, not a recorder
 > limit. Production capture ends only on user stop or an explicit failure.
 
-Imports: 
+Imports:
 
 - Line 3: `define recorder_test_note with text:`
 - Line 8: `define recorder_test_start with event:`
@@ -2481,7 +2481,7 @@ SHA-256: `2803902d3cb38039dcb1084bfc58bdd2064274d6a95c031008899214945a0499`
 
 > Explicit synthetic browser-storage acceptance, independent of microphone.
 
-Imports: 
+Imports:
 
 - Line 2: `define store_test_note with text:`
 - Line 7: `define store_test_rejection with operation:`
@@ -2498,7 +2498,7 @@ SHA-256: `839991ba51047e4e5f562eb24a2fc9f257135d88ba1749a8754bbf85d6e09637`
 > echo_client_main before concatenating this test. All production upload and
 > recording functions remain unchanged. Run only against a fixture database.
 
-Imports: 
+Imports:
 
 - Line 4: `define recovery_test_note with text:`
 - Line 9: `define recovery_test_prepare with send_body:`
@@ -2515,6 +2515,19 @@ SHA-256: `bcf33ac083d881f6280ae58544e0cacc566075028c5dd3cc0a04daf20a2d9fcb`
 Imports: ../../app/web/run_store → app/web/run_store.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/web/group_speaker_browser.ep
+
+[Source](../../tests/web/group_speaker_browser.ep) · 23 lines · 1435 bytes
+
+SHA-256: `be5ae24dc868ecc5534e65bf45ae25df2d2c4221c6dae74ffad697a62bc4d5c1`
+
+> Link with client.ep after renaming its main to echo_application_main.
+> Real DOM rendering must use admission metadata, never identity-looking text.
+
+Imports:
+
+- Line 3: `define main:`
 
 ## tests/web/prepare_compaction_preview.ep
 
