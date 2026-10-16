@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T07:45:40.305400+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T07:55:08.792275+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1197,9 +1197,9 @@ Imports: ../retained_text → app/retained_text.ep, recap_review_coverage → ap
 
 ## app/context/recap_sources.ep
 
-[Source](../../app/context/recap_sources.ep) · 131 lines · 8043 bytes
+[Source](../../app/context/recap_sources.ep) · 133 lines · 8121 bytes
 
-SHA-256: `58e250ae4b3866d80d55932e8fb9eaee67c0f7f93a3ce5de71952aed417e3066`
+SHA-256: `367d2fce218fcfe41bc1f327016a18036a783ad956b539abf85a2ddfc0f14180`
 
 > Read one consistent view of accepted run ancestry through a frozen endpoint.
 > Transport copies and nested model requests stay in the original archive but
@@ -1209,13 +1209,13 @@ Imports: ../context/echo_labels → app/context/echo_labels.ep, ../retained_text
 
 - Line 5: `define recap_source_record with database as Int and row as List returning Str:`
 - Line 21: `define recap_sources_snapshot with database as Int and session as Str and endpoint as Str returning Str:`
-- Line 121: `define recap_sources with database as Int and session as Str and endpoint as Str returning Str:`
+- Line 123: `define recap_sources with database as Int and session as Str and endpoint as Str returning Str:`
 
 ## app/context/session_messages.ep
 
-[Source](../../app/context/session_messages.ep) · 183 lines · 12180 bytes
+[Source](../../app/context/session_messages.ep) · 185 lines · 12258 bytes
 
-SHA-256: `94b31fbcfe2a9ff4c0e5a35a31dbb6fe444e78bc7ea5333a2d640cfd563574b2`
+SHA-256: `a573d235e29fb4cc75fea0862b9508d279c958aba6589d9028d28b6c99e08781`
 
 > Admin-only schemas are selected from frozen initiating authority. Dispatch
 > repeats the check; advertising a schema is never itself permission.
@@ -1238,7 +1238,7 @@ Imports: ../tools/continuity_tools → app/tools/continuity_tools.ep, ../retaine
 - Line 20: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
 - Line 50: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
 - Line 55: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
-- Line 173: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
+- Line 175: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
 
 ## app/context/system_awareness.ep
 
@@ -2924,6 +2924,21 @@ Imports: ../archive/history → app/archive/history.ep
 - Line 26: `define group_device_session_sql with database as Int and session_expression as Str and device_expression as Str returning Str:`
 - Line 37: `define group_privileged_audience_allows with database as Int and run as Str returning Int:`
 
+## app/security/group_history.ep
+
+[Source](../../app/security/group_history.ep) · 40 lines · 2470 bytes
+
+SHA-256: `6a5c4f917575b6f3e4c12c53b65ce0f23d3a5b429c793c0bd84286e0f0768c9b`
+
+> A shared privileged result can be repeated in later replies, recaps and tool
+> arguments. Check the complete source scope before exposing any derived text;
+> filtering just the original tool result would leave those copies visible.
+> Callers must hold their normal archive snapshot during check and read.
+
+Imports: tool_policy → app/security/tool_policy.ep
+
+- Line 7: `define group_history_allows with database as Int and session as Str returning Int:`
+
 ## app/security/group_output_policy.ep
 
 [Source](../../app/security/group_output_policy.ep) · 9 lines · 1603 bytes
@@ -3249,9 +3264,9 @@ Imports: attach_file → app/tools/attach_file.ep, ../security/principals → ap
 
 ## app/tools/compaction_tools.ep
 
-[Source](../../app/tools/compaction_tools.ep) · 90 lines · 6410 bytes
+[Source](../../app/tools/compaction_tools.ep) · 102 lines · 7181 bytes
 
-SHA-256: `87a517957feab85677ade5cbec08afcaa1eba2a05962fa3bfe4ca4fe218abb71`
+SHA-256: `57e2c5a9edf4be9158a89ef7be476f048be93a3a15c73df87b524d682e9eb54f`
 
 > Device ownership comes from the trusted session, never from tool arguments.
 > Exact checkpoint IDs may traverse this session's saved recaps only. Return
@@ -3259,8 +3274,9 @@ SHA-256: `87a517957feab85677ade5cbec08afcaa1eba2a05962fa3bfe4ca4fe218abb71`
 
 Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep, ../context/checkpoint → app/context/checkpoint.ep
 
-- Line 9: `define compaction_tool_read with database as Int and session as Str and arguments as Str returning Str:`
-- Line 89: `define compaction_tool_schema returning Str:`
+- Line 9: `define compaction_tool_read_snapshot with database as Int and session as Str and arguments as Str returning Str:`
+- Line 91: `define compaction_tool_schema returning Str:`
+- Line 94: `define compaction_tool_read with database as Int and session as Str and arguments as Str returning Str:`
 
 ## app/tools/continuity_tools.ep
 
@@ -3326,9 +3342,9 @@ Imports: execution_guardian → app/tools/execution_guardian.ep, ../retained_tex
 
 ## app/tools/history_tools.ep
 
-[Source](../../app/tools/history_tools.ep) · 107 lines · 7278 bytes
+[Source](../../app/tools/history_tools.ep) · 122 lines · 8241 bytes
 
-SHA-256: `6f2f2da16865294e6da3982e99818e027c97ac4b2f9a05be27f7f0c40de2c260`
+SHA-256: `60ea152dbeca070ee16f492922fbfe748ebc46242eb5743e88042c9bc32afc5a`
 
 > Session scope comes from the trusted run, never from model arguments.
 > Cursor and excerpt sizes are explicit; no hidden result or text ceiling.
@@ -3336,13 +3352,16 @@ SHA-256: `6f2f2da16865294e6da3982e99818e027c97ac4b2f9a05be27f7f0c40de2c260`
 > using byte length or confusing total source size with this piece.
 > Schemas are authored in Ernos as data for provider adapters. Integer range is
 > checked against SQLite's actual integer representation, not an artificial cap.
+> The savepoint also starts a read snapshot when dispatch has no transaction.
+> Nested callers retain their own transaction and authority view.
 
-Imports: ../context/echo_labels → app/context/echo_labels.ep, ../retained_text → app/retained_text.ep, ../archive/history → app/archive/history.ep, ../providers/archived_stream → app/providers/archived_stream.ep
+Imports: ../security/group_history → app/security/group_history.ep, ../context/echo_labels → app/context/echo_labels.ep, ../retained_text → app/retained_text.ep, ../archive/history → app/archive/history.ep, ../providers/archived_stream → app/providers/archived_stream.ep
 
-- Line 8: `define history_tool_integer with tokens as List and name as Str returning Int:`
-- Line 15: `define history_tool_row with row as List and keys as List returning Str:`
-- Line 29: `define history_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
-- Line 106: `define history_tool_schemas returning Str:`
+- Line 9: `define history_tool_integer with tokens as List and name as Str returning Int:`
+- Line 16: `define history_tool_row with row as List and keys as List returning Str:`
+- Line 30: `define history_tool_execute_snapshot with database as Int and session as Str and name as Str and arguments as Str returning Str:`
+- Line 109: `define history_tool_schemas returning Str:`
+- Line 114: `define history_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
 
 ## app/tools/host_text.ep
 

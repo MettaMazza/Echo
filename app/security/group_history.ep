@@ -1,0 +1,40 @@
+import "tool_policy"
+
+# A shared privileged result can be repeated in later replies, recaps and tool
+# arguments. Check the complete source scope before exposing any derived text;
+# filtering just the original tool result would leave those copies visible.
+# Callers must hold their normal archive snapshot during check and read.
+define group_history_allows with database as Int and session as Str returning Int:
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_group_run_origins';"))
+    if archive_list_text(installed and 0) equals "end":
+        return 1
+    if not (archive_list_text(installed and 0) equals "found"):
+        return 0
+    set values to [session]
+    set query to concat(session_scope_sql() and "SELECT DISTINCT g.run,json_extract(q.payload,'$.name') FROM scopes s JOIN echo_group_run_origins g ON g.session=s.session JOIN echo_tool_calls t ON t.run=g.run JOIN echo_events q ON q.event=t.request_event JOIN echo_events e ON e.event=t.result_event WHERE e.sequence<=s.boundary AND NOT (COALESCE(json_extract(e.payload,'$.result.stage'),'')='tool-dispatch' AND COALESCE(json_extract(e.payload,'$.result.effects'),'')='none' AND COALESCE(json_extract(e.payload,'$.result.status'),'') IN ('not-authorized','tool-unavailable'));")
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return 0
+    set calls to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return 0
+        set run to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        set name to concat(ptr_to_str(ep_sqlite3_column_text(statement and 1)) and "")
+        set added to append_list(calls and run)
+        set added to append_list(calls and name)
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return 0
+    set index to 0
+    repeat while index < length_list(calls):
+        set role to capability_role(tool_capability(archive_list_text(calls and index + 1)))
+        if string_length(role) equals 0:
+            return 0
+        if role equals "admin" and group_privileged_audience_allows(database and archive_list_text(calls and index)) equals 0:
+            return 0
+        set index to index + 2
+    return 1

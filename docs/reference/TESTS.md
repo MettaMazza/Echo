@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T07:45:40.305400+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T07:55:08.792275+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -799,9 +799,9 @@ Imports: ../../app/context/recap_review_coverage → app/context/recap_review_co
 
 ## tests/context/test_recap_sources.ep
 
-[Source](../../tests/context/test_recap_sources.ep) · 53 lines · 3433 bytes
+[Source](../../tests/context/test_recap_sources.ep) · 55 lines · 3521 bytes
 
-SHA-256: `03561b933e2a5f0b221ddbe8e0e52886b85be12073c03f62116b9c6c3f22f920`
+SHA-256: `c54559a82a6c4acb97c1222b8500b6ed80162de194aaae4ca959286096c81a14`
 
 
 Imports: ../../app/context/recap_sources → app/context/recap_sources.ep, ../fixtures/runner_provider → tests/fixtures/runner_provider.ep
@@ -1706,15 +1706,15 @@ Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/a
 
 ## tests/security/test_group_output_policy.ep
 
-[Source](../../tests/security/test_group_output_policy.ep) · 55 lines · 5719 bytes
+[Source](../../tests/security/test_group_output_policy.ep) · 85 lines · 7868 bytes
 
-SHA-256: `fb33dda5d0633ddd6c02f849d05638cdc71a98fbddfcef7240808d5f722aeee0`
+SHA-256: `45ea7c4cb96536966c13b7fd96325d2ef1811aa3fa3338585fac1727127bd4d2`
 
 
-Imports: ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+Imports: ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/context/recap_sources → app/context/recap_sources.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
-- Line 7: `define audience_fixture_run with database as Int and identity as Str and path as Str returning Int:`
-- Line 21: `define main returning Int:`
+- Line 8: `define audience_fixture_run with database as Int and identity as Str and path as Str returning Int:`
+- Line 22: `define main returning Int:`
 
 ## tests/security/test_group_output_read.ep
 
