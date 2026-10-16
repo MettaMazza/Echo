@@ -61,3 +61,6 @@ Tool policy qualification (16 October): existing tools now have explicit capabil
 
 
 Host-browser enrolment visibility (16 October): Options now refreshes authenticated device/principal/role from `/api/identity`, enabling the host operator to select the exact browser for the existing audited CLI grant. A separate native candidate server passed HTTP tests for ordinary access, forged role/device/header rejection as authority, visible host-local admin grant, unchanged second user, revoked credential denial, ordinary-user restoration and unknown credential denial. No token or credential hash is returned. Browser JavaScript emitted successfully; physical-browser UI acceptance and production deployment remain pending.
+
+
+Real host-browser acceptance (16 October): paired a disposable browser through the actual invitation form on the candidate server; Options showed user, then admin after an audited CLI grant, then user again after a CLI downgrade. Each change refreshed on reopening Options. Screenshots and accessibility evidence are retained privately with public hashes. The first candidate launch omitted ECHO_UI_ASSETS and therefore lacked the audio-controls module; the test launch was corrected and the full UI loaded. The disposable server and tab were stopped after acceptance. No production grant or deployment occurred; phone acceptance remains separate.

@@ -21,6 +21,8 @@ Generate the browser client with the existing reference compiler:
 ./target/release/ernos emit /PATH/TO/Echo/app/ui/client.ep --js -o /PATH/TO/echo-runtime/ui/modern.js
 ```
 
+Set `ECHO_UI_ASSETS` when launching a candidate server, just as the installed service does. Emitting `client.ep` alone does not provide the separately loaded audio-controls module; omitting the assets directory can leave startup at “Connecting…” with a missing-function error.
+
 Generate the audio and math worker modules from `app/ui/` into the host UI asset directory, preserving the filenames selected in `app/ui/assets.ep` and the page's script URLs. Third-party highlight/math assets are separate local dependencies. Native parser rejection of a browser-only source is not equivalent to JavaScript emission failure.
 
 ## Tests
