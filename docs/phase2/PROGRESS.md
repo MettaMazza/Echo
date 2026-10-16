@@ -79,3 +79,6 @@ Host-read latency diagnosis (16 October): correlated the two archived provider r
 
 
 Concurrent full-context candidate started (16 October): the installed llama.cpp build exposes kv-unified-per-slot. Derived 262,144 tokens from the exact active model’s reported training context and launched a separate loopback candidate with two slots and a 524,288-token shared KV pool, preserving 262,144 per slot. No application context ceiling was added and the production provider remains unchanged. The candidate process was observed live and its health endpoint reported Loading model; production health remained OK. Capacity, simultaneous generation, memory use and full-context acceptance are not yet verified. Candidate process/profile/log records are retained privately under evidence/phase2/llama-parallel-candidate*.
+
+
+Concurrency candidate follow-up: loaded in approximately 23 seconds from cached local weights. Both slots reported the full model context; simultaneous short generations were observed in both slots and completed in 6.01 seconds each (128-token measurement outputs, not a production output limit). Started two independently token-counted near-full-context recall requests with output room reserved within each model-derived capacity. The long test is still running; this is not full-context acceptance or production promotion.
