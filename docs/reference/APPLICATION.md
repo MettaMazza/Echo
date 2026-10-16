@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T10:35:32.065595+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:39:45.865552+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1450,6 +1450,29 @@ Imports: controller_bundle → app/lifecycle/controller_bundle.ep
 - Line 5: `define controller_bundle_entry with manifest as Str and name as Str and kind as Str returning Int:`
 - Line 18: `define controller_bundle_profile with manifest as Str and expected as Str and parent as Str and executable as Str and configuration as Str returning Str:`
 - Line 32: `define controller_bundle_launch with manifest as Str and expected as Str and parent as Str and executable as Str and configuration as Str and check_only as Int returning Int:`
+
+## app/lifecycle/controller_ledger.ep
+
+[Source](../../app/lifecycle/controller_ledger.ep) · 94 lines · 4721 bytes
+
+SHA-256: `aa1d8570afb207f42209fefd9c5d1bcf6eaad8b5468536f428acf20f4841535e`
+
+> The controller's mutable archive is separate from the runtime archive. Its
+> directory and every SQLite file must be root-only, not merely root-writable.
+> Validate an optional journal inode without following links. Absence is valid;
+> unreadability, hard links, ACL grants and any other error are not absence.
+> Called only by the installed controller, before handling requests. No schema,
+> authority or approval is copied from an untrusted runtime database here.
+> Darwin O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode0600.
+> The retained private directory and its root-owned ancestors exclude
+> replacement by the runtime account while SQLite opens the validated path.
+
+Imports: protected_path → app/lifecycle/protected_path.ep, ../archive/event_store → app/archive/event_store.ep
+
+- Line 6: `define controller_private_inode with library as Int and descriptor as Int and directory as Int returning Int:`
+- Line 25: `define controller_ledger_sidecar with library as Int and directory as Int and name as Str returning Int:`
+- Line 38: `define controller_ledger_open with directory_path as Str and name as Str returning Int:`
+- Line 64: `define controller_ledger_open_inside with library as Int and directory as Int and directory_path as Str and name as Str returning Int:`
 
 ## app/lifecycle/migrations.ep
 

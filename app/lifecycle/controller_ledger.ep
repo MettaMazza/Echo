@@ -1,0 +1,94 @@
+import "protected_path"
+import "../archive/event_store"
+
+# The controller's mutable archive is separate from the runtime archive. Its
+# directory and every SQLite file must be root-only, not merely root-writable.
+define controller_private_inode with library as Int and descriptor as Int and directory as Int returning Int:
+    if protected_inode_owned(library and descriptor and directory) equals 0:
+        return 0
+    set inspect to ep_dlsym(library and "fstat")
+    set information to create_list()
+    set index to 0
+    repeat while index < 18:
+        set added to append_list(information and 0)
+        set index to index + 1
+    set pointer to get_list_data_ptr(information)
+    if ep_dlcall2(inspect and descriptor and pointer) is not equal to 0:
+        return 0
+    set mode to peek_byte(pointer and 4) + peek_byte(pointer and 5) * 256
+    if directory equals 1:
+        return mode % 4096 equals 448
+    return mode % 4096 equals 384
+
+# Validate an optional journal inode without following links. Absence is valid;
+# unreadability, hard links, ACL grants and any other error are not absence.
+define controller_ledger_sidecar with library as Int and directory as Int and name as Str returning Int:
+    set open_at to ep_dlsym(library and "openat")
+    set descriptor to socket_signed_result(ep_dlcall3(open_at and directory and str_to_ptr(name) and 16777476))
+    if descriptor < 0:
+        return socket_errno(library) equals 2
+    set valid to controller_private_inode(library and descriptor and 0)
+    set closed to net_close(descriptor)
+    if valid equals 1 and closed equals 0:
+        return 1
+    return 0
+
+# Called only by the installed controller, before handling requests. No schema,
+# authority or approval is copied from an untrusted runtime database here.
+define controller_ledger_open with directory_path as Str and name as Str returning Int:
+    set parts to workspace_path_parts(name)
+    if parts equals 0 or else length_list(parts) is not equal to 1:
+        return 0
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 0
+    set effective_user to ep_dlsym(library and "geteuid")
+    if effective_user equals 0 or else ep_dlcall0(effective_user) is not equal to 0:
+        set released to ep_dlclose(library)
+        return 0
+    set directory to protected_path_open(library and directory_path and 1)
+    if directory < 0:
+        set released to ep_dlclose(library)
+        return 0
+    set database to 0
+    if controller_private_inode(library and directory and 1) equals 1:
+        set database to controller_ledger_open_inside(library and directory and directory_path and name)
+    set closed to net_close(directory)
+    set released to ep_dlclose(library)
+    if closed is not equal to 0 or else released is not equal to 0:
+        if database is not equal to 0:
+            set closed to sql_close(database)
+        return 0
+    return database
+
+define controller_ledger_open_inside with library as Int and directory as Int and directory_path as Str and name as Str returning Int:
+    set open_at to ep_dlsym(library and "openat")
+    set flush to ep_dlsym(library and "fsync")
+    if open_at equals 0 or else flush equals 0:
+        return 0
+    # Darwin O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode0600.
+    set descriptor to socket_signed_result(ep_dlcall4(open_at and directory and str_to_ptr(name) and 16780034 and 384))
+    if descriptor < 0:
+        if socket_errno(library) is not equal to 17:
+            return 0
+        set descriptor to socket_signed_result(ep_dlcall3(open_at and directory and str_to_ptr(name) and 16777478))
+    if descriptor < 0:
+        return 0
+    set valid to controller_private_inode(library and descriptor and 0)
+    set flushed to ep_dlcall1(flush and descriptor)
+    set closed to net_close(descriptor)
+    if valid equals 0 or else flushed is not equal to 0 or else closed is not equal to 0 or else ep_dlcall1(flush and directory) is not equal to 0:
+        return 0
+    for each suffix in ["-journal", "-wal", "-shm"]:
+        if controller_ledger_sidecar(library and directory and concat(name and ptr_to_str(suffix))) equals 0:
+            return 0
+    # The retained private directory and its root-owned ancestors exclude
+    # replacement by the runtime account while SQLite opens the validated path.
+    set database to archive_open(concat(directory_path and concat("/" and name)))
+    if database equals 0:
+        return 0
+    for each suffix in ["", "-journal", "-wal", "-shm"]:
+        if controller_ledger_sidecar(library and directory and concat(name and ptr_to_str(suffix))) equals 0:
+            set closed to sql_close(database)
+            return 0
+    return database

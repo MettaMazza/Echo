@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T10:35:32.065595+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:39:45.865552+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1036,6 +1036,33 @@ SHA-256: `283ed74facd106718fac36517bd441a90af8b07fb050c0ea37f8d949fd8bd387`
 Imports: ../../app/lifecycle/controller_launch → app/lifecycle/controller_launch.ep, ../../app/workspace/native_process → app/workspace/native_process.ep, fs → standard library or compiler dependency
 
 - Line 7: `define main returning Int:`
+
+## tests/lifecycle/test_controller_ledger.ep
+
+[Source](../../tests/lifecycle/test_controller_ledger.ep) · 23 lines · 1205 bytes
+
+SHA-256: `ab243ce238ae6882c107831ad4ba7c6222b36daa55b517353560c209ae3365cc`
+
+> This process is intentionally unprivileged. It must not create a database,
+> even inside an otherwise writable directory supplied by its caller.
+
+Imports: ../../app/lifecycle/controller_ledger → app/lifecycle/controller_ledger.ep
+
+- Line 5: `define main returning Int:`
+
+## tests/lifecycle/test_controller_ledger_privileged.ep
+
+[Source](../../tests/lifecycle/test_controller_ledger_privileged.ep) · 54 lines · 3889 bytes
+
+SHA-256: `2d9d9742307f3d97300932aa5cb5475a45beaf642cee20b729ceb1956d2d1adf`
+
+> This fixture changes only its newly created directory. It neither installs a
+> controller nor opens the production archive. A pre-existing directory aborts.
+> A public ledger file and a public state directory must both be refused.
+
+Imports: ../../app/lifecycle/controller_ledger → app/lifecycle/controller_ledger.ep
+
+- Line 5: `define main returning Int:`
 
 ## tests/lifecycle/test_guardian_readiness.ep
 
