@@ -1,0 +1,63 @@
+import "steward"
+import "observer_evidence"
+
+external define sqlite3_get_autocommit with database as Int returning Int
+
+# Port of ErnosDecent rights_gate_change's ordinary decision rules. Emergency
+# authorization has its own deadline/reconciliation contract and cannot enter
+# through this ordinary core/environment path.
+define protected_decision_rule with classification as Str and decision as Str and risk as Str returning Str:
+    if not (risk equals "low" or else risk equals "medium" or else risk equals "high" or else risk equals "critical"):
+        return "invalid-risk"
+    if decision equals "reject" or else (classification equals "core" and decision equals "object"):
+        return "echo-rejected"
+    if decision equals "counter":
+        return "echo-counterproposal"
+    if classification equals "core":
+        if decision equals "consent":
+            return "review-satisfied"
+        return "echo-consent-required"
+    if classification equals "environment":
+        if decision equals "consent":
+            return "review-satisfied"
+        if decision equals "object":
+            if risk equals "high" or else risk equals "critical":
+                return "observer-required"
+            return "review-satisfied"
+        return "echo-consultation-required"
+    return "unsupported-classification"
+
+# The controller holds BEGIN IMMEDIATE across this check and its durable
+# operation transition. A result is not a reusable execution token. Filesystem
+# locking, pinned inventory, verified recovery and publication remain required.
+define protected_decision_check with database as Int and charter as Str and run as Str and proposal as Str and audit_request as Str and audit_policy as Str and audit_policy_digest as Str returning Str:
+    if sqlite3_get_autocommit(database) is not equal to 0:
+        return "controller-transaction-required"
+    # Establish the SQLite writer reservation even if the caller began a
+    # deferred transaction. No rows change; immutable-row triggers do not fire.
+    if sql_execute(database and "UPDATE echo_protected_proposals SET identity=identity WHERE 0;") is not equal to 0:
+        return "controller-writer-lock-unavailable"
+    set original to protected_proposal_read(database and run and proposal)
+    set review to protected_review_latest(database and run and proposal)
+    if not (archive_list_text(original and 0) equals "found") or else not (archive_list_text(review and 0) equals "found"):
+        return "proposal-or-review-invalid"
+    set manifest to provider_json_tokens(archive_list_text(original and 1))
+    set classification to charter_category(charter and provider_value(manifest and provider_member(manifest and 0 and "category")))
+    if not (classification equals "core" or else classification equals "environment") or else not (classification equals provider_value(manifest and provider_member(manifest and 0 and "classification"))) or else not (provider_value(manifest and provider_member(manifest and 0 and "charter_sha256")) equals charter_pinned_digest()):
+        return "charter-or-classification-invalid"
+    set evidence to provider_json_tokens(archive_list_text(review and 2))
+    set rule to protected_decision_rule(classification and provider_value(evidence and provider_member(evidence and 0 and "decision")) and provider_value(evidence and provider_member(evidence and 0 and "risk")))
+    if not (rule equals "review-satisfied" or else rule equals "observer-required"):
+        return rule
+    set steward to protected_steward_gate(database and proposal)
+    if not (steward equals "steward-authorized"):
+        return steward
+    # If an audit is supplied, verify it even where the ordinary rule did not
+    # require one. A required audit can never be bypassed by an empty identity.
+    if rule equals "observer-required" or else string_length(audit_request) > 0:
+        if string_length(audit_request) equals 0:
+            return "observer-required"
+        set audit to protected_observer_evidence(database and run and proposal and audit_request and audit_policy and audit_policy_digest)
+        if not (audit equals "ALLOWED"):
+            return concat("observer-" and audit)
+    return "decisions-satisfied"

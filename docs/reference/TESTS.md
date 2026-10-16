@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T03:53:04.075569+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:57:20.599685+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1515,6 +1515,18 @@ SHA-256: `e229d1f485f98b2f3199b56c1d30e19a0739958b6394f7c6604c586d3818fb51`
 Imports: ../../app/rights/charter → app/rights/charter.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/security/test_decision_gate.ep
+
+[Source](../../tests/security/test_decision_gate.ep) · 60 lines · 5487 bytes
+
+SHA-256: `84656699159c8035561d355c9e5e75e3f1691fad504090336c969e3ffc43eec1`
+
+
+Imports: ../../app/rights/decision_gate → app/rights/decision_gate.ep
+
+- Line 3: `define decision_fixture_check with database as Int and charter as Str and audit as Str and policy as Str returning Str:`
+- Line 11: `define main returning Int:`
 
 ## tests/security/test_device_links.ep
 

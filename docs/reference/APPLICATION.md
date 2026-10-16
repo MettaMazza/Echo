@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T03:53:04.075569+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:57:20.599685+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2315,6 +2315,29 @@ Imports: ../archive/file_digest → app/archive/file_digest.ep, ../providers/arc
 - Line 7: `define charter_pinned_digest returning Str:`
 - Line 12: `define charter_verified_text with path as Str returning Str:`
 - Line 29: `define charter_category with path as Str and category as Str returning Str:`
+
+## app/rights/decision_gate.ep
+
+[Source](../../app/rights/decision_gate.ep) · 63 lines · 4216 bytes
+
+SHA-256: `ff71aa6ac07208d0a3b31aa0cd4f33c8e7fe7d1b9c2796831acfd08011c62bca`
+
+> Port of ErnosDecent rights_gate_change's ordinary decision rules. Emergency
+> authorization has its own deadline/reconciliation contract and cannot enter
+> through this ordinary core/environment path.
+> The controller holds BEGIN IMMEDIATE across this check and its durable
+> operation transition. A result is not a reusable execution token. Filesystem
+> locking, pinned inventory, verified recovery and publication remain required.
+> Establish the SQLite writer reservation even if the caller began a
+> deferred transaction. No rows change; immutable-row triggers do not fire.
+> If an audit is supplied, verify it even where the ordinary rule did not
+> require one. A required audit can never be bypassed by an empty identity.
+
+Imports: steward → app/rights/steward.ep, observer_evidence → app/rights/observer_evidence.ep
+
+- Line 4: `external define sqlite3_get_autocommit with database as Int returning Int`
+- Line 9: `define protected_decision_rule with classification as Str and decision as Str and risk as Str returning Str:`
+- Line 33: `define protected_decision_check with database as Int and charter as Str and run as Str and proposal as Str and audit_request as Str and audit_policy as Str and audit_policy_digest as Str returning Str:`
 
 ## app/rights/files.ep
 
