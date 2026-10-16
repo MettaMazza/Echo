@@ -53,7 +53,7 @@ flowchart LR
     G --> C
 ```
 
-**431 application and test source files** are indexed with hashes, imports and definition signatures. The forensic reference distinguishes implemented behavior, observed tests and deferred work. It does not turn a file count into a test-coverage claim.
+**433 application and test source files** are indexed with hashes, imports and definition signatures. The forensic reference distinguishes implemented behavior, observed tests and deferred work. It does not turn a file count into a test-coverage claim.
 
 | You want to… | Start here |
 | --- | --- |

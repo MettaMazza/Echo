@@ -1,0 +1,121 @@
+import "files"
+
+define protected_stage_flush_parent with path as Str returning Int:
+    set slash to -1
+    set index to 0
+    repeat while index < string_length(path):
+        if get_character(path and index) equals 47:
+            set slash to index
+        set index to index + 1
+    if slash < 1:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 1
+    set flush to ep_dlsym(library and "fsync")
+    set directory to workspace_root_open(library and ptr_to_str(substring(path and 0 and slash)))
+    if directory < 0 or else flush equals 0:
+        if directory >= 0:
+            set closed to net_close(directory)
+        set closed to ep_dlclose(library)
+        return 1
+    set flushed to ep_dlcall1(flush and directory)
+    set closed to net_close(directory)
+    set released to ep_dlclose(library)
+    if flushed is not equal to 0 or else closed is not equal to 0:
+        return 1
+    return 0
+
+# Controller-owned stage paths only. Open each component without following
+# symlinks, create exclusively, and retain failed copies for diagnosis. Existing
+# complete copies may be reused only after their full digest is reverified.
+define protected_stage_copy with source as Str and destination as Str and expected_digest as Str returning Str:
+    if source equals destination or else protected_digest_valid(expected_digest) equals 0 or else string_length(source) < 2 or else string_length(destination) < 2 or else get_character(source and 0) is not equal to 47 or else get_character(destination and 0) is not equal to 47:
+        return "invalid-stage-path"
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "unavailable"
+    set root to workspace_root_open(library and "/")
+    if root < 0:
+        set closed to ep_dlclose(library)
+        return "root-unavailable"
+    set relative_source to ptr_to_str(substring(source and 1 and string_length(source) - 1))
+    set relative_destination to ptr_to_str(substring(destination and 1 and string_length(destination) - 1))
+    set input to workspace_file_open(library and root and relative_source and 0)
+    if input < 0:
+        set closed to net_close(root)
+        set closed to ep_dlclose(library)
+        return "source-unreadable"
+    set output to workspace_file_open(library and root and relative_destination and 1)
+    if output < 0:
+        set existing_descriptor to workspace_file_open(library and root and relative_destination and 0)
+        set closed to net_close(root)
+        set closed to net_close(input)
+        set closed to ep_dlclose(library)
+        if existing_descriptor < 0:
+            return "stage-exists-or-unavailable"
+        set closed to net_close(existing_descriptor)
+        set existing to file_digest_durable(destination and 65536)
+        if archive_list_text(existing and 0) equals "verified" and archive_list_text(existing and 1) equals expected_digest:
+            if protected_stage_flush_parent(destination) is not equal to 0:
+                return "stage-directory-flush-failed"
+            return "already-staged"
+        return "stage-exists-or-unavailable"
+    set closed to net_close(root)
+    set allocate to ep_dlsym(library and "malloc")
+    set release to ep_dlsym(library and "free")
+    set read_function to ep_dlsym(library and "read")
+    if allocate equals 0 or else release equals 0 or else read_function equals 0:
+        set closed to net_close(input)
+        set closed to net_close(output)
+        set closed to ep_dlclose(library)
+        return "unavailable"
+    set buffer to ep_dlcall1(allocate and 65536)
+    set status to "copied"
+    if buffer equals 0 or else read_function equals 0:
+        set status to "allocation-or-reader-failed"
+    repeat while status equals "copied":
+        set count to socket_signed_result(ep_dlcall3(read_function and input and buffer and 65536))
+        if count equals 0:
+            break
+        if count < 0:
+            if socket_errno(library) equals 4:
+                continue
+            set status to "read-failed"
+            break
+        if count > 65536 or else file_stage_write(library and output and buffer and count) is not equal to 0:
+            set status to "write-failed"
+    if buffer is not equal to 0:
+        set freed to ep_dlcall1(release and buffer)
+    set input_closed to net_close(input)
+    set output_finished to file_stage_finish(library and output)
+    if input_closed is not equal to 0 or else output_finished is not equal to 0:
+        set status to "close-or-flush-failed"
+    set closed to ep_dlclose(library)
+    if not (status equals "copied"):
+        return status
+    set copied to file_digest_durable(destination and 65536)
+    if not (archive_list_text(copied and 0) equals "verified") or else not (archive_list_text(copied and 1) equals expected_digest):
+        return "stage-digest-mismatch"
+    if protected_stage_flush_parent(destination) is not equal to 0:
+        return "stage-directory-flush-failed"
+    return "staged"
+
+# Stage recovery and candidate copies without publishing to the original target.
+# This is not a deployment gate: protected directory ownership, durable receipt,
+# publication locking, steward/Observer consent and rollback remain independent.
+define protected_stage_pair with charter as Str and inventory as Str and inventory_digest as Str and manifest as Str and candidate as Str and original_stage as Str and candidate_stage as Str returning Str:
+    set preflight to protected_file_check(charter and inventory and inventory_digest and manifest and candidate)
+    if not (preflight equals "bytes-match"):
+        return preflight
+    set tokens to provider_json_tokens(manifest)
+    set target to provider_value(tokens and provider_member(tokens and 0 and "target"))
+    if original_stage equals candidate_stage or else original_stage equals target or else original_stage equals candidate or else candidate_stage equals target or else candidate_stage equals candidate:
+        return "invalid-stage-path"
+    set original to protected_stage_copy(target and original_stage and provider_value(tokens and provider_member(tokens and 0 and "before_sha256")))
+    if not (original equals "staged" or else original equals "already-staged"):
+        return concat("original:" and original)
+    set proposed to protected_stage_copy(candidate and candidate_stage and provider_value(tokens and provider_member(tokens and 0 and "proposed_sha256")))
+    if not (proposed equals "staged" or else proposed equals "already-staged"):
+        return concat("candidate:" and proposed)
+    return "copies-staged"

@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T03:22:22.997803+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:27:53.762557+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2411,6 +2411,25 @@ Imports: proposals → app/rights/proposals.ep
 - Line 5: `define protected_review_schema with database as Int returning Str:`
 - Line 13: `define protected_review_store with database as Int and run as Str and call_id as Str returning Str:`
 - Line 67: `define protected_review_latest with database as Int and run as Str and identity as Str returning List:`
+
+## app/rights/staging.ep
+
+[Source](../../app/rights/staging.ep) · 121 lines · 6642 bytes
+
+SHA-256: `ddc5ffa31c0f99c816ca83903957649ec74430bc57b140a694fa2e91f8736936`
+
+> Controller-owned stage paths only. Open each component without following
+> symlinks, create exclusively, and retain failed copies for diagnosis. Existing
+> complete copies may be reused only after their full digest is reverified.
+> Stage recovery and candidate copies without publishing to the original target.
+> This is not a deployment gate: protected directory ownership, durable receipt,
+> publication locking, steward/Observer consent and rollback remain independent.
+
+Imports: files → app/rights/files.ep
+
+- Line 3: `define protected_stage_flush_parent with path as Str returning Int:`
+- Line 32: `define protected_stage_copy with source as Str and destination as Str and expected_digest as Str returning Str:`
+- Line 107: `define protected_stage_pair with charter as Str and inventory as Str and inventory_digest as Str and manifest as Str and candidate as Str and original_stage as Str and candidate_stage as Str returning Str:`
 
 ## app/security/accounts.ep
 
