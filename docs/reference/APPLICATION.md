@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T03:27:53.762557+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:34:49.578417+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2430,6 +2430,33 @@ Imports: files → app/rights/files.ep
 - Line 3: `define protected_stage_flush_parent with path as Str returning Int:`
 - Line 32: `define protected_stage_copy with source as Str and destination as Str and expected_digest as Str returning Str:`
 - Line 107: `define protected_stage_pair with charter as Str and inventory as Str and inventory_digest as Str and manifest as Str and candidate as Str and original_stage as Str and candidate_stage as Str returning Str:`
+
+## app/rights/steward.ep
+
+[Source](../../app/rights/steward.ep) · 146 lines · 12921 bytes
+
+SHA-256: `9cb3993dc944c855e1b5119403a0d7a295a44d0802fc4414c71014b9ab481510`
+
+> Human-interface boundary only. Never register this as a model tool. A steward
+> is explicitly enrolled by the host; ordinary admin is insufficient. Production
+> use also requires the protected controller and authenticated human UI path.
+> Verify the complete stored decision sequence before deriving state or appending.
+> This detects damaged fields and missing earlier revisions; OS protection and
+> an external audit anchor are still needed against deliberate whole-ledger rewrite.
+> The bearer credential is verified but never stored in the decision ledger.
+> CAS and frozen authority prevent old requests from overriding later intent.
+> Independent steward gate only. A positive result is never the complete
+> deployment decision: inventory, Echo consent, Observer and recovery gates
+> must also pass under the controller's publication transaction/lock.
+
+Imports: reviews → app/rights/reviews.ep, ../web/devices → app/web/devices.ep
+
+- Line 7: `define protected_steward_schema with database as Int returning Str:`
+- Line 13: `define protected_steward_digest with values as List returning Str:`
+- Line 24: `define protected_steward_integrity with database as Int and proposal as Str returning Int:`
+- Line 45: `define protected_steward_actor with database as Int and credential as Str returning List:`
+- Line 55: `define protected_steward_decide with database as Int and credential as Str and identity as Str and proposal as Str and manifest_digest as Str and review_revision as Int and previous_revision as Int and decision as Str and reason as Str returning Str:`
+- Line 114: `define protected_steward_gate with database as Int and proposal as Str returning Str:`
 
 ## app/security/accounts.ep
 

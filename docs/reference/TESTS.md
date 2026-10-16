@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T03:27:53.762557+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:34:49.578417+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1715,6 +1715,18 @@ SHA-256: `c76474923c1958e8e8a2e57f5d35f2910377fb0edd8f8e045cbe8afe2b0ce162`
 Imports: ../../app/rights/staging → app/rights/staging.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/security/test_protected_steward.ep
+
+[Source](../../tests/security/test_protected_steward.ep) · 46 lines · 5179 bytes
+
+SHA-256: `00dc46caaf0acbb73ae1d1a33039a16296250a09f215ce22b172c464d5d4346f`
+
+> Use a disposable backup of test_live_protected_tools, never the live archive.
+
+Imports: ../../app/rights/steward → app/rights/steward.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/security/test_protected_tools.ep
 

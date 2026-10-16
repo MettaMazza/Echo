@@ -1,0 +1,146 @@
+import "reviews"
+import "../web/devices"
+
+# Human-interface boundary only. Never register this as a model tool. A steward
+# is explicitly enrolled by the host; ordinary admin is insufficient. Production
+# use also requires the protected controller and authenticated human UI path.
+define protected_steward_schema with database as Int returning Str:
+    set prior to protected_review_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 13 and "protected-steward-decisions" and "CREATE TABLE echo_protected_steward(sequence INTEGER PRIMARY KEY AUTOINCREMENT,identity TEXT NOT NULL UNIQUE,proposal TEXT NOT NULL REFERENCES echo_protected_proposals(identity),manifest_digest TEXT NOT NULL,review_revision INTEGER NOT NULL CHECK(review_revision>=0),previous_revision INTEGER NOT NULL CHECK(previous_revision>=0),device TEXT NOT NULL REFERENCES echo_devices(device),principal TEXT NOT NULL REFERENCES echo_principals(identity),role_revision INTEGER NOT NULL,revocation_revision INTEGER NOT NULL,link_revision INTEGER NOT NULL,decision TEXT NOT NULL CHECK(decision IN ('authorize','withdraw','reject')),reason TEXT NOT NULL,receipt_digest TEXT NOT NULL,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')),UNIQUE(proposal,previous_revision)); CREATE TRIGGER echo_protected_steward_no_update BEFORE UPDATE ON echo_protected_steward BEGIN SELECT RAISE(ABORT,'Steward decisions are immutable'); END; CREATE TRIGGER echo_protected_steward_no_delete BEFORE DELETE ON echo_protected_steward BEGIN SELECT RAISE(ABORT,'Steward decisions are immutable'); END;")
+
+define protected_steward_digest with values as List returning Str:
+    set canonical to ""
+    set index to 0
+    repeat while index < 12:
+        set canonical to concat(canonical and provider_quote(archive_list_text(values and index)))
+        set index to index + 1
+    return ep_sha256(canonical)
+
+# Verify the complete stored decision sequence before deriving state or appending.
+# This detects damaged fields and missing earlier revisions; OS protection and
+# an external audit anchor are still needed against deliberate whole-ledger rewrite.
+define protected_steward_integrity with database as Int and proposal as Str returning Int:
+    set revision to 0
+    repeat while 1 equals 1:
+        set values to create_list()
+        set added to append_list(values and proposal)
+        set added to append_list(values and int_to_string(revision))
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT identity,proposal,manifest_digest,review_revision,previous_revision,device,principal,role_revision,revocation_revision,link_revision,decision,reason,receipt_digest FROM echo_protected_steward WHERE proposal=?1 AND previous_revision>=CAST(?2 AS INTEGER) ORDER BY previous_revision LIMIT 1;" and values))
+        if archive_list_text(row and 0) equals "end":
+            return 1
+        if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 5) equals int_to_string(revision)):
+            return 0
+        set fields to create_list()
+        set index to 1
+        repeat while index <= 12:
+            set added to append_list(fields and archive_list_text(row and index))
+            set index to index + 1
+        if not (protected_steward_digest(fields) equals archive_list_text(row and 13)):
+            return 0
+        set revision to revision + 1
+    return 0
+
+define protected_steward_actor with database as Int and credential as Str returning List:
+    set device to web_device_authenticate(database and credential)
+    if string_length(device) equals 0:
+        return history_status("not-authorized")
+    set values to create_list()
+    set added to append_list(values and device)
+    return history_collect_one(checkpoint_prepare(database and "SELECT d.device,p.identity,(SELECT COUNT(*) FROM echo_authority_events a WHERE a.principal=p.identity),(SELECT COUNT(*) FROM echo_principal_revocations v WHERE v.principal=p.identity),(SELECT COUNT(*) FROM echo_device_link_events l WHERE l.device=d.device) FROM echo_devices d JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE d.device=? AND d.revoked=0 AND p.revoked=0 AND p.role='steward';" and values))
+
+# The bearer credential is verified but never stored in the decision ledger.
+# CAS and frozen authority prevent old requests from overriding later intent.
+define protected_steward_decide with database as Int and credential as Str and identity as Str and proposal as Str and manifest_digest as Str and review_revision as Int and previous_revision as Int and decision as Str and reason as Str returning Str:
+    if string_length(identity) equals 0 or else protected_digest_valid(manifest_digest) equals 0 or else review_revision < 0 or else previous_revision < 0 or else string_length(string_trim(reason)) equals 0 or else not (decision equals "authorize" or else decision equals "withdraw" or else decision equals "reject"):
+        return "invalid-decision"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set actor to protected_steward_actor(database and credential)
+    if not (archive_list_text(actor and 0) equals "found"):
+        return migration_fail(database and "not-authorized")
+    if protected_steward_integrity(database and proposal) equals 0:
+        return migration_fail(database and "steward-history-invalid")
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and proposal)
+    set added to append_list(values and manifest_digest)
+    set added to append_list(values and int_to_string(review_revision))
+    set added to append_list(values and int_to_string(previous_revision))
+    set index to 1
+    repeat while index < length_list(actor):
+        set added to append_list(values and archive_list_text(actor and index))
+        set index to index + 1
+    set added to append_list(values and decision)
+    set added to append_list(values and reason)
+    set added to append_list(values and protected_steward_digest(values))
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN proposal=?2 AND manifest_digest=?3 AND review_revision=CAST(?4 AS INTEGER) AND previous_revision=CAST(?5 AS INTEGER) AND device=?6 AND principal=?7 AND role_revision=CAST(?8 AS INTEGER) AND revocation_revision=CAST(?9 AS INTEGER) AND link_revision=CAST(?10 AS INTEGER) AND decision=?11 AND reason=?12 AND receipt_digest=?13 THEN 'same' ELSE 'different' END FROM echo_protected_steward WHERE identity=?1;" and values))
+    if archive_list_text(saved and 0) equals "found":
+        if not (archive_list_text(saved and 1) equals "same"):
+            return migration_fail(database and "decision-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(saved and 0) equals "end"):
+        return migration_fail(database and "decision-read-failed")
+    set lookup to create_list()
+    set added to append_list(lookup and proposal)
+    set original to history_collect_one(checkpoint_prepare(database and "SELECT run,manifest,manifest_digest,(SELECT COUNT(*) FROM echo_protected_steward s WHERE s.proposal=p.identity) FROM echo_protected_proposals p WHERE identity=?;" and lookup))
+    if not (archive_list_text(original and 0) equals "found") or else not (archive_list_text(original and 3) equals manifest_digest) or else not (ep_sha256(archive_list_text(original and 2)) equals manifest_digest):
+        return migration_fail(database and "proposal-mismatch")
+    if not (archive_list_text(original and 4) equals int_to_string(previous_revision)):
+        return migration_fail(database and "revision-conflict")
+    if decision equals "authorize":
+        set review to protected_review_latest(database and archive_list_text(original and 1) and proposal)
+        if not (archive_list_text(review and 0) equals "found") or else not (archive_list_text(review and 1) equals int_to_string(review_revision)):
+            return migration_fail(database and "review-mismatch")
+        set reviewed to provider_json_tokens(archive_list_text(review and 2))
+        set echo_decision to provider_value(reviewed and provider_member(reviewed and 0 and "decision"))
+        set manifest to provider_json_tokens(archive_list_text(original and 2))
+        set classification to provider_value(manifest and provider_member(manifest and 0 and "classification"))
+        if not (echo_decision equals "consent" or else (classification equals "environment" and echo_decision equals "object")):
+            return migration_fail(database and "echo-review-blocks-authorization")
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_protected_steward(identity,proposal,manifest_digest,review_revision,previous_revision,device,principal,role_revision,revocation_revision,link_revision,decision,reason,receipt_digest) VALUES(?1,?2,?3,CAST(?4 AS INTEGER),CAST(?5 AS INTEGER),?6,?7,CAST(?8 AS INTEGER),CAST(?9 AS INTEGER),CAST(?10 AS INTEGER),?11,?12,?13);" and values)
+    if statement equals 0 or else archive_finish(statement and 101) is not equal to 0:
+        return migration_fail(database and "decision-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+# Independent steward gate only. A positive result is never the complete
+# deployment decision: inventory, Echo consent, Observer and recovery gates
+# must also pass under the controller's publication transaction/lock.
+define protected_steward_gate with database as Int and proposal as Str returning Str:
+    if protected_steward_integrity(database and proposal) equals 0:
+        return "steward-receipt-invalid"
+    set values to create_list()
+    set added to append_list(values and proposal)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT identity,proposal,manifest_digest,review_revision,previous_revision,device,principal,role_revision,revocation_revision,link_revision,decision,reason,receipt_digest FROM echo_protected_steward WHERE proposal=? ORDER BY previous_revision DESC LIMIT 1;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "steward-decision-missing"
+    set fields to create_list()
+    set index to 1
+    repeat while index <= 12:
+        set added to append_list(fields and archive_list_text(row and index))
+        set index to index + 1
+    if not (protected_steward_digest(fields) equals archive_list_text(row and 13)):
+        return "steward-receipt-invalid"
+    if not (archive_list_text(row and 11) equals "authorize"):
+        return concat("steward-" and archive_list_text(row and 11))
+    set actor_values to create_list()
+    set added to append_list(actor_values and archive_list_text(row and 6))
+    set added to append_list(actor_values and archive_list_text(row and 7))
+    set added to append_list(actor_values and archive_list_text(row and 8))
+    set added to append_list(actor_values and archive_list_text(row and 9))
+    set added to append_list(actor_values and archive_list_text(row and 10))
+    set actor to history_collect_one(checkpoint_prepare(database and "SELECT d.device FROM echo_devices d JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE d.device=?1 AND p.identity=?2 AND d.revoked=0 AND p.revoked=0 AND p.role='steward' AND (SELECT COUNT(*) FROM echo_authority_events a WHERE a.principal=p.identity)=CAST(?3 AS INTEGER) AND (SELECT COUNT(*) FROM echo_principal_revocations v WHERE v.principal=p.identity)=CAST(?4 AS INTEGER) AND (SELECT COUNT(*) FROM echo_device_link_events l WHERE l.device=d.device)=CAST(?5 AS INTEGER);" and actor_values))
+    if not (archive_list_text(actor and 0) equals "found"):
+        return "steward-authority-changed"
+    set original to history_collect_one(checkpoint_prepare(database and "SELECT run,manifest,manifest_digest FROM echo_protected_proposals WHERE identity=?;" and values))
+    if not (archive_list_text(original and 0) equals "found") or else not (archive_list_text(original and 3) equals archive_list_text(row and 3)) or else not (ep_sha256(archive_list_text(original and 2)) equals archive_list_text(row and 3)):
+        return "steward-proposal-mismatch"
+    set review to protected_review_latest(database and archive_list_text(original and 1) and proposal)
+    if not (archive_list_text(review and 0) equals "found") or else not (archive_list_text(review and 1) equals archive_list_text(row and 4)):
+        return "steward-review-changed"
+    return "steward-authorized"
