@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T02:06:06.490439+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:11:23.267854+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1899,6 +1899,19 @@ SHA-256: `bcf33ac083d881f6280ae58544e0cacc566075028c5dd3cc0a04daf20a2d9fcb`
 Imports: ../../app/web/run_store → app/web/run_store.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/web/prepare_compaction_preview.ep
+
+[Source](../../tests/web/prepare_compaction_preview.ep) · 46 lines · 2779 bytes
+
+SHA-256: `03e9220c270b2b886b7128d5b0cc9fe529b2fde0678506200a78cb5b16032a05`
+
+> Disposable browser acceptance fixture. These are explicitly seeded stages,
+> not a model compaction result. Never run this against a user archive.
+
+Imports: ../../app/web/worker → app/web/worker.ep, fs → standard library or compiler dependency
+
+- Line 6: `define main returning Int:`
 
 ## tests/web/provision_crash_probe.ep
 
