@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T00:43:32.110740+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:48:19.074302+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1458,12 +1458,12 @@ Imports: ../../app/research/vector_controls → app/research/vector_controls.ep
 
 ## tests/security/prepare_http_principals.ep
 
-[Source](../../tests/security/prepare_http_principals.ep) · 14 lines · 861 bytes
+[Source](../../tests/security/prepare_http_principals.ep) · 14 lines · 859 bytes
 
-SHA-256: `f060a9a884b275d125c3bc2ec9931e1bfd074e74833503b53b952c4635515cdc`
+SHA-256: `ce31467266a4548f6149abd47b76026b8494b48af4ae3f4f250baf2b8eb9c3c1`
 
 
-Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/revocation → app/security/revocation.ep
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/tool_authority → app/security/tool_authority.ep
 
 - Line 4: `define main returning Int:`
 

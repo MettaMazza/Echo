@@ -51,3 +51,10 @@ Host device association uses `principal_admin DATABASE link-device DEVICE EXPECT
 After migration 6, a new run must have an authenticated session owner, and its initiating authority is immutable. Role or device-link changes invalidate already queued runs even if authority is later restored. Start a new run after reviewing the change; do not edit the saved authority snapshot or relabel historical work. Historical runs predating this migration are not automatically assigned current privileges.
 
 The current Phase Two source supports migrations through version 7. The host `principal_admin migrate` command includes frozen run and tool-request authority. Perform migration only during the coherent authority deployment after stopping older processes and taking the verified backup. The running Phase One service has not been migrated by these fixture tests. Requests queued before migration have no invented authority snapshot; inspect and reconcile them instead of replaying them under a later grant.
+
+
+## Enrol the host browser after the authority upgrade
+
+Pair the intended Mac browser normally, open Options and read its Browser ID. On the Mac, use the native `principal_admin DATABASE inspect-device DEVICE` command to confirm that exact device, then `principal_admin DATABASE role-device DEVICE admin UNIQUE_CHANGE_ID REASON` to record the grant. Reopen Options to refresh the role. Use a new change identity for each intentional grant; an old receipt does not replay a grant. Do not choose a device by display name, IP or a forwarded message alone. The Browser ID is an identifier, not its bearer credential; never copy the browser credential into chat or a command line.
+
+This procedure grants ordinary administrator authority. It does not grant charter-steward authority, change ownership of conversations, or install tools that are not implemented yet. Other browser profiles remain ordinary users unless explicitly associated or granted authority. The candidate UI/API supports this flow; the live service remains on its previous release until the coherent upgrade.

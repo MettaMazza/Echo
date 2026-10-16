@@ -11,6 +11,7 @@ All routes below except bootstrap use POST. JSON bodies must be valid UTF-8 obje
 | Route | Method | Request fields | Behavior |
 | --- | --- | --- | --- |
 | `/api/bootstrap` | GET | — | Unauthenticated pairing/provider bootstrap; origin checked. |
+| `/api/identity` | POST | Empty object | Authenticated browser’s device, principal, role and authority mode; never grants a role or selects another identity. |
 | `/api/pair` | POST | name | One-use invitation in X-Echo-Token; returns browser credential. |
 | `/api/providers` | POST | identity (optional) | List registered, non-retired profiles or inspect a selected profile. |
 | `/api/session-create` | POST | identity | Create an owned session idempotently. |
@@ -67,3 +68,5 @@ The trusted run supplies session ownership. Tool arguments cannot select another
 ## What is outside this API
 
 General host administration, Discord/Gmail access, dynamic tool creation, training and model-callable activation/weight editing belong to the Phase Two plan. Existing host research executables do not grant the conversational agent those capabilities. [Security boundaries](SECURITY-AND-DATA.md) and [Phase Two](../phase2.md) distinguish current behavior from planned expansion.
+
+Phase Two identity addition (16 October): `/api/identity` uses the same token and origin checks as other protected routes and is allowed in restored read-only mode. Legacy archives report `user` and `legacy-sandbox`; migrated archives report the current principal role. Options refreshes this information whenever opened. Role changes remain host-local operations. This addition has separate HTTP fixture evidence; production deployment is pending.
