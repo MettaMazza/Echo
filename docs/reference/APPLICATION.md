@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T07:18:46.405295+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T07:45:40.305400+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -156,9 +156,9 @@ Imports: tool_ledger → app/agent/tool_ledger.ep
 
 ## app/agent/runner.ep
 
-[Source](../../app/agent/runner.ep) · 108 lines · 6765 bytes
+[Source](../../app/agent/runner.ep) · 111 lines · 6875 bytes
 
-SHA-256: `1d9ca5f52ed61fa6823860cddc18cb568a8b56a55b5156562a3527b7676e2973`
+SHA-256: `9ef9695ffe4867d6daf9f7e486f27794954198303ffa3846aa32c00e0fed8238`
 
 > The model/tool loop has no iteration limit. Non-ready preflight decisions are
 > Capacity triggers archived recap/review/activation before resuming this run.
@@ -171,25 +171,25 @@ SHA-256: `1d9ca5f52ed61fa6823860cddc18cb568a8b56a55b5156562a3527b7676e2973`
 Imports: ../retained_text → app/retained_text.ep, control → app/agent/control.ep, provider_profile → app/agent/provider_profile.ep, ../context/compact → app/context/compact.ep, ../memory/automatic → app/memory/automatic.ep
 
 - Line 7: `define agent_loop_inner_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
-- Line 67: `define agent_loop_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
-- Line 102: `define agent_loop_inner with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
-- Line 106: `define agent_loop with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
+- Line 70: `define agent_loop_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
+- Line 105: `define agent_loop_inner with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
+- Line 109: `define agent_loop with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
 
 ## app/agent/tool_dispatch.ep
 
-[Source](../../app/agent/tool_dispatch.ep) · 130 lines · 9700 bytes
+[Source](../../app/agent/tool_dispatch.ep) · 136 lines · 10316 bytes
 
-SHA-256: `37145d4e57d417faf5892940bbbe8f9abf778faee15cd07a80a90a799107bc92`
+SHA-256: `1f7139e7e9af2b697bbceea425b5ec93ae347cf16d8066acff2d567803a98263`
 
 > One invocation executes at most the next cursor item. The enclosing run loops
 > until the ledger is observed; this is scheduling granularity, not a turn cap.
 > Do not advance another queued action past an unresolved earlier effect.
 > Existing direct callers have no external cancellation descriptor.
 
-Imports: ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
+Imports: ../tools/continuity_tools → app/tools/continuity_tools.ep, ../tools/scratchpad → app/tools/scratchpad.ep, ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
 
-- Line 16: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
-- Line 129: `define agent_tool_step with database as Int and run as Str returning Int:`
+- Line 18: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
+- Line 135: `define agent_tool_step with database as Int and run as Str returning Int:`
 
 ## app/agent/tool_ledger.ep
 
@@ -308,9 +308,9 @@ Imports: attachment_restore → app/archive/attachment_restore.ep, tree_snapshot
 
 ## app/archive/event_store.ep
 
-[Source](../../app/archive/event_store.ep) · 220 lines · 12249 bytes
+[Source](../../app/archive/event_store.ep) · 226 lines · 12589 bytes
 
-SHA-256: `4aad681e6e10138bb9922b333cd392590c3ec0094050220aaca25faaf0e77784`
+SHA-256: `d42b41f1179019c3053bb183a8d00d22db94019c2474e446b6f75c044da9b179`
 
 > Echo owns its original history independently of prompts, summaries and caches.
 > SQLite constants below are protocol result codes, not application limits.
@@ -319,7 +319,9 @@ SHA-256: `4aad681e6e10138bb9922b333cd392590c3ec0094050220aaca25faaf0e77784`
 > Native workers, status readers and cancellation monitors use separate
 > connections. Give short write locks time to clear instead of failing on
 > the first SQLITE_BUSY. This is a database lock wait, not a model deadline.
-> Rollback journals avoid assuming shared-memory/WAL support on the drive.
+> WAL is explicit host configuration for suitable local storage. Otherwise
+> preserve the existing journal; new portable databases default to DELETE.
+> Readers must never switch a live WAL archive back to rollback mode.
 > Length-prefix every field so embedded separators cannot change hash boundaries.
 > Named strings remain explicit compiler GC roots while another worker
 > allocates. Nested temporary arguments can be missed by minor collection.
@@ -342,13 +344,13 @@ Imports: ../retained_text → app/retained_text.ep, sql → standard library or 
 - Line 23: `define archive_bind with statement as Int and position as Int and value as Str returning Int:`
 - Line 29: `define archive_finish with statement as Int and expected as Int returning Int:`
 - Line 39: `define archive_open with path as Str returning Int:`
-- Line 60: `define archive_hash_field with value as Str returning Str:`
-- Line 67: `define archive_digest with session as Str and event as Str and kind as Str and payload as Str and occurred as Str and previous as Str returning Str:`
-- Line 82: `define archive_rollback with database as Int returning Int:`
-- Line 90: `define archive_append_pending with database as Int and session as Str and event as Str and kind as Str and payload as Str and occurred as Str returning Int:`
-- Line 149: `define archive_append with database as Int and session as Str and event as Str and kind as Str and payload as Str and occurred as Str returning Int:`
-- Line 163: `define archive_read_event with database as Int and event as Str returning List:`
-- Line 191: `define archive_verify with database as Int and session as Str returning Int:`
+- Line 66: `define archive_hash_field with value as Str returning Str:`
+- Line 73: `define archive_digest with session as Str and event as Str and kind as Str and payload as Str and occurred as Str and previous as Str returning Str:`
+- Line 88: `define archive_rollback with database as Int returning Int:`
+- Line 96: `define archive_append_pending with database as Int and session as Str and event as Str and kind as Str and payload as Str and occurred as Str returning Int:`
+- Line 155: `define archive_append with database as Int and session as Str and event as Str and kind as Str and payload as Str and occurred as Str returning Int:`
+- Line 169: `define archive_read_event with database as Int and event as Str returning List:`
+- Line 197: `define archive_verify with database as Int and session as Str returning Int:`
 
 ## app/archive/export_restore.ep
 
@@ -1211,9 +1213,9 @@ Imports: ../context/echo_labels → app/context/echo_labels.ep, ../retained_text
 
 ## app/context/session_messages.ep
 
-[Source](../../app/context/session_messages.ep) · 180 lines · 11947 bytes
+[Source](../../app/context/session_messages.ep) · 183 lines · 12180 bytes
 
-SHA-256: `974ea93b1598b4c3675c6291a15a190a1e7fa1026708963c7f9fe203d4d9abbc`
+SHA-256: `94b31fbcfe2a9ff4c0e5a35a31dbb6fe444e78bc7ea5333a2d640cfd563574b2`
 
 > Admin-only schemas are selected from frozen initiating authority. Dispatch
 > repeats the check; advertising a schema is never itself permission.
@@ -1230,13 +1232,13 @@ SHA-256: `974ea93b1598b4c3675c6291a15a190a1e7fa1026708963c7f9fe203d4d9abbc`
 > that trusted runtime receipt in the resumed prompt so the model does not
 > mistake the earlier queued observation for still-pending work.
 
-Imports: ../retained_text → app/retained_text.ep, system_awareness → app/context/system_awareness.ep, ../archive/session_scope → app/archive/session_scope.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../memory/automatic_context → app/memory/automatic_context.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../agent/run_messages → app/agent/run_messages.ep
+Imports: ../tools/continuity_tools → app/tools/continuity_tools.ep, ../retained_text → app/retained_text.ep, system_awareness → app/context/system_awareness.ep, ../archive/session_scope → app/archive/session_scope.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../memory/automatic_context → app/memory/automatic_context.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../agent/run_messages → app/agent/run_messages.ep
 
-- Line 12: `define session_request_body with model as Str and messages as Str returning Str:`
-- Line 19: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
-- Line 47: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
-- Line 52: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
-- Line 170: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
+- Line 13: `define session_request_body with model as Str and messages as Str returning Str:`
+- Line 20: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
+- Line 50: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
+- Line 55: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
+- Line 173: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
 
 ## app/context/system_awareness.ep
 
@@ -3012,9 +3014,9 @@ Imports: ../rights/review_upgrade → app/rights/review_upgrade.ep
 
 ## app/security/node_gate.ep
 
-[Source](../../app/security/node_gate.ep) · 39 lines · 2397 bytes
+[Source](../../app/security/node_gate.ep) · 46 lines · 2847 bytes
 
-SHA-256: `b18675267aaa39eced534fe160f88ec91d4cb495fdbeac6ece10743cd6049717`
+SHA-256: `68ae9a805c1c92b723106c934e70c77bcf2703a16e660c95b17fe1cfc5c16ee1`
 
 > Schema absence preserves the existing installation. Once installed, any
 > read failure denies work. Emergency disclosure alone never releases a node.
@@ -3024,8 +3026,9 @@ Imports: ../archive/history → app/archive/history.ep
 
 - Line 5: `define node_gate_installed with database as Int returning Int:`
 - Line 13: `define node_admission_allows with database as Int returning Int:`
-- Line 23: `define node_run_allows with database as Int and run as Str returning Int:`
-- Line 32: `define node_tool_allows with database as Int and run as Str and call_id as Str returning Int:`
+- Line 23: `define node_run_status with database as Int and run as Str returning Int:`
+- Line 36: `define node_run_allows with database as Int and run as Str returning Int:`
+- Line 39: `define node_tool_allows with database as Int and run as Str and call_id as Str returning Int:`
 
 ## app/security/principals.ep
 
@@ -3118,9 +3121,9 @@ Imports: group_gate → app/security/group_gate.ep, node_gate → app/security/n
 
 ## app/security/tool_policy.ep
 
-[Source](../../app/security/tool_policy.ep) · 54 lines · 3289 bytes
+[Source](../../app/security/tool_policy.ep) · 54 lines · 3435 bytes
 
-SHA-256: `4cdc1cb4a23acf60e61ee9eed6f3c0be19a3603d5f3b3548e0ee039f83068983`
+SHA-256: `331f0bec46b733fde954277ff73fba4b4b60632c9b078bd10573069a5147cc2a`
 
 > Classification is explicit. A newly registered name is not automatically a
 > safe tool. Dynamic tools must later obtain an independently verified manifest.
@@ -3226,9 +3229,9 @@ Imports: ../security/principals → app/security/principals.ep, ../retained_text
 
 ## app/tools/attachment_tools.ep
 
-[Source](../../app/tools/attachment_tools.ep) · 107 lines · 13054 bytes
+[Source](../../app/tools/attachment_tools.ep) · 107 lines · 13124 bytes
 
-SHA-256: `69c5f69085e3fd550e236c57eb210bbc982b1b7ec877513e6d272d69f26d1adb`
+SHA-256: `a63dd8f08bbee3a354ff5fadffd0707ad1ec752e72ddbab2bcf120decd3aa0a3`
 
 > Scope is the trusted run session. Model arguments cannot choose another
 > session, device, or host path. One cursor result keeps context use explicit.
@@ -3259,6 +3262,20 @@ Imports: ../security/principals → app/security/principals.ep, ../retained_text
 - Line 9: `define compaction_tool_read with database as Int and session as Str and arguments as Str returning Str:`
 - Line 89: `define compaction_tool_schema returning Str:`
 
+## app/tools/continuity_tools.ep
+
+[Source](../../app/tools/continuity_tools.ep) · 79 lines · 7649 bytes
+
+SHA-256: `8334ae3e63ddf441e52fae762cb5a9e1b036198d60d544494056b994304ff2e9`
+
+> Trusted run scope, shared across its owner's private sessions. No filesystem
+> or device selector is accepted. Original texts and reasoning are paged exactly.
+
+Imports: memory_tools → app/tools/memory_tools.ep
+
+- Line 5: `define continuity_execute with database as Int and run as Str and name as Str and arguments as Str returning Str:`
+- Line 78: `define continuity_schemas returning Str:`
+
 ## app/tools/execution_guardian.ep
 
 [Source](../../app/tools/execution_guardian.ep) · 56 lines · 3065 bytes
@@ -3274,16 +3291,19 @@ Imports: ../workspace/guardian_receipt → app/workspace/guardian_receipt.ep, ..
 
 ## app/tools/execution_output.ep
 
-[Source](../../app/tools/execution_output.ep) · 56 lines · 4553 bytes
+[Source](../../app/tools/execution_output.ep) · 88 lines · 6459 bytes
 
-SHA-256: `f94fc81114de77532dd3eb585797196f1c4bc9720f819c873496cfc250213390`
+SHA-256: `b15b747df3745b26d684a39f7bb637756f3522966471e13ecb3ca7e5338b8994`
 
 > Traverse only original output records, excluding model requests and later
 > search/read copies. Session comes from the current run, never from arguments.
+> Hex is validated before use as a SQLite blob literal. NUL or incomplete
+> Unicode stays explicit binary; original bytes and cursor remain available.
 
-Imports: ../security/group_gate → app/security/group_gate.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep
+Imports: ../providers/local_json → app/providers/local_json.ep, ../security/group_gate → app/security/group_gate.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep
 
-- Line 8: `define execution_output_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 9: `define execution_output_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 74: `define execution_decode_hex with database as Int and encoded as Str returning Str:`
 
 ## app/tools/execution_tool.ep
 
@@ -3340,9 +3360,9 @@ Imports: ../security/tool_policy → app/security/tool_policy.ep, ../workspace/r
 
 ## app/tools/knowledge_tools.ep
 
-[Source](../../app/tools/knowledge_tools.ep) · 134 lines · 12921 bytes
+[Source](../../app/tools/knowledge_tools.ep) · 139 lines · 13476 bytes
 
-SHA-256: `8300f8010fb45ab81d591b990261bdc90406577bd25922e58f9b85ced4cb6fe7`
+SHA-256: `69d540655d10e7ba32636e4d0aef5673ef80e2f5986ded0ebe4d4b2afa0a026e`
 
 > Re-read the immutable ledger request; asserted roles and scope fields are
 > rejected. The graph primitive rechecks source ownership under its writer lock.
@@ -3350,8 +3370,8 @@ SHA-256: `8300f8010fb45ab81d591b990261bdc90406577bd25922e58f9b85ced4cb6fe7`
 Imports: ../memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep, ../security/tool_policy → app/security/tool_policy.ep
 
 - Line 6: `define knowledge_tool_execute with database as Int and run as Str and call_id as Str and name as Str returning Str:`
-- Line 130: `define knowledge_tool_schemas returning Str:`
-- Line 133: `define knowledge_visibility_tool_schemas returning Str:`
+- Line 135: `define knowledge_tool_schemas returning Str:`
+- Line 138: `define knowledge_visibility_tool_schemas returning Str:`
 
 ## app/tools/memory_tools.ep
 
@@ -3379,6 +3399,19 @@ Imports: ../rights/reviews → app/rights/reviews.ep, ../security/tool_policy �
 
 - Line 6: `define protected_tool_execute with database as Int and run as Str and call_id as Str and name as Str returning Str:`
 - Line 64: `define protected_tool_schemas returning Str:`
+
+## app/tools/scratchpad.ep
+
+[Source](../../app/tools/scratchpad.ep) · 81 lines · 5923 bytes
+
+SHA-256: `93acb408fae1a8e119d665c751665244ab98bcc396b790c477c2df3a5fc2a9ca`
+
+> Notes belong to the authenticated private principal and survive session changes.
+> Append-only revisions retain audit history; compare-and-swap prevents lost edits.
+
+Imports: memory_tools → app/tools/memory_tools.ep
+
+- Line 5: `define scratchpad_execute with database as Int and run as Str and arguments as Str returning Str:`
 
 ## app/tools/workspace_tools.ep
 
@@ -4060,9 +4093,9 @@ Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_st
 
 ## app/web/cancellation.ep
 
-[Source](../../app/web/cancellation.ep) · 55 lines · 3136 bytes
+[Source](../../app/web/cancellation.ep) · 69 lines · 3849 bytes
 
-SHA-256: `efa9ba406b0043ee0f2b7f402cc3c1f02a8f3adf81016e1aabf701ca367d3afb`
+SHA-256: `04bbab0ea4374439b7c9a16f03dfdd4b2b16a43a56e4302714fd58067db026a6`
 
 > A durable request is distinct from completion. Only the owning active device
 > may request it; the worker records the actual terminal transition.
@@ -4070,6 +4103,8 @@ SHA-256: `efa9ba406b0043ee0f2b7f402cc3c1f02a8f3adf81016e1aabf701ca367d3afb`
 > provider read/write/connect. A separate stop pipe ends the monitor when normal
 > work finishes. Database failure also wakes the worker rather than leaving an
 > uncancellable inference request running indefinitely.
+> A transient read lock is not a Stop request or revocation.
+> Retry observation; dispatch still performs its own checks.
 > Responsiveness cadence, not an inference deadline or token cap.
 > Use the existing channel wait so this idle monitor cooperates
 > with allocation on the active inference worker.
@@ -4633,9 +4668,9 @@ Imports: native_process → app/workspace/native_process.ep, sandbox_profile →
 
 ## app/workspace/sandbox_profile.ep
 
-[Source](../../app/workspace/sandbox_profile.ep) · 5 lines · 1160 bytes
+[Source](../../app/workspace/sandbox_profile.ep) · 5 lines · 1145 bytes
 
-SHA-256: `68220ff34926fc70d996fec0b36629398bb1e90e3b7f0a4f40db8fc7cc2b2b0f`
+SHA-256: `4a4099c6bced5bc591d51d0a31c3f22e4fe9c7da00a2c205c684363f37daf800`
 
 > Native macOS sandbox configuration, generated from English source. The host
 > passes roots as sandbox-exec parameters, never interpolated profile syntax.

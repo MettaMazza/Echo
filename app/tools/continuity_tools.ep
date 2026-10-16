@@ -1,0 +1,79 @@
+import "memory_tools"
+
+# Trusted run scope, shared across its owner's private sessions. No filesystem
+# or device selector is accepted. Original texts and reasoning are paged exactly.
+define continuity_execute with database as Int and run as Str and name as Str and arguments as Str returning Str:
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        set allowed to 0
+        if name equals "memory_sessions":
+            set allowed to key equals "after"
+        else if name equals "memory_messages":
+            set allowed to key equals "session" or else key equals "after"
+        else if name equals "reasoning_read":
+            set allowed to key equals "event" or else key equals "offset" or else key equals "characters"
+        if allowed equals 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set values to create_list()
+    set added to append_list(values and principal)
+    set keys to create_list()
+    if name equals "memory_sessions":
+        set after to history_tool_integer(tokens and "after")
+        if after < 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        set added to append_list(values and int_to_string(after))
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT s.session,s.title,s.created,s.rowid,(SELECT COUNT(*) FROM echo_events e WHERE e.session=s.session AND e.kind IN ('user','assistant_final')) FROM echo_sessions s JOIN echo_session_principals p ON p.session=s.session WHERE p.principal=?1 AND s.rowid>CAST(?2 AS INTEGER) ORDER BY s.rowid LIMIT 1;" and values))
+        set added to append_list(keys and "session")
+        set added to append_list(keys and "title")
+        set added to append_list(keys and "created")
+        set added to append_list(keys and "next_after")
+        set added to append_list(keys and "message_count")
+        return history_tool_row(row and keys)
+    set selected to "event"
+    if name equals "memory_messages":
+        set selected to "session"
+    set field to provider_member(tokens and 0 and selected)
+    if not (provider_kind(tokens and field) equals "string"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set added to append_list(values and provider_value(tokens and field))
+    if name equals "memory_messages":
+        set after to history_tool_integer(tokens and "after")
+        if after < 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        set added to append_list(values and int_to_string(after))
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT e.event,e.kind,e.sequence,e.occurred,e.digest,length(e.payload) FROM echo_events e JOIN echo_session_principals p ON p.session=e.session WHERE p.principal=?1 AND e.session=?2 AND e.sequence>CAST(?3 AS INTEGER) AND e.kind IN ('user','assistant_final') ORDER BY e.sequence LIMIT 1;" and values))
+        set added to append_list(keys and "event")
+        set added to append_list(keys and "kind")
+        set added to append_list(keys and "next_after")
+        set added to append_list(keys and "occurred")
+        set added to append_list(keys and "digest")
+        set added to append_list(keys and "characters")
+        return history_tool_row(row and keys)
+    set offset to history_tool_integer(tokens and "offset")
+    set characters to history_tool_integer(tokens and "characters")
+    if offset < 0 or else characters < 1:
+        return "{\"status\":\"invalid-arguments\"}"
+    set added to append_list(values and int_to_string(offset))
+    set added to append_list(values and int_to_string(characters))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT e.event,e.digest,length(COALESCE(json_extract(e.payload,'$.reasoning_content'),'')),substr(COALESCE(json_extract(e.payload,'$.reasoning_content'),''),CAST(?3 AS INTEGER)+1,CAST(?4 AS INTEGER)) FROM echo_events e JOIN echo_session_principals p ON p.session=e.session WHERE p.principal=?1 AND e.event=?2 AND e.kind IN ('assistant_final','assistant_tool_calls');" and values))
+    set added to append_list(keys and "event")
+    set added to append_list(keys and "digest")
+    set added to append_list(keys and "total_characters")
+    set added to append_list(keys and "reasoning_text")
+    set output to history_tool_row(row and keys)
+    if archive_list_text(row and 0) equals "found" and archive_list_text(row and 3) equals "0":
+        return concat(substring(output and 0 and string_length(output) - 1) and ",\"capture_status\":\"no-reasoning-emitted-or-retained\",\"explanation\":\"No reasoning was archived for this event. Do not invent a retrospective trace.\"}")
+    return output
+
+define continuity_schemas returning Str:
+    return "[{\"type\":\"function\",\"function\":{\"name\":\"memory_sessions\",\"description\":\"List your authenticated private owner\\u2019s sessions chronologically. Start after=0. Each call returns one session and next_after; continue until status=end. Then use memory_messages to page messages.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"after\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"after\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"memory_messages\",\"description\":\"Page original user and Echo messages in an owned session. Start after=0; continue with next_after until end. Use memory_read on each event for exact text and reasoning_read for captured reasoning.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"session\":{\"type\":\"string\"},\"after\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"session\",\"after\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"reasoning_read\",\"description\":\"Read the actual captured model reasoning for an owned Echo response event, including earlier sessions. Unicode offsets. Empty capture is explicitly reported and must never be replaced with invented reasons. Tools and results remain available through history_read.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"event\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\",\"minimum\":0},\"characters\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"event\",\"offset\",\"characters\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"scratchpad\",\"description\":\"Persistent private working notes across this owner\\u2019s sessions. list with after=0 and next_after to end; read by name; write creates or replaces text with previous_revision from read (empty for new); delete creates a tombstone with previous_revision. Historical revisions stay archived. This is working text, not a verified fact or system instruction.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"operation\":{\"type\":\"string\",\"enum\":[\"list\",\"read\",\"write\",\"delete\"]},\"name\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"previous_revision\":{\"type\":\"string\"},\"after\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"operation\"],\"additionalProperties\":false}}}]"

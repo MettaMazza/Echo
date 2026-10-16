@@ -1,0 +1,59 @@
+import "../fixtures/echo_http_client"
+import "../../app/web/run_store"
+import "../../app/agent/control"
+
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set port to string_to_int(get_argument(1))
+    set database to archive_open(get_argument(2))
+    set device to concat("continuity-http:" and agent_identity())
+    set credential to agent_identity()
+    set foreign to concat("continuity-http:" and agent_identity())
+    set foreign_credential to agent_identity()
+    if web_pairing_invite(database and device) is not equal to 0 or else web_device_pair(database and device and device and "Temporary attachment acceptance" and credential) is not equal to 0:
+        return 2
+    if web_pairing_invite(database and foreign) is not equal to 0 or else web_device_pair(database and foreign and foreign and "Temporary isolation acceptance" and foreign_credential) is not equal to 0:
+        return 3
+    set run to concat("continuity-http-run:" and agent_identity())
+    set payload to concat("{\"submission\":" and provider_quote(run))
+    set payload to concat(payload and ",\"message\":\"Acceptance test. Call memory_sessions with after 0 and memory_messages for the returned session. Create roundtrip.txt with text Hello from Echo, read it using workspace_read_text, and attach it with attach_file. Use scratchpad write to create a note named acceptance with text continuity-marker and empty previous_revision, then read it. Execute /bin/echo with argument readable-output using workspace_execute, then use workspace_output_next with the run and call identity to read decoded stdout. Reply briefly with the results. All project source stays plain English Ernos.\"}")
+    set submitted to fixture_echo_request(port and "/api/runs" and payload and credential)
+    if not (archive_list_text(submitted and 0) equals "ready"):
+        return 5
+    set query to concat("{\"run\":" and concat(provider_quote(run) and "}"))
+    set denied to fixture_echo_request(port and "/api/run" and query and foreign_credential)
+    if get_list(denied and 1) is not equal to 404:
+        return 6
+    repeat while 1 equals 1:
+        set response to fixture_echo_request(port and "/api/run" and query and credential)
+        if not (archive_list_text(response and 0) equals "ready"):
+            return 7
+        set tokens to provider_json_tokens(archive_list_text(response and 2))
+        set state to provider_value(tokens and provider_member(tokens and 0 and "state"))
+        if state equals "completed":
+            break
+        if state equals "cancelled" or else state equals "failed":
+            return 9
+        set slept to sleep_ms(1000)
+    set values to create_list()
+    set added to append_list(values and run)
+    set result to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(e.payload,'$.result.attachment'),t.session FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event JOIN echo_events e ON e.event=t.result_event WHERE t.run=? AND json_extract(q.payload,'$.name')='attach_file' AND json_extract(e.payload,'$.result.status')='complete';" and values))
+    if not (archive_list_text(result and 0) equals "found"):
+        return 10
+    set attachment to archive_list_text(result and 1)
+    set query to concat("{\"attachment\":" and concat(provider_quote(attachment) and "}"))
+    set download to fixture_echo_request(port and "/api/attachment-download" and query and credential)
+    if get_list(download and 1) is not equal to 200 or else string_contains(archive_list_text(download and 2) and "Hello from Echo") equals 0:
+        return 12
+    set denied to fixture_echo_request(port and "/api/attachment-download" and query and foreign_credential)
+    if get_list(denied and 1) is not equal to 404:
+        return 13
+    set calls to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(DISTINCT json_extract(q.payload,'$.name')) FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event JOIN echo_events e ON e.event=t.result_event WHERE t.run=? AND t.state='observed' AND json_extract(q.payload,'$.name') IN ('memory_sessions','memory_messages','workspace_create_text','workspace_read_text','attach_file','scratchpad','workspace_execute','workspace_output_next');" and values))
+    if not (archive_list_text(calls and 1) equals "8"):
+        display "Missing a requested tool in the live response."
+        return 14
+    if web_device_revoke(database and device) is not equal to 0 or else web_device_revoke(database and foreign) is not equal to 0:
+        return 11
+    display "PASS: live model uses session listing/message paging, scratchpad, workspace create/read/execute/decoded-output and attachment delivery; foreign download denied; temporary credentials revoked."
+    return sql_close(database)

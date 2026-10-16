@@ -1,0 +1,81 @@
+import "memory_tools"
+
+# Notes belong to the authenticated private principal and survive session changes.
+# Append-only revisions retain audit history; compare-and-swap prevents lost edits.
+define scratchpad_execute with database as Int and run as Str and arguments as Str returning Str:
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "operation" or else key equals "name" or else key equals "text" or else key equals "previous_revision" or else key equals "after"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    set name to provider_value(tokens and provider_member(tokens and 0 and "name"))
+    set values to create_list()
+    set added to append_list(values and principal)
+    set keys to create_list()
+    if operation equals "list":
+        set after to history_tool_integer(tokens and "after")
+        if after < 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        set added to append_list(values and int_to_string(after))
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(e.payload,'$.name'),e.event,e.sequence FROM echo_events e WHERE e.kind='scratchpad_revision' AND json_extract(e.payload,'$.principal')=?1 AND e.sequence>CAST(?2 AS INTEGER) AND json_extract(e.payload,'$.deleted')=0 AND NOT EXISTS(SELECT 1 FROM echo_events n WHERE n.kind='scratchpad_revision' AND n.sequence>e.sequence AND json_extract(n.payload,'$.principal')=?1 AND json_extract(n.payload,'$.name')=json_extract(e.payload,'$.name')) ORDER BY e.sequence LIMIT 1;" and values))
+        set added to append_list(keys and "name")
+        set added to append_list(keys and "revision")
+        set added to append_list(keys and "next_after")
+        return history_tool_row(row and keys)
+    if string_length(name) equals 0 or else not (operation equals "read" or else operation equals "write" or else operation equals "delete"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set mutating to operation equals "write" or else operation equals "delete"
+    if mutating and sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    if not (memory_archive_principal(database and run) equals principal):
+        if mutating:
+            set rolled_back to archive_rollback(database)
+        return "{\"status\":\"authorization-changed\"}"
+    set added to append_list(values and name)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT event,json_extract(payload,'$.text'),json_extract(payload,'$.deleted') FROM echo_events WHERE kind='scratchpad_revision' AND json_extract(payload,'$.principal')=?1 AND json_extract(payload,'$.name')=?2 ORDER BY sequence DESC LIMIT 1;" and values))
+    if operation equals "read":
+        set added to append_list(keys and "revision")
+        set added to append_list(keys and "text")
+        set added to append_list(keys and "deleted")
+        return history_tool_row(row and keys)
+    set previous_field to provider_member(tokens and 0 and "previous_revision")
+    set previous to provider_value(tokens and previous_field)
+    set existing to ""
+    if archive_list_text(row and 0) equals "found":
+        set existing to archive_list_text(row and 1)
+    else if not (archive_list_text(row and 0) equals "end"):
+        set rolled_back to archive_rollback(database)
+        return "{\"status\":\"database-error\"}"
+    if not (provider_kind(tokens and previous_field) equals "string") or else not (existing equals previous):
+        set rolled_back to archive_rollback(database)
+        return "{\"status\":\"revision-conflict\",\"recovery\":\"Read the current note and retry with its revision; empty previous_revision creates a new name.\"}"
+    set text to ""
+    set deleted to 1
+    if operation equals "write":
+        set text_field to provider_member(tokens and 0 and "text")
+        if not (provider_kind(tokens and text_field) equals "string"):
+            set rolled_back to archive_rollback(database)
+            return "{\"status\":\"invalid-arguments\"}"
+        set text to provider_value(tokens and text_field)
+        set deleted to 0
+    set revision to concat("note:" and agent_identity())
+    set payload to concat("{\"principal\":" and provider_quote(principal))
+    set payload to concat(payload and concat(",\"name\":" and provider_quote(name)))
+    set payload to concat(payload and concat(",\"text\":" and provider_quote(text)))
+    set payload to concat(payload and concat(",\"previous_revision\":" and provider_quote(previous)))
+    set payload to concat(payload and concat(",\"deleted\":" and concat(int_to_string(deleted) and "}")))
+    set owner to agent_run_read(database and run)
+    if archive_append_pending(database and archive_list_text(owner and 0) and revision and "scratchpad_revision" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled_back to archive_rollback(database)
+        return "{\"status\":\"archive-error\"}"
+    return concat("{\"status\":\"saved\",\"revision\":" and concat(provider_quote(revision) and ",\"history_preserved\":true}"))

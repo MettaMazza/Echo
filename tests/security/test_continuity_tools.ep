@@ -1,0 +1,93 @@
+import "../../app/web/attachments"
+import "../../app/agent/tool_recovery"
+import "../../app/agent/run_messages"
+import "../fixtures/generation_fixture"
+
+# Exercise the real streaming parser, durable queued request and dispatcher.
+define recall_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Fixture reasoning: select the requested operation.\",\"tool_calls\":[{\"index\":0,\"id\":" and provider_quote(call_id))
+    set delta to concat(delta and concat(",\"function\":{\"name\":" and provider_quote(name)))
+    set delta to concat(delta and concat(",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}")))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set body to session_request_body_owned(database and run and "fixture" and agent_run_messages(database and run))
+    if string_contains(body and "memory_search") equals 0 or else provider_json_tokens(body) equals 0:
+        return 2
+    set generated to agent_generate_local(database and run and request and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 3
+    if agent_tool_step(database and run) is not equal to 0 or else agent_tool_step(database and run) is not equal to 0:
+        return 4
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0 or else workspace_session_schema(database) is not equal to 0 or else not (session_principal_schema(database) equals "applied"):
+        return 2
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture" and "secret") is not equal to 0:
+        return 3
+    set submitted to web_submit_owned(database and "owner" and "first" and "" and "First session")
+    set session to archive_list_text(submitted and 1)
+    if recall_fixture_call(database and "first" and "request-write" and "write" and "scratchpad" and "{\"operation\":\"write\",\"name\":\"work\",\"text\":\"Hello \\ud83c\\udf0d\",\"previous_revision\":\"\"}") is not equal to 0:
+        return 4
+    set saved to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.revision') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='write';"))
+    set revision to archive_list_text(saved and 1)
+    if string_length(revision) equals 0:
+        return 5
+    set another to web_submit_owned(database and "owner" and "second" and "" and "Second session")
+    if recall_fixture_call(database and "second" and "request-read" and "read" and "scratchpad" and "{\"operation\":\"read\",\"name\":\"work\"}") is not equal to 0:
+        return 4
+    set saved to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.text') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='read';"))
+    if not (archive_list_text(saved and 1) equals "Hello 🌍"):
+        return 6
+    if recall_fixture_call(database and "second" and "request-sessions" and "sessions" and "memory_sessions" and "{\"after\":0}") is not equal to 0:
+        return 4
+    set saved to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.session') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='sessions';"))
+    if not (archive_list_text(saved and 1) equals session):
+        return 7
+    set messages to concat("{\"session\":" and concat(provider_quote(session) and ",\"after\":0}"))
+    if recall_fixture_call(database and "second" and "message-request" and "messages" and "memory_messages" and messages) is not equal to 0:
+        return 8
+    set edited to concat("{\"operation\":\"write\",\"name\":\"work\",\"text\":\"Revised\",\"previous_revision\":" and concat(provider_quote(revision) and "}"))
+    if string_contains(scratchpad_execute(database and "second" and edited) and "saved") equals 0:
+        return 9
+    if string_contains(scratchpad_execute(database and "second" and edited) and "revision-conflict") equals 0:
+        return 10
+    set note to provider_json_tokens(scratchpad_execute(database and "second" and "{\"operation\":\"read\",\"name\":\"work\"}"))
+    set revision to provider_value(note and provider_member(note and 0 and "revision"))
+    set deleted to concat("{\"operation\":\"delete\",\"name\":\"work\",\"previous_revision\":" and concat(provider_quote(revision) and "}"))
+    if string_contains(scratchpad_execute(database and "second" and deleted) and "saved") equals 0:
+        return 11
+    if not (scratchpad_execute(database and "second" and "{\"operation\":\"list\",\"after\":0}") equals "{\"status\":\"end\"}"):
+        return 12
+    if not (execution_decode_hex(database and "48656c6c6f20f09f8c8d") equals "Hello 🌍"):
+        return 13
+    if not (execution_decode_hex(database and "610062") equals ""):
+        return 14
+    if web_pairing_invite(database and "foreign") is not equal to 0 or else web_device_pair(database and "foreign" and "foreign" and "Other" and "othersecret") is not equal to 0:
+        return 15
+    set foreign to web_submit_owned(database and "foreign" and "foreign-run" and "" and "Other owner")
+    if string_contains(continuity_execute(database and "foreign-run" and "memory_messages" and messages) and "end") equals 0:
+        return 16
+    if not (scratchpad_execute(database and "foreign-run" and "{\"operation\":\"read\",\"name\":\"work\"}") equals "{\"status\":\"end\"}"):
+        return 17
+    set created to workspace_tool_execute(database and session and "{\"path\":\"roundtrip.txt\",\"text\":\"read back 🌍\"}" and "create")
+    set read to workspace_text_execute(database and session and "{\"path\":\"roundtrip.txt\",\"offset\":0,\"characters\":100}")
+    if string_contains(created and "created") equals 0 or else string_contains(read and "read back 🌍") equals 0:
+        display created
+        display read
+        return 18
+    set reason to continuity_execute(database and "second" and "reasoning_read" and "{\"event\":\"request-write:response\",\"offset\":0,\"characters\":1000}")
+    if string_contains(reason and "Fixture reasoning: select the requested operation.") equals 0:
+        display reason
+        return 19
+    if string_contains(continuity_execute(database and "foreign-run" and "reasoning_read" and "{\"event\":\"request-write:response\",\"offset\":0,\"characters\":1000}") and "end") equals 0:
+        return 20
+    display "PASS: session index and messages, scratchpad cross-session read/edit/delete/conflict/isolation, decoded output and workspace write/read."
+    return sql_close(database)
