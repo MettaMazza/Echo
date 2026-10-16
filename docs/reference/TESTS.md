@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T00:26:30.522105+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:29:05.133510+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1469,9 +1469,9 @@ Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/re
 
 ## tests/security/test_accounts.ep
 
-[Source](../../tests/security/test_accounts.ep) · 55 lines · 4792 bytes
+[Source](../../tests/security/test_accounts.ep) · 72 lines · 6258 bytes
 
-SHA-256: `45fee253f9b14ef67f10976a1fd4904bb797a105db88cb2c64f99fcd38548d10`
+SHA-256: `48fefea5fee111b7caaf63bb93b992a09605d32e6a67b5575fb548eca6b8f92f`
 
 
 Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/accounts → app/security/accounts.ep

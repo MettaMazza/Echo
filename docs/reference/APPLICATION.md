@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T00:26:30.522105+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:29:05.133510+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2203,20 +2203,26 @@ Imports:
 
 ## app/security/accounts.ep
 
-[Source](../../app/security/accounts.ep) · 71 lines · 5994 bytes
+[Source](../../app/security/accounts.ep) · 119 lines · 9172 bytes
 
-SHA-256: `ac80bfa99b0702d3f1e1c2079c6998dba82d5a5eaf4248f748e61170f95e8437`
+SHA-256: `d100204e8488b1e982f7d0c25a72ab0bed199af016d26a5fd9f78b8f57d1bbf1`
 
 > Host-local authority after verifying the platform's stable subject identity.
 > This routine does not authenticate a Discord event or infer a role from a name.
 > Relinking requires explicitly unlinking the current binding first. A stale
 > unlink must name the current principal, preventing revocation of a replacement.
 > Linking changes authority association only, never session ownership/history.
+> Called only after a connector authenticates the external subject. This
+> enrolment can create an ordinary user only. Existing revoked bindings never
+> revive because a new message or reconnect arrived. Concurrent duplicates
+> resolve to the same binding under the writer transaction.
+> Length-prefixed platform prevents ambiguity between platform/subject pairs.
 
 Imports: revocation → app/security/revocation.ep
 
 - Line 3: `define principal_account_schema with database as Int returning Str:`
 - Line 14: `define principal_host_account with database as Int and identity as Str and platform as Str and subject as Str and principal as Str and revoked as Int and reason as Str returning Str:`
+- Line 77: `define principal_account_enroll with database as Int and platform as Str and subject as Str returning Str:`
 
 ## app/security/principals.ep
 

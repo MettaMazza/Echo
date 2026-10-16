@@ -69,3 +69,51 @@ define principal_host_account with database as Int and identity as Str and platf
     if sql_execute(database and "COMMIT;") is not equal to 0:
         return migration_fail(database and "commit-failed")
     return "recorded"
+
+# Called only after a connector authenticates the external subject. This
+# enrolment can create an ordinary user only. Existing revoked bindings never
+# revive because a new message or reconnect arrived. Concurrent duplicates
+# resolve to the same binding under the writer transaction.
+define principal_account_enroll with database as Int and platform as Str and subject as Str returning Str:
+    if string_length(platform) equals 0 or else string_length(subject) equals 0:
+        return ""
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return ""
+    set values to create_list()
+    set added to append_list(values and platform)
+    set added to append_list(values and subject)
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT principal FROM echo_principal_accounts WHERE platform=? AND subject=?;" and values))
+    if archive_list_text(existing and 0) equals "found":
+        set principal to principal_for_account(database and platform and subject)
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            set failure to migration_fail(database and "commit-failed")
+            return ""
+        return principal
+    if not (archive_list_text(existing and 0) equals "end"):
+        set failure to migration_fail(database and "account-read-failed")
+        return ""
+    # Length-prefixed platform prevents ambiguity between platform/subject pairs.
+    set key to concat(int_to_string(string_length(platform)) and concat(":" and concat(platform and subject)))
+    set principal to concat("account:" and ep_sha256(key))
+    set receipt to concat("enrol:" and principal)
+    set values to create_list()
+    set added to append_list(values and principal)
+    set created to checkpoint_prepare(database and "INSERT INTO echo_principals(identity,role,revoked) VALUES(?1,'user',0);" and values)
+    if created equals 0 or else archive_finish(created and 101) is not equal to 0:
+        set failure to migration_fail(database and "principal-create-failed")
+        return ""
+    set added to append_list(values and platform)
+    set added to append_list(values and subject)
+    set binding to checkpoint_prepare(database and "INSERT INTO echo_principal_accounts(platform,subject,principal,revoked) VALUES(?2,?3,?1,0);" and values)
+    if binding equals 0 or else archive_finish(binding and 101) is not equal to 0:
+        set failure to migration_fail(database and "account-create-failed")
+        return ""
+    set added to append_list(values and receipt)
+    set recorded to checkpoint_prepare(database and "INSERT INTO echo_account_link_events(identity,platform,subject,previous_principal,previous_revoked,principal,revoked,actor,reason) VALUES(?4,?2,?3,'',-1,?1,0,'authenticated-platform','First authenticated account enrolment');" and values)
+    if recorded equals 0 or else archive_finish(recorded and 101) is not equal to 0:
+        set failure to migration_fail(database and "account-receipt-failed")
+        return ""
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set failure to migration_fail(database and "commit-failed")
+        return ""
+    return principal
