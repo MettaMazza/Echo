@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:54:03.027681+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:57:26.805173+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1374,13 +1374,15 @@ Imports: migrations → app/lifecycle/migrations.ep
 
 ## app/lifecycle/service_profile.ep
 
-[Source](../../app/lifecycle/service_profile.ep) · 109 lines · 5923 bytes
+[Source](../../app/lifecycle/service_profile.ep) · 140 lines · 7980 bytes
 
-SHA-256: `19900767c6942c37b10507cb089ac4a42fb1d1d67b9856ec1d5e625cac605b37`
+SHA-256: `a2ad9c9e762569ab80c35ebd47c3feb138e3efa9876f5b762253aada096487f6`
 
 > Host configuration only. This is not a browser or model execution endpoint.
 > Exec replaces the launcher, so the caller owns the actual service PID and
 > receives its exit status and signals without an unsupervised wrapper child.
+> A command-enabled service must have its guardian installed before startup.
+> Read the explicit profile environment, never the launcher's inherited values.
 > Check filesystem requirements without starting a service or changing cwd.
 > No shell expansion, inherited environment or token caps.
 
@@ -1389,7 +1391,8 @@ Imports: ../providers/json_access → app/providers/json_access.ep, ../workspace
 - Line 7: `define service_native_text with text as Str returning Int:`
 - Line 15: `define service_profile_valid with tokens as List returning Int:`
 - Line 65: `define service_profile_vector with tokens as List and name as Str returning List:`
-- Line 78: `define service_profile_run with profile as Str and check_only as Int returning Int:`
+- Line 79: `define service_runtime_ready with tokens as List and library as Int returning Int:`
+- Line 106: `define service_profile_run with profile as Str and check_only as Int returning Int:`
 
 ## app/lifecycle/startup.ep
 

@@ -8,10 +8,13 @@ Run native builds from the compiler directory, using an absolute application sou
 
 ```sh
 ./epc /PATH/TO/Echo/app/server.ep
+./epc /PATH/TO/Echo/app/execute_guardian.ep
 ./epc /PATH/TO/Echo/app/start_service.ep
 ./epc /PATH/TO/Echo/app/mlx_count.ep
 ./epc /PATH/TO/Echo/app/device_admin.ep
 ```
+
+Install the resulting `execute_guardian` executable alongside the server in the directory named by `ECHO_EXECUTION_RUNTIME`. Build and deploy it from the same source revision as the server. It owns command execution and preserves results if a conversation worker dies; omitting it prevents workspace commands from running. The service launcher checks for a regular executable guardian whenever that environment entry is configured. This file check does not certify binary provenance or end-to-end behavior.
 
 Require the explicit `Self-hosted compilation successful!` marker and a fresh executable. The compiler has historically returned exit zero even when a build did not complete; exit status or an old executable alone is insufficient evidence.
 

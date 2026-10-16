@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:54:03.027681+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:57:26.805173+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -899,6 +899,17 @@ SHA-256: `f7431ba9d7c5dd4efd5f05171993edcdf03f4d3541a07ed9e5369194535b18d3`
 > the release file controls duration without changing application timeouts.
 
 Imports: ../../app/lifecycle/startup → app/lifecycle/startup.ep
+
+- Line 5: `define main returning Int:`
+
+## tests/lifecycle/test_guardian_readiness.ep
+
+[Source](../../tests/lifecycle/test_guardian_readiness.ep) · 25 lines · 1358 bytes
+
+SHA-256: `a1f9d8cb17104e5bf60af9f859dc369e21390e5c72c2b46f219a86441a619163`
+
+
+Imports: ../../app/providers/archived_stream → app/providers/archived_stream.ep, ../../app/lifecycle/service_profile → app/lifecycle/service_profile.ep, fs → standard library or compiler dependency
 
 - Line 5: `define main returning Int:`
 
