@@ -2,6 +2,12 @@
 
 This is a dated snapshot, not a permanent health assertion. Runtime observations and checks are recorded in `forensics/release-verification.json`; file identities are in `forensics/source-manifest.json`. Older plans, logs and handovers retain their original claims and must be read chronologically.
 
+## Phase Two authority deployment — 16 October
+
+The authority foundation through schema 7 is now deployed with the browser identity readout. The upgrade preserved every pre-existing table row, assigned no implicit admins, and followed a fresh bundle backup plus independent restore. The live local model completed a fresh paired-user run with four successful history-search calls; one run-authority record and four immutable tool-authority records were verified. The test credential was revoked afterwards. Service health and archive quick-check passed.
+
+This deploys principal/account/device association, revocation, queued authority, the current tool policy and identity visibility. It does not complete the privileged host-tool suite, Discord, cross-session memory, rights, training or the other Phase Two requirements. See `phase2/PROGRESS.md` and `phase2/FOUNDATION-VERIFICATION.json` for scope and evidence.
+
 ## Working foundation
 
 Echo runs locally with a multi-turn ReAct loop, durable submissions and tool observations, streaming replies, cancellation, conversation history, branches, revisions, regeneration, export and device ownership. Local llama.cpp and MLX adapters use provider/model metadata and exact preflight counting. Identity/system architecture text is included in the assembled context; a live `system_inspect` tool reports provider health and capabilities. The application is authored in Ernos, including its browser client.
