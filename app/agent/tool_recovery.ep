@@ -1,3 +1,5 @@
+import "../context/compaction_lock"
+import "../workspace/guardian_receipt"
 import "../retained_text"
 import "run_state"
 import "process_recovery"
@@ -5,6 +7,19 @@ import "process_recovery"
 # Caller owns the native run lock and has verified the abandoned worker claim.
 # Recover only original saved results. Missing outcomes never authorize replay.
 define agent_recover_tools_owned with database as Int and run as Str returning Int:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 1
+    set lock to compaction_lock_acquire(database and concat("execution-guardian:" and run) and library)
+    if lock < 0:
+        set closed to ep_dlclose(library)
+        return 1
+    set result to agent_recover_tools_locked(database and run)
+    set closed to net_close(lock)
+    set closed to ep_dlclose(library)
+    return result
+
+define agent_recover_tools_locked with database as Int and run as Str returning Int:
     set row to agent_run_read(database and run)
     if row equals 0 or else archive_verify(database and archive_list_text(row and 0)) is not equal to 0:
         return 1
@@ -37,6 +52,8 @@ define agent_recover_tools_owned with database as Int and run as Str returning I
         set call_id to archive_list_text(item and 0)
         set result_event to archive_list_text(item and 2)
         if string_length(result_event) equals 0:
+            set result_event to agent_recover_guardian_pending(database and run and call_id)
+        if string_length(result_event) equals 0:
             set result_event to agent_recover_process_pending(database and run and call_id)
         if string_length(result_event) is greater than 0:
             if tool_ledger_observe(database and run and call_id and result_event) is not equal to 0:
@@ -48,4 +65,29 @@ define agent_recover_tools_owned with database as Int and run as Str returning I
         set index to index + 1
     if sql_execute(database and "COMMIT;") is not equal to 0:
         return archive_rollback(database)
+    set cancelled to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='tool_result' AND json_extract(payload,'$.run_id')=? AND (json_extract(payload,'$.result.status') IN ('cancelled','cancelled-before-launch','authorization-changed','not-authorized','review-required') OR json_extract(payload,'$.result.execution_status')='cancelled');" and values))
+    if not (archive_list_text(cancelled and 0) equals "found"):
+        return 1
+    if not (archive_list_text(cancelled and 1) equals "0"):
+        return agent_cancel_run(database and run)
     return 0
+
+# The original guardian result includes launch failures and cancellation as well
+# as normal process exits. Preserve it verbatim in the recovered tool result.
+define agent_recover_guardian_pending with database as Int and run as Str and call_id as Str returning Str:
+    set result to workspace_guardian_receipt(database and run and call_id)
+    if string_length(result) equals 0:
+        return ""
+    set call to tool_ledger_read(database and run and call_id)
+    set current to agent_run_read(database and run)
+    if call equals 0 or else current equals 0:
+        return ""
+    set request to archive_list_text(call and 3)
+    set event to concat(request and ":result")
+    set payload to agent_event_envelope(run and archive_list_text(current and 3))
+    set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"request_event\":" and provider_quote(request)))
+    set payload to concat(payload and concat(",\"result\":" and concat(result and "}")))
+    if archive_append_pending(database and archive_list_text(current and 0) and event and "tool_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return ""
+    return event

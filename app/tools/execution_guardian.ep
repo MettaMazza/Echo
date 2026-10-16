@@ -1,0 +1,56 @@
+import "../workspace/guardian_receipt"
+import "../workspace/native_process"
+import "../workspace/files"
+
+# The guardian is a host-installed Ernos binary. It owns the command process,
+# capture and journal. This worker only owns the private lifetime-pipe writer.
+define execution_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:
+    set authority to workspace_execution_request(database and run and call_id)
+    if not (archive_list_text(authority and 0) equals "authorized"):
+        return "{\"status\":\"not-authorized\"}"
+    set runtime to ptr_to_str(get_env("ECHO_EXECUTION_RUNTIME"))
+    set root to ptr_to_str(get_env("ECHO_WORKSPACE_ROOT"))
+    if string_length(runtime) equals 0 or else string_length(root) equals 0:
+        return "{\"status\":\"not-configured\"}"
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(location and 0) equals "found"):
+        return ""
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return ""
+    set directory to workspace_root_open(library and runtime)
+    set output to native_open_mode(library and "/dev/null" and 1 and 0)
+    set owner to socket_cancellation_create(library)
+    if directory < 0 or else output < 0 or else owner equals 0:
+        if directory >= 0:
+            set closed to net_close(directory)
+        if output >= 0:
+            set closed to net_close(output)
+        if owner is not equal to 0:
+            set closed to socket_cancellation_close(owner)
+        set closed to ep_dlclose(library)
+        return ""
+    set arguments to [archive_list_text(location and 1), run, call_id]
+    set environment to [concat("ECHO_EXECUTION_RUNTIME=" and runtime), concat("ECHO_WORKSPACE_ROOT=" and root), "PATH=/usr/bin:/bin"]
+    set handle to workspace_process_start_owned(concat(runtime and "/execute_guardian") and arguments and environment and directory and output and output and get_list(owner and 0))
+    set closed to net_close(directory)
+    set closed to net_close(output)
+    set closed to net_close(get_list(owner and 0))
+    set changed to set_list(owner and 0 and -1)
+    if handle equals 0:
+        set closed to socket_cancellation_close(owner)
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"guardian-launch-failed\",\"effects\":\"none\"}"
+    set state to workspace_process_poll(handle)
+    repeat while state equals 0:
+        if get_list(owner and 1) >= 0 and agent_cancellation_pending(library and cancellation) is not equal to 0:
+            set closed to socket_cancel(owner)
+        set slept to sleep_ms(10)
+        set state to workspace_process_poll(handle)
+    set closed to socket_cancellation_close(owner)
+    set result to ""
+    if state equals 1:
+        set result to workspace_guardian_receipt(database and run and call_id)
+        set closed to workspace_process_close(handle)
+    set closed to ep_dlclose(library)
+    return result

@@ -1,0 +1,28 @@
+import "execution_request"
+
+# The event namespace binds the guardian's original return value to the exact
+# queued call. Recovery verifies the archive before trusting this receipt.
+define workspace_guardian_receipt with database as Int and run as Str and call_id as Str returning Str:
+    set values to [run, call_id]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT g.payload,t.request_event FROM echo_tool_calls t JOIN echo_events g ON g.event=t.request_event||':guardian-result' AND g.session=t.session AND g.kind='execution_guardian_result' WHERE t.run=? AND t.call_id=?;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    set tokens to provider_json_tokens(archive_list_text(row and 1))
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "run_id")) equals run) or else not (provider_value(tokens and provider_member(tokens and 0 and "call_id")) equals call_id) or else not (provider_value(tokens and provider_member(tokens and 0 and "request_event")) equals archive_list_text(row and 2)):
+        return ""
+    set result to provider_value(tokens and provider_member(tokens and 0 and "result_text"))
+    set parsed to provider_json_tokens(result)
+    if parsed equals 0 or else provider_unique_objects(parsed) equals 0 or else not (provider_kind(parsed and 0) equals "{"):
+        return ""
+    return result
+
+define workspace_guardian_save with database as Int and run as Str and call_id as Str and result as Str returning Int:
+    set values to [run, call_id]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT session,request_event FROM echo_tool_calls WHERE run=? AND call_id=? AND state='running';" and values))
+    if not (archive_list_text(row and 0) equals "found") or else string_length(result) equals 0:
+        return 1
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"request_event\":" and provider_quote(archive_list_text(row and 2))))
+    set payload to concat(payload and concat(",\"result_text\":" and concat(provider_quote(result) and "}")))
+    return archive_append(database and archive_list_text(row and 1) and concat(archive_list_text(row and 2) and ":guardian-result") and "execution_guardian_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))

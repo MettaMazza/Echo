@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:48:43.028321+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:54:03.027681+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -217,16 +217,20 @@ Imports: ../context/checkpoint → app/context/checkpoint.ep
 
 ## app/agent/tool_recovery.ep
 
-[Source](../../app/agent/tool_recovery.ep) · 51 lines · 2953 bytes
+[Source](../../app/agent/tool_recovery.ep) · 93 lines · 5545 bytes
 
-SHA-256: `1ef7c24b451a6ab6af8f788068b7469cda4a48522a690654d032a6adcd584bb2`
+SHA-256: `f748848113c62eef935ce655624f19fe68411951c0c868b15409a5d9f0253b51`
 
 > Caller owns the native run lock and has verified the abandoned worker claim.
 > Recover only original saved results. Missing outcomes never authorize replay.
+> The original guardian result includes launch failures and cancellation as well
+> as normal process exits. Preserve it verbatim in the recovered tool result.
 
-Imports: ../retained_text → app/retained_text.ep, run_state → app/agent/run_state.ep, process_recovery → app/agent/process_recovery.ep
+Imports: ../context/compaction_lock → app/context/compaction_lock.ep, ../workspace/guardian_receipt → app/workspace/guardian_receipt.ep, ../retained_text → app/retained_text.ep, run_state → app/agent/run_state.ep, process_recovery → app/agent/process_recovery.ep
 
-- Line 7: `define agent_recover_tools_owned with database as Int and run as Str returning Int:`
+- Line 9: `define agent_recover_tools_owned with database as Int and run as Str returning Int:`
+- Line 22: `define agent_recover_tools_locked with database as Int and run as Str returning Int:`
+- Line 77: `define agent_recover_guardian_pending with database as Int and run as Str and call_id as Str returning Str:`
 
 ## app/agent/user_content.ep
 
@@ -1276,6 +1280,19 @@ SHA-256: `7bc97cfb16ac3eee45dadf5ed148c52b7b83d62f3c9eae4f5d71334df388fd7c`
 Imports: providers/registry → app/providers/registry.ep, fs → standard library or compiler dependency
 
 - Line 4: `define main returning Int:`
+
+## app/execute_guardian.ep
+
+[Source](../../app/execute_guardian.ep) · 27 lines · 1171 bytes
+
+SHA-256: `cd5e1627d6cdc0068f4c0219ec4c2752dd299293996ae3f0bb094b32f9a4ca80`
+
+> fd 3 is the exclusive owner pipe, inherited only by this guardian. The
+> sandboxed command does not inherit it or gain access to the host archive.
+
+Imports: tools/execution_tool → app/tools/execution_tool.ep, context/compaction_lock → app/context/compaction_lock.ep
+
+- Line 6: `define main returning Int:`
 
 ## app/hash_file.ep
 
@@ -2938,6 +2955,19 @@ Imports: ../security/principals → app/security/principals.ep, ../retained_text
 - Line 9: `define compaction_tool_read with database as Int and session as Str and arguments as Str returning Str:`
 - Line 89: `define compaction_tool_schema returning Str:`
 
+## app/tools/execution_guardian.ep
+
+[Source](../../app/tools/execution_guardian.ep) · 56 lines · 3065 bytes
+
+SHA-256: `c543fd172093beb597196a4d38c0809bfce9336d42b88c9aef34d0033a11c631`
+
+> The guardian is a host-installed Ernos binary. It owns the command process,
+> capture and journal. This worker only owns the private lifetime-pipe writer.
+
+Imports: ../workspace/guardian_receipt → app/workspace/guardian_receipt.ep, ../workspace/native_process → app/workspace/native_process.ep, ../workspace/files → app/workspace/files.ep
+
+- Line 7: `define execution_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
+
 ## app/tools/execution_output.ep
 
 [Source](../../app/tools/execution_output.ep) · 53 lines · 4176 bytes
@@ -2953,9 +2983,9 @@ Imports: ../security/principals → app/security/principals.ep, ../retained_text
 
 ## app/tools/execution_tool.ep
 
-[Source](../../app/tools/execution_tool.ep) · 146 lines · 9744 bytes
+[Source](../../app/tools/execution_tool.ep) · 147 lines · 9778 bytes
 
-SHA-256: `6bddbc2ff1cd05cab1bceec3633edf80c8af6ac3beb05c9960dd09f9fac1b7e4`
+SHA-256: `117d3ca6e2148552ff2f744e2a763b28dd05492592170a2879cd5255d4800f1a`
 
 > Separate connection observes revocation and cancellation while capture owns
 > the worker connection. Closing the private writer wakes blocked pipe reads.
@@ -2965,10 +2995,10 @@ SHA-256: `6bddbc2ff1cd05cab1bceec3633edf80c8af6ac3beb05c9960dd09f9fac1b7e4`
 > Retain ownership during exceptional cleanup. No abandoned live handle or
 > guessed PID-based recovery; the worker stays pending until actually reaped.
 
-Imports: ../retained_text → app/retained_text.ep, ../workspace/execution_request → app/workspace/execution_request.ep, ../workspace/execute_process → app/workspace/execute_process.ep, ../workspace/directories → app/workspace/directories.ep
+Imports: execution_guardian → app/tools/execution_guardian.ep, ../retained_text → app/retained_text.ep, ../workspace/execution_request → app/workspace/execution_request.ep, ../workspace/execute_process → app/workspace/execute_process.ep, ../workspace/directories → app/workspace/directories.ep
 
-- Line 8: `define execution_authority_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
-- Line 35: `define execution_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
+- Line 9: `define execution_authority_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
+- Line 36: `define execution_tool_execute_local with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
 
 ## app/tools/history_tools.ep
 
@@ -4146,6 +4176,20 @@ Imports: ../retained_text → app/retained_text.ep, ../archive/file_stage → ap
 - Line 16: `define workspace_path_parts with path as Str returning List:`
 - Line 30: `define workspace_regular_file with library as Int and descriptor as Int returning Int:`
 - Line 52: `define workspace_file_open with library as Int and root as Int and path as Str and create_new as Int returning Int:`
+
+## app/workspace/guardian_receipt.ep
+
+[Source](../../app/workspace/guardian_receipt.ep) · 28 lines · 2543 bytes
+
+SHA-256: `33cbd6cbbcb2b78812161481f7d4a29160a644c907d98fd23d46e07e6a4f2765`
+
+> The event namespace binds the guardian's original return value to the exact
+> queued call. Recovery verifies the archive before trusting this receipt.
+
+Imports: execution_request → app/workspace/execution_request.ep
+
+- Line 5: `define workspace_guardian_receipt with database as Int and run as Str and call_id as Str returning Str:`
+- Line 19: `define workspace_guardian_save with database as Int and run as Str and call_id as Str and result as Str returning Int:`
 
 ## app/workspace/native_process.ep
 

@@ -1,6 +1,18 @@
 # Tests source reference
 
-Generated 2026-10-16T04:48:43.028321+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:54:03.027681+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+
+## tests/agent/recover_guardian_fixture.ep
+
+[Source](../../tests/agent/recover_guardian_fixture.ep) · 32 lines · 1934 bytes
+
+SHA-256: `83d51516b21a6ca69b4f45df846657e72e978f2624dd22b0d972a061cd95b108`
+
+> Run only after the test driver has observed the original worker's SIGKILL.
+
+Imports: ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/web/run_store → app/web/run_store.ep
+
+- Line 5: `define main returning Int:`
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -29,15 +41,15 @@ Imports: ../../app/agent/checked_generation → app/agent/checked_generation.ep,
 
 ## tests/agent/test_execution_control.ep
 
-[Source](../../tests/agent/test_execution_control.ep) · 92 lines · 6439 bytes
+[Source](../../tests/agent/test_execution_control.ep) · 95 lines · 6678 bytes
 
-SHA-256: `5a76167b409c28cb6ed0cc9aee743739ce1c9818ddfa91ad84ce7059229e9e82`
+SHA-256: `6a798390d9b648cd5041fed6de848f88eb7cab6eb5affc46ce9b3005b27c5106`
 
 
 Imports: ../../app/rights/quarantine → app/rights/quarantine.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/agent/runner → app/agent/runner.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
 - Line 6: `define execution_interrupt_fixture with path as Str and mode as Str and charter as Str and writer as Int and completed as Int returning Int:`
-- Line 29: `define main returning Int:`
+- Line 32: `define main returning Int:`
 
 ## tests/agent/test_execution_loop.ep
 
@@ -103,9 +115,9 @@ Imports: ../../app/web/attachments → app/web/attachments.ep, fs → standard l
 
 ## tests/agent/test_process_result_recovery.ep
 
-[Source](../../tests/agent/test_process_result_recovery.ep) · 104 lines · 7311 bytes
+[Source](../../tests/agent/test_process_result_recovery.ep) · 104 lines · 7314 bytes
 
-SHA-256: `bb8b90e984c73824ffc644058aeb33fdcfe659e46e0477f224759a8e1f721bad`
+SHA-256: `3cddaf25b6397a639a72947d2be64d685ad2de5303addd0069c4102d1780cf7c`
 
 > Single-threaded fixture owns the run; dispatch returned and reaped
 > its real child before the injected result transaction failure.
