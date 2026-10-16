@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:31:44.983519+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:36:07.387321+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1854,6 +1854,17 @@ Imports: ../../app/rights/reviews → app/rights/reviews.ep, ../../app/web/run_s
 - Line 24: `define review_fixture with database as Int and session as Str and call_id as Str and decision as Str and digest as Str and include_disclosure as Int and previous_revision as Int returning Int:`
 - Line 48: `define fixture_review_store with database as Int and run as Str and call_id as Str returning Str:`
 - Line 67: `define main returning Int:`
+
+## tests/security/test_protected_quarantine.ep
+
+[Source](../../tests/security/test_protected_quarantine.ep) · 49 lines · 4588 bytes
+
+SHA-256: `9aa3ae41ce5b77d9c72a8d849a21e1b4680606119acd36d3a38f6e84bf96549d`
+
+
+Imports: ../../app/rights/quarantine → app/rights/quarantine.ep, ../../app/web/run_store → app/web/run_store.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/security/test_protected_staging.ep
 

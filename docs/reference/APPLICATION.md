@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:31:44.983519+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:36:07.387321+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2575,6 +2575,21 @@ Imports: charter → app/rights/charter.ep, ../agent/tool_ledger → app/agent/t
 - Line 140: `define protected_inspection_event with database as Int and run as Str and call_id as Str and identity as Str returning Str:`
 - Line 179: `define protected_review_evidence with database as Int and run as Str and call_id as Str returning Str:`
 
+## app/rights/quarantine.ep
+
+[Source](../../app/rights/quarantine.ep) · 50 lines · 5630 bytes
+
+SHA-256: `ec84dee0c1998a8442d076e8f581d4b607d846af80f7156794d9f59439999984`
+
+> Archive insertion and work admission share the SQLite writer lock.
+> This host-controller action releases admission only after disclosure. It does
+> not restart processes, clear old run epochs or change any model/identity data.
+
+Imports: emergency → app/rights/emergency.ep, operation_prepare → app/rights/operation_prepare.ep
+
+- Line 5: `define protected_quarantine_schema with database as Int returning Str:`
+- Line 13: `define protected_quarantine_release with database as Int and charter as Str and credential as Str and identity as Str and reason as Str returning Str:`
+
 ## app/rights/reviews.ep
 
 [Source](../../app/rights/reviews.ep) · 95 lines · 8291 bytes
@@ -2681,6 +2696,23 @@ Imports: accounts → app/security/accounts.ep
 - Line 3: `define principal_device_link_schema with database as Int returning Str:`
 - Line 14: `define principal_host_device_link with database as Int and identity as Str and device as Str and expected as Str and target as Str and reason as Str returning Str:`
 
+## app/security/node_gate.ep
+
+[Source](../../app/security/node_gate.ep) · 39 lines · 2397 bytes
+
+SHA-256: `b18675267aaa39eced534fe160f88ec91d4cb495fdbeac6ece10743cd6049717`
+
+> Schema absence preserves the existing installation. Once installed, any
+> read failure denies work. Emergency disclosure alone never releases a node.
+> A release admits fresh work; it cannot revive pre-emergency queued work.
+
+Imports: ../archive/history → app/archive/history.ep
+
+- Line 5: `define node_gate_installed with database as Int returning Int:`
+- Line 13: `define node_admission_allows with database as Int returning Int:`
+- Line 23: `define node_run_allows with database as Int and run as Str returning Int:`
+- Line 32: `define node_tool_allows with database as Int and run as Str and call_id as Str returning Int:`
+
 ## app/security/principals.ep
 
 [Source](../../app/security/principals.ep) · 110 lines · 9155 bytes
@@ -2733,9 +2765,9 @@ Imports: principals → app/security/principals.ep
 
 ## app/security/run_authority.ep
 
-[Source](../../app/security/run_authority.ep) · 46 lines · 5266 bytes
+[Source](../../app/security/run_authority.ep) · 49 lines · 5353 bytes
 
-SHA-256: `b4a1d182c1b99b84cc0738e20acf7129ded7e66e2137da9ced6bf5cfb39efc05`
+SHA-256: `9ae6f35ce9be8cb98418ce3a170c1452a7c1b5261a6878fced16d059bc770ce0`
 
 > Capture authority atomically with run creation. Existing historical runs
 > have no proven initiating role and are not silently backfilled as admins.
@@ -2746,17 +2778,17 @@ SHA-256: `b4a1d182c1b99b84cc0738e20acf7129ded7e66e2137da9ced6bf5cfb39efc05`
 > A factual per-run observation, not a grant and not stable system-prompt text.
 > A later promotion does not describe an older queued run as newly privileged.
 
-Imports: device_links → app/security/device_links.ep
+Imports: node_gate → app/security/node_gate.ep, device_links → app/security/device_links.ep
 
-- Line 5: `define run_authority_schema with database as Int returning Str:`
-- Line 14: `define run_authority_allows with database as Int and run as Str and required as Str returning Int:`
-- Line 31: `define run_authority_observation with database as Int and run as Str returning Str:`
+- Line 6: `define run_authority_schema with database as Int returning Str:`
+- Line 15: `define run_authority_allows with database as Int and run as Str and required as Str returning Int:`
+- Line 34: `define run_authority_observation with database as Int and run as Str returning Str:`
 
 ## app/security/tool_authority.ep
 
-[Source](../../app/security/tool_authority.ep) · 28 lines · 4092 bytes
+[Source](../../app/security/tool_authority.ep) · 31 lines · 4192 bytes
 
-SHA-256: `1ec1a8b6a390bef30339b6fc2c55c2a0252287c3b473ee8c5b7267295420fe57`
+SHA-256: `f1fdf33192212b138eb3bea5cefd309067739b3bd6aff50e054faa76e47caa54`
 
 > Freeze each queued tool request, including direct UI actions without a model
 > run. Historical requests are not assigned invented initiating authority.
@@ -2765,10 +2797,10 @@ SHA-256: `1ec1a8b6a390bef30339b6fc2c55c2a0252287c3b473ee8c5b7267295420fe57`
 > unlink/relink cycles require a new request. Ordinary admin is not charter steward.
 > Unmigrated Phase One retains its existing sandbox only, never admin.
 
-Imports: run_authority → app/security/run_authority.ep
+Imports: node_gate → app/security/node_gate.ep, run_authority → app/security/run_authority.ep
 
-- Line 5: `define tool_authority_schema with database as Int returning Str:`
-- Line 14: `define tool_authority_allows with database as Int and run as Str and call_id as Str and required as Str returning Int:`
+- Line 6: `define tool_authority_schema with database as Int returning Str:`
+- Line 15: `define tool_authority_allows with database as Int and run as Str and call_id as Str and required as Str returning Int:`
 
 ## app/security/tool_policy.ep
 
@@ -3843,9 +3875,9 @@ Imports: ../transport/isolated_process → app/transport/isolated_process.ep, ..
 
 ## app/web/run_store.ep
 
-[Source](../../app/web/run_store.ep) · 386 lines · 26359 bytes
+[Source](../../app/web/run_store.ep) · 389 lines · 26504 bytes
 
-SHA-256: `39218a0fd2902f3386533c12449c4020b0373792f56aac7e816e4d25202f789e`
+SHA-256: `8c8d3a2bf0b3825bb8cf8a6eeca3dac2cdcc86746fd33199818bac3d0f206de9`
 
 > Submission identity is supplied once by the browser and retained on retries.
 > Message, session and ready run commit together before a worker is launched.
@@ -3868,22 +3900,22 @@ SHA-256: `39218a0fd2902f3386533c12449c4020b0373792f56aac7e816e4d25202f789e`
 > Compare the displayed title inside the write transaction so another tab cannot
 > silently overwrite a rename. The original conversation events remain intact.
 
-Imports: ../retained_text → app/retained_text.ep, devices → app/web/devices.ep, source_reads → app/web/source_reads.ep, ../archive/turn_attachments → app/archive/turn_attachments.ep, ../providers/registry → app/providers/registry.ep
+Imports: ../security/node_gate → app/security/node_gate.ep, ../retained_text → app/retained_text.ep, devices → app/web/devices.ep, source_reads → app/web/source_reads.ep, ../archive/turn_attachments → app/archive/turn_attachments.ep, ../providers/registry → app/providers/registry.ep
 
-- Line 7: `define web_run_schema with database as Int returning Int:`
-- Line 16: `define web_submit_result with status as Str and session as Str and run as Str and created as Int returning List:`
-- Line 24: `define web_submit_abort with database as Int and status as Str returning List:`
-- Line 33: `define web_submit with database as Int and submission as Str and requested_session as Str and message as Str returning List:`
-- Line 38: `define web_submit_owned with database as Int and device as Str and submission as Str and requested_session as Str and message as Str returning List:`
-- Line 41: `define web_submit_owned_files with database as Int and device as Str and submission as Str and requested_session as Str and message as Str and attachments as List returning List:`
-- Line 47: `define web_submit_owned_provider with database as Int and device as Str and submission as Str and requested_session as Str and message as Str and attachments as List and provider_identity as Str returning List:`
-- Line 162: `define web_run_status with database as Int and run as Str returning Str:`
-- Line 186: `define web_session_transcript with database as Int and session as Str returning Str:`
-- Line 191: `define web_session_transcript_window with database as Int and session as Str and before as Int and amount as Int returning Str:`
-- Line 277: `define web_device_sessions with database as Int and device as Str returning Str:`
-- Line 282: `define web_device_sessions_search with database as Int and device as Str and query as Str returning Str:`
-- Line 318: `define web_create_session with database as Int and device as Str and identity as Str returning List:`
-- Line 356: `define web_rename_session with database as Int and device as Str and session as Str and previous as Str and title as Str returning Str:`
+- Line 8: `define web_run_schema with database as Int returning Int:`
+- Line 17: `define web_submit_result with status as Str and session as Str and run as Str and created as Int returning List:`
+- Line 25: `define web_submit_abort with database as Int and status as Str returning List:`
+- Line 34: `define web_submit with database as Int and submission as Str and requested_session as Str and message as Str returning List:`
+- Line 39: `define web_submit_owned with database as Int and device as Str and submission as Str and requested_session as Str and message as Str returning List:`
+- Line 42: `define web_submit_owned_files with database as Int and device as Str and submission as Str and requested_session as Str and message as Str and attachments as List returning List:`
+- Line 48: `define web_submit_owned_provider with database as Int and device as Str and submission as Str and requested_session as Str and message as Str and attachments as List and provider_identity as Str returning List:`
+- Line 165: `define web_run_status with database as Int and run as Str returning Str:`
+- Line 189: `define web_session_transcript with database as Int and session as Str returning Str:`
+- Line 194: `define web_session_transcript_window with database as Int and session as Str and before as Int and amount as Int returning Str:`
+- Line 280: `define web_device_sessions with database as Int and device as Str returning Str:`
+- Line 285: `define web_device_sessions_search with database as Int and device as Str and query as Str returning Str:`
+- Line 321: `define web_create_session with database as Int and device as Str and identity as Str returning List:`
+- Line 359: `define web_rename_session with database as Int and device as Str and session as Str and previous as Str and title as Str returning Str:`
 
 ## app/web/source_reads.ep
 

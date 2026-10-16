@@ -1,0 +1,50 @@
+import "emergency"
+import "operation_prepare"
+
+# Archive insertion and work admission share the SQLite writer lock.
+define protected_quarantine_schema with database as Int returning Str:
+    set prior to protected_operation_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 15 and "emergency-node-admission" and "CREATE TABLE echo_node_run_epochs(run TEXT PRIMARY KEY REFERENCES echo_runs(run),epoch INTEGER NOT NULL); CREATE TABLE echo_node_tool_epochs(run TEXT NOT NULL,call_id TEXT NOT NULL,epoch INTEGER NOT NULL,PRIMARY KEY(run,call_id),FOREIGN KEY(run,call_id) REFERENCES echo_tool_calls(run,call_id)); CREATE TRIGGER echo_node_run_epochs_no_update BEFORE UPDATE ON echo_node_run_epochs BEGIN SELECT RAISE(ABORT,'Node epoch is immutable'); END; CREATE TRIGGER echo_node_run_epochs_no_delete BEFORE DELETE ON echo_node_run_epochs BEGIN SELECT RAISE(ABORT,'Node epoch is immutable'); END; CREATE TRIGGER echo_node_tool_epochs_no_update BEFORE UPDATE ON echo_node_tool_epochs BEGIN SELECT RAISE(ABORT,'Node epoch is immutable'); END; CREATE TRIGGER echo_node_tool_epochs_no_delete BEFORE DELETE ON echo_node_tool_epochs BEGIN SELECT RAISE(ABORT,'Node epoch is immutable'); END; INSERT INTO echo_node_run_epochs SELECT run,0 FROM echo_runs; CREATE TRIGGER echo_node_run_epochs_capture AFTER INSERT ON echo_runs BEGIN SELECT CASE WHEN EXISTS(SELECT 1 FROM echo_events s WHERE s.kind='emergency_started' AND NOT EXISTS(SELECT 1 FROM echo_events r WHERE r.session=s.session AND r.kind='emergency_released')) THEN RAISE(ABORT,'Node quarantined') END; INSERT INTO echo_node_run_epochs VALUES(NEW.run,(SELECT COUNT(*) FROM echo_events WHERE kind='emergency_started')); END; INSERT INTO echo_node_tool_epochs SELECT run,call_id,0 FROM echo_tool_calls; CREATE TRIGGER echo_node_tool_epochs_capture AFTER INSERT ON echo_tool_calls BEGIN SELECT CASE WHEN EXISTS(SELECT 1 FROM echo_events s WHERE s.kind='emergency_started' AND NOT EXISTS(SELECT 1 FROM echo_events r WHERE r.session=s.session AND r.kind='emergency_released')) THEN RAISE(ABORT,'Node quarantined') END; INSERT INTO echo_node_tool_epochs VALUES(NEW.run,NEW.call_id,(SELECT COUNT(*) FROM echo_events WHERE kind='emergency_started')); END; ")
+
+# This host-controller action releases admission only after disclosure. It does
+# not restart processes, clear old run epochs or change any model/identity data.
+define protected_quarantine_release with database as Int and charter as Str and credential as Str and identity as Str and reason as Str returning Str:
+    if string_length(charter_verified_text(charter)) equals 0:
+        return "charter-unavailable-or-altered"
+    if node_gate_installed(database) is not equal to 1 or else string_length(string_trim(reason)) equals 0:
+        return "invalid-release"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set actor to protected_steward_actor(database and credential)
+    if not (archive_list_text(actor and 0) equals "found"):
+        return migration_fail(database and "not-authorized")
+    set session to protected_emergency_session(identity)
+    set started to archive_read_event(database and concat(session and ":started"))
+    set disclosure to archive_read_event(database and concat(session and ":disclosed"))
+    if started equals 0 or else disclosure equals 0 or else archive_verify(database and session) is not equal to 0:
+        return migration_fail(database and "disclosure-required")
+    if not (archive_list_text(started and 0) equals session) or else not (archive_list_text(started and 2) equals "emergency_started") or else not (archive_list_text(disclosure and 0) equals session) or else not (archive_list_text(disclosure and 2) equals "emergency_disclosed"):
+        return migration_fail(database and "emergency-integrity-failed")
+    set disclosed to provider_json_tokens(archive_list_text(disclosure and 3))
+    if not (provider_value(disclosed and provider_member(disclosed and 0 and "started_digest")) equals ep_sha256(archive_list_text(started and 3))):
+        return migration_fail(database and "emergency-integrity-failed")
+    set tokens to provider_json_tokens(archive_list_text(started and 3))
+    if not (provider_value(tokens and provider_member(tokens and 0 and "principal")) equals archive_list_text(actor and 2)):
+        return migration_fail(database and "different-steward")
+    set payload to concat("{\"disclosure_digest\":" and provider_quote(ep_sha256(archive_list_text(disclosure and 3))))
+    set payload to concat(payload and concat(",\"principal\":" and provider_quote(archive_list_text(actor and 2))))
+    set payload to concat(payload and concat(",\"reason\":" and concat(provider_quote(reason) and "}")))
+    set event to concat(session and ":released")
+    set old to archive_read_event(database and event)
+    set result to "recorded"
+    if old is not equal to 0:
+        if not (archive_list_text(old and 2) equals "emergency_released") or else not (archive_list_text(old and 3) equals payload):
+            return migration_fail(database and "release-identity-conflict")
+        set result to "already-recorded"
+    else if archive_append_pending(database and session and event and "emergency_released" and payload and concat("unix:" and int_to_string(ep_time_now_sec()))) is not equal to 0:
+        return migration_fail(database and "release-save-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return result
