@@ -51,3 +51,26 @@ define group_privileged_audience_allows with database as Int and run as Str retu
         return 0
     set row to history_collect_one(checkpoint_prepare(database and "SELECT g.run FROM echo_group_run_origins g JOIN echo_group_sessions s ON s.session=g.session WHERE g.run=?1 AND EXISTS(SELECT 1 FROM echo_group_run_recipients WHERE run=g.run) AND NOT EXISTS(SELECT 1 FROM echo_group_audiences a WHERE a.group_id=s.group_id AND a.revision=s.revision AND NOT EXISTS(SELECT 1 FROM echo_group_run_recipients v JOIN echo_principals p ON p.identity=v.principal WHERE v.run=g.run AND v.principal=a.principal AND v.role IN ('admin','steward') AND p.role=v.role AND p.revoked=0 AND v.role_revision=(SELECT COUNT(*) FROM echo_authority_events WHERE principal=v.principal) AND v.revocation_revision=(SELECT COUNT(*) FROM echo_principal_revocations WHERE principal=v.principal)));" and values))
     return archive_list_text(row and 0) equals "found"
+
+
+# Only the exact immutable source text may be spoken by a direct shared job.
+# SQL expressions come from trusted callers, never model or HTTP arguments.
+define group_speech_scope_sql with database as Int and run_expression as Str and session_expression as Str and device_expression as Str returning Str:
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_group_speech_jobs';"))
+    if not (archive_list_text(installed and 0) equals "found"):
+        return "0"
+    set clause to concat("EXISTS(SELECT 1 FROM echo_group_speech_jobs sj JOIN echo_tool_calls st ON st.run=sj.job AND st.session=sj.session AND st.call_id='speak' JOIN echo_events sq ON sq.event=st.request_event AND sq.session=sj.session JOIN echo_events ss ON ss.event=sj.source AND ss.session=sj.session AND ss.kind='assistant_final' WHERE sj.job=" and run_expression)
+    set clause to concat(clause and concat(" AND sj.session=" and session_expression))
+    set clause to concat(clause and concat(" AND sj.device=" and device_expression))
+    set clause to concat(clause and " AND sq.kind='tool_call' AND json_extract(sq.payload,'$.name')='speech_synthesize' AND json_extract(sq.payload,'$.run_id')=sj.job AND json_extract(sq.payload,'$.call_id')='speak' AND json_extract(sq.payload,'$.speech_source')=ss.event AND json_extract(json_extract(sq.payload,'$.arguments'),'$.text')=json_extract(ss.payload,'$.content') AND NOT EXISTS(SELECT 1 FROM echo_runs WHERE run=sj.job) AND ")
+    return concat(clause and concat(group_device_session_sql(database and "sj.session" and "sj.device") and ")"))
+
+define group_speech_call_matches with database as Int and run as Str and call_id as Str returning Int:
+    if not (call_id equals "speak"):
+        return 0
+    set scope to group_speech_scope_sql(database and "t.run" and "t.session" and "a.device")
+    if scope equals "0":
+        return 0
+    set values to [run,call_id]
+    set row to history_collect_one(checkpoint_prepare(database and concat("SELECT t.run FROM echo_tool_calls t JOIN echo_tool_authority a ON a.run=t.run AND a.call_id=t.call_id WHERE t.run=?1 AND t.call_id=?2 AND " and concat(scope and ";")) and values))
+    return archive_list_text(row and 0) equals "found"

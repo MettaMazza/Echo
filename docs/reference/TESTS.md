@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T09:30:11.375937+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T09:43:52.684712+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1077,6 +1077,18 @@ Imports: ../../app/agent/runner → app/agent/runner.ep, ../../app/security/grou
 
 - Line 5: `define main returning Int:`
 
+## tests/media/test_group_message_speech.ep
+
+[Source](../../tests/media/test_group_message_speech.ep) · 50 lines · 3846 bytes
+
+SHA-256: `9d9b1a8bd04cd98a4e8d14c6271bf94678e3de203dc658c12fc352743bec3877`
+
+> Actual local synthesis from a member other than the source message sender.
+
+Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../../app/web/message_speech → app/web/message_speech.ep
+
+- Line 5: `define main returning Int:`
+
 ## tests/media/test_group_voice_tool.ep
 
 [Source](../../tests/media/test_group_voice_tool.ep) · 79 lines · 6774 bytes
@@ -1754,6 +1766,19 @@ Imports: ../../app/security/group_route → app/security/group_route.ep, ../../a
 
 - Line 4: `define group_attachment_route with config as List and target as Str and body as Str and credential as Str returning List:`
 - Line 21: `define main returning Int:`
+
+## tests/security/test_group_direct_speech_authority.ep
+
+[Source](../../tests/security/test_group_direct_speech_authority.ep) · 61 lines · 5653 bytes
+
+SHA-256: `556be58b7368da4205dcf8ef6739f588856e187eca3ecaaa69b6605ecf21a94d`
+
+
+Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../../app/web/message_speech → app/web/message_speech.ep
+
+- Line 4: `define queue_saved_speech with database as Int and session as Str and job as Str returning Int:`
+- Line 16: `define queue_forged_speech with database as Int and session as Str and job as Str returning Int:`
+- Line 28: `define main returning Int:`
 
 ## tests/security/test_group_media.ep
 
@@ -2607,6 +2632,29 @@ SHA-256: `be5ae24dc868ecc5534e65bf45ae25df2d2c4221c6dae74ffad697a62bc4d5c1`
 Imports:
 
 - Line 3: `define main:`
+
+## tests/web/group_speech_browser.ep
+
+[Source](../../tests/web/group_speech_browser.ep) · 6 lines · 273 bytes
+
+SHA-256: `958349c95277b2bd1248d181a8cdc5ae076260e07dd41c9f3dd3f1760bcedfd8`
+
+> Link after client.ep with main renamed. Disposable test origin only.
+
+Imports:
+
+- Line 2: `define main:`
+
+## tests/web/group_speech_seed.ep
+
+[Source](../../tests/web/group_speech_seed.ep) · 32 lines · 2229 bytes
+
+SHA-256: `bf995913433d70e515f35ab3be2c64247bb175ac179a2e21ccaca963dd38d5d8`
+
+
+Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../../app/agent/runner → app/agent/runner.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 5: `define main returning Int:`
 
 ## tests/web/outbox_application_browser.ep
 

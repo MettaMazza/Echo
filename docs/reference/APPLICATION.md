@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T09:30:11.375937+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T09:43:52.684712+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1572,9 +1572,9 @@ Imports: shared_authority → app/media/shared_authority.ep, ../security/princip
 
 ## app/media/shared_authority.ep
 
-[Source](../../app/media/shared_authority.ep) · 27 lines · 2704 bytes
+[Source](../../app/media/shared_authority.ep) · 35 lines · 3341 bytes
 
-SHA-256: `4d43ba419f76bc6f64a9ae3c8f7e87493f8ee7e4f108f78937ed12f397eb2775`
+SHA-256: `0bfc18e3ab5c7b588f29e85f477b9ed4f0a1423c90a52246614887606b5e528b`
 
 > Resolve the initiating device from the frozen call, never from media arguments
 > or another member of the room. Publication checks this identity again.
@@ -1584,7 +1584,7 @@ SHA-256: `4d43ba419f76bc6f64a9ae3c8f7e87493f8ee7e4f108f78937ed12f397eb2775`
 Imports: ../security/tool_policy → app/security/tool_policy.ep, ../web/attachments → app/web/attachments.ep
 
 - Line 6: `define media_shared_authority with database as Int and run as Str and call_id as Str and family as Str returning List:`
-- Line 24: `define media_attachment_register with database as Int and device as Str and session as Str and identity as Str and path as Str and name as Str and media_type as Str and run as Str and call_id as Str returning Int:`
+- Line 32: `define media_attachment_register with database as Int and device as Str and session as Str and identity as Str and path as Str and name as Str and media_type as Str and run as Str and call_id as Str returning Int:`
 
 ## app/media/speech_request.ep
 
@@ -2934,9 +2934,9 @@ Imports: accounts → app/security/accounts.ep
 
 ## app/security/group_gate.ep
 
-[Source](../../app/security/group_gate.ep) · 53 lines · 5649 bytes
+[Source](../../app/security/group_gate.ep) · 76 lines · 7928 bytes
 
-SHA-256: `1dd08c9233883e7cc418e13df7b93a7a8f0119739216c3ddbf4c9bfb9151fa1f`
+SHA-256: `b49ac1e4f986299fbfa7ba5c6f1a3a2e780db74c71abb391ba373eea09da4936`
 
 > SQL expressions are supplied only by internal callers, never request data.
 > This clause supplements private ownership only for a recorded initiating run.
@@ -2947,6 +2947,8 @@ SHA-256: `1dd08c9233883e7cc418e13df7b93a7a8f0119739216c3ddbf4c9bfb9151fa1f`
 > A private run keeps its existing policy. A shared privileged result requires
 > every recipient to have held admin authority when the run was admitted, with
 > unchanged role/revocation revisions now. Missing snapshots never grant access.
+> Only the exact immutable source text may be spoken by a direct shared job.
+> SQL expressions come from trusted callers, never model or HTTP arguments.
 
 Imports: ../archive/history → app/archive/history.ep
 
@@ -2954,6 +2956,8 @@ Imports: ../archive/history → app/archive/history.ep
 - Line 16: `define group_run_session_allows with database as Int and run as Str and session as Str returning Int:`
 - Line 26: `define group_device_session_sql with database as Int and session_expression as Str and device_expression as Str returning Str:`
 - Line 37: `define group_privileged_audience_allows with database as Int and run as Str returning Int:`
+- Line 58: `define group_speech_scope_sql with database as Int and run_expression as Str and session_expression as Str and device_expression as Str returning Str:`
+- Line 68: `define group_speech_call_matches with database as Int and run as Str and call_id as Str returning Int:`
 
 ## app/security/group_history.ep
 
@@ -3053,6 +3057,18 @@ Imports: ../providers/json_string → app/providers/json_string.ep, ../archive/h
 
 - Line 7: `define group_event_speaker with database as Int and session as Str and event as Str returning Str:`
 - Line 33: `define group_attributed_user_text with database as Int and session as Str and event as Str and text as Str returning Str:`
+
+## app/security/group_speech.ep
+
+[Source](../../app/security/group_speech.ep) · 8 lines · 2914 bytes
+
+SHA-256: `364d0b68c2aa1adec5be47cfbefab0e3f943346a016bdc1c7f0af56554bfc51f`
+
+> Direct UI speech has its own caller; it does not invent a model/user turn.
+
+Imports: group_output_policy → app/security/group_output_policy.ep
+
+- Line 4: `define group_speech_schema with database as Int returning Str:`
 
 ## app/security/groups.ep
 
@@ -3171,9 +3187,9 @@ Imports: group_gate → app/security/group_gate.ep, node_gate → app/security/n
 
 ## app/security/tool_authority.ep
 
-[Source](../../app/security/tool_authority.ep) · 32 lines · 4377 bytes
+[Source](../../app/security/tool_authority.ep) · 32 lines · 4484 bytes
 
-SHA-256: `35c79067f5b06cf31a1c782bc4de4cee77bd6a459d7ea366d07beae36b56fea3`
+SHA-256: `1f06fd824cb71f580adf612ad1f851f681db74e8cb5cf98c4def1c8f88427d59`
 
 > Freeze each queued tool request, including direct UI actions without a model
 > run. Historical requests are not assigned invented initiating authority.
@@ -3189,9 +3205,9 @@ Imports: group_gate → app/security/group_gate.ep, node_gate → app/security/n
 
 ## app/security/tool_policy.ep
 
-[Source](../../app/security/tool_policy.ep) · 54 lines · 3435 bytes
+[Source](../../app/security/tool_policy.ep) · 56 lines · 3622 bytes
 
-SHA-256: `331f0bec46b733fde954277ff73fba4b4b60632c9b078bd10573069a5147cc2a`
+SHA-256: `87645c80392ae18799cf1ef3ae85adcc11bed54b359b4b08cdbc61f3764b7a4b`
 
 > Classification is explicit. A newly registered name is not automatically a
 > safe tool. Dynamic tools must later obtain an independently verified manifest.
@@ -3211,7 +3227,7 @@ Imports: tool_authority → app/security/tool_authority.ep
 
 [Source](../../app/server.ep) · 357 lines · 23140 bytes
 
-SHA-256: `a5aad0eeb99f217a4e1b1bb339d8876f350013c774261bf29352e612b16b04d5`
+SHA-256: `92c79aa6ee01b0510c29b6d67e04ea43b265f224644105c51abdc45ec4cb9179`
 
 > A busy archive must not turn a status request into an unexplained reset.
 > Consume the framed request without retaining its body before closing TCP.
@@ -3924,9 +3940,9 @@ Imports:
 
 ## app/ui/client.ep
 
-[Source](../../app/ui/client.ep) · 3021 lines · 134507 bytes
+[Source](../../app/ui/client.ep) · 3022 lines · 134568 bytes
 
-SHA-256: `0b033091e2cbaef9d950a231a0bc3d2a9763db423fddf0325052c40efeea44ae`
+SHA-256: `730cbf198597c2f38c0a31753a44d006f4ea8ff479fed50cc5d935d7d13cea0d`
 
 > Keep the newest turn visible without pulling readers away from older messages.
 > Authored in Ernos; the browser program is generated by the reference compiler.
@@ -3986,82 +4002,82 @@ Imports:
 - Line 427: `define echo_inline_audio with file and owner:`
 - Line 472: `define echo_speak_button with message and article:`
 - Line 506: `define echo_render_message with message:`
-- Line 550: `define echo_history_page with before and marker:`
-- Line 577: `define echo_history_render with result and before and marker:`
-- Line 618: `define echo_recap_notice with marker:`
-- Line 668: `define echo_history:`
-- Line 677: `define echo_open_session with session:`
-- Line 708: `define echo_session_rename with session:`
-- Line 768: `define echo_session_button with session:`
-- Line 782: `define echo_sessions:`
-- Line 806: `define echo_thinking_panel with run:`
-- Line 833: `define echo_trace_load with panel:`
-- Line 877: `define echo_trace_clear_floating:`
-- Line 885: `define echo_trace_refresh:`
-- Line 896: `define echo_poll:`
-- Line 964: `define echo_clear_draft:`
-- Line 974: `define echo_draft:`
-- Line 1003: `define echo_submit_payload with payload:`
-- Line 1010: `define echo_reconcile_pending:`
-- Line 1041: `define echo_send with event:`
-- Line 1101: `define echo_new_chat with event:`
-- Line 1140: `define echo_stop with event:`
-- Line 1152: `define echo_retry with event:`
-- Line 1169: `define echo_pair with event:`
-- Line 1195: `define echo_export:`
-- Line 1227: `define echo_verified_attachment with file:`
-- Line 1258: `define echo_download_attachment with file:`
-- Line 1287: `define echo_image_supported with file:`
-- Line 1290: `define echo_release_image:`
-- Line 1300: `define echo_open_attachment with file:`
-- Line 1308: `define echo_preview_audio with file:`
-- Line 1369: `define echo_preview_image with file:`
-- Line 1430: `define echo_read_source with file:`
-- Line 1483: `define echo_open_source with file:`
-- Line 1565: `define echo_selected_files:`
-- Line 1576: `define echo_file_choice with file:`
-- Line 1599: `define echo_attachments:`
-- Line 1658: `define echo_ensure_session:`
-- Line 1677: `define echo_upload_file with event:`
-- Line 1683: `define echo_upload_one with file:`
-- Line 1707: `define echo_upload_prepared with file and identity:`
-- Line 1726: `define echo_upload_files with originals:`
-- Line 1756: `define echo_drag_files with event:`
-- Line 1766: `define echo_drop_files with event:`
-- Line 1771: `define echo_paste_files with event:`
-- Line 1780: `define echo_attachment_inputs:`
-- Line 1787: `define escapeHTML with str:`
-- Line 1801: `define renderAiInlineMarkdown with text:`
-- Line 1821: `define echo_table_cells with line:`
-- Line 1850: `define echo_table_row with cells and alignments and heading:`
-- Line 1862: `define echo_markdown_table with lines and start:`
-- Line 1899: `define renderAiMarkdown with inputText:`
-- Line 2022: `define echo_open_recap:`
-- Line 2146: `define echo_theme_apply:`
-- Line 2154: `define echo_theme_setup:`
-- Line 2178: `define echo_suggestion with label and prompt and container:`
-- Line 2191: `define echo_polish_layout:`
-- Line 2257: `define echo_show_identity with target:`
-- Line 2273: `define main:`
-- Line 2468: `define echo_capability_label with value:`
-- Line 2475: `define echo_provider_picker:`
-- Line 2521: `define echo_provider_details with provider:`
-- Line 2549: `define echo_provider_refresh with identity:`
-- Line 2572: `define echo_group_action with path and payload and button:`
-- Line 2590: `define echo_group_member_button with group and member and state and title:`
-- Line 2606: `define echo_group_open with group:`
-- Line 2624: `define echo_group_row with group and principal:`
-- Line 2685: `define echo_groups_refresh:`
-- Line 2712: `define echo_groups_setup:`
-- Line 2754: `define echo_group_watch_start:`
-- Line 2795: `define echo_group_history_choice with segment and group:`
-- Line 2809: `define echo_group_watch with marker:`
-- Line 2890: `define echo_outbox_prefix:`
-- Line 2896: `define echo_outbox_park:`
-- Line 2914: `define echo_outbox_restore with key:`
-- Line 2927: `define echo_outbox_row with key and original:`
-- Line 2963: `define echo_outbox_render:`
-- Line 2987: `define echo_outbox_setup:`
+- Line 551: `define echo_history_page with before and marker:`
+- Line 578: `define echo_history_render with result and before and marker:`
+- Line 619: `define echo_recap_notice with marker:`
+- Line 669: `define echo_history:`
+- Line 678: `define echo_open_session with session:`
+- Line 709: `define echo_session_rename with session:`
+- Line 769: `define echo_session_button with session:`
+- Line 783: `define echo_sessions:`
+- Line 807: `define echo_thinking_panel with run:`
+- Line 834: `define echo_trace_load with panel:`
+- Line 878: `define echo_trace_clear_floating:`
+- Line 886: `define echo_trace_refresh:`
+- Line 897: `define echo_poll:`
+- Line 965: `define echo_clear_draft:`
+- Line 975: `define echo_draft:`
+- Line 1004: `define echo_submit_payload with payload:`
+- Line 1011: `define echo_reconcile_pending:`
+- Line 1042: `define echo_send with event:`
+- Line 1102: `define echo_new_chat with event:`
+- Line 1141: `define echo_stop with event:`
+- Line 1153: `define echo_retry with event:`
+- Line 1170: `define echo_pair with event:`
+- Line 1196: `define echo_export:`
+- Line 1228: `define echo_verified_attachment with file:`
+- Line 1259: `define echo_download_attachment with file:`
+- Line 1288: `define echo_image_supported with file:`
+- Line 1291: `define echo_release_image:`
+- Line 1301: `define echo_open_attachment with file:`
+- Line 1309: `define echo_preview_audio with file:`
+- Line 1370: `define echo_preview_image with file:`
+- Line 1431: `define echo_read_source with file:`
+- Line 1484: `define echo_open_source with file:`
+- Line 1566: `define echo_selected_files:`
+- Line 1577: `define echo_file_choice with file:`
+- Line 1600: `define echo_attachments:`
+- Line 1659: `define echo_ensure_session:`
+- Line 1678: `define echo_upload_file with event:`
+- Line 1684: `define echo_upload_one with file:`
+- Line 1708: `define echo_upload_prepared with file and identity:`
+- Line 1727: `define echo_upload_files with originals:`
+- Line 1757: `define echo_drag_files with event:`
+- Line 1767: `define echo_drop_files with event:`
+- Line 1772: `define echo_paste_files with event:`
+- Line 1781: `define echo_attachment_inputs:`
+- Line 1788: `define escapeHTML with str:`
+- Line 1802: `define renderAiInlineMarkdown with text:`
+- Line 1822: `define echo_table_cells with line:`
+- Line 1851: `define echo_table_row with cells and alignments and heading:`
+- Line 1863: `define echo_markdown_table with lines and start:`
+- Line 1900: `define renderAiMarkdown with inputText:`
+- Line 2023: `define echo_open_recap:`
+- Line 2147: `define echo_theme_apply:`
+- Line 2155: `define echo_theme_setup:`
+- Line 2179: `define echo_suggestion with label and prompt and container:`
+- Line 2192: `define echo_polish_layout:`
+- Line 2258: `define echo_show_identity with target:`
+- Line 2274: `define main:`
+- Line 2469: `define echo_capability_label with value:`
+- Line 2476: `define echo_provider_picker:`
+- Line 2522: `define echo_provider_details with provider:`
+- Line 2550: `define echo_provider_refresh with identity:`
+- Line 2573: `define echo_group_action with path and payload and button:`
+- Line 2591: `define echo_group_member_button with group and member and state and title:`
+- Line 2607: `define echo_group_open with group:`
+- Line 2625: `define echo_group_row with group and principal:`
+- Line 2686: `define echo_groups_refresh:`
+- Line 2713: `define echo_groups_setup:`
+- Line 2755: `define echo_group_watch_start:`
+- Line 2796: `define echo_group_history_choice with segment and group:`
+- Line 2810: `define echo_group_watch with marker:`
+- Line 2891: `define echo_outbox_prefix:`
+- Line 2897: `define echo_outbox_park:`
+- Line 2915: `define echo_outbox_restore with key:`
+- Line 2928: `define echo_outbox_row with key and original:`
+- Line 2964: `define echo_outbox_render:`
+- Line 2988: `define echo_outbox_setup:`
 
 ## app/ui/layout.ep
 
@@ -4332,12 +4348,14 @@ Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_st
 
 ## app/web/message_speech.ep
 
-[Source](../../app/web/message_speech.ep) · 50 lines · 4171 bytes
+[Source](../../app/web/message_speech.ep) · 78 lines · 6968 bytes
 
-SHA-256: `c66f9dff5a24b63f6098991501bbbe35143be3e5ed4bdcdf21d8d8ee30017d39`
+SHA-256: `beea5b52fa1ee6c63b83f2ab47dc2e700a8a98e8ecf8328ed48c9eb3049104a5`
 
 > Idempotent direct speech of an owned, immutable assistant message. This uses
 > the existing speech executor and tool ledger without another model turn.
+> Include authority epochs so a fresh explicit click after a role/link
+> change is new work, while retries within that authority are stable.
 
 Imports: ../retained_text → app/retained_text.ep, ../media/speech_tool → app/media/speech_tool.ep
 

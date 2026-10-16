@@ -11,11 +11,30 @@ define web_message_speak with database as Int and device as Str and source as St
     set retained_added to append_list(retained_list_1 and retained_item_1_1)
     set values to retained_list_1
     set row to history_collect_one(checkpoint_prepare(database and concat("SELECT e.session,json_extract(e.payload,'$.content') FROM echo_events e JOIN echo_session_owners o ON o.session=e.session JOIN echo_devices d ON d.device=o.device WHERE " and concat(principal_session_sql(database and "e.session" and "d.device") and " AND e.event=?2 AND e.kind='assistant_final' AND d.device=?1 AND d.revoked=0;")) and values))
+    set shared to 0
+    if not (archive_list_text(row and 0) equals "found"):
+        set candidate to history_collect_one(checkpoint_prepare(database and "SELECT session,json_extract(payload,'$.content') FROM echo_events WHERE event=?2 AND kind='assistant_final';" and values))
+        set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_group_speech_jobs';"))
+        if archive_list_text(installed and 0) equals "found" and archive_list_text(candidate and 0) equals "found" and web_attachment_session_allowed(database and device and archive_list_text(candidate and 1) and 1) equals 1:
+            set row to candidate
+            set shared to 1
     if not (archive_list_text(row and 0) equals "found"):
         return "{\"status\":\"not-found\"}"
     set session to archive_list_text(row and 1)
     set text to archive_list_text(row and 2)
     set job to concat("message-speech:plain-v1:" and ep_sha256(source))
+    if shared equals 1:
+        # Include authority epochs so a fresh explicit click after a role/link
+        # change is new work, while retries within that authority are stable.
+        set epoch to history_collect_one(checkpoint_prepare(database and "SELECT p.identity,p.role,CAST((SELECT COUNT(*) FROM echo_authority_events WHERE principal=p.identity) AS TEXT),CAST((SELECT COUNT(*) FROM echo_principal_revocations WHERE principal=p.identity) AS TEXT),CAST((SELECT COUNT(*) FROM echo_device_link_events WHERE device=d.device) AS TEXT),CAST((SELECT COUNT(*) FROM echo_events WHERE kind='emergency_started') AS TEXT) FROM echo_devices d JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE d.device=?1 AND d.revoked=0 AND p.revoked=0;" and [device]))
+        if not (archive_list_text(epoch and 0) equals "found"):
+            return "{\"status\":\"not-authorized\"}"
+        set seed to concat(archive_hash_field(source) and archive_hash_field(device))
+        set index to 1
+        repeat while index < length_list(epoch):
+            set seed to concat(seed and archive_hash_field(archive_list_text(epoch and index)))
+            set index to index + 1
+        set job to concat("group-speech:plain-v1:" and ep_sha256(seed))
     set request to concat(job and ":request")
     set existing to tool_ledger_read(database and job and "speak")
     if existing equals 0:
@@ -25,6 +44,13 @@ define web_message_speak with database as Int and device as Str and source as St
         set payload to concat(payload and concat(",\"call_id\":\"speak\",\"name\":\"speech_synthesize\",\"arguments\":" and concat(provider_quote(arguments) and "}")))
         if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
             return "{\"status\":\"busy\"}"
+        if shared equals 1:
+            if web_attachment_session_allowed(database and device and session and 1) equals 0 or else node_admission_allows(database) equals 0:
+                set rolled to archive_rollback(database)
+                return "{\"status\":\"not-authorized\"}"
+            if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_speech_jobs(job,session,device,source) VALUES(?1,?2,?3,?4);" and [job,session,device,source]) and 101) is not equal to 0:
+                set rolled to archive_rollback(database)
+                return "{\"status\":\"speech-in-progress-or-interrupted\"}"
         if archive_append_pending(database and session and request and "tool_call" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else tool_ledger_queue(database and job and "speak" and session and request) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
             set rolled to archive_rollback(database)
     if tool_ledger_claim(database and job and "speak") equals 0:
@@ -45,6 +71,8 @@ define web_message_speak with database as Int and device as Str and source as St
     set retained_item_2_0 to job
     set retained_added to append_list(retained_list_2 and retained_item_2_0)
     set saved to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(e.payload,'$.result') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run=?1 AND t.call_id='speak' AND t.state='observed';" and retained_list_2))
+    if shared equals 1 and web_attachment_session_allowed(database and device and session and 0) equals 0:
+        return "{\"status\":\"not-authorized\"}"
     if archive_list_text(saved and 0) equals "found":
         return archive_list_text(saved and 1)
     return "{\"status\":\"speech-in-progress-or-interrupted\"}"
