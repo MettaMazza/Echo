@@ -20,8 +20,18 @@ define main returning Int:
     set parent to ptr_to_str(get_list(row and 3))
     if activity_expect(database and "Preparing context for the next step") is not equal to 0:
         return 1
+    if not (web_run_compaction(database and "run") equals "{\"state\":\"inactive\"}"):
+        return 1
     set binding to concat("{\"run_id\":\"run\",\"job\":\"job\",\"parent_event\":" and concat(provider_quote(parent) and "}"))
     if archive_append(database and session and "binding" and "compaction_binding" and binding and "test") is not equal to 0:
+        return 1
+    set observed to web_run_compaction(database and "run")
+    if string_index_of(observed and "\"state\":\"pending\"") < 0 or else string_index_of(observed and "\"job\":\"job\"") < 0:
+        return 1
+    if sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(get_argument(1))
+    if not (web_run_compaction(database and "run") equals observed):
         return 1
     set stages to ["candidate", "notes", "merge", "fragment-review", "review", "synthesis", "repair", "checkpoint"]
     set labels to ["Writing a detailed recap from original records", "Reading original history in parts", "Combining the saved recap notes", "Checking the recap against original records", "Checking the recap against original records", "Checking the combined recap reviews", "Revising the recap from review findings", "Verifying files and saving the reviewed recap"]
@@ -45,10 +55,26 @@ define main returning Int:
         return 1
     if activity_expect(database and "Verifying files and saving the reviewed recap") is not equal to 0:
         return 1
+    # A committed checkpoint ends the pending state without losing the job ID.
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and parent)
+    set inserted to checkpoint_prepare(database and "INSERT INTO echo_checkpoints(identity,session,source_end,source_digest,previous,summary,structured_state,validation) VALUES('job:checkpoint:verified',?1,?2,'fixture','','Recap','{}','fixture');" and values)
+    if inserted equals 0 or else archive_finish(inserted and 101) is not equal to 0:
+        return 1
+    set values to create_list()
+    set added to append_list(values and session)
+    set inserted to checkpoint_prepare(database and "INSERT INTO echo_active_context(session,checkpoint) VALUES(?,'job:checkpoint:verified');" and values)
+    if inserted equals 0 or else archive_finish(inserted and 101) is not equal to 0:
+        return 1
+    if string_index_of(web_run_compaction(database and "run") and "\"state\":\"saved\"") < 0 or else activity_expect(database and "Recap saved; preparing to continue") is not equal to 0:
+        return 1
     # A committed binding for an old head must not describe a later run step.
     if archive_append(database and session and "later-head" and "user" and "Next step" and "test") is not equal to 0 or else sql_execute(database and "UPDATE echo_runs SET last_event='later-head' WHERE run='run';") is not equal to 0:
         return 1
     if activity_expect(database and "Preparing context for the next step") is not equal to 0:
+        return 1
+    if not (web_run_compaction(database and "run") equals "{\"state\":\"inactive\"}"):
         return 1
     if agent_cancel_run(database and "run") is not equal to 0 or else activity_expect(database and "Stopped") is not equal to 0:
         return 1
@@ -57,5 +83,5 @@ define main returning Int:
     set database to archive_open(get_argument(1))
     if activity_expect(database and "Stopped") is not equal to 0 or else sql_close(database) is not equal to 0:
         return 1
-    display "PASS: recap activity stages, unrelated job and foreign-session exclusion, stale-head exclusion, terminal state and reopened status."
+    display "PASS: recap activity stages, unrelated job and foreign-session exclusion, stale-head exclusion, terminal state, structured pending/saved/inactive observations and reopened status."
     return 0

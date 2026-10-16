@@ -18,7 +18,7 @@ Conversation originals remain in SQLite while reviewed, source-linked recaps red
 
 ## Identity restoration
 
-The ErnosDecent kernel, personas, epistemic and philosophical frameworks, runtime policies and rights charter are now installed verbatim with a separate technical adaptation block. The original user-supplied Echo handover is included unchanged. The actual live provider request and compaction/reopen preservation passed verification. The separate gitignored private identity file remains absent; the complete My Brain collection and SFT archive are not connected. See [PROMPT-MIGRATION.md](PROMPT-MIGRATION.md) for exact scope and evidence.
+The ErnosDecent kernel, personas, epistemic and philosophical frameworks, runtime policies and rights charter are now installed verbatim with a separate technical adaptation block. The Codex-addressed handover is excluded from the live Echo prompt bundle; its original remains private audit material. The actual live provider request and compaction/reopen preservation passed verification. The separate gitignored private identity file remains absent; the complete My Brain collection and SFT archive are not connected. See [PROMPT-MIGRATION.md](PROMPT-MIGRATION.md) for exact scope and evidence.
 
 ## Incident and recovery
 

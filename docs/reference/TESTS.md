@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T01:57:20.241858+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:06:06.490439+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1988,12 +1988,13 @@ Imports: ../../app/web/recovery → app/web/recovery.ep, ../fixtures/runner_prov
 
 ## tests/web/test_activity.ep
 
-[Source](../../tests/web/test_activity.ep) · 61 lines · 4036 bytes
+[Source](../../tests/web/test_activity.ep) · 87 lines · 5805 bytes
 
-SHA-256: `c928beba05f8914b53ac0b2a6521617096004f5678700e23d99e309d2c91354a`
+SHA-256: `69b9b753c1a8b46c8941664e3a162f43fb5ff50b1efa58fca099c743fbf573fc`
 
 > A later unrelated job must not replace the current run's activity.
 > Even a matching job prefix in another session cannot supply a stage.
+> A committed checkpoint ends the pending state without losing the job ID.
 > A committed binding for an old head must not describe a later run step.
 
 Imports: ../../app/web/activity → app/web/activity.ep, fs → standard library or compiler dependency
