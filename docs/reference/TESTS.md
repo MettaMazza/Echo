@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T08:00:18.649156+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:07:40.474807+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1704,11 +1704,23 @@ Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/a
 
 - Line 10: `define main returning Int:`
 
+## tests/security/test_group_attachments.ep
+
+[Source](../../tests/security/test_group_attachments.ep) · 90 lines · 7665 bytes
+
+SHA-256: `9917a1ff5ba75894c968ec45934eab3c30d9c481113b53fd7bf82f3d37f3a166`
+
+
+Imports: ../../app/security/group_route → app/security/group_route.ep, ../../app/web/routes → app/web/routes.ep
+
+- Line 4: `define group_attachment_route with config as List and target as Str and body as Str and credential as Str returning List:`
+- Line 21: `define main returning Int:`
+
 ## tests/security/test_group_output_policy.ep
 
-[Source](../../tests/security/test_group_output_policy.ep) · 98 lines · 8887 bytes
+[Source](../../tests/security/test_group_output_policy.ep) · 102 lines · 9459 bytes
 
-SHA-256: `e2416677de9bee8d0371f588b335724880d46a46666e15ad7efda175e269a45e`
+SHA-256: `0c2761a60d362cce852accee7838c480d5a3770bdc9d6251d9b3ccf3d381c733`
 
 
 Imports: ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/context/recap_sources → app/context/recap_sources.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep

@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T08:00:18.649156+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:07:40.474807+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -4094,21 +4094,27 @@ Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_st
 
 ## app/web/attachments.ep
 
-[Source](../../app/web/attachments.ep) · 79 lines · 6030 bytes
+[Source](../../app/web/attachments.ep) · 122 lines · 9194 bytes
 
-SHA-256: `24aa7767fb89107de66ad2bbd626381c8f205d228cbe24d33a9da4a7f612bc96`
+SHA-256: `46aa23f7b9812d9ace8818be21a261b5185f5941421050e34554fdc1c9d79585`
 
+> Session IDs are opaque references, not authority. Shared reads require this
+> authenticated principal in the recorded audience and still joined now;
+> publication additionally requires the current audience revision.
 > Host-only storage primitive. Path must be a closed, exclusively owned staging
 > file; browser names are metadata, never filesystem paths. Publication and
 > ownership recheck commit with the original attachment event.
 > Resolve only through ownership joins; never expose host paths over HTTP.
 
-Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_store.ep, ../archive/file_digest → app/archive/file_digest.ep
+Imports: ../security/group_history → app/security/group_history.ep, ../retained_text → app/retained_text.ep, run_store → app/web/run_store.ep, ../archive/file_digest → app/archive/file_digest.ep
 
-- Line 5: `define web_attachment_schema with database as Int returning Int:`
-- Line 11: `define web_attachment_register with database as Int and device as Str and session as Str and attachment as Str and path as Str and name as Str and media_type as Str returning Int:`
-- Line 47: `define web_attachment_owned with database as Int and device as Str and attachment as Str returning List:`
-- Line 53: `define web_attachment_list with database as Int and device as Str and session as Str returning Str:`
+- Line 6: `define web_attachment_schema with database as Int returning Int:`
+- Line 13: `define web_attachment_session_allowed with database as Int and device as Str and session as Str and writing as Int returning Int:`
+- Line 28: `define web_attachment_register with database as Int and device as Str and session as Str and attachment as Str and path as Str and name as Str and media_type as Str returning Int:`
+- Line 64: `define web_attachment_owned_snapshot with database as Int and device as Str and attachment as Str returning List:`
+- Line 73: `define web_attachment_owned with database as Int and device as Str and attachment as Str returning List:`
+- Line 83: `define web_attachment_list_snapshot with database as Int and device as Str and session as Str returning Str:`
+- Line 114: `define web_attachment_list with database as Int and device as Str and session as Str returning Str:`
 
 ## app/web/branches.ep
 
@@ -4288,9 +4294,9 @@ Imports: ../transport/isolated_process → app/transport/isolated_process.ep, ..
 
 ## app/web/routes.ep
 
-[Source](../../app/web/routes.ep) · 343 lines · 26543 bytes
+[Source](../../app/web/routes.ep) · 343 lines · 26553 bytes
 
-SHA-256: `f02335d2efe0d25c0e672295648878f6f091393f7eda3b95d8f6be570883eef2`
+SHA-256: `0beaf4f7e8243e6ca5b0ecccc1a3d78056d6b7d7440eb5af3661d801342e2f97`
 
 > Configuration: database path, model, provider port, workload reserve,
 > I/O batch size. It is immutable while workers use it.
@@ -4393,9 +4399,9 @@ Imports: ../retained_text → app/retained_text.ep, http_api → app/web/http_ap
 
 ## app/web/uploads.ep
 
-[Source](../../app/web/uploads.ep) · 69 lines · 5540 bytes
+[Source](../../app/web/uploads.ep) · 77 lines · 5575 bytes
 
-SHA-256: `103582c7b9195fa299404c77bbf00331a9ee52c3cb4b30a2c84cc4ffe71c7a3c`
+SHA-256: `2328b0f77316ea91b22deb068c5a6a1fab0bb1f1069b52c8cabe3e72d113c0c3`
 
 > Root is host configuration. The opaque storage name is always host-generated.
 > The active body owner marks transport/storage failures; a saved receipt can
@@ -4412,10 +4418,10 @@ Imports: ../retained_text → app/retained_text.ep, attachments → app/web/atta
 - Line 5: `define web_upload_schema with database as Int returning Int:`
 - Line 11: `define web_upload_prepare with database as Int and device as Str and session as Str and root as Str and name as Str and media_type as Str returning Str:`
 - Line 32: `define web_upload_owned with database as Int and device as Str and upload as Str returning List:`
-- Line 38: `define web_upload_claim with database as Int and device as Str and upload as Str returning Int:`
-- Line 46: `define web_upload_fail with database as Int and device as Str and upload as Str returning Int:`
-- Line 55: `define web_upload_register with database as Int and device as Str and upload as Str returning Int:`
-- Line 68: `define web_upload_recover with database as Int returning Int:`
+- Line 41: `define web_upload_claim with database as Int and device as Str and upload as Str returning Int:`
+- Line 54: `define web_upload_fail with database as Int and device as Str and upload as Str returning Int:`
+- Line 63: `define web_upload_register with database as Int and device as Str and upload as Str returning Int:`
+- Line 76: `define web_upload_recover with database as Int returning Int:`
 
 ## app/web/worker.ep
 
