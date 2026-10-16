@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T05:20:50.388258+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:25:33.835875+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -914,6 +914,17 @@ SHA-256: `f7431ba9d7c5dd4efd5f05171993edcdf03f4d3541a07ed9e5369194535b18d3`
 Imports: ../../app/lifecycle/startup → app/lifecycle/startup.ep
 
 - Line 5: `define main returning Int:`
+
+## tests/lifecycle/test_controller_bundle.ep
+
+[Source](../../tests/lifecycle/test_controller_bundle.ep) · 42 lines · 2881 bytes
+
+SHA-256: `e14a5280f402e1b8cba783471c75a2b1e4c7c88d784e1872f4e43fd3e4b1774f`
+
+
+Imports: ../../app/lifecycle/controller_bundle → app/lifecycle/controller_bundle.ep, fs → standard library or compiler dependency
+
+- Line 4: `define main returning Int:`
 
 ## tests/lifecycle/test_guardian_readiness.ep
 

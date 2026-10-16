@@ -1,0 +1,147 @@
+import "protected_path"
+import "service_profile"
+import "../rights/staging"
+
+# Bootstrap package description only, never a protected-change approval.
+# Flat destination names prevent a manifest from escaping its version directory.
+define controller_bundle_valid with manifest as Str and expected as Str returning Int:
+    if protected_digest_valid(expected) equals 0 or else not (ep_sha256(manifest) equals expected):
+        return 0
+    set tokens to provider_json_tokens(manifest)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 0
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "version" or else key equals "files"):
+            return 0
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    if not (provider_index(tokens and provider_member(tokens and 0 and "version")) equals "1"):
+        return 0
+    set files to provider_items(tokens and provider_member(tokens and 0 and "files"))
+    if files equals 0 or else length_list(files) equals 0:
+        return 0
+    set names to create_list()
+    for each entry in files:
+        if not (provider_kind(tokens and entry) equals "{"):
+            return 0
+        set index to entry + 1
+        repeat while not (provider_kind(tokens and index) equals "}"):
+            set key to provider_value(tokens and index)
+            if not (key equals "name" or else key equals "source" or else key equals "sha256" or else key equals "kind") or else not (provider_kind(tokens and index + 2) equals "string") or else service_native_text(provider_value(tokens and index + 2)) equals 0:
+                return 0
+            set index to provider_after(tokens and index + 2)
+            if provider_kind(tokens and index) equals ",":
+                set index to index + 1
+        set name to provider_value(tokens and provider_member(tokens and entry and "name"))
+        set parts to workspace_path_parts(name)
+        if parts equals 0 or else length_list(parts) is not equal to 1 or else name equals "bundle.json" or else name equals "complete":
+            return 0
+        for each prior in names:
+            if ptr_to_str(prior) equals name:
+                return 0
+        set added to append_list(names and name)
+        set source to provider_value(tokens and provider_member(tokens and entry and "source"))
+        if string_length(source) < 2 or else get_character(source and 0) is not equal to 47 or else workspace_path_parts(ptr_to_str(substring(source and 1 and string_length(source) - 1))) equals 0:
+            return 0
+        if protected_digest_valid(provider_value(tokens and provider_member(tokens and entry and "sha256"))) equals 0:
+            return 0
+        set kind to provider_value(tokens and provider_member(tokens and entry and "kind"))
+        if not (kind equals "executable" or else kind equals "data"):
+            return 0
+    return 1
+
+# Entire sources are checked without truncation or execution. A later copy is
+# checked again; passing preflight never authorises activation or target exchange.
+define controller_bundle_preflight with manifest as Str and expected as Str returning Str:
+    if controller_bundle_valid(manifest and expected) equals 0:
+        return "invalid-bundle"
+    set tokens to provider_json_tokens(manifest)
+    set files to provider_items(tokens and provider_member(tokens and 0 and "files"))
+    for each entry in files:
+        set result to file_digest_durable(provider_value(tokens and provider_member(tokens and entry and "source")) and 65536)
+        if not (archive_list_text(result and 0) equals "verified") or else not (archive_list_text(result and 1) equals provider_value(tokens and provider_member(tokens and entry and "sha256"))):
+            return "source-unreadable-or-changed"
+    return "bytes-verified"
+
+# Exclusive, durable receipt; retry succeeds only for identical bytes.
+define controller_bundle_receipt with library as Int and directory as Int and root as Str and name as Str and content as Str returning Int:
+    set descriptor to workspace_file_open(library and directory and name and 1)
+    if descriptor < 0:
+        set retained to protected_path_open(library and concat(root and concat("/" and name)) and 0)
+        if retained < 0:
+            return 1
+        set closed to net_close(retained)
+        set existing to file_digest_durable(concat(root and concat("/" and name)) and 65536)
+        if not (archive_list_text(existing and 0) equals "verified") or else not (archive_list_text(existing and 1) equals ep_sha256(content)):
+            return 1
+        return 0
+    set written to file_stage_write(library and descriptor and str_to_ptr(content) and string_length(content))
+    set finished to file_stage_finish(library and descriptor)
+    if written is not equal to 0 or else finished is not equal to 0:
+        return 1
+    return 0
+
+# Root-only staging into a digest-named directory. Never modifies an active
+# installation, launchd job, approval ledger, identity or model. Partial failures
+# remain available for inspection; retry revalidates every retained byte.
+define controller_bundle_stage with manifest as Str and expected as Str and parent_path as Str returning Str:
+    set checked to controller_bundle_preflight(manifest and expected)
+    if not (checked equals "bytes-verified"):
+        return checked
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "native-unavailable"
+    set effective_user to ep_dlsym(library and "geteuid")
+    if effective_user equals 0 or else ep_dlcall0(effective_user) is not equal to 0:
+        set closed to ep_dlclose(library)
+        return "root-installation-required"
+    set parent to protected_path_open(library and parent_path and 1)
+    if parent < 0:
+        set closed to ep_dlclose(library)
+        return "untrusted-installation-parent"
+    set directory to workspace_directory_open(library and parent and expected and 1)
+    set closed to net_close(parent)
+    if directory < 0:
+        set closed to ep_dlclose(library)
+        return "stage-directory-unavailable"
+    if protected_inode_owned(library and directory and 1) equals 0:
+        set closed to net_close(directory)
+        set closed to ep_dlclose(library)
+        return "untrusted-stage-directory"
+    set root to concat(parent_path and concat("/" and expected))
+    set outcome to controller_bundle_stage_files(library and directory and root and manifest and expected)
+    set closed to net_close(directory)
+    set released to ep_dlclose(library)
+    if closed is not equal to 0 or else released is not equal to 0:
+        return "stage-close-failed"
+    return outcome
+
+define controller_bundle_stage_files with library as Int and directory as Int and root as Str and manifest as Str and expected as Str returning Str:
+    set tokens to provider_json_tokens(manifest)
+    set files to provider_items(tokens and provider_member(tokens and 0 and "files"))
+    set chmod_function to ep_dlsym(library and "fchmod")
+    set flush to ep_dlsym(library and "fsync")
+    if chmod_function equals 0 or else flush equals 0:
+        return "native-unavailable"
+    for each entry in files:
+        set name to provider_value(tokens and provider_member(tokens and entry and "name"))
+        set path to concat(root and concat("/" and name))
+        set copied to protected_stage_copy(provider_value(tokens and provider_member(tokens and entry and "source")) and path and provider_value(tokens and provider_member(tokens and entry and "sha256")))
+        if not (copied equals "staged" or else copied equals "already-staged"):
+            return concat("stage-copy:" and copied)
+        set descriptor to protected_path_open(library and path and 0)
+        if descriptor < 0:
+            return "staged-file-untrusted"
+        set mode to 384
+        if provider_value(tokens and provider_member(tokens and entry and "kind")) equals "executable":
+            set mode to 448
+        set changed to ep_dlcall2(chmod_function and descriptor and mode)
+        set finished to file_stage_finish(library and descriptor)
+        if changed is not equal to 0 or else finished is not equal to 0:
+            return "stage-mode-or-flush-failed"
+    if controller_bundle_receipt(library and directory and root and "bundle.json" and manifest) is not equal to 0 or else controller_bundle_receipt(library and directory and root and "complete" and expected) is not equal to 0 or else ep_dlcall1(flush and directory) is not equal to 0:
+        return "stage-receipt-or-directory-flush-failed"
+    return "staged-not-activated"

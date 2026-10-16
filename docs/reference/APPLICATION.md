@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T05:20:50.388258+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:25:33.835875+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1343,6 +1343,29 @@ SHA-256: `56899571cfc3f6b5b547aedef232314d411844a9126f32047a91ba4f7ad10600`
 Imports: providers/native_python → app/providers/native_python.ep, providers/json_access → app/providers/json_access.ep, providers/archived_stream → app/providers/archived_stream.ep, fs → standard library or compiler dependency
 
 - Line 8: `define main returning Int:`
+
+## app/lifecycle/controller_bundle.ep
+
+[Source](../../app/lifecycle/controller_bundle.ep) · 147 lines · 8826 bytes
+
+SHA-256: `4fd5516694a5a10b584755f08caf1316abacf345ee5c1fc802b559c842904d36`
+
+> Bootstrap package description only, never a protected-change approval.
+> Flat destination names prevent a manifest from escaping its version directory.
+> Entire sources are checked without truncation or execution. A later copy is
+> checked again; passing preflight never authorises activation or target exchange.
+> Exclusive, durable receipt; retry succeeds only for identical bytes.
+> Root-only staging into a digest-named directory. Never modifies an active
+> installation, launchd job, approval ledger, identity or model. Partial failures
+> remain available for inspection; retry revalidates every retained byte.
+
+Imports: protected_path → app/lifecycle/protected_path.ep, service_profile → app/lifecycle/service_profile.ep, ../rights/staging → app/rights/staging.ep
+
+- Line 7: `define controller_bundle_valid with manifest as Str and expected as Str returning Int:`
+- Line 58: `define controller_bundle_preflight with manifest as Str and expected as Str returning Str:`
+- Line 70: `define controller_bundle_receipt with library as Int and directory as Int and root as Str and name as Str and content as Str returning Int:`
+- Line 90: `define controller_bundle_stage with manifest as Str and expected as Str and parent_path as Str returning Str:`
+- Line 122: `define controller_bundle_stage_files with library as Int and directory as Int and root as Str and manifest as Str and expected as Str returning Str:`
 
 ## app/lifecycle/migrations.ep
 
@@ -2940,6 +2963,17 @@ Imports: transport/isolated_process → app/transport/isolated_process.ep, retai
 - Line 103: `define echo_worker_owner returning Int:`
 - Line 142: `define echo_service_owner returning Int:`
 - Line 176: `define main returning Int:`
+
+## app/stage_controller.ep
+
+[Source](../../app/stage_controller.ep) · 18 lines · 886 bytes
+
+SHA-256: `bd5a3df4f36f84faf7fad1219217b540210c69f326b1fed013b051ef5a54ed6c`
+
+
+Imports: lifecycle/controller_bundle → app/lifecycle/controller_bundle.ep, fs → standard library or compiler dependency
+
+- Line 4: `define main returning Int:`
 
 ## app/start_service.ep
 
