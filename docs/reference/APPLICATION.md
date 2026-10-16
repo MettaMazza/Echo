@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T08:07:40.474807+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:14:02.928579+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -268,6 +268,20 @@ Imports: ../retained_text → app/retained_text.ep, file_publication → app/arc
 - Line 48: `define attachment_restore_start_allowed with database as Int returning Int:`
 - Line 60: `define attachment_restore_reserved with library as Int and source as Str and backup_root as Str and destination as Str and destination_root as Str returning Int:`
 - Line 87: `define attachment_restore with source as Str and backup_root as Str and destination as Str and destination_root as Str returning Int:`
+
+## app/archive/attachment_scope.ep
+
+[Source](../../app/archive/attachment_scope.ep) · 12 lines · 867 bytes
+
+SHA-256: `ab7403866ebe6d8c9f539848b46c6da93e297832a83b6132295f20bce111f864`
+
+> Internal readers receive the run's trusted session. Shared sources must be
+> in that exact segment; private branch ancestry is never imported into it.
+> HTTP callers separately authenticate the requesting audience member.
+
+Imports: ../security/group_history → app/security/group_history.ep
+
+- Line 6: `define attachment_shared_session with database as Int and session as Str returning Int:`
 
 ## app/archive/attachment_snapshot.ep
 
@@ -688,17 +702,17 @@ Imports: tree_sidecars → app/archive/tree_sidecars.ep, fs → standard library
 
 ## app/archive/turn_attachments.ep
 
-[Source](../../app/archive/turn_attachments.ep) · 41 lines · 3110 bytes
+[Source](../../app/archive/turn_attachments.ep) · 45 lines · 3596 bytes
 
-SHA-256: `5c2df94f1b0427e0230fca0be8f6fd76acb6af798dbb2bf39da9bde5c97c1df4`
+SHA-256: `e2fc5bdbe2ee268f0ca0241d10d44cfbc04a0673ae4f077493b961ae22a32fd5`
 
 > Resolve selected identities under the submission transaction. The immutable
 > receipt records original provenance without placing host paths in context.
 
-Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep
+Imports: attachment_scope → app/archive/attachment_scope.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep
 
-- Line 7: `define turn_attachment_manifest with database as Int and device as Str and session as Str and event as Str and attachments as List returning Str:`
-- Line 37: `define turn_attachment_read with database as Int and session as Str and event as Str returning List:`
+- Line 8: `define turn_attachment_manifest with database as Int and device as Str and session as Str and event as Str and attachments as List returning Str:`
+- Line 41: `define turn_attachment_read with database as Int and session as Str and event as Str returning List:`
 
 ## app/backup.ep
 
@@ -1802,18 +1816,18 @@ Imports: ../retained_text → app/retained_text.ep, chat_stream → app/provider
 
 ## app/providers/attachment_image.ep
 
-[Source](../../app/providers/attachment_image.ep) · 38 lines · 2816 bytes
+[Source](../../app/providers/attachment_image.ep) · 41 lines · 3180 bytes
 
-SHA-256: `9fa55eabe14b634a988b658f25cb89931bd5327a19d99075f915f365bf8b020a`
+SHA-256: `411d0554c89b8f9620b3802f7dbcf38ee63b0d18d5835d9282785e73a6735bd8`
 
 > The caller supplies a trusted run session, never an arbitrary host path.
 > Returns status, typed content part, original source event and original digest.
 > Decoding and token cost belong to the loaded provider, not this serializer.
 > MIME spelling is metadata only. The provider validates actual image bytes.
 
-Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../archive/file_base64 → app/archive/file_base64.ep, ../tools/history_tools → app/tools/history_tools.ep
+Imports: ../archive/attachment_scope → app/archive/attachment_scope.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../archive/file_base64 → app/archive/file_base64.ep, ../tools/history_tools → app/tools/history_tools.ep
 
-- Line 9: `define attachment_image_part with database as Int and session as Str and attachment as Str returning List:`
+- Line 10: `define attachment_image_part with database as Int and session as Str and attachment as Str returning List:`
 
 ## app/providers/chat_stream.ep
 
@@ -2954,9 +2968,9 @@ Imports: group_runs → app/security/group_runs.ep
 
 ## app/security/group_route.ep
 
-[Source](../../app/security/group_route.ep) · 52 lines · 3622 bytes
+[Source](../../app/security/group_route.ep) · 55 lines · 4011 bytes
 
-SHA-256: `d6593cbf51cc078c4e0c72127e6925e5607e285f88b58f01812f95c8f30066a8`
+SHA-256: `f0831947ccbeaba42cbe0bfa72a8f5ae9f7a3a2e33d93f0e105b4b36013c79a5`
 
 > Connector adapters supply authenticated device and verified namespace. The
 > route returns the existing segment or creates one for the current audience;
@@ -2970,13 +2984,14 @@ SHA-256: `d6593cbf51cc078c4e0c72127e6925e5607e285f88b58f01812f95c8f30066a8`
 Imports: group_runs → app/security/group_runs.ep
 
 - Line 8: `define group_route with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str returning List:`
-- Line 36: `define group_route_submit with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str and run as Str and message as Str returning List:`
+- Line 36: `define group_route_submit_files with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str and run as Str and message as Str and attachments as List returning List:`
+- Line 54: `define group_route_submit with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str and run as Str and message as Str returning List:`
 
 ## app/security/group_runs.ep
 
-[Source](../../app/security/group_runs.ep) · 46 lines · 6967 bytes
+[Source](../../app/security/group_runs.ep) · 63 lines · 8482 bytes
 
-SHA-256: `a4f03b249a4f289463397a9f78b6b1d772c078ac9a7309fc04b6d65d5b7306d1`
+SHA-256: `63127882b6bf586596e318c600fb77f88cd0ecc76d4629d70bd5d6813843192d`
 
 > Origin, original user event and run are committed together. The deferred
 > foreign key rejects abandoned origin records at commit. Tool capture copies
@@ -2984,10 +2999,11 @@ SHA-256: `a4f03b249a4f289463397a9f78b6b1d772c078ac9a7309fc04b6d65d5b7306d1`
 > Adapter-only admission. The session already binds the exact audience; the
 > verified connector supplies its namespace. It never accepts a model's claim.
 
-Imports: group_sessions → app/security/group_sessions.ep, ../agent/run_state → app/agent/run_state.ep
+Imports: ../archive/turn_attachments → app/archive/turn_attachments.ep, group_sessions → app/security/group_sessions.ep, ../agent/run_state → app/agent/run_state.ep
 
-- Line 7: `define group_run_schema with database as Int returning Str:`
-- Line 15: `define group_run_submit with database as Int and device as Str and run as Str and session as Str and platform as Str and server as Str and room as Str and message as Str returning Str:`
+- Line 8: `define group_run_schema with database as Int returning Str:`
+- Line 16: `define group_run_submit_attachments with database as Int and device as Str and run as Str and session as Str and platform as Str and server as Str and room as Str and message as Str and attachments as List returning Str:`
+- Line 62: `define group_run_submit with database as Int and device as Str and run as Str and session as Str and platform as Str and server as Str and room as Str and message as Str returning Str:`
 
 ## app/security/group_sessions.ep
 
@@ -3251,36 +3267,36 @@ Imports: ../retained_text → app/retained_text.ep, ../providers/attachment_imag
 
 ## app/tools/attachment_text.ep
 
-[Source](../../app/tools/attachment_text.ep) · 90 lines · 6086 bytes
+[Source](../../app/tools/attachment_text.ep) · 93 lines · 6450 bytes
 
-SHA-256: `0cb28eb38c6d2591735434d49fdd37e050aa22bc27e49f1a71e9b49a4cb0a129`
+SHA-256: `a236c85398a200add574d3847b7c4c7994f19b2d11c22915f282e418d62d8202`
 
 > UTF-8 decoded by Foundation; offsets count Unicode scalars, not bytes.
 
-Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep, ../archive/file_text → app/archive/file_text.ep, ../archive/pdf_cache → app/archive/pdf_cache.ep
+Imports: ../archive/attachment_scope → app/archive/attachment_scope.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep, ../archive/file_text → app/archive/file_text.ep, ../archive/pdf_cache → app/archive/pdf_cache.ep
 
-- Line 7: `define attachment_text_execute with database as Int and session as Str and arguments as Str returning Str:`
-- Line 70: `define attachment_unicode_window with text as Str and offset as Int and characters as Int returning List:`
+- Line 8: `define attachment_text_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 73: `define attachment_unicode_window with text as Str and offset as Int and characters as Int returning List:`
 
 ## app/tools/attachment_tools.ep
 
-[Source](../../app/tools/attachment_tools.ep) · 107 lines · 13124 bytes
+[Source](../../app/tools/attachment_tools.ep) · 110 lines · 13607 bytes
 
-SHA-256: `a63dd8f08bbee3a354ff5fadffd0707ad1ec752e72ddbab2bcf120decd3aa0a3`
+SHA-256: `13ea95f3f75570413314fa766d4027fdd9cbcf9de465cd817b1927fcdcb9a5d4`
 
 > Scope is the trusted run session. Model arguments cannot choose another
 > session, device, or host path. One cursor result keeps context use explicit.
 > Capability is configured by the host; no remote fallback.
 
-Imports: attach_file → app/tools/attach_file.ep, ../security/principals → app/security/principals.ep, ../context/system_awareness → app/context/system_awareness.ep, history_tools → app/tools/history_tools.ep, ../media/speech_request → app/media/speech_request.ep, ../media/voice_request → app/media/voice_request.ep, compaction_tools → app/tools/compaction_tools.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep, attachment_text → app/tools/attachment_text.ep, workspace_tools → app/tools/workspace_tools.ep, execution_output → app/tools/execution_output.ep, attachment_image → app/tools/attachment_image.ep
+Imports: ../archive/attachment_scope → app/archive/attachment_scope.ep, attach_file → app/tools/attach_file.ep, ../security/principals → app/security/principals.ep, ../context/system_awareness → app/context/system_awareness.ep, history_tools → app/tools/history_tools.ep, ../media/speech_request → app/media/speech_request.ep, ../media/voice_request → app/media/voice_request.ep, compaction_tools → app/tools/compaction_tools.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep, attachment_text → app/tools/attachment_text.ep, workspace_tools → app/tools/workspace_tools.ep, execution_output → app/tools/execution_output.ep, attachment_image → app/tools/attachment_image.ep
 
-- Line 16: `define attachment_tool_execute with database as Int and session as Str and arguments as Str returning Str:`
-- Line 45: `define session_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
-- Line 66: `define attachment_listing_schemas returning Str:`
-- Line 71: `define attachment_text_schemas returning Str:`
-- Line 76: `define workspace_tool_schemas returning Str:`
-- Line 84: `define session_base_tool_schemas returning Str:`
-- Line 94: `define session_tool_schemas returning Str:`
+- Line 17: `define attachment_tool_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 48: `define session_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
+- Line 69: `define attachment_listing_schemas returning Str:`
+- Line 74: `define attachment_text_schemas returning Str:`
+- Line 79: `define workspace_tool_schemas returning Str:`
+- Line 87: `define session_base_tool_schemas returning Str:`
+- Line 97: `define session_tool_schemas returning Str:`
 
 ## app/tools/compaction_tools.ep
 

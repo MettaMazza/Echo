@@ -1,3 +1,4 @@
+import "../archive/turn_attachments"
 import "group_sessions"
 import "../agent/run_state"
 
@@ -12,17 +13,27 @@ define group_run_schema with database as Int returning Str:
 
 # Adapter-only admission. The session already binds the exact audience; the
 # verified connector supplies its namespace. It never accepts a model's claim.
-define group_run_submit with database as Int and device as Str and run as Str and session as Str and platform as Str and server as Str and room as Str and message as Str returning Str:
+define group_run_submit_attachments with database as Int and device as Str and run as Str and session as Str and platform as Str and server as Str and room as Str and message as Str and attachments as List returning Str:
     if string_length(run) equals 0 or else string_length(message) equals 0 or else group_text_valid(run) equals 0 or else group_text_valid(message) equals 0:
         return "invalid-submission"
     if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
         return "writer-lock-unavailable"
     if node_admission_allows(database) equals 0 or else group_session_allows(database and device and session and platform and server and room and 1) equals 0:
         return migration_fail(database and "audience-not-authorized")
+    set event to concat(run and ":user")
+    set manifest to turn_attachment_manifest(database and device and session and event and attachments)
+    if string_length(manifest) equals 0:
+        return migration_fail(database and "attachment-not-authorized")
     set identity to [run]
     set old to history_collect_one(checkpoint_prepare(database and "SELECT g.device,r.session,e.payload FROM echo_runs r LEFT JOIN echo_group_run_origins g ON g.run=r.run JOIN echo_events e ON e.event=r.objective_event WHERE r.run=?;" and identity))
     if archive_list_text(old and 0) equals "found":
         if not (archive_list_text(old and 1) equals device) or else not (archive_list_text(old and 2) equals session) or else not (archive_list_text(old and 3) equals message):
+            return migration_fail(database and "submission-conflict")
+        set binding to turn_attachment_read(database and session and event)
+        if length_list(attachments) > 0:
+            if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals manifest) or else not (archive_list_text(binding and 2) equals "turn_attachments"):
+                return migration_fail(database and "submission-conflict")
+        else if not (archive_list_text(binding and 0) equals "end"):
             return migration_fail(database and "submission-conflict")
         if sql_execute(database and "COMMIT;") is not equal to 0:
             return migration_fail(database and "commit-failed")
@@ -39,8 +50,14 @@ define group_run_submit with database as Int and device as Str and run as Str an
     set event to concat(run and ":user")
     if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_run_origins VALUES(?1,?2,?3);" and values) and 101) is not equal to 0 or else archive_append_pending(database and session and event and "user" and message and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_create(database and run and session and event) is not equal to 0:
         return migration_fail(database and "run-write-failed")
+    if length_list(attachments) > 0:
+        if archive_append_pending(database and session and concat(event and ":attachments") and "turn_attachments" and manifest and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return migration_fail(database and "attachment-write-failed")
     if run_authority_allows(database and run and "user") is not equal to 1:
         return migration_fail(database and "authority-not-current")
     if sql_execute(database and "COMMIT;") is not equal to 0:
         return migration_fail(database and "commit-failed")
     return "accepted"
+
+define group_run_submit with database as Int and device as Str and run as Str and session as Str and platform as Str and server as Str and room as Str and message as Str returning Str:
+    return group_run_submit_attachments(database and device and run and session and platform and server and room and message and create_list())

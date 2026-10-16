@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T08:07:40.474807+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:14:02.928579+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1715,6 +1715,31 @@ Imports: ../../app/security/group_route → app/security/group_route.ep, ../../a
 
 - Line 4: `define group_attachment_route with config as List and target as Str and body as Str and credential as Str returning List:`
 - Line 21: `define main returning Int:`
+
+## tests/security/test_group_media.ep
+
+[Source](../../tests/security/test_group_media.ep) · 70 lines · 5573 bytes
+
+SHA-256: `357860bb52f104ffa44e3b4abf4b686090f5bbab449cd7d1f18af39eef62d334`
+
+
+Imports: ../../app/security/group_route → app/security/group_route.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/context/session_messages → app/context/session_messages.ep
+
+- Line 6: `define live_group_finish with database as Int and run as Str and model as Str and port as Int returning Int:`
+- Line 31: `define main returning Int:`
+
+## tests/security/test_group_media_receipts.ep
+
+[Source](../../tests/security/test_group_media_receipts.ep) · 40 lines · 2972 bytes
+
+SHA-256: `8781837f2a98503fc87ba3afe67edc9d6851d9a71640d5b0fbfd221c27163b78`
+
+> Verify retries and denied selections against a disposable copy of the actual
+> completed multimodal run; no additional inference or invented model evidence.
+
+Imports: ../../app/security/group_route → app/security/group_route.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency
+
+- Line 7: `define main returning Int:`
 
 ## tests/security/test_group_output_policy.ep
 
