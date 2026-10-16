@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:39:15.847559+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:42:00.481497+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2939,9 +2939,9 @@ Imports: ../security/principals → app/security/principals.ep, ../retained_text
 
 ## app/tools/execution_tool.ep
 
-[Source](../../app/tools/execution_tool.ep) · 141 lines · 9487 bytes
+[Source](../../app/tools/execution_tool.ep) · 146 lines · 9744 bytes
 
-SHA-256: `28bf905a91e5643789bbcc1bf3cfa68005280becd355ade261c19136bf736502`
+SHA-256: `6bddbc2ff1cd05cab1bceec3633edf80c8af6ac3beb05c9960dd09f9fac1b7e4`
 
 > Separate connection observes revocation and cancellation while capture owns
 > the worker connection. Closing the private writer wakes blocked pipe reads.

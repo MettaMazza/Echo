@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:39:15.847559+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:42:00.481497+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -29,15 +29,15 @@ Imports: ../../app/agent/checked_generation → app/agent/checked_generation.ep,
 
 ## tests/agent/test_execution_control.ep
 
-[Source](../../tests/agent/test_execution_control.ep) · 71 lines · 4432 bytes
+[Source](../../tests/agent/test_execution_control.ep) · 92 lines · 6439 bytes
 
-SHA-256: `e10f1ca807f3e78e3c9b26c2ee73793d587c168c08be5ef4200b7487b2f228d1`
+SHA-256: `5a76167b409c28cb6ed0cc9aee743739ce1c9818ddfa91ad84ce7059229e9e82`
 
 
-Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/agent/runner → app/agent/runner.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+Imports: ../../app/rights/quarantine → app/rights/quarantine.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/agent/runner → app/agent/runner.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
-- Line 5: `define execution_interrupt_fixture with path as Str and mode as Str and writer as Int and completed as Int returning Int:`
-- Line 24: `define main returning Int:`
+- Line 6: `define execution_interrupt_fixture with path as Str and mode as Str and charter as Str and writer as Int and completed as Int returning Int:`
+- Line 29: `define main returning Int:`
 
 ## tests/agent/test_execution_loop.ep
 
