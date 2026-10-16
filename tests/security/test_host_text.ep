@@ -1,0 +1,90 @@
+import "../../app/archive/snapshot"
+import "../../app/web/attachments"
+import "fs"
+import "../../app/security/tool_authority"
+import "../../app/agent/tool_recovery"
+import "../../app/agent/run_messages"
+import "../../app/archive/history"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is not equal to 4:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture" and "secret") is not equal to 0:
+        return 1
+    if not (tool_authority_schema(database) equals "applied"):
+        return 2
+    set admin to get_argument(3) equals "admin" or else get_argument(3) equals "revoked" or else get_argument(3) equals "symlink"
+    if admin:
+        if not (principal_host_role(database and "grant" and "device:owner" and "admin" and "fixture") equals "recorded"):
+            return 16
+    set schemas to provider_json_tokens(session_tool_schemas())
+    set items to provider_items(schemas and 0)
+    set index to 0
+    repeat while index < length_list(items):
+        set entry to get_list(items and index)
+        set function to provider_member(schemas and entry and "function")
+        set name to provider_value(schemas and provider_member(schemas and function and "name"))
+        if string_length(capability_role(tool_capability(name))) equals 0:
+            display name
+            return 12
+        set index to index + 1
+    if not (tool_capability("unclassified_tool") equals "") or else not (capability_role("host.execute") equals ""):
+        return 13
+    set submitted to web_submit_owned(database and "owner" and "request" and "" and "Create source.ep in this session workspace.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set arguments to concat("{\"path\":" and concat(provider_quote(get_argument(2)) and ",\"offset\":0,\"characters\":100}"))
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"read-host\",\"function\":{\"name\":\"host_read_text\",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set messages to agent_run_messages(database and run)
+    set body to session_request_body_owned(database and run and "fixture" and messages)
+    if admin and string_contains(body and "host_read_text") equals 0:
+        return 17
+    if not admin and string_contains(body and "host_read_text") is not equal to 0:
+        return 18
+    set generated to agent_generate_local(database and run and "first-request" and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 1
+    if get_argument(3) equals "revoked":
+        if not (principal_host_revocation(database and "revoke" and "device:owner" and 1 and "fixture") equals "recorded"):
+            return 19
+    if get_argument(3) equals "promoted":
+        if not (principal_host_role(database and "late-grant" and "device:owner" and "admin" and "fixture") equals "recorded"):
+            return 20
+    if not admin:
+        if string_contains(host_text_execute(database and run and "read-host") and "not-authorized") equals 0:
+            return 21
+    if agent_tool_step(database and run) is not equal to 0:
+        return 6
+    set result to history_collect_one(archive_prepare(database and "SELECT t.state,json_extract(e.payload,'$.result.status'),COALESCE(json_extract(e.payload,'$.result.text'),'') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='read-host';"))
+    if not (archive_list_text(result and 1) equals "observed"):
+        return 7
+    if get_argument(3) equals "admin":
+        if not (archive_list_text(result and 2) equals "found") or else not (archive_list_text(result and 3) equals "Café 🌍 verified host read"):
+            display archive_list_text(result and 2)
+            return 8
+    else:
+        if string_length(archive_list_text(result and 3)) > 0:
+            return 9
+        if get_argument(3) equals "symlink":
+            if not (archive_list_text(result and 2) equals "open-failed"):
+                return 22
+        else if get_argument(3) equals "revoked" or else get_argument(3) equals "promoted":
+            if not (archive_list_text(result and 2) equals "not-authorized"):
+                return 10
+        else if not (archive_list_text(result and 2) equals "tool-unavailable"):
+            return 11
+    if archive_verify_all(database) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 11
+    display "PASS: host file read is advertised and executed only for current initiating admin authority; guest/revoked paths expose no content."
+    return 0

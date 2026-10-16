@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T00:54:45.199155+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:58:46.494361+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -138,9 +138,9 @@ Imports: tool_ledger → app/agent/tool_ledger.ep
 
 ## app/agent/runner.ep
 
-[Source](../../app/agent/runner.ep) · 95 lines · 5597 bytes
+[Source](../../app/agent/runner.ep) · 95 lines · 5624 bytes
 
-SHA-256: `f3a9412097275c606d87334672b0639792bc8c362636401e6f78da166d8fc11f`
+SHA-256: `0c656adda2b2f6f61ce2b47df558e544f5ed641e3f4aa381d7abd5892ee054dc`
 
 > The model/tool loop has no iteration limit. Non-ready preflight decisions are
 > Capacity triggers archived recap/review/activation before resuming this run.
@@ -156,19 +156,19 @@ Imports: ../retained_text → app/retained_text.ep, control → app/agent/contro
 
 ## app/agent/tool_dispatch.ep
 
-[Source](../../app/agent/tool_dispatch.ep) · 113 lines · 7912 bytes
+[Source](../../app/agent/tool_dispatch.ep) · 116 lines · 8090 bytes
 
-SHA-256: `5f66946cdc9a0f78c54485ea6f47daeb88d42e44be846d623c8c1ab9acbcabd8`
+SHA-256: `27fcbbdfd43c123e8488a98952afa837fddb48f7b86dc33d5150cc468fa29793`
 
 > One invocation executes at most the next cursor item. The enclosing run loops
 > until the ledger is observed; this is scheduling granularity, not a turn cap.
 > Do not advance another queued action past an unresolved earlier effect.
 > Existing direct callers have no external cancellation descriptor.
 
-Imports: ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
+Imports: ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
 
-- Line 12: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
-- Line 112: `define agent_tool_step with database as Int and run as Str returning Int:`
+- Line 13: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
+- Line 115: `define agent_tool_step with database as Int and run as Str returning Int:`
 
 ## app/agent/tool_ledger.ep
 
@@ -873,9 +873,9 @@ Imports: ../retained_text → app/retained_text.ep, recap_jobs → app/context/r
 
 ## app/context/recap_accept.ep
 
-[Source](../../app/context/recap_accept.ep) · 105 lines · 8160 bytes
+[Source](../../app/context/recap_accept.ep) · 105 lines · 8187 bytes
 
-SHA-256: `0374e68bea5c82bf17b917f0e19d529a10459d3436d070a5cd599dfce36f702d`
+SHA-256: `508c2bbe11892bc96ca5470f72baf97f59c4a1e3b46ec0e6326c914c80c32574`
 
 > Consume archived candidate and review receipts, not a caller-supplied verdict.
 > A passing model review remains fallible evidence; this gate verifies its
@@ -1174,10 +1174,12 @@ Imports: ../retained_text → app/retained_text.ep, ../agent/run_messages → ap
 
 ## app/context/session_messages.ep
 
-[Source](../../app/context/session_messages.ep) · 144 lines · 8791 bytes
+[Source](../../app/context/session_messages.ep) · 156 lines · 9622 bytes
 
-SHA-256: `cd90d343e866f4d6ca16d682f38427f9a575971cb2eab9767cfe0d346a244a3a`
+SHA-256: `dd5bda0e5caf8e43936c723989dc182861bd05a66230650b1308ece9378c4f95`
 
+> Admin-only schemas are selected from frozen initiating authority. Dispatch
+> repeats the check; advertising a schema is never itself permission.
 > Caller holds a read transaction while collecting context, so checkpoint,
 > accepted run heads and tool observations come from the same database snapshot.
 > Checkpoint activation requires generation and coverage validation upstream;
@@ -1191,12 +1193,13 @@ SHA-256: `cd90d343e866f4d6ca16d682f38427f9a575971cb2eab9767cfe0d346a244a3a`
 > that trusted runtime receipt in the resumed prompt so the model does not
 > mistake the earlier queued observation for still-pending work.
 
-Imports: ../retained_text → app/retained_text.ep, system_awareness → app/context/system_awareness.ep, ../archive/session_scope → app/archive/session_scope.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../agent/run_messages → app/agent/run_messages.ep
+Imports: ../retained_text → app/retained_text.ep, system_awareness → app/context/system_awareness.ep, ../archive/session_scope → app/archive/session_scope.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/host_text → app/tools/host_text.ep, ../agent/run_messages → app/agent/run_messages.ep
 
-- Line 7: `define session_request_body with model as Str and messages as Str returning Str:`
-- Line 17: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
-- Line 22: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
-- Line 134: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
+- Line 8: `define session_request_body with model as Str and messages as Str returning Str:`
+- Line 15: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
+- Line 29: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
+- Line 34: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
+- Line 146: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
 
 ## app/context/system_awareness.ep
 
@@ -2325,9 +2328,9 @@ Imports: run_authority → app/security/run_authority.ep
 
 ## app/security/tool_policy.ep
 
-[Source](../../app/security/tool_policy.ep) · 40 lines · 2419 bytes
+[Source](../../app/security/tool_policy.ep) · 44 lines · 2544 bytes
 
-SHA-256: `0eebc81d32dd535cbe50cd871928fcbeefc9f21325e52792c28180e96a53e7cf`
+SHA-256: `6bd7d3079daba6735192d0bfb65bbec89748e9193bf567339be1178cd5b50be6`
 
 > Classification is explicit. A newly registered name is not automatically a
 > safe tool. Dynamic tools must later obtain an independently verified manifest.
@@ -2340,8 +2343,8 @@ SHA-256: `0eebc81d32dd535cbe50cd871928fcbeefc9f21325e52792c28180e96a53e7cf`
 Imports: tool_authority → app/security/tool_authority.ep
 
 - Line 6: `define tool_capability with name as Str returning Str:`
-- Line 27: `define capability_role with capability as Str returning Str:`
-- Line 34: `define tool_policy_allows with database as Int and run as Str and call_id as Str and name as Str returning Int:`
+- Line 29: `define capability_role with capability as Str returning Str:`
+- Line 38: `define tool_policy_allows with database as Int and run as Str and call_id as Str and name as Str returning Int:`
 
 ## app/server.ep
 
@@ -2487,6 +2490,20 @@ Imports: ../retained_text → app/retained_text.ep, ../archive/history → app/a
 - Line 14: `define history_tool_row with row as List and keys as List returning Str:`
 - Line 25: `define history_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
 - Line 102: `define history_tool_schemas returning Str:`
+
+## app/tools/host_text.ep
+
+[Source](../../app/tools/host_text.ep) · 63 lines · 5257 bytes
+
+SHA-256: `482c4d21820cdb6b93d6a8b87a45a777acc9b6594e113350bae855a2ea1257a0`
+
+> The dispatcher supplies run/call identity. Read the exact saved arguments;
+> never trust a caller-provided role, session or replacement argument object.
+
+Imports: ../security/tool_policy → app/security/tool_policy.ep, ../workspace/read_text → app/workspace/read_text.ep, history_tools → app/tools/history_tools.ep
+
+- Line 7: `define host_text_execute with database as Int and run as Str and call_id as Str returning Str:`
+- Line 62: `define host_text_schema returning Str:`
 
 ## app/tools/workspace_tools.ep
 

@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T00:54:45.199155+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:58:46.494361+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1506,6 +1506,17 @@ Imports: ../../app/web/message_speech → app/web/message_speech.ep
 [Source](../../tests/security/test_dispatch_revocation.ep) · 58 lines · 4183 bytes
 
 SHA-256: `e697cfa5864818805ab27e091334c07e83e7a20c714af8171b309dbd110c4531`
+
+
+Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency, ../../app/security/tool_authority → app/security/tool_authority.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 10: `define main returning Int:`
+
+## tests/security/test_host_text.ep
+
+[Source](../../tests/security/test_host_text.ep) · 90 lines · 5326 bytes
+
+SHA-256: `a062ff19f57bec3d86e3dcda3e626739d8534a4a536bc41a238a9b6dac56ad9b`
 
 
 Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency, ../../app/security/tool_authority → app/security/tool_authority.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
