@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T02:17:07.105546+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:22:28.977211+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -925,10 +925,12 @@ Imports: ../../app/lifecycle/startup → app/lifecycle/startup.ep
 
 ## tests/lifecycle/test_startup_busy.ep
 
-[Source](../../tests/lifecycle/test_startup_busy.ep) · 32 lines · 1321 bytes
+[Source](../../tests/lifecycle/test_startup_busy.ep) · 40 lines · 1854 bytes
 
-SHA-256: `7e579bad744b65497e57b5563c0c50849221241f40800905fd40b36bd33ab1f5`
+SHA-256: `6d0167404701ab723886d2cabc8cb634e0d7a0f8badbacaad3396be641a2bc3c`
 
+> A writer exceeding the bounded SQLite wait must be retryable, not an
+> incompatible-schema verdict that permanently stops the supervisor.
 
 Imports: ../../app/lifecycle/startup → app/lifecycle/startup.ep, select → standard library or compiler dependency
 

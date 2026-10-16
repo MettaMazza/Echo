@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T02:17:07.105546+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:22:28.977211+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1358,18 +1358,22 @@ Imports: ../providers/json_access → app/providers/json_access.ep, ../workspace
 
 ## app/lifecycle/startup.ep
 
-[Source](../../app/lifecycle/startup.ep) · 22 lines · 907 bytes
+[Source](../../app/lifecycle/startup.ep) · 34 lines · 1587 bytes
 
-SHA-256: `e975e9ab4900b192cfa94d8953dbc3f0e98feb19e59541bc6341241662b5dbca`
+SHA-256: `b6d9fc10b2375874f6f97accab84b190519ec8b8c2882fe9fd7b8917d1170371`
 
 > Inspect before archive_open can create or update any application schema.
 > Deployment must stop old processes before migrations; this is not a live
 > migration lock or permission to run mixed application versions.
+> Distinguish a transient database lock from a proven schema incompatibility.
+> -1 never permits writes; it tells the process supervisor this is retryable.
 > Match normal archive access: a short writer lock is not a schema change.
+> Existing boolean callers remain fail-closed for both busy and incompatible.
 
 Imports: migrations → app/lifecycle/migrations.ep, fs → standard library or compiler dependency
 
-- Line 7: `define startup_archive_compatible with path as Str and supported as Int returning Int:`
+- Line 9: `define startup_archive_status with path as Str and supported as Int returning Int:`
+- Line 33: `define startup_archive_compatible with path as Str and supported as Int returning Int:`
 
 ## app/media/image_logs.ep
 
@@ -2463,9 +2467,9 @@ Imports: tool_authority → app/security/tool_authority.ep
 
 ## app/server.ep
 
-[Source](../../app/server.ep) · 323 lines · 20590 bytes
+[Source](../../app/server.ep) · 330 lines · 20931 bytes
 
-SHA-256: `72d04a61bff17b4baab474e7c62db7208fdc5fe596ca7d89ab937805928c1234`
+SHA-256: `bc62209cadac949aacc4db981c1747366632d3192b4ab64b18e94a7cf3709d2c`
 
 > Let macOS retain native fault stacks for every role, including workers.
 > Every executable role checks before schema writes, recovery or dispatch.
