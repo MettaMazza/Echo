@@ -2,33 +2,19 @@
 
 Authorised 16 October 2026. Goal remains active. No Phase Two feature is complete merely because it is planned or compiles.
 
-## Current work
+## Current delivery status — 16 October
 
-- Step 01: source/runtime identities captured privately; requirement ledger created. A29 (Ernos self-hosting) is explicitly included. Existing acceptance evidence remains valid within its recorded scope and needs mapping to each ledger row.
-- Step 02: inspecting ErnosDecent rights/extension/training controllers and HIVE routing. Admin ID is supplied privately; Maria authorised PC credential setup and disposable test channels. Remaining continuity sources are on GitHub; My Brain is explicitly excluded.
-- Step 03: native verified archive snapshot passed; restoration to separate internal storage passed native verification before schema work. A database snapshot is not a complete attachment/configuration backup.
+The plan has 32 dependency-ordered steps. REQUIREMENTS.json contains 413 requirement, carry-forward and acceptance-check rows; these are not 413 dependencies. Its statuses have not yet been comprehensively reconciled with the implementation evidence and must not be used as a completion percentage. No overall percentage is asserted here.
 
-## External inputs
+Current production remains on schema10. Its verified releases include principal/admin and private-memory boundaries, native process guardian recovery and the compaction progress UI. Later candidate schemas11–19 contain protected-change and group work; their existence does not mean those features are deployed.
 
-Discord server/application/admin IDs and rotated token location; disposable Discord test area; Gmail OAuth and authorised test recipient; external-provider qualification accounts; missing continuity archive locations. No credentials belong in this ledger.
+The latest group work now has an integrated native primary-model test: two authenticated users, preserved sender attribution, history tool execution, completed replies and private-canary exclusion. Browser/Discord group routing, shared workspace/output policy and full group compaction acceptance remain incomplete. The next implementation work is integrating those remaining surfaces; no group UI release is claimed.
 
-Proposed acceptance workload: two simultaneous full-context users and four hours of mixed tasks. Maria delegated workload selection. Use this as the initial workload, extending investigation if resource growth or instability appears; no artificial context reduction is permitted. Cold/import latency is measured separately from cached follow-ups.
+Discord, Gmail, the complete recursive code/weight improvement workflow, generated-tool lifecycle, optional external-provider qualification and final installer/performance/device acceptance have not been delivered in full. Joint final prompt review with Maria remains required near closure.
 
-## Verified foundation
+Use FOUNDATION-VERIFICATION.json and the dated records below for scoped evidence. Older records preserve the history of what was tested at that point; later deployment records supersede older statements that the same component was not deployed. File counts, compilations and isolated fixture tests are not full-step acceptance.
 
-The native archive snapshot and clean internal restoration passed; all table rows matched. `tests/lifecycle/test_migrations.ep` passed against a fresh database, verifying transactional DDL rollback, idempotent replay, changed SQL rejection, ordering, immutable receipts, reopening and incompatible downgrade checks. Evidence: private `evidence/phase2/foundation-verification.json` and build log. Production is unchanged. Native SIGKILL-during-migration recovery and durable operation journal tests now pass. Startup integration and full attachment/configuration restore remain required before step 03 closes.
-
-## Current implementation evidence
-
-- `tests/lifecycle/test_migration_interruption.ep`: the driver observed a nonempty rollback journal, killed the native migration with SIGKILL, reopened the database and verified no partial DDL/data/receipt remained; original archive hashes verified and a later clean migration succeeded.
-- `tests/lifecycle/test_operations.ep`: scoped durable identity, exact reservation replay, conflicting payload rejection, one execution claim, reopen, uncertain-effect reconciliation, failed outcome-write rollback and immutable receipts passed. Real connector calls will use this journal; it does not yet prove Discord or Gmail delivery.
-- `tests/security/test_principals.ep`: existing and newly paired devices retain separate default-user identities; names do not grant authority; host role changes and their audit records commit atomically; conflicting replay and revoked device resolution are rejected. No session ownership was moved.
-- `app/principal_admin.ep`: native host command built and granted/inspected admin only in the disposable fixture database. There is no HTTP role-grant route. Production has not yet been migrated or enrolled.
-- GitHub metadata now confirms Echo is public. Publication is tracked by exact local/remote tree identity; final candidate publication remains step 31.
-
-## Next action
-
-Qualify startup version guards and complete backup bundle; integrate principals and explicit host enrolment with the live UI; then enforce capabilities at every dispatch boundary. Discord account bindings, reversible device linking, principal revocation and protected-change authority still require implementation/testing before step 04 closes.
+## Historical implementation and qualification records
 
 
 Restored real-archive qualification: all 21 original tables remained byte-value equivalent after foundation migration; seven devices mapped to seven distinct users, with no implicit admin. The explicit host migration command passed on that copy.
@@ -216,3 +202,7 @@ Group audience foundation (16 October): reread HIVE scope.rs at pinned revision 
 Group conversation boundary (16 October): candidate schema18 records a separate conversation segment for each group audience revision. Group sessions cannot acquire private device/principal ownership, and private sessions cannot be relabelled as group sessions. The native test verifies exact retry, duplicate segment rejection, historical audience separation, removal, namespace mismatch, immutable mapping and restart, with independent SQLite integrity/ownership checks. An initial binding failure was fixed before the final passing run. Shared run authority and tool dispatch remain the next dependency; this change does not enable group UI or Discord routing or migrate production.
 
 Shared-run sender authority (16 October): candidate schema19 atomically stores the authenticated initiating device, original user event and group run; the origin references an immutable audience segment. Run and tool permission checks require that exact audience revision to remain current. Group tools copy the run's original role and audit revisions, rather than recapturing later privileges. Tests pass guest/admin separation, no queued promotion, membership changes, revoke/restore denial, mismatched-session/no-origin rejection, immutable origins, deferred-FK rollback and restart. An otherwise-authorised group run cannot retrieve the sender's private cross-session memory. Existing private-run and direct saved-speech regressions pass. Production remains unchanged: shared workspaces, output policy, speaker-labelled prompt assembly, audience-filtered history/compaction and connector/UI routing must be integrated before enabling shared chat.
+
+Group speaker attribution (16 October): model user-content assembly and compaction source packets now include the frozen initiating principal, role-at-submission, group audience revision and connector namespace. Original messages and digests remain unchanged; this metadata grants no permission. Native tests pass spoof-text escaping, relink/restart stability, missing-origin denial and private-message preservation; existing recap-source and session-context regressions pass. Live model interpretation, shared retrieval policy and connector rollout are not claimed.
+
+Live shared conversation (16 October): two authenticated fixture principals completed consecutive turns through the installed primary Qwen model, full identity/architecture and native ReAct loop. The second turn called history_read and correctly attributed both markers, rejecting a false in-message speaker claim. All three model requests excluded a seeded private-session canary. The first attempt found a real dispatcher integration failure: its private-owner-only gate cancelled the otherwise authorised history call. The fix admits an exact current group-run session while retaining both frozen run and tool permission checks. The repeated live test and existing revoked private dispatch regression pass. Original failed and successful archives are retained privately. This is integrated native model/tool evidence, not browser/Discord rollout or full group-compaction acceptance.

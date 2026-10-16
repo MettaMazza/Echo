@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T06:02:28.524083+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T06:11:53.208370+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1690,6 +1690,17 @@ Imports: ../../app/security/group_sessions → app/security/group_sessions.ep, .
 
 - Line 4: `define main returning Int:`
 
+## tests/security/test_group_speakers.ep
+
+[Source](../../tests/security/test_group_speakers.ep) · 58 lines · 4341 bytes
+
+SHA-256: `f00670b0fafdff2895e4f546522d4fa4bf4d67b0fc43e97dac67fc0d9ef2af74`
+
+
+Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/context/recap_sources → app/context/recap_sources.ep
+
+- Line 5: `define main returning Int:`
+
 ## tests/security/test_groups.ep
 
 [Source](../../tests/security/test_groups.ep) · 65 lines · 6910 bytes
@@ -1749,6 +1760,18 @@ Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/t
 
 - Line 7: `define knowledge_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
 - Line 27: `define main returning Int:`
+
+## tests/security/test_live_group_conversation.ep
+
+[Source](../../tests/security/test_live_group_conversation.ep) · 58 lines · 5206 bytes
+
+SHA-256: `f91f7d5bf2a7da8e4a3b551b39caca5188a892cee8bf4607841c0f1ace2554c1`
+
+
+Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/context/session_messages → app/context/session_messages.ep
+
+- Line 6: `define live_group_finish with database as Int and run as Str and model as Str and port as Int returning Int:`
+- Line 31: `define main returning Int:`
 
 ## tests/security/test_live_observer.ep
 

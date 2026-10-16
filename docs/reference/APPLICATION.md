@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T06:02:28.524083+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T06:11:53.208370+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -174,9 +174,9 @@ Imports: ../retained_text → app/retained_text.ep, control → app/agent/contro
 
 ## app/agent/tool_dispatch.ep
 
-[Source](../../app/agent/tool_dispatch.ep) · 125 lines · 9145 bytes
+[Source](../../app/agent/tool_dispatch.ep) · 128 lines · 9307 bytes
 
-SHA-256: `19349a48b639449059e9deda46751dfcc2d62ee8c7bc96a5465d991b60c29397`
+SHA-256: `9d00eae649bcfc1150c12106ed4a56090214ab1aabdc109ad74e705de8a2d719`
 
 > One invocation executes at most the next cursor item. The enclosing run loops
 > until the ledger is observed; this is scheduling granularity, not a turn cap.
@@ -186,7 +186,7 @@ SHA-256: `19349a48b639449059e9deda46751dfcc2d62ee8c7bc96a5465d991b60c29397`
 Imports: ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
 
 - Line 16: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
-- Line 124: `define agent_tool_step with database as Int and run as Str returning Int:`
+- Line 127: `define agent_tool_step with database as Int and run as Str returning Int:`
 
 ## app/agent/tool_ledger.ep
 
@@ -234,16 +234,16 @@ Imports: ../context/compaction_lock → app/context/compaction_lock.ep, ../works
 
 ## app/agent/user_content.ep
 
-[Source](../../app/agent/user_content.ep) · 40 lines · 2817 bytes
+[Source](../../app/agent/user_content.ep) · 44 lines · 3092 bytes
 
-SHA-256: `b14affa2f2a94d84d0f528345e7821d766c75627b3b52575060bd2ba6bdbb702`
+SHA-256: `5118cd20672774d294339c41a60536bc51012cd1e243b841fd5345c86ba30d5f`
 
 > Rebuild each user's selected sources from the durable original receipt.
 > A missing or changed image fails the request instead of silently dropping it.
 
-Imports: ../retained_text → app/retained_text.ep, ../archive/turn_attachments → app/archive/turn_attachments.ep, ../providers/attachment_image → app/providers/attachment_image.ep
+Imports: ../security/group_speakers → app/security/group_speakers.ep, ../retained_text → app/retained_text.ep, ../archive/turn_attachments → app/archive/turn_attachments.ep, ../providers/attachment_image → app/providers/attachment_image.ep
 
-- Line 7: `define agent_user_content with database as Int and session as Str and event as Str and text as Str returning Str:`
+- Line 8: `define agent_user_content with database as Int and session as Str and event as Str and text as Str returning Str:`
 
 ## app/archive/attachment_restore.ep
 
@@ -1180,9 +1180,9 @@ Imports: ../retained_text → app/retained_text.ep, recap_review_coverage → ap
 
 ## app/context/recap_sources.ep
 
-[Source](../../app/context/recap_sources.ep) · 121 lines · 7429 bytes
+[Source](../../app/context/recap_sources.ep) · 130 lines · 7992 bytes
 
-SHA-256: `8df7afc5b40e9283726966977e768edfebdfa88bf2a5170f4104bc745e98314d`
+SHA-256: `8180e277614ac3af89acb167738ba3576bc2ecd626e84c5374965e13f269c570`
 
 > Read one consistent view of accepted run ancestry through a frozen endpoint.
 > Transport copies and nested model requests stay in the original archive but
@@ -1190,9 +1190,9 @@ SHA-256: `8df7afc5b40e9283726966977e768edfebdfa88bf2a5170f4104bc745e98314d`
 
 Imports: ../retained_text → app/retained_text.ep, ../agent/run_messages → app/agent/run_messages.ep
 
-- Line 4: `define recap_source_record with row as List returning Str:`
-- Line 14: `define recap_sources_snapshot with database as Int and session as Str and endpoint as Str returning Str:`
-- Line 111: `define recap_sources with database as Int and session as Str and endpoint as Str returning Str:`
+- Line 4: `define recap_source_record with database as Int and row as List returning Str:`
+- Line 20: `define recap_sources_snapshot with database as Int and session as Str and endpoint as Str returning Str:`
+- Line 120: `define recap_sources with database as Int and session as Str and endpoint as Str returning Str:`
 
 ## app/context/session_messages.ep
 
@@ -2833,16 +2833,19 @@ Imports: accounts → app/security/accounts.ep
 
 ## app/security/group_gate.ep
 
-[Source](../../app/security/group_gate.ep) · 12 lines · 1555 bytes
+[Source](../../app/security/group_gate.ep) · 22 lines · 2255 bytes
 
-SHA-256: `59269d5a84982eea6f48995e26dce86e05f3188ba837985acbfd32f42f0b72ff`
+SHA-256: `c6ff51e3e0db15b9a61341d36d41fae4e7820fabe79a466dbd8b2c6fe901a0f4`
 
 > SQL expressions are supplied only by internal callers, never request data.
 > This clause supplements private ownership only for a recorded initiating run.
+> Supplemental group-session check for dispatchers that also enforce frozen
+> run and tool authority. This never substitutes for those permission checks.
 
 Imports: ../archive/history → app/archive/history.ep
 
 - Line 5: `define group_run_scope_sql with database as Int and run_expression as Str and session_expression as Str and device_expression as Str returning Str:`
+- Line 16: `define group_run_session_allows with database as Int and run as Str and session as Str returning Int:`
 
 ## app/security/group_runs.ep
 
@@ -2877,6 +2880,21 @@ Imports: groups → app/security/groups.ep
 - Line 5: `define group_session_schema with database as Int returning Str:`
 - Line 13: `define group_session_create with database as Int and device as Str and session as Str and group_id as Str and platform as Str and server as Str and room as Str and revision as Int returning Str:`
 - Line 43: `define group_session_allows with database as Int and device as Str and session as Str and platform as Str and server as Str and room as Str and current_only as Int returning Int:`
+
+## app/security/group_speakers.ep
+
+[Source](../../app/security/group_speakers.ep) · 40 lines · 3187 bytes
+
+SHA-256: `1b50fc178053aef4920ff0c49c0cd51786d6ae3dcdbc6924c66d36a402938270`
+
+> Historical authorship comes from immutable admission receipts, not today's
+> device link, role or display name. It is descriptive and grants no authority.
+> Null denotes private/legacy history; empty means missing required evidence.
+
+Imports: ../providers/json_string → app/providers/json_string.ep, ../archive/history → app/archive/history.ep
+
+- Line 7: `define group_event_speaker with database as Int and session as Str and event as Str returning Str:`
+- Line 33: `define group_attributed_user_text with database as Int and session as Str and event as Str and text as Str returning Str:`
 
 ## app/security/groups.ep
 
