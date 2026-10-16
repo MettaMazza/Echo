@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T02:37:27.857738+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:44:30.421196+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1646,6 +1646,20 @@ SHA-256: `c0194c8fe87263027587b8b55ddb394586d13934070b438ea0e81a49fca240ec`
 Imports: ../../app/web/uploads → app/web/uploads.ep, ../../app/web/cancellation → app/web/cancellation.ep, ../../app/web/message_speech → app/web/message_speech.ep, ../../app/memory/session_ownership → app/memory/session_ownership.ep
 
 - Line 6: `define main returning Int:`
+
+## tests/security/test_protected_proposals.ep
+
+[Source](../../tests/security/test_protected_proposals.ep) · 69 lines · 5772 bytes
+
+SHA-256: `ca6ad480abe4dc9cf5ba1d8fdd3fc432dbe95614753e4fca5202ee84cff72b71`
+
+> No host target is changed by this fixture; manifests are stored evidence only.
+> Simulate out-of-band damage in this disposable database. Ordinary writes
+> were denied above; inspection must independently reject mismatched bytes.
+
+Imports: ../../app/rights/proposals → app/rights/proposals.ep, ../../app/web/run_store → app/web/run_store.ep
+
+- Line 5: `define main returning Int:`
 
 ## tests/security/test_revocation.ep
 

@@ -1,0 +1,118 @@
+import "charter"
+import "../memory/knowledge_lifecycle"
+
+# Proposal storage only. No approval, executable access or mutation is granted.
+# A future protected controller must derive the category and target inventory
+# independently of model arguments before using this record for authorisation.
+define protected_proposal_schema with database as Int returning Str:
+    set prior to knowledge_lifecycle_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 11 and "protected-change-proposals" and "CREATE TABLE echo_protected_proposals(identity TEXT PRIMARY KEY,run TEXT NOT NULL REFERENCES echo_runs(run),principal TEXT NOT NULL REFERENCES echo_principals(identity),manifest TEXT NOT NULL,manifest_digest TEXT NOT NULL,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE INDEX echo_protected_proposals_principal ON echo_protected_proposals(principal,identity); CREATE TRIGGER echo_protected_proposals_no_update BEFORE UPDATE ON echo_protected_proposals BEGIN SELECT RAISE(ABORT,'Protected proposals are immutable'); END; CREATE TRIGGER echo_protected_proposals_no_delete BEFORE DELETE ON echo_protected_proposals BEGIN SELECT RAISE(ABORT,'Protected proposals are immutable'); END;")
+
+define protected_digest_valid with digest as Str returning Int:
+    if string_length(digest) is not equal to 64:
+        return 0
+    set index to 0
+    repeat while index < 64:
+        set code to get_character(digest and index)
+        if not ((code >= 48 and code <= 57) or else (code >= 97 and code <= 102)):
+            return 0
+        set index to index + 1
+    return 1
+
+# All disclosed bytes, including the payload and target hashes, participate in
+# the manifest digest. Category classification comes from the unchanged charter.
+define protected_manifest with charter as Str and category as Str and target as Str and before_hash as Str and after_hash as Str and payload as Str returning Str:
+    set classification to charter_category(charter and category)
+    if not (classification equals "core" or else classification equals "environment"):
+        return ""
+    if string_length(target) equals 0 or else string_length(payload) equals 0 or else protected_digest_valid(before_hash) equals 0 or else protected_digest_valid(after_hash) equals 0:
+        return ""
+    set keys to ["charter_sha256", "classification", "category", "target", "before_sha256", "proposed_sha256", "proposal_payload_sha256", "proposal_payload"]
+    set values to create_list()
+    set added to append_list(values and charter_pinned_digest())
+    set added to append_list(values and classification)
+    set added to append_list(values and category)
+    set added to append_list(values and target)
+    set added to append_list(values and before_hash)
+    set added to append_list(values and after_hash)
+    set added to append_list(values and ep_sha256(payload))
+    set added to append_list(values and payload)
+    set result to "{"
+    set index to 0
+    repeat while index < length_list(keys):
+        if index > 0:
+            set result to concat(result and ",")
+        set result to concat(result and provider_quote(archive_list_text(keys and index)))
+        set result to concat(result and ":")
+        set result to concat(result and provider_quote(archive_list_text(values and index)))
+        set index to index + 1
+    return concat(result and "}")
+
+# The initiating principal is read from frozen authority, never supplied as a
+# claimed actor string. A changed role/revocation/device link invalidates use.
+define protected_proposal_principal with database as Int and run as Str returning Str:
+    if run_authority_allows(database and run and "admin") equals 0:
+        return ""
+    set values to create_list()
+    set added to append_list(values and run)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT principal FROM echo_run_authority WHERE run=?;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+# Exact retries reuse the saved proposal. A changed manifest or initiating run
+# cannot overwrite an old attempt or inherit its future inspection/consent.
+define protected_proposal_store with database as Int and charter as Str and run as Str and identity as Str and manifest as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(manifest) equals 0:
+        return "invalid-proposal"
+    set tokens to provider_json_tokens(manifest)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "invalid-proposal"
+    set canonical to protected_manifest(charter and provider_value(tokens and provider_member(tokens and 0 and "category")) and provider_value(tokens and provider_member(tokens and 0 and "target")) and provider_value(tokens and provider_member(tokens and 0 and "before_sha256")) and provider_value(tokens and provider_member(tokens and 0 and "proposed_sha256")) and provider_value(tokens and provider_member(tokens and 0 and "proposal_payload")))
+    if string_length(canonical) equals 0 or else not (canonical equals manifest):
+        return "invalid-proposal"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set principal to protected_proposal_principal(database and run)
+    if string_length(principal) equals 0:
+        return migration_fail(database and "not-authorized")
+    set values to create_list()
+    set added to append_list(values and identity)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT run,principal,manifest,manifest_digest FROM echo_protected_proposals WHERE identity=?;" and values))
+    if archive_list_text(row and 0) equals "found":
+        if not (archive_list_text(row and 1) equals run) or else not (archive_list_text(row and 2) equals principal) or else not (archive_list_text(row and 3) equals manifest) or else not (archive_list_text(row and 4) equals ep_sha256(manifest)):
+            return migration_fail(database and "proposal-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(row and 0) equals "end"):
+        return migration_fail(database and "proposal-read-failed")
+    set added to append_list(values and run)
+    set added to append_list(values and principal)
+    set added to append_list(values and manifest)
+    set added to append_list(values and ep_sha256(manifest))
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_protected_proposals(identity,run,principal,manifest,manifest_digest) VALUES(?,?,?,?,?);" and values)
+    if statement equals 0 or else archive_finish(statement and 101) is not equal to 0:
+        return migration_fail(database and "proposal-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+# Internal storage read, not a public tool. Exposing this later must record the
+# exact disclosed digest before a separate authenticated Echo review can count.
+define protected_proposal_read with database as Int and run as Str and identity as Str returning List:
+    set principal to protected_proposal_principal(database and run)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and principal)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT manifest,manifest_digest,run FROM echo_protected_proposals WHERE identity=? AND principal=?;" and values))
+    if archive_list_text(row and 0) equals "found":
+        if not (ep_sha256(archive_list_text(row and 1)) equals archive_list_text(row and 2)):
+            return history_status("proposal-integrity-failed")
+    if not (protected_proposal_principal(database and run) equals principal):
+        return history_status("not-authorized")
+    return row

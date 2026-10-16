@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T02:37:27.857738+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:44:30.421196+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2315,6 +2315,33 @@ Imports: ../archive/file_digest → app/archive/file_digest.ep, ../providers/arc
 - Line 7: `define charter_pinned_digest returning Str:`
 - Line 12: `define charter_verified_text with path as Str returning Str:`
 - Line 29: `define charter_category with path as Str and category as Str returning Str:`
+
+## app/rights/proposals.ep
+
+[Source](../../app/rights/proposals.ep) · 118 lines · 8216 bytes
+
+SHA-256: `acdb5771fa8ae168f536e561f58049a855932d34eb29bce482a2932607d9251c`
+
+> Proposal storage only. No approval, executable access or mutation is granted.
+> A future protected controller must derive the category and target inventory
+> independently of model arguments before using this record for authorisation.
+> All disclosed bytes, including the payload and target hashes, participate in
+> the manifest digest. Category classification comes from the unchanged charter.
+> The initiating principal is read from frozen authority, never supplied as a
+> claimed actor string. A changed role/revocation/device link invalidates use.
+> Exact retries reuse the saved proposal. A changed manifest or initiating run
+> cannot overwrite an old attempt or inherit its future inspection/consent.
+> Internal storage read, not a public tool. Exposing this later must record the
+> exact disclosed digest before a separate authenticated Echo review can count.
+
+Imports: charter → app/rights/charter.ep, ../memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep
+
+- Line 7: `define protected_proposal_schema with database as Int returning Str:`
+- Line 13: `define protected_digest_valid with digest as Str returning Int:`
+- Line 26: `define protected_manifest with charter as Str and category as Str and target as Str and before_hash as Str and after_hash as Str and payload as Str returning Str:`
+- Line 55: `define protected_proposal_principal with database as Int and run as Str returning Str:`
+- Line 67: `define protected_proposal_store with database as Int and charter as Str and run as Str and identity as Str and manifest as Str returning Str:`
+- Line 105: `define protected_proposal_read with database as Int and run as Str and identity as Str returning List:`
 
 ## app/security/accounts.ep
 
