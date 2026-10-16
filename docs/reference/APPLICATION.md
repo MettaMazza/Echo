@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T05:03:19.944968+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:10:38.522059+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -3627,9 +3627,9 @@ Imports:
 
 ## app/ui/layout.ep
 
-[Source](../../app/ui/layout.ep) · 9 lines · 11972 bytes
+[Source](../../app/ui/layout.ep) · 9 lines · 11991 bytes
 
-SHA-256: `709e65dc243aa57ad1bceb873699acce1110c6053efe1add95b059d2ec960d3c`
+SHA-256: `1130662cce3be7e8662b5d6d3ac38d7f85f8ec12648f299051b4c6dfb22c18ac`
 
 
 Imports: 

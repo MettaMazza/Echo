@@ -53,3 +53,5 @@ Maria authorised the full end-to-end goal. The source integration map, requireme
 ## Guardian execution update — 16 October 2026
 
 The current host now runs the guardian-backed server on schema 10. An authenticated production conversation exercised the local model, a real command, durable guardian/exit records and final reply; a second device was denied access. Temporary test credentials were revoked. A consistent pre-cutover backup and executable/prompt/browser hashes are retained privately. This update does not deploy the schema-15 emergency controls or establish completion of Phase Two.
+
+Compaction indicator is deployed (16 October): animated preparation/review stages explain the delay and retained originals; worker failure stops the animation. Reduced-motion styling includes the spinner. Both loopback and LAN HTTPS served the verified browser build after a backed-up restart with unchanged archive rows. This deployment does not close the remaining compaction performance acceptance gate.

@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T05:03:19.944968+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:10:38.522059+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
