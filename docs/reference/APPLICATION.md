@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T09:51:10.360241+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:09:41.163131+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -926,19 +926,21 @@ Imports:
 
 ## app/context/recap_accept.ep
 
-[Source](../../app/context/recap_accept.ep) · 105 lines · 8187 bytes
+[Source](../../app/context/recap_accept.ep) · 110 lines · 8502 bytes
 
-SHA-256: `508c2bbe11892bc96ca5470f72baf97f59c4a1e3b46ec0e6326c914c80c32574`
+SHA-256: `d4bd9ea78b6f2f7dfaefbb9822861c1fe8da8e3d2803416198c9a78eccb95a57`
 
 > Consume archived candidate and review receipts, not a caller-supplied verdict.
 > A passing model review remains fallible evidence; this gate verifies its
 > binding and checks the exact resumed request without changing model limits.
+> Membership and initiating authority can change while provider preflight
+> is in flight. Recheck under the same writer reservation as activation.
 > Compatibility entry for existing host llama.cpp launch settings.
 
 Imports: ../retained_text → app/retained_text.ep, recap_review_synthesis → app/context/recap_review_synthesis.ep, session_messages → app/context/session_messages.ep, attachment_gate → app/context/attachment_gate.ep
 
 - Line 9: `define recap_accept_provider with database as Int and session as Str and run as Str and candidate_event as Str and review_event as Str and identity as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
-- Line 103: `define recap_accept with database as Int and session as Str and run as Str and candidate_event as Str and review_event as Str and identity as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
+- Line 108: `define recap_accept with database as Int and session as Str and run as Str and candidate_event as Str and review_event as Str and identity as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
 
 ## app/context/recap_collect.ep
 

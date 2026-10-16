@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T09:51:10.360241+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:09:41.163131+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -638,6 +638,20 @@ Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../fi
 - Line 6: `define rebuild_provider_fixture with listener as List and objective as Str and completed as Int and start as Int and finish as Int returning Int:`
 - Line 23: `define main returning Int:`
 
+## tests/context/test_group_recap_membership.ep
+
+[Source](../../tests/context/test_group_recap_membership.ep) · 83 lines · 5704 bytes
+
+SHA-256: `2edf5548355b2b1a2200fb7c9aac53ca2e0db16d79f35553d014d7b295a219d8`
+
+> Start beyond the fixture's artificial capacity trigger: this test must
+> rebuild because of an explicit request while ordinary context still fits.
+
+Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../fixtures/runner_provider → tests/fixtures/runner_provider.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep, ../../app/web/run_store → app/web/run_store.ep
+
+- Line 6: `define rebuild_provider_fixture with listener as List and objective as Str and completed as Int and start as Int and finish as Int and archive_path as Str returning Int:`
+- Line 24: `define main returning Int:`
+
 ## tests/context/test_group_recap_rebuild.ep
 
 [Source](../../tests/context/test_group_recap_rebuild.ep) · 118 lines · 7930 bytes
@@ -927,26 +941,28 @@ Imports: ../../app/rights/reviews → app/rights/reviews.ep, ../../app/web/run_s
 
 ## tests/fixtures/runner_provider.ep
 
-[Source](../../tests/fixtures/runner_provider.ep) · 301 lines · 20096 bytes
+[Source](../../tests/fixtures/runner_provider.ep) · 313 lines · 20825 bytes
 
-SHA-256: `0ea744f4fd87e9dedbba0c237e80f06068cdd558889275ca971d48a2ce88fde5`
+SHA-256: `4a3553aa6c81989afc2c4daf1c811cb9ab5530a0b5f1ee83b7d0fd97201ae533`
 
 > Three scripted generations: recap, independent review, resumed final answer.
 > Only this fixture's first token count reports full capacity.
 > Kill while activation is asking for metadata, after candidate and
 > passing review have committed and while compaction owns its lock.
+> Optional shared recap race fixture: change membership after the
+> activation request was assembled, before its preflight returns.
 > This fixture ends after its scripted final answer; the application runner
 > itself decides when to make requests and contains no turn-count limit.
 > Start at review: the candidate must come from the durable archive.
 
-Imports: ../../app/agent/runner → app/agent/runner.ep, os → standard library or compiler dependency
+Imports: ../../app/security/groups → app/security/groups.ep, ../../app/agent/runner → app/agent/runner.ep, os → standard library or compiler dependency
 
-- Line 6: `define compaction_fixture_content with state as List and tokens as List and messages as List returning Str:`
-- Line 104: `define runner_fixture_call with name as Str and identity as Str and arguments as Str returning Str:`
-- Line 109: `define runner_fixture_exchange with listener as List and state as List returning Int:`
-- Line 228: `define runner_fixture with listener as List and objective as Str and completed as Int returning Int:`
-- Line 248: `define compaction_fixture with listener as List and mode as Int and completed as Int returning Int:`
-- Line 279: `define compaction_recovery_fixture with listener as List and candidate as Str and endpoint as Str and review_saved as Int and completed as Int returning Int:`
+- Line 7: `define compaction_fixture_content with state as List and tokens as List and messages as List returning Str:`
+- Line 105: `define runner_fixture_call with name as Str and identity as Str and arguments as Str returning Str:`
+- Line 110: `define runner_fixture_exchange with listener as List and state as List returning Int:`
+- Line 240: `define runner_fixture with listener as List and objective as Str and completed as Int returning Int:`
+- Line 260: `define compaction_fixture with listener as List and mode as Int and completed as Int returning Int:`
+- Line 291: `define compaction_recovery_fixture with listener as List and candidate as Str and endpoint as Str and review_saved as Int and completed as Int returning Int:`
 
 ## tests/integration/test_component_imports.ep
 
