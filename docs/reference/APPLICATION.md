@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T03:34:49.578417+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:43:31.164547+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2351,6 +2351,22 @@ Imports: proposals → app/rights/proposals.ep, ../workspace/files → app/works
 - Line 7: `define protected_inventory_category with charter as Str and inventory as Str and expected_digest as Str and target as Str returning Str:`
 - Line 47: `define protected_inventory_manifest with charter as Str and inventory as Str and inventory_digest as Str and target as Str and before_hash as Str and after_hash as Str and payload as Str returning Str:`
 - Line 55: `define protected_inventory_matches with charter as Str and inventory as Str and inventory_digest as Str and manifest as Str returning Int:`
+
+## app/rights/observer_parser.ep
+
+[Source](../../app/rights/observer_parser.ep) · 62 lines · 3498 bytes
+
+SHA-256: `19ec2653467d4eb57586cfcc6ffd713de8791645c06b05a90f9d3c8f5919793e`
+
+> Adapted from the inspected ErnosDecent Observer protocol. Only the separate
+> audit model makes the policy judgment; this code validates its stated verdict.
+> Missing/ambiguous/malformed evidence is BLOCKED, never permission by silence.
+> A deployment audit must include a usable reason in its durable evidence.
+
+Imports: ../providers/archived_stream → app/providers/archived_stream.ep
+
+- Line 6: `define protected_observer_result with parsed as Int and verdict as Str and reason as Str returning Str:`
+- Line 11: `define protected_observer_parse with raw as Str returning Str:`
 
 ## app/rights/proposals.ep
 

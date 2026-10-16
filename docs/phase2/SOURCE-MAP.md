@@ -69,3 +69,9 @@ Inspected `decent_agent/memory.ep` (blob `e5c650126f2134cbc66b322f22633553904d40
 ## Charter policy verification
 
 `rights/charter.ep` verifies the exact canonical v2 charter hash (`7acfd345d50ad3d459061e7c76b94ff331d2102e3829de885a53df8e4722810c`) before parsing that same byte string. Categories come from the original consent/consultation arrays. Tests reject missing/altered policy and unknown categories. This helper does not authorise execution, derive executable target categories or replace the pending manifest/decision/recovery controller. The source’s 85% compaction clause remains unchanged and explicitly conflicts with Echo’s no-artificial-limit requirement pending the joint review.
+
+## Observer audit protocol
+
+Inspected the complete `decent_agent/observer.ep`, `observer_rules.ep` and `observer_parser.ep` at ErnosDecent revision `4ef202c5a920f17e5d2f6bde406b62e8185b1531`; source blob hashes are recorded in FOUNDATION-VERIFICATION.json. Original source is retained privately. The Observer makes policy judgments through a separate model call. Its parser accepts only an explicit top-level JSON verdict with exact aliases; prose containing verdict words never grants permission. Deployment audits fail closed, while the original nonblocking lookback requires a parsed explicit denial before reporting drift. The source test bypass is not a production authorization mechanism.
+
+`rights/observer_parser.ep` adapts that protocol to Echo's existing JSON parser, additionally rejecting duplicate/conflicting verdict aliases and requiring a nonblank textual reason for deployment evidence. Native tests cover all 91 verdict-key/value combinations and malformed/ambiguous cases. This is a parser only: separate inference, archived audit binding and deployment gating remain pending. Original policy prose has not been installed or changed; final adaptations remain subject to Maria's joint review.

@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T03:34:49.578417+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:43:31.164547+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1624,6 +1624,18 @@ Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/t
 
 - Line 7: `define recall_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
 - Line 27: `define main returning Int:`
+
+## tests/security/test_observer_parser.ep
+
+[Source](../../tests/security/test_observer_parser.ep) · 45 lines · 3354 bytes
+
+SHA-256: `6cb47313a6438da065c6ed3ce8fcc025e13880ebaa10e2e9078760fd7340f624`
+
+
+Imports: ../../app/rights/observer_parser → app/rights/observer_parser.ep
+
+- Line 3: `define observer_fixture_assert with raw as Str and parsed as Str and verdict as Str returning Int:`
+- Line 11: `define main returning Int:`
 
 ## tests/security/test_principals.ep
 
