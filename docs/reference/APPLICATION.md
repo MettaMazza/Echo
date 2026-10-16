@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T09:16:00.526164+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T09:30:11.375937+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1554,9 +1554,9 @@ Imports: ../retained_text → app/retained_text.ep, ../providers/json_tokens →
 
 ## app/media/image_tool.ep
 
-[Source](../../app/media/image_tool.ep) · 166 lines · 10823 bytes
+[Source](../../app/media/image_tool.ep) · 169 lines · 10951 bytes
 
-SHA-256: `247de1d73a86fad464781f6fc355b22eeb5d5498860f5e82bb8e9e3b7ed71faf`
+SHA-256: `d21f4ea50ec1b94d758b98e4d62a5c89f69ecb38adf42beb0b240497804dbdd6`
 
 > Run/call identity comes from the dispatcher. Re-read the immutable request.
 > Each claimed call gets its own private directory outside writable workspaces.
@@ -1564,28 +1564,45 @@ SHA-256: `247de1d73a86fad464781f6fc355b22eeb5d5498860f5e82bb8e9e3b7ed71faf`
 > Leave an uncertain claim when logging failed; never report a fully saved
 > result or authorize automatic replay after partial archive persistence.
 
-Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, image_request → app/media/image_request.ep, ../security/tool_policy → app/security/tool_policy.ep, image_logs → app/media/image_logs.ep, ../web/attachments → app/web/attachments.ep, ../workspace/directories → app/workspace/directories.ep, ../providers/helper_process → app/providers/helper_process.ep
+Imports: shared_authority → app/media/shared_authority.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, image_request → app/media/image_request.ep, ../security/tool_policy → app/security/tool_policy.ep, image_logs → app/media/image_logs.ep, ../web/attachments → app/web/attachments.ep, ../workspace/directories → app/workspace/directories.ep, ../providers/helper_process → app/providers/helper_process.ep
 
-- Line 11: `define image_tool_authority with database as Int and run as Str and call_id as Str returning List:`
-- Line 26: `define image_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
-- Line 52: `define image_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
+- Line 12: `define image_tool_authority with database as Int and run as Str and call_id as Str returning List:`
+- Line 29: `define image_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
+- Line 55: `define image_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
+
+## app/media/shared_authority.ep
+
+[Source](../../app/media/shared_authority.ep) · 27 lines · 2704 bytes
+
+SHA-256: `4d43ba419f76bc6f64a9ae3c8f7e87493f8ee7e4f108f78937ed12f397eb2775`
+
+> Resolve the initiating device from the frozen call, never from media arguments
+> or another member of the room. Publication checks this identity again.
+> Private legacy and direct Speak jobs keep their existing authorization path.
+> Shared model jobs bind the attachment transaction to the exact running call.
+
+Imports: ../security/tool_policy → app/security/tool_policy.ep, ../web/attachments → app/web/attachments.ep
+
+- Line 6: `define media_shared_authority with database as Int and run as Str and call_id as Str and family as Str returning List:`
+- Line 24: `define media_attachment_register with database as Int and device as Str and session as Str and identity as Str and path as Str and name as Str and media_type as Str and run as Str and call_id as Str returning Int:`
 
 ## app/media/speech_request.ep
 
-[Source](../../app/media/speech_request.ep) · 118 lines · 7720 bytes
+[Source](../../app/media/speech_request.ep) · 125 lines · 8497 bytes
 
-SHA-256: `430a8d8544131ba2dad518319f231970fadb36c9b6cfd0db177bca8075516947`
+SHA-256: `2c2c69c0d9803c90004b45cb639dbd002d008b24a72390d820277c73bac424ab`
 
 > This adapter accepts only an owned archive identity and spoken language.
 > Runtime paths, model weights and output filenames are host controlled.
 > No duration, output-token or segment-length override. Whisper processes
 > the entire recording using its native windows. JSON retains timestamps.
 
-Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep, ../archive/session_scope → app/archive/session_scope.ep
+Imports: ../web/attachments → app/web/attachments.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep, ../archive/session_scope → app/archive/session_scope.ep
 
-- Line 8: `define speech_request_source with database as Int and session as Str and arguments as Str returning List:`
-- Line 66: `define speech_request_arguments with profile as Str and language as Str returning List:`
-- Line 117: `define speech_tool_schema returning Str:`
+- Line 9: `define speech_request_source with database as Int and session as Str and arguments as Str returning List:`
+- Line 12: `define speech_request_source_device with database as Int and device as Str and session as Str and arguments as Str returning List:`
+- Line 73: `define speech_request_arguments with profile as Str and language as Str returning List:`
+- Line 124: `define speech_tool_schema returning Str:`
 
 ## app/media/speech_text.ep
 
@@ -1602,9 +1619,9 @@ Imports: ../providers/json_string → app/providers/json_string.ep
 
 ## app/media/speech_tool.ep
 
-[Source](../../app/media/speech_tool.ep) · 243 lines · 16583 bytes
+[Source](../../app/media/speech_tool.ep) · 246 lines · 16752 bytes
 
-SHA-256: `9f8556a350b10fa660d19e961859bddbffa7d99795ce86f5946f7d50a01495c8`
+SHA-256: `96b1aa524baa6fa24f5945bd110d7c1c9fdb5de6b44c617c6a8cb6f4700e2d7f`
 
 > Run/call identity comes from the dispatcher. Re-read the immutable request.
 > Direct Speak actions have no model run. Their immutable request binds the
@@ -1616,11 +1633,11 @@ SHA-256: `9f8556a350b10fa660d19e961859bddbffa7d99795ce86f5946f7d50a01495c8`
 > Leave an uncertain claim when logging failed; never report a fully saved
 > result or authorize automatic replay after partial archive persistence.
 
-Imports: ../security/principals → app/security/principals.ep, speech_text → app/media/speech_text.ep, ../security/tool_authority → app/security/tool_authority.ep, ../retained_text → app/retained_text.ep, speech_request → app/media/speech_request.ep, voice_request → app/media/voice_request.ep, ../archive/file_copy → app/archive/file_copy.ep, image_logs → app/media/image_logs.ep, ../web/attachments → app/web/attachments.ep, ../workspace/directories → app/workspace/directories.ep, ../providers/helper_process → app/providers/helper_process.ep
+Imports: shared_authority → app/media/shared_authority.ep, ../security/principals → app/security/principals.ep, speech_text → app/media/speech_text.ep, ../security/tool_authority → app/security/tool_authority.ep, ../retained_text → app/retained_text.ep, speech_request → app/media/speech_request.ep, voice_request → app/media/voice_request.ep, ../archive/file_copy → app/archive/file_copy.ep, image_logs → app/media/image_logs.ep, ../web/attachments → app/web/attachments.ep, ../workspace/directories → app/workspace/directories.ep, ../providers/helper_process → app/providers/helper_process.ep
 
-- Line 14: `define speech_tool_authority with database as Int and run as Str and call_id as Str returning List:`
-- Line 36: `define speech_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
-- Line 62: `define speech_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
+- Line 15: `define speech_tool_authority with database as Int and run as Str and call_id as Str returning List:`
+- Line 39: `define speech_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
+- Line 65: `define speech_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
 
 ## app/media/voice_request.ep
 

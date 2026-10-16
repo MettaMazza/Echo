@@ -1,0 +1,27 @@
+import "../security/tool_policy"
+import "../web/attachments"
+
+# Resolve the initiating device from the frozen call, never from media arguments
+# or another member of the room. Publication checks this identity again.
+define media_shared_authority with database as Int and run as Str and call_id as Str and family as Str returning List:
+    set values to tool_ledger_identity(run and call_id)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.session,a.device,e.payload,e.event,json_extract(e.payload,'$.name') FROM echo_tool_calls t JOIN echo_runs r ON r.run=t.run AND r.session=t.session JOIN echo_tool_authority a ON a.run=t.run AND a.call_id=t.call_id JOIN echo_events e ON e.event=t.request_event AND e.session=t.session WHERE t.run=?1 AND t.call_id=?2 AND t.state='running' AND r.state='tools' AND e.kind='tool_call' AND json_valid(e.payload) AND json_extract(e.payload,'$.name') IN ('image_generate','speech_synthesize','attachment_transcribe') AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.call_id')=?2;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("not-authorized")
+    set name to archive_list_text(row and 5)
+    if family equals "image" and not (name equals "image_generate"):
+        return history_status("not-authorized")
+    if family equals "speech" and not (name equals "speech_synthesize" or else name equals "attachment_transcribe"):
+        return history_status("not-authorized")
+    if not (family equals "image" or else family equals "speech"):
+        return history_status("not-authorized")
+    if group_run_session_allows(database and run and archive_list_text(row and 1)) equals 0 or else tool_policy_allows(database and run and call_id and archive_list_text(row and 5)) equals 0 or else web_attachment_session_allowed(database and archive_list_text(row and 2) and archive_list_text(row and 1) and 1) equals 0:
+        return history_status("not-authorized")
+    return row
+
+# Private legacy and direct Speak jobs keep their existing authorization path.
+# Shared model jobs bind the attachment transaction to the exact running call.
+define media_attachment_register with database as Int and device as Str and session as Str and identity as Str and path as Str and name as Str and media_type as Str and run as Str and call_id as Str returning Int:
+    if principal_session_active(database and session) equals 1:
+        return web_attachment_register(database and device and session and identity and path and name and media_type)
+    return web_attachment_register_call(database and device and session and identity and path and name and media_type and run and call_id)

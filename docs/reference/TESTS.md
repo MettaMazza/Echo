@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T09:16:00.526164+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T09:30:11.375937+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1066,6 +1066,30 @@ Imports: ../../app/providers/helper_process → app/providers/helper_process.ep
 
 - Line 3: `define main returning Int:`
 
+## tests/media/test_group_image_tool.ep
+
+[Source](../../tests/media/test_group_image_tool.ep) · 65 lines · 5111 bytes
+
+SHA-256: `df12b00e45fd1ac63c303d7f6b9dc5055530be466e9ef16054cfa07f9d5e71a2`
+
+
+Imports: ../../app/agent/runner → app/agent/runner.ep, ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 5: `define main returning Int:`
+
+## tests/media/test_group_voice_tool.ep
+
+[Source](../../tests/media/test_group_voice_tool.ep) · 79 lines · 6774 bytes
+
+SHA-256: `450ea97f65db017fde0071c386eb4715cc77c05703922af61630ae07d1b4827d`
+
+> Script only the model request. Both synthesis and recognition are real.
+
+Imports: ../../app/agent/runner → app/agent/runner.ep, ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 6: `define voice_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
+- Line 25: `define main returning Int:`
+
 ## tests/media/test_image_control.ep
 
 [Source](../../tests/media/test_image_control.ep) · 75 lines · 4971 bytes
@@ -1742,6 +1766,19 @@ Imports: ../../app/security/group_route → app/security/group_route.ep, ../../a
 
 - Line 6: `define live_group_finish with database as Int and run as Str and model as Str and port as Int returning Int:`
 - Line 31: `define main returning Int:`
+
+## tests/security/test_group_media_authority.ep
+
+[Source](../../tests/security/test_group_media_authority.ep) · 67 lines · 4977 bytes
+
+SHA-256: `fc3135093b483212a2f02280188e35a260956060d884c4807d0a5b80c70e288e`
+
+> Script only the model request. Both synthesis and recognition are real.
+
+Imports: ../../app/agent/runner → app/agent/runner.ep, ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 6: `define voice_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
+- Line 42: `define main returning Int:`
 
 ## tests/security/test_group_media_receipts.ep
 
