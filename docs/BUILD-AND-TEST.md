@@ -51,3 +51,9 @@ The earlier complete-source audit checked 360 files: 353 native checks passed an
 ## Deployment verification
 
 Stage generated output before replacing the running bundle. Check for active runs before stopping the server. The server loads JavaScript at startup, so replacing the file requires a server restart and client refresh. Verify that `/app.js` has the expected digest, that loopback and LAN TLS health checks succeed, and that an actual authenticated turn completes. Reuse a pending submission's identity when reconciling a lost response. Do not delete the production database to clear a browser error.
+
+## Emergency status inspection candidate
+
+Compile `app/emergency_status.ep` with the existing Ernos compiler. Invoke the resulting host binary as `emergency_status EXISTING_DATABASE PINNED_CHARTER`; provide the current steward bearer credential through the child process environment `ECHO_STEWARD_CREDENTIAL`, never through argv, shared logs or a persistent shell profile. This command accepts compatible protected-controller archives containing migration 13, through supported migration 15. It does not migrate the production schema 10 archive.
+
+Successful JSON contains only that steward’s incident identities, Unix-second reconciliation deadlines and verified disclosure states. Pending, overdue, on-time, late and unverifiable clock states remain distinct. Any integrity/access error returns a nonzero exit without a partial incident report. The command does not release quarantine, execute protected changes or replace the pending dashboard/notification workflow. Native coverage is in `tests/security/test_protected_emergency.ep`.

@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T05:14:05.294987+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:17:19.734718+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1281,6 +1281,19 @@ Imports: providers/registry → app/providers/registry.ep, fs → standard libra
 
 - Line 4: `define main returning Int:`
 
+## app/emergency_status.ep
+
+[Source](../../app/emergency_status.ep) · 33 lines · 1691 bytes
+
+SHA-256: `beccd3737635f8493a250342948d6b155506205d1108274ddf8dfda0045f29e8`
+
+> Host operator inspection only. No migration, new credentials, role grants,
+> quarantine release or protected changes occur through this command.
+
+Imports: rights/emergency_report → app/rights/emergency_report.ep, os → standard library or compiler dependency
+
+- Line 6: `define main returning Int:`
+
 ## app/execute_guardian.ep
 
 [Source](../../app/execute_guardian.ep) · 27 lines · 1171 bytes
@@ -2402,6 +2415,19 @@ Imports: steward → app/rights/steward.ep
 - Line 70: `define protected_emergency_disclose_at with database as Int and charter as Str and credential as Str and identity as Str and cause as Str and exact_diff as Str and resulting_state as Str and stealth_review as Str and now as Int returning Str:`
 - Line 118: `define protected_emergency_status with database as Int and charter as Str and credential as Str and identity as Str returning Str:`
 - Line 121: `define protected_emergency_status_at with database as Int and charter as Str and credential as Str and identity as Str and now as Int returning Str:`
+
+## app/rights/emergency_report.ep
+
+[Source](../../app/rights/emergency_report.ep) · 58 lines · 3535 bytes
+
+SHA-256: `94dc867395ba37993d660a83fc902412c167556fba3f5378630ebb57178b0d46`
+
+> Assemble privately, then recheck the initiating authority before returning.
+> Never publish a partial report if a record fails integrity or access checks.
+
+Imports: emergency → app/rights/emergency.ep
+
+- Line 5: `define protected_emergency_report with database as Int and charter as Str and credential as Str returning Str:`
 
 ## app/rights/exchange.ep
 

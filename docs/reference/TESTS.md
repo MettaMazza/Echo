@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T05:14:05.294987+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:17:19.734718+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1834,13 +1834,13 @@ Imports: ../../app/web/uploads → app/web/uploads.ep, ../../app/web/cancellatio
 
 ## tests/security/test_protected_emergency.ep
 
-[Source](../../tests/security/test_protected_emergency.ep) · 58 lines · 5947 bytes
+[Source](../../tests/security/test_protected_emergency.ep) · 69 lines · 7243 bytes
 
-SHA-256: `a345bbac66ab71d73c6cc40332507a839235580afc9bf62cde66db1e498d5888`
+SHA-256: `be1ca04a6be8ee45ef32484f536ff2704d5344a356cbdaf8b688d9d92bfc4ef3`
 
 > Only disposable copies of the live tool fixture are accepted.
 
-Imports: ../../app/rights/emergency → app/rights/emergency.ep
+Imports: ../../app/rights/emergency_report → app/rights/emergency_report.ep
 
 - Line 4: `define main returning Int:`
 

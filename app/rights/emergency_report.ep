@@ -1,0 +1,58 @@
+import "emergency"
+
+# Assemble privately, then recheck the initiating authority before returning.
+# Never publish a partial report if a record fails integrity or access checks.
+define protected_emergency_report with database as Int and charter as Str and credential as Str returning Str:
+    if string_length(charter_verified_text(charter)) equals 0:
+        return "charter-unavailable-or-altered"
+    set actor to protected_steward_actor(database and credential)
+    if not (archive_list_text(actor and 0) equals "found"):
+        return "not-authorized"
+    set values to [archive_list_text(actor and 2)]
+    set statement to checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE kind='emergency_started' AND json_valid(payload) AND json_extract(payload,'$.principal')=? ORDER BY sequence;" and values)
+    if statement equals 0:
+        return "emergency-read-failed"
+    set identities to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set finished to ep_sqlite3_finalize(statement)
+            return "emergency-read-failed"
+        set payload to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        set tokens to provider_json_tokens(payload)
+        set identity to provider_value(tokens and provider_member(tokens and 0 and "identity"))
+        if string_length(identity) equals 0:
+            set finished to ep_sqlite3_finalize(statement)
+            return "emergency-integrity-failed"
+        set added to append_list(identities and identity)
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return "emergency-read-failed"
+    set report to "{\"status\":\"verified\",\"incidents\":["
+    set index to 0
+    repeat while index < length_list(identities):
+        set identity to archive_list_text(identities and index)
+        set status to protected_emergency_status(database and charter and credential and identity)
+        if not (status equals "pending" or else status equals "overdue" or else status equals "clock-before-start" or else status equals "disclosed-on-time" or else status equals "disclosed-late" or else status equals "disclosed-time-unverified"):
+            return status
+        if index > 0:
+            set report to concat(report and ",")
+        set original to archive_read_event(database and concat(protected_emergency_session(identity) and ":started"))
+        if original equals 0:
+            return "emergency-read-failed"
+        set tokens to provider_json_tokens(archive_list_text(original and 3))
+        set report to concat(report and concat("{\"identity\":" and provider_quote(identity)))
+        set report to concat(report and concat(",\"disclosure_status\":" and provider_quote(status)))
+        set report to concat(report and concat(",\"reconciliation_due\":" and provider_value(tokens and provider_member(tokens and 0 and "reconciliation_due"))))
+        set report to concat(report and ",\"deadline_basis\":\"unix-seconds\"}")
+        set index to index + 1
+    set current to protected_steward_actor(database and credential)
+    if length_list(current) is not equal to length_list(actor):
+        return "not-authorized"
+    set index to 0
+    repeat while index < length_list(actor):
+        if not (archive_list_text(current and index) equals archive_list_text(actor and index)):
+            return "not-authorized"
+        set index to index + 1
+    return concat(report and "]}")
