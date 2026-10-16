@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T07:07:33.651408+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T07:18:46.405295+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -617,7 +617,7 @@ SHA-256: `99555fb6801d97a0714972c1ba64a9bc9a833d52ad3be59638e685bda5c38a5c`
 > endpoint predates its branch event; descendants cannot expose later messages.
 > UNION also deduplicates repeated ancestry without imposing a depth ceiling.
 
-Imports: 
+Imports:
 
 - Line 4: `define session_scope_sql returning Str:`
 
@@ -797,7 +797,7 @@ SHA-256: `67b02fd3424c79fa3327526352a064c3153457f373f5189beac7e603a262d292`
 > The output reserve is chosen from the actual next workload, not a fixed default.
 > Comparison is exact: reductions must be surfaced instead of called maximum.
 
-Imports: 
+Imports:
 
 - Line 4: `define context_remaining with capacity as Int and occupied as Int returning Int:`
 - Line 13: `define context_output_allowance with capacity as Int and occupied as Int and provider_output_ceiling as Int returning Int:`
@@ -896,6 +896,18 @@ Imports: ../retained_text → app/retained_text.ep, recap_jobs → app/context/r
 - Line 91: `define compaction_saved_candidate with database as Int and session as Str and endpoint as Str and job as Str returning List:`
 - Line 140: `define compaction_saved_synthesis with database as Int and session as Str and endpoint as Str and job as Str and candidate as Str returning List:`
 
+## app/context/echo_labels.ep
+
+[Source](../../app/context/echo_labels.ep) · 7 lines · 321 bytes
+
+SHA-256: `d503f8b7f53aec94f3c2b4901824e415e803c657f84e9f746a85d9fe517fb56c`
+
+> Presentation labels only: archive event kinds and provider roles stay stable.
+
+Imports:
+
+- Line 2: `define echo_record_label with kind as Str returning Str:`
+
 ## app/context/recap_accept.ep
 
 [Source](../../app/context/recap_accept.ep) · 105 lines · 8187 bytes
@@ -933,9 +945,9 @@ Imports: ../retained_text → app/retained_text.ep, recap_jobs → app/context/r
 
 ## app/context/recap_contract.ep
 
-[Source](../../app/context/recap_contract.ep) · 87 lines · 5548 bytes
+[Source](../../app/context/recap_contract.ep) · 87 lines · 5543 bytes
 
-SHA-256: `6ed32b20f17a008b46e6ded6abd09f2c681cc5d0e36631c9aa83e636c8699dd3`
+SHA-256: `3fc746949aa9c539f732b2e6456fb63dd6fa44da36cdab7c8de6ccd4eef4579f`
 
 > Structural/provenance validation only. Passing does not establish semantic
 > completeness and must never by itself authorize checkpoint activation.
@@ -1183,19 +1195,19 @@ Imports: ../retained_text → app/retained_text.ep, recap_review_coverage → ap
 
 ## app/context/recap_sources.ep
 
-[Source](../../app/context/recap_sources.ep) · 130 lines · 7992 bytes
+[Source](../../app/context/recap_sources.ep) · 131 lines · 8043 bytes
 
-SHA-256: `8180e277614ac3af89acb167738ba3576bc2ecd626e84c5374965e13f269c570`
+SHA-256: `58e250ae4b3866d80d55932e8fb9eaee67c0f7f93a3ce5de71952aed417e3066`
 
 > Read one consistent view of accepted run ancestry through a frozen endpoint.
 > Transport copies and nested model requests stay in the original archive but
 > are not repeated as conversational evidence. Tool originals retain identities.
 
-Imports: ../retained_text → app/retained_text.ep, ../agent/run_messages → app/agent/run_messages.ep
+Imports: ../context/echo_labels → app/context/echo_labels.ep, ../retained_text → app/retained_text.ep, ../agent/run_messages → app/agent/run_messages.ep
 
-- Line 4: `define recap_source_record with database as Int and row as List returning Str:`
-- Line 20: `define recap_sources_snapshot with database as Int and session as Str and endpoint as Str returning Str:`
-- Line 120: `define recap_sources with database as Int and session as Str and endpoint as Str returning Str:`
+- Line 5: `define recap_source_record with database as Int and row as List returning Str:`
+- Line 21: `define recap_sources_snapshot with database as Int and session as Str and endpoint as Str returning Str:`
+- Line 121: `define recap_sources with database as Int and session as Str and endpoint as Str returning Str:`
 
 ## app/context/session_messages.ep
 
@@ -1228,9 +1240,9 @@ Imports: ../retained_text → app/retained_text.ep, system_awareness → app/con
 
 ## app/context/system_awareness.ep
 
-[Source](../../app/context/system_awareness.ep) · 63 lines · 6003 bytes
+[Source](../../app/context/system_awareness.ep) · 64 lines · 6289 bytes
 
-SHA-256: `51c39838b0cad1ff68c75a7c58e187abfc3a547c0d3ea945ebfcec806d43ca61`
+SHA-256: `5fa3c9b194f7d688c6c4084443d2b40c20cac4f5943390e82d1e81d5d697a30c`
 
 > Only operator-controlled files enter the system role. Conversation content,
 > attachments and tool observations never select identity or architecture files.
@@ -1242,8 +1254,8 @@ SHA-256: `51c39838b0cad1ff68c75a7c58e187abfc3a547c0d3ea945ebfcec806d43ca61`
 Imports: ../retained_text → app/retained_text.ep, ../agent/provider_profile → app/agent/provider_profile.ep, ../providers/status → app/providers/status.ep, ../security/run_authority → app/security/run_authority.ep, fs → standard library or compiler dependency
 
 - Line 9: `define echo_system_prompt with database as Int and run as Str returning Str:`
-- Line 40: `define echo_system_inspect with database as Int and run as Str and arguments as Str returning Str:`
-- Line 62: `define echo_system_schema returning Str:`
+- Line 41: `define echo_system_inspect with database as Int and run as Str and arguments as Str returning Str:`
+- Line 63: `define echo_system_schema returning Str:`
 
 ## app/device_admin.ep
 
@@ -1631,9 +1643,9 @@ Imports: session_ownership → app/memory/session_ownership.ep, ../archive/histo
 
 ## app/memory/automatic.ep
 
-[Source](../../app/memory/automatic.ep) · 253 lines · 18213 bytes
+[Source](../../app/memory/automatic.ep) · 254 lines · 18256 bytes
 
-SHA-256: `93b403dcef0cebdf3c43d9aae4f9718c8dfe315785e5a113b74d8c25789e9e22`
+SHA-256: `551ea4425efebdbc4cbcac45dea7f83aaa41adf7e586be97e57a7f982a605b16`
 
 > Private, incremental extraction. Only accepted conversation events before the
 > current objective are eligible. Receipts prevent repeated ingestion after a
@@ -1645,20 +1657,20 @@ SHA-256: `93b403dcef0cebdf3c43d9aae4f9718c8dfe315785e5a113b74d8c25789e9e22`
 > Validate every quote and source before writing any claim. A partial write can
 > safely retry because knowledge_record is content-addressed and idempotent.
 
-Imports: knowledge → app/memory/knowledge.ep, ../agent/control → app/agent/control.ep, ../providers/prepare → app/providers/prepare.ep, ../providers/local_chat → app/providers/local_chat.ep
+Imports: ../context/echo_labels → app/context/echo_labels.ep, knowledge → app/memory/knowledge.ep, ../agent/control → app/agent/control.ep, ../providers/prepare → app/providers/prepare.ep, ../providers/local_chat → app/providers/local_chat.ep
 
-- Line 9: `define memory_pending with database as Int and run as Str returning List:`
-- Line 32: `define memory_source_text with row as List returning Str:`
-- Line 42: `define memory_ground_extraction with database as Int and run as Str and sources as List and start as Int and count as Int and response as Str returning Str:`
-- Line 92: `define memory_extract_body with database as Int and model as Str and sources as List and start as Int and count as Int returning Str:`
-- Line 115: `define memory_extract_save with database as Int and run as Str and sources as List and start as Int and count as Int and response as Str returning Str:`
-- Line 187: `define memory_prepare with database as Int and run as Str and profile as Str and reserve as Int and cancellation as Int and read_size as Int returning Str:`
+- Line 10: `define memory_pending with database as Int and run as Str returning List:`
+- Line 33: `define memory_source_text with row as List returning Str:`
+- Line 43: `define memory_ground_extraction with database as Int and run as Str and sources as List and start as Int and count as Int and response as Str returning Str:`
+- Line 93: `define memory_extract_body with database as Int and model as Str and sources as List and start as Int and count as Int returning Str:`
+- Line 116: `define memory_extract_save with database as Int and run as Str and sources as List and start as Int and count as Int and response as Str returning Str:`
+- Line 188: `define memory_prepare with database as Int and run as Str and profile as Str and reserve as Int and cancellation as Int and read_size as Int returning Str:`
 
 ## app/memory/automatic_context.ep
 
-[Source](../../app/memory/automatic_context.ep) · 31 lines · 4157 bytes
+[Source](../../app/memory/automatic_context.ep) · 31 lines · 4152 bytes
 
-SHA-256: `e7518dba6af8bc6c8f59bdae0be73ecb8cccda0ff24a3f64d46339cdef2bc529`
+SHA-256: `674d320d73376b4ebee7d1bdc02e1ad7927679b53a979e81a8811adeb50e85d8`
 
 > Derived memory remains data in a user-role context record. It cannot grant
 > permissions or replace the installed identity. Visibility and ownership are
@@ -2072,7 +2084,7 @@ SHA-256: `760b3404e1b7ec57b8f1db484ed55a09be8c95fc12e1843dafdf305bc38ebb5f`
 > Arguments are existing owned or borrowed references. The temporary tuple owns
 > additional references so calling never consumes the caller's objects.
 
-Imports: 
+Imports:
 
 - Line 5: `define native_python_open with library_path as Str and program as Str returning Int:`
 - Line 27: `define native_python_import with library as Int and name as Str returning Int:`
@@ -2350,7 +2362,7 @@ SHA-256: `c6692b9f3a4da395b6c636242c6b48d8f171711f0ecbd3561be54e539e22853e`
 > Darwin arm64 ffi_cif has the extra unsigned aarch64_nfixedargs field,
 > making its aligned size40 bytes. FFI_SYSV is1 on this platform.
 
-Imports: 
+Imports:
 
 - Line 5: `define research_native_words with count as Int returning List:`
 - Line 13: `define research_native_word with pointer as Int returning Int:`
@@ -2449,7 +2461,7 @@ SHA-256: `341af71d59cc0ce9cd435b9fe8e3c14d4ed9e8f87160f064dc42b48485fb9e99`
 > duplicate between evaluations of function arguments. The caller keeps the
 > containing list alive. Missing entries keep ptr_to_str's empty-string result.
 
-Imports: 
+Imports:
 
 - Line 4: `define archive_list_text with values as List and index as Int returning Str:`
 
@@ -3106,9 +3118,9 @@ Imports: group_gate → app/security/group_gate.ep, node_gate → app/security/n
 
 ## app/security/tool_policy.ep
 
-[Source](../../app/security/tool_policy.ep) · 54 lines · 3255 bytes
+[Source](../../app/security/tool_policy.ep) · 54 lines · 3289 bytes
 
-SHA-256: `d7578e103c8e9784489a942825cea493dced0776adf597e6db9b301f9aefbc8e`
+SHA-256: `4cdc1cb4a23acf60e61ee9eed6f3c0be19a3603d5f3b3548e0ee039f83068983`
 
 > Classification is explicit. A newly registered name is not automatically a
 > safe tool. Dynamic tools must later obtain an independently verified manifest.
@@ -3171,6 +3183,20 @@ Imports: lifecycle/service_profile → app/lifecycle/service_profile.ep, fs → 
 
 - Line 4: `define main returning Int:`
 
+## app/tools/attach_file.ep
+
+[Source](../../app/tools/attach_file.ep) · 91 lines · 5477 bytes
+
+SHA-256: `a9d43bb8c7ef50b3b0ed70394da1968c2ad17131abe0c736f98c5623bb77dcde`
+
+> Copy the opened, confined source descriptor into an immutable host-owned
+> attachment. No shell, absolute source path, symlink or size ceiling.
+
+Imports: workspace_tools → app/tools/workspace_tools.ep, ../web/attachments → app/web/attachments.ep
+
+- Line 6: `define attach_copy with library as Int and input as Int and path as Str returning Int:`
+- Line 34: `define attach_file_execute with database as Int and session as Str and arguments as Str returning Str:`
+
 ## app/tools/attachment_image.ep
 
 [Source](../../app/tools/attachment_image.ep) · 30 lines · 2426 bytes
@@ -3200,23 +3226,23 @@ Imports: ../security/principals → app/security/principals.ep, ../retained_text
 
 ## app/tools/attachment_tools.ep
 
-[Source](../../app/tools/attachment_tools.ep) · 103 lines · 12189 bytes
+[Source](../../app/tools/attachment_tools.ep) · 107 lines · 13054 bytes
 
-SHA-256: `f3f0f59888c11c58bb9bf62eb02933854367855031cbd5b67a0b6ba526509d15`
+SHA-256: `69c5f69085e3fd550e236c57eb210bbc982b1b7ec877513e6d272d69f26d1adb`
 
 > Scope is the trusted run session. Model arguments cannot choose another
 > session, device, or host path. One cursor result keeps context use explicit.
 > Capability is configured by the host; no remote fallback.
 
-Imports: ../security/principals → app/security/principals.ep, ../context/system_awareness → app/context/system_awareness.ep, history_tools → app/tools/history_tools.ep, ../media/speech_request → app/media/speech_request.ep, ../media/voice_request → app/media/voice_request.ep, compaction_tools → app/tools/compaction_tools.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep, attachment_text → app/tools/attachment_text.ep, workspace_tools → app/tools/workspace_tools.ep, execution_output → app/tools/execution_output.ep, attachment_image → app/tools/attachment_image.ep
+Imports: attach_file → app/tools/attach_file.ep, ../security/principals → app/security/principals.ep, ../context/system_awareness → app/context/system_awareness.ep, history_tools → app/tools/history_tools.ep, ../media/speech_request → app/media/speech_request.ep, ../media/voice_request → app/media/voice_request.ep, compaction_tools → app/tools/compaction_tools.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep, attachment_text → app/tools/attachment_text.ep, workspace_tools → app/tools/workspace_tools.ep, execution_output → app/tools/execution_output.ep, attachment_image → app/tools/attachment_image.ep
 
-- Line 15: `define attachment_tool_execute with database as Int and session as Str and arguments as Str returning Str:`
-- Line 44: `define session_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
-- Line 63: `define attachment_listing_schemas returning Str:`
-- Line 68: `define attachment_text_schemas returning Str:`
-- Line 73: `define workspace_tool_schemas returning Str:`
-- Line 81: `define session_base_tool_schemas returning Str:`
-- Line 91: `define session_tool_schemas returning Str:`
+- Line 16: `define attachment_tool_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 45: `define session_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
+- Line 66: `define attachment_listing_schemas returning Str:`
+- Line 71: `define attachment_text_schemas returning Str:`
+- Line 76: `define workspace_tool_schemas returning Str:`
+- Line 84: `define session_base_tool_schemas returning Str:`
+- Line 94: `define session_tool_schemas returning Str:`
 
 ## app/tools/compaction_tools.ep
 
@@ -3280,9 +3306,9 @@ Imports: execution_guardian → app/tools/execution_guardian.ep, ../retained_tex
 
 ## app/tools/history_tools.ep
 
-[Source](../../app/tools/history_tools.ep) · 103 lines · 7097 bytes
+[Source](../../app/tools/history_tools.ep) · 107 lines · 7278 bytes
 
-SHA-256: `0481ebf7c9661898310c7d0b65685e3167754c1dfa3d67e4637b84bc5a8df79d`
+SHA-256: `6f2f2da16865294e6da3982e99818e027c97ac4b2f9a05be27f7f0c40de2c260`
 
 > Session scope comes from the trusted run, never from model arguments.
 > Cursor and excerpt sizes are explicit; no hidden result or text ceiling.
@@ -3291,12 +3317,12 @@ SHA-256: `0481ebf7c9661898310c7d0b65685e3167754c1dfa3d67e4637b84bc5a8df79d`
 > Schemas are authored in Ernos as data for provider adapters. Integer range is
 > checked against SQLite's actual integer representation, not an artificial cap.
 
-Imports: ../retained_text → app/retained_text.ep, ../archive/history → app/archive/history.ep, ../providers/archived_stream → app/providers/archived_stream.ep
+Imports: ../context/echo_labels → app/context/echo_labels.ep, ../retained_text → app/retained_text.ep, ../archive/history → app/archive/history.ep, ../providers/archived_stream → app/providers/archived_stream.ep
 
-- Line 7: `define history_tool_integer with tokens as List and name as Str returning Int:`
-- Line 14: `define history_tool_row with row as List and keys as List returning Str:`
-- Line 25: `define history_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
-- Line 102: `define history_tool_schemas returning Str:`
+- Line 8: `define history_tool_integer with tokens as List and name as Str returning Int:`
+- Line 15: `define history_tool_row with row as List and keys as List returning Str:`
+- Line 29: `define history_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
+- Line 106: `define history_tool_schemas returning Str:`
 
 ## app/tools/host_text.ep
 
@@ -3329,9 +3355,9 @@ Imports: ../memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep, ..
 
 ## app/tools/memory_tools.ep
 
-[Source](../../app/tools/memory_tools.ep) · 91 lines · 7565 bytes
+[Source](../../app/tools/memory_tools.ep) · 91 lines · 7560 bytes
 
-SHA-256: `cd635de98252aa842de0d743c1c27cb6203d774e5c8838fd1259ff64dc134abf`
+SHA-256: `6b7822b824a7905aee850196330ad3f6d8d5cd253be85d810ecf322f5ace7f05`
 
 > Identity and arguments come from the immutable queued call, never model scope fields.
 
@@ -3680,7 +3706,7 @@ SHA-256: `ddee27ab7fd7545d91df4542cfd3c71cd21d35075036a9cfe5abaad5a2b31038`
 > One second is a transfer batch, not a recording length limit. Stop flushes the
 > final partial batch before an end receipt; no audio is played through output.
 
-Imports: 
+Imports:
 
 - Line 4: `define echo_capture_processor:`
 - Line 17: `define echo_capture_process with inputs and outputs and parameters:`
@@ -3695,7 +3721,7 @@ SHA-256: `b16dbb754676200ea880c14f395ebf5583c427f7101b24412b71815e62aac801`
 > Persist the server upload identity before sending audio. On retry, reconcile
 > that identity first so a lost completion response cannot duplicate the file.
 
-Imports: 
+Imports:
 
 - Line 1: `define echo_audio_note with text:`
 - Line 7: `define echo_audio_controls_refresh:`
@@ -3728,7 +3754,7 @@ SHA-256: `adc4e3a94d73e89a8a52ac91706a4b00ccf719dbbf24ed841a75e4982dbab19a`
 > Freeze the saved metadata, read sequentially, and verify the total before
 > packaging. An unfinished recording must first be explicitly recovered/sealed.
 
-Imports: 
+Imports:
 
 - Line 3: `define echo_recorder_release with recorder:`
 - Line 15: `define echo_recorder_fail with recorder and error:`
@@ -3757,7 +3783,7 @@ SHA-256: `0604c51fea6e3fc16a53b97c23039d81008b85b7dc79ebce2c456b95b717ebaa`
 > Called only after the authenticated server confirms original upload. Keep
 > local chunks; marking the receipt does not erase the recovery source.
 
-Imports: 
+Imports:
 
 - Line 4: `define echo_audio_store_open:`
 - Line 24: `define echo_audio_transaction with database and mode:`
@@ -3780,7 +3806,7 @@ SHA-256: `25af3452ee47ed22fec4c3c7db3e2bdc422f4d745bf16e2496d3dba1ff38c407`
 > boundary selects RF64 rather than limiting recording duration or discarding
 > source. Blob parts avoid concatenating a second giant sample buffer.
 
-Imports: 
+Imports:
 
 - Line 4: `define echo_wave_word with view and offset and word:`
 - Line 11: `define echo_wave_header with frames and rate:`
@@ -3821,7 +3847,7 @@ SHA-256: `483a10075dafa2310b84edfa9bb187fc620aa4f322fba0dbdc322d122430a355`
 > from fixed templates. This keeps formatting readable without trusting model HTML.
 > Refresh on opening Options so grants and revocation are not stale UI claims.
 
-Imports: 
+Imports:
 
 - Line 2: `define echo_follow_latest:`
 - Line 10: `define echo_note with text:`
@@ -3912,7 +3938,7 @@ Imports:
 SHA-256: `1130662cce3be7e8662b5d6d3ac38d7f85f8ec12648f299051b4c6dfb22c18ac`
 
 
-Imports: 
+Imports:
 
 - Line 1: `define echo_layout_style returning Str:`
 
@@ -3925,7 +3951,7 @@ SHA-256: `61179503a8eedd8a63d392b2340ef23bb69db9e5313e6f9b722560be64a3299d`
 > All renderer controls remain authored in English. Original equation text stays
 > visible until a worker result arrives; cancellation keeps it available.
 
-Imports: 
+Imports:
 
 - Line 3: `define echo_math_cancel_all:`
 - Line 10: `define echo_math_render with element:`
@@ -3939,7 +3965,7 @@ SHA-256: `6ad03b42d4f6eed5e73d4f803b9336c396e77cfa43ebfb7d7328c0242cf40747`
 > Generated as a separate local browser worker. The caller can terminate a
 > nonterminating expression without freezing chat or imposing an expansion cap.
 
-Imports: 
+Imports:
 
 - Line 3: `define main:`
 
@@ -3961,7 +3987,7 @@ Imports: theme → app/ui/theme.ep, layout → app/ui/layout.ep
 SHA-256: `5411c7c154cf3a5b7b6518cd418864317c3b6c47ddbeb6c79be7ec12e64a748f`
 
 
-Imports: 
+Imports:
 
 - Line 1: `define echo_theme_style returning Str:`
 
@@ -4250,9 +4276,9 @@ Imports: ../security/node_gate → app/security/node_gate.ep, ../retained_text �
 
 ## app/web/source_reads.ep
 
-[Source](../../app/web/source_reads.ep) · 76 lines · 5636 bytes
+[Source](../../app/web/source_reads.ep) · 76 lines · 5672 bytes
 
-SHA-256: `215c057f90607b347d2542ad9d4cc2fbc5120d5308aefeec5108913af0e9a697`
+SHA-256: `75927102ca14f214be5b183a135e4bd94d1da0f1f22b644fb00453ffd60b2441`
 
 > These are recorded reads, not an assertion that every answer claim is
 > supported. Only successful observed attachment reads with matching provenance
@@ -4615,7 +4641,7 @@ SHA-256: `68220ff34926fc70d996fec0b36629398bb1e90e3b7f0a4f40db8fc7cc2b2b0f`
 > passes roots as sandbox-exec parameters, never interpolated profile syntax.
 > This initial profile is a qualification candidate, not a proven code sandbox.
 
-Imports: 
+Imports:
 
 - Line 4: `define workspace_sandbox_profile returning Str:`
 

@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T07:07:33.651408+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T07:18:46.405295+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1610,6 +1610,19 @@ Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/ac
 
 - Line 4: `define main returning Int:`
 
+## tests/security/test_attach_file.ep
+
+[Source](../../tests/security/test_attach_file.ep) · 65 lines · 4305 bytes
+
+SHA-256: `5c01951c5b3c74cf67601098f06700f0d4b2f84bb042086eb34a9528d77f5652`
+
+> Exercise the real streaming parser, durable queued request and dispatcher.
+
+Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 7: `define recall_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
+- Line 27: `define main returning Int:`
+
 ## tests/security/test_automatic_memory.ep
 
 [Source](../../tests/security/test_automatic_memory.ep) · 56 lines · 5000 bytes
@@ -2722,6 +2735,17 @@ SHA-256: `1963298ce1e1715e1756db62075838e851878680be8ff12569e51a0dbf4a74b2`
 Imports: ../../app/web/worker → app/web/worker.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/web/test_live_attach_server.ep
+
+[Source](../../tests/web/test_live_attach_server.ep) · 55 lines · 3871 bytes
+
+SHA-256: `6f25a75e1f02ad5fc956733f4e5f2cd36abc34017fb19fc4b7f6305d1feaf4d6`
+
+
+Imports: ../fixtures/echo_http_client → tests/fixtures/echo_http_client.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/agent/control → app/agent/control.ep
+
+- Line 5: `define main returning Int:`
 
 ## tests/web/test_live_guardian_server.ep
 

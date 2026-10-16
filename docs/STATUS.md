@@ -1,5 +1,7 @@
 # Current status — 16 October 2026
 
+16 October: generated images now appear on replies, attach_file publishes workspace files to chat, and recall/compaction self-labels use Echo. See CHAT-ARTIFACTS.md and phase2/JEV-RESEARCH.md. Jev was reviewed and excluded because no open local model release was found.
+
 This is a dated snapshot, not a permanent health assertion. Runtime observations and checks are recorded in `forensics/release-verification.json`; file identities are in `forensics/source-manifest.json`. Older plans, logs and handovers retain their original claims and must be read chronologically.
 
 ## Phase Two authority deployment — 16 October

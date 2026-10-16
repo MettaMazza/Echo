@@ -1,0 +1,91 @@
+import "workspace_tools"
+import "../web/attachments"
+
+# Copy the opened, confined source descriptor into an immutable host-owned
+# attachment. No shell, absolute source path, symlink or size ceiling.
+define attach_copy with library as Int and input as Int and path as Str returning Int:
+    set output to file_stage_open(library and path)
+    if output < 0:
+        return 1
+    set allocate to ep_dlsym(library and "malloc")
+    set release to ep_dlsym(library and "free")
+    set read_function to ep_dlsym(library and "read")
+    set buffer to ep_dlcall1(allocate and 65536)
+    set status to 0
+    if buffer equals 0:
+        set status to 1
+    repeat while status equals 0:
+        set count to socket_signed_result(ep_dlcall3(read_function and input and buffer and 65536))
+        if count equals 0:
+            break
+        if count < 0:
+            if socket_errno(library) equals 4:
+                continue
+            set status to 1
+            break
+        if file_stage_write(library and output and buffer and count) is not equal to 0:
+            set status to 1
+    if buffer is not equal to 0:
+        set released to ep_dlcall1(release and buffer)
+    if file_stage_finish(library and output) is not equal to 0:
+        set status to 1
+    return status
+
+define attach_file_execute with database as Int and session as Str and arguments as Str returning Str:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "path" or else key equals "media_type"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set field to provider_member(tokens and 0 and "path")
+    set media_field to provider_member(tokens and 0 and "media_type")
+    if not (provider_kind(tokens and field) equals "string") or else not (provider_kind(tokens and media_field) equals "string"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set path to provider_value(tokens and field)
+    set parts to workspace_path_parts(path)
+    if parts equals 0:
+        return "{\"status\":\"invalid-path\"}"
+    set values to create_list()
+    set added to append_list(values and session)
+    set owner to history_collect_one(checkpoint_prepare(database and "SELECT device FROM echo_session_owners WHERE session=?;" and values))
+    set device to archive_list_text(owner and 1)
+    if not (archive_list_text(owner and 0) equals "found") or else web_device_session_allowed(database and device and session) is not equal to 1:
+        return "{\"status\":\"not-authorized\"}"
+    set restored to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE name='echo_attachment_restore_receipt';"))
+    if not (archive_list_text(restored and 0) equals "end"):
+        return "{\"status\":\"review-required\"}"
+    set storage to get_env("ECHO_ATTACHMENT_ROOT")
+    set workspace to get_env("ECHO_WORKSPACE_ROOT")
+    if string_length(storage) equals 0 or else string_length(workspace) equals 0:
+        return "{\"status\":\"not-configured\"}"
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "{\"status\":\"platform-error\"}"
+    set root to workspace_session_open(database and library and device and session and workspace)
+    set input to workspace_file_open(library and root and path and 0)
+    if root >= 0:
+        set closed to net_close(root)
+    if input < 0:
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"source-unavailable\",\"recovery\":\"Use a regular file in this session workspace; create or copy the requested artifact there first.\"}"
+    set identity to concat("export:" and agent_identity())
+    set destination to concat(storage and concat("/" and concat(identity and ".blob")))
+    set copied to attach_copy(library and input and destination)
+    set closed to net_close(input)
+    set closed to ep_dlclose(library)
+    if copied is not equal to 0:
+        return "{\"status\":\"copy-failed\",\"recovery\":\"Check local storage availability and retry. No attachment was published.\"}"
+    if web_attachment_register(database and device and session and identity and destination and archive_list_text(parts and length_list(parts) - 1) and provider_value(tokens and media_field)) is not equal to 0:
+        return "{\"status\":\"registration-failed\",\"recovery\":\"The staged copy remains on disk; inspect the server log before retrying.\"}"
+    set saved to web_attachment_owned(database and device and identity)
+    if not (archive_list_text(saved and 0) equals "found"):
+        return "{\"status\":\"authorization-changed\"}"
+    set result to concat("{\"status\":\"complete\",\"attachment\":" and provider_quote(identity))
+    set result to concat(result and concat(",\"event\":" and provider_quote(archive_list_text(saved and 7))))
+    return concat(result and concat(",\"sha256\":" and concat(provider_quote(archive_list_text(saved and 4)) and ",\"instruction\":\"This file is attached to your reply and will appear in the chat with preview or download controls.\"}")))
