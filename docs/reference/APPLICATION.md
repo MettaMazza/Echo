@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T05:49:11.580421+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:57:36.710058+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2830,6 +2830,23 @@ Imports: accounts → app/security/accounts.ep
 
 - Line 3: `define principal_device_link_schema with database as Int returning Str:`
 - Line 14: `define principal_host_device_link with database as Int and identity as Str and device as Str and expected as Str and target as Str and reason as Str returning Str:`
+
+## app/security/group_sessions.ep
+
+[Source](../../app/security/group_sessions.ep) · 48 lines · 5269 bytes
+
+SHA-256: `68d2b6bf91704b03eb15292f0581c16e211eceeb497ead6228fcfb8cdf4336f4`
+
+> Group conversations have no private owner. A revision change starts a new
+> conversation segment so new members never inherit older private audiences.
+> Only trusted adapter routing supplies namespace and session identifiers.
+> No private archive is copied or linked when a shared conversation is created.
+
+Imports: groups → app/security/groups.ep
+
+- Line 5: `define group_session_schema with database as Int returning Str:`
+- Line 13: `define group_session_create with database as Int and device as Str and session as Str and group_id as Str and platform as Str and server as Str and room as Str and revision as Int returning Str:`
+- Line 43: `define group_session_allows with database as Int and device as Str and session as Str and platform as Str and server as Str and room as Str and current_only as Int returning Int:`
 
 ## app/security/groups.ep
 

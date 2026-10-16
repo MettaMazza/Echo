@@ -1,0 +1,48 @@
+import "groups"
+
+# Group conversations have no private owner. A revision change starts a new
+# conversation segment so new members never inherit older private audiences.
+define group_session_schema with database as Int returning Str:
+    set prior to group_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 18 and "separate-group-conversations" and "CREATE TABLE echo_group_sessions(session TEXT PRIMARY KEY REFERENCES echo_sessions(session),group_id TEXT NOT NULL REFERENCES echo_groups(identity),revision INTEGER NOT NULL CHECK(revision>0),UNIQUE(group_id,revision)); CREATE TRIGGER echo_group_session_no_update BEFORE UPDATE ON echo_group_sessions BEGIN SELECT RAISE(ABORT,'Group session audience is immutable'); END; CREATE TRIGGER echo_group_session_no_delete BEFORE DELETE ON echo_group_sessions BEGIN SELECT RAISE(ABORT,'Group session audience is immutable'); END; CREATE TRIGGER echo_group_session_not_private BEFORE INSERT ON echo_group_sessions BEGIN SELECT CASE WHEN EXISTS(SELECT 1 FROM echo_session_owners WHERE session=NEW.session) OR EXISTS(SELECT 1 FROM echo_session_principals WHERE session=NEW.session) THEN RAISE(ABORT,'Private conversation cannot become shared') END; SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM echo_group_audiences WHERE group_id=NEW.group_id AND revision=NEW.revision) THEN RAISE(ABORT,'Recorded audience required') END; END; CREATE TRIGGER echo_private_owner_not_group BEFORE INSERT ON echo_session_owners WHEN EXISTS(SELECT 1 FROM echo_group_sessions WHERE session=NEW.session) BEGIN SELECT RAISE(ABORT,'Group conversation cannot become private'); END; CREATE TRIGGER echo_private_principal_not_group BEFORE INSERT ON echo_session_principals WHEN EXISTS(SELECT 1 FROM echo_group_sessions WHERE session=NEW.session) BEGIN SELECT RAISE(ABORT,'Group conversation cannot become private'); END;")
+
+# Only trusted adapter routing supplies namespace and session identifiers.
+# No private archive is copied or linked when a shared conversation is created.
+define group_session_create with database as Int and device as Str and session as Str and group_id as Str and platform as Str and server as Str and room as Str and revision as Int returning Str:
+    if string_length(session) equals 0 or else group_text_valid(session) equals 0:
+        return "invalid-session"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    if group_audience_allows(database and device and group_id and platform and server and room and revision and 1) equals 0:
+        return migration_fail(database and "audience-not-authorized")
+    set values to [session,group_id,int_to_string(revision)]
+    set identity_values to [session]
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT group_id,revision FROM echo_group_sessions WHERE session=?1;" and identity_values))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals group_id) or else not (archive_list_text(old and 2) equals int_to_string(revision)):
+            return migration_fail(database and "session-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-created"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "session-read-failed")
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_sessions WHERE session=?1 UNION ALL SELECT session FROM echo_group_sessions WHERE group_id=?2 AND revision=CAST(?3 AS INTEGER);" and values))
+    if archive_list_text(existing and 0) equals "found":
+        return migration_fail(database and "session-identity-conflict")
+    if not (archive_list_text(existing and 0) equals "end"):
+        return migration_fail(database and "session-read-failed")
+    set created to [session,concat("unix-ms:" and int_to_string(ep_time_now_ms()))]
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_sessions(session,title,created) VALUES(?1,'Shared conversation',?2);" and created) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_sessions VALUES(?1,?2,CAST(?3 AS INTEGER));" and values) and 101) is not equal to 0:
+        return migration_fail(database and "session-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "created"
+
+define group_session_allows with database as Int and device as Str and session as Str and platform as Str and server as Str and room as Str and current_only as Int returning Int:
+    set values to [session]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT group_id,revision FROM echo_group_sessions WHERE session=?;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return 0
+    return group_audience_allows(database and device and archive_list_text(row and 1) and platform and server and room and string_to_int(archive_list_text(row and 2)) and current_only)
