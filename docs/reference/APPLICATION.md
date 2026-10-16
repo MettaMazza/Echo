@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T02:44:30.421196+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:53:13.756867+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2318,9 +2318,9 @@ Imports: ../archive/file_digest → app/archive/file_digest.ep, ../providers/arc
 
 ## app/rights/proposals.ep
 
-[Source](../../app/rights/proposals.ep) · 118 lines · 8216 bytes
+[Source](../../app/rights/proposals.ep) · 152 lines · 11046 bytes
 
-SHA-256: `acdb5771fa8ae168f536e561f58049a855932d34eb29bce482a2932607d9251c`
+SHA-256: `3fa22a02b4149c7a62127d277f1d4d46a48f42f10b2af8081b559855cd7142d2`
 
 > Proposal storage only. No approval, executable access or mutation is granted.
 > A future protected controller must derive the category and target inventory
@@ -2333,6 +2333,10 @@ SHA-256: `acdb5771fa8ae168f536e561f58049a855932d34eb29bce482a2932607d9251c`
 > cannot overwrite an old attempt or inherit its future inspection/consent.
 > Internal storage read, not a public tool. Exposing this later must record the
 > exact disclosed digest before a separate authenticated Echo review can count.
+> An inspection is evidence of disclosure, not consent. Derive it from an
+> observed tool call and its full original result, never a caller's assertion.
+> The future review controller must also prove this result preceded its review
+> request. No public inspection tool or protected execution is enabled here.
 
 Imports: charter → app/rights/charter.ep, ../memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep
 
@@ -2342,6 +2346,7 @@ Imports: charter → app/rights/charter.ep, ../memory/knowledge_lifecycle → ap
 - Line 55: `define protected_proposal_principal with database as Int and run as Str returning Str:`
 - Line 67: `define protected_proposal_store with database as Int and charter as Str and run as Str and identity as Str and manifest as Str returning Str:`
 - Line 105: `define protected_proposal_read with database as Int and run as Str and identity as Str returning List:`
+- Line 124: `define protected_inspection_event with database as Int and run as Str and call_id as Str and identity as Str returning Str:`
 
 ## app/security/accounts.ep
 

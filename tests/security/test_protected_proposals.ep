@@ -1,6 +1,24 @@
 import "../../app/rights/proposals"
 import "../../app/web/run_store"
 
+# Persist the same original event envelope used by the native tool ledger.
+define inspection_fixture with database as Int and session as Str and call_id as Str and name as Str and manifest as Str and digest as Str and observed as Int returning Int:
+    set request to concat("{\"run_id\":\"admin-run\",\"call_id\":" and provider_quote(call_id))
+    set request to concat(request and concat(",\"name\":" and provider_quote(name)))
+    set request to concat(request and ",\"arguments\":{\"proposal\":\"attempt\"}}")
+    set request_event to concat(call_id and ":request")
+    if archive_append(database and session and request_event and "tool_call" and request and "fixture") is not equal to 0 or else tool_ledger_queue(database and "admin-run" and call_id and session and request_event) is not equal to 0 or else tool_ledger_claim(database and "admin-run" and call_id) is not equal to 0:
+        return 1
+    set response to concat("{\"run_id\":\"admin-run\",\"call_id\":" and provider_quote(call_id))
+    set response to concat(response and concat(",\"result\":{\"status\":\"disclosed\",\"proposal\":\"attempt\",\"manifest\":" and provider_quote(manifest)))
+    set response to concat(response and concat(",\"manifest_digest\":" and concat(provider_quote(digest) and "}}")))
+    set result_event to concat(call_id and ":result")
+    if archive_append(database and session and result_event and "tool_result" and response and "fixture") is not equal to 0:
+        return 2
+    if observed equals 1:
+        return tool_ledger_observe(database and "admin-run" and call_id and result_event)
+    return 0
+
 # No host target is changed by this fixture; manifests are stored evidence only.
 define main returning Int:
     if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)):
@@ -43,11 +61,26 @@ define main returning Int:
         return 15
     if sql_execute(database and "UPDATE echo_protected_proposals SET manifest='changed' WHERE identity='attempt';") equals 0 or else sql_execute(database and "DELETE FROM echo_protected_proposals WHERE identity='attempt';") equals 0:
         return 16
+    set session to archive_list_text(admin_run and 1)
+    if inspection_fixture(database and session and "inspect" and "protected_change_inspect" and manifest and ep_sha256(manifest) and 1) is not equal to 0:
+        return 30
+    if not (protected_inspection_event(database and "admin-run" and "inspect" and "attempt") equals "inspect:result"):
+        return 31
+    if inspection_fixture(database and session and "partial" and "protected_change_inspect" and "summary only" and ep_sha256(manifest) and 1) is not equal to 0 or else inspection_fixture(database and session and "pending" and "protected_change_inspect" and manifest and ep_sha256(manifest) and 0) is not equal to 0 or else inspection_fixture(database and session and "wrong-tool" and "memory_read" and manifest and ep_sha256(manifest) and 1) is not equal to 0:
+        return 32
+    if string_length(protected_inspection_event(database and "admin-run" and "partial" and "attempt")) is not equal to 0 or else string_length(protected_inspection_event(database and "admin-run" and "pending" and "attempt")) is not equal to 0 or else string_length(protected_inspection_event(database and "admin-run" and "wrong-tool" and "attempt")) is not equal to 0 or else string_length(protected_inspection_event(database and "guest-run" and "inspect" and "attempt")) is not equal to 0:
+        return 33
+    if inspection_fixture(database and session and "bad-digest" and "protected_change_inspect" and manifest and ep_sha256("different") and 1) is not equal to 0:
+        return 36
+    if string_length(protected_inspection_event(database and "admin-run" and "bad-digest" and "attempt")) is not equal to 0 or else string_length(protected_inspection_event(database and "admin-run" and "inspect" and "missing-proposal")) is not equal to 0:
+        return 37
     if sql_close(database) is not equal to 0:
         return 17
     set database to archive_open(get_argument(1))
     if not (archive_list_text(protected_proposal_read(database and "admin-run" and "attempt") and 2) equals ep_sha256(manifest)):
         return 18
+    if not (protected_inspection_event(database and "admin-run" and "inspect" and "attempt") equals "inspect:result"):
+        return 34
     set second_run to web_submit_owned(database and "admin" and "second-run" and "" and "A new attempt needs a new identity")
     if not (archive_list_text(second_run and 0) equals "accepted") or else not (protected_proposal_store(database and get_argument(2) and "second-run" and "attempt" and manifest) equals "proposal-identity-conflict"):
         return 22
@@ -63,7 +96,9 @@ define main returning Int:
         return 19
     if not (archive_list_text(protected_proposal_read(database and "admin-run" and "attempt") and 0) equals "not-authorized") or else not (protected_proposal_store(database and get_argument(2) and "admin-run" and "later" and manifest) equals "not-authorized"):
         return 20
+    if string_length(protected_inspection_event(database and "admin-run" and "inspect" and "attempt")) is not equal to 0:
+        return 35
     if sql_close(database) is not equal to 0:
         return 21
-    display "PASS: exact protected manifests, canonical charter binding, admin-only frozen authority, retry/conflict, immutable records, reopen, distinct-run replay rejection, corruption detection and revocation. No execution approval is granted."
+    display "PASS: exact protected manifests, canonical charter binding, admin-only frozen authority, retry/conflict, immutable records, reopen, distinct-run replay rejection, corruption detection, exact observed inspection evidence, partial/pending/wrong-tool rejection and revocation. No execution approval is granted."
     return 0

@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T02:44:30.421196+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:53:13.756867+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1649,17 +1649,19 @@ Imports: ../../app/web/uploads → app/web/uploads.ep, ../../app/web/cancellatio
 
 ## tests/security/test_protected_proposals.ep
 
-[Source](../../tests/security/test_protected_proposals.ep) · 69 lines · 5772 bytes
+[Source](../../tests/security/test_protected_proposals.ep) · 104 lines · 9529 bytes
 
-SHA-256: `ca6ad480abe4dc9cf5ba1d8fdd3fc432dbe95614753e4fca5202ee84cff72b71`
+SHA-256: `e226967452fe07e5614818162fbf7770489b3de1a78037427c6ef3bb6e92a7df`
 
+> Persist the same original event envelope used by the native tool ledger.
 > No host target is changed by this fixture; manifests are stored evidence only.
 > Simulate out-of-band damage in this disposable database. Ordinary writes
 > were denied above; inspection must independently reject mismatched bytes.
 
 Imports: ../../app/rights/proposals → app/rights/proposals.ep, ../../app/web/run_store → app/web/run_store.ep
 
-- Line 5: `define main returning Int:`
+- Line 5: `define inspection_fixture with database as Int and session as Str and call_id as Str and name as Str and manifest as Str and digest as Str and observed as Int returning Int:`
+- Line 23: `define main returning Int:`
 
 ## tests/security/test_revocation.ep
 
