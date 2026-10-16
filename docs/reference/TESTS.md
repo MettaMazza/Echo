@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T03:50:13.209513+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:53:04.075569+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1648,6 +1648,20 @@ SHA-256: `0d3850530b25e8ca288d9487e66af8a275687fdfa08e53438ce37aca337f164e`
 Imports: ../../app/rights/observer_evidence → app/rights/observer_evidence.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/security/test_observer_faults.ep
+
+[Source](../../tests/security/test_observer_faults.ep) · 78 lines · 5406 bytes
+
+SHA-256: `bbd2528599c3e15259d7937f372454ef3f7d56225abfb378c9883e2b74b8ed7d`
+
+> Synthetic transport failures share the actual live proposal/review fixture.
+> These tests do not substitute for a model policy judgment.
+
+Imports: ../../app/rights/observer_evidence → app/rights/observer_evidence.ep
+
+- Line 5: `define observer_fault_attempt with database as Int and session as Str and request as Str and policy as Str and raw as Str and mode as Str returning Int:`
+- Line 48: `define main returning Int:`
 
 ## tests/security/test_observer_input.ep
 
