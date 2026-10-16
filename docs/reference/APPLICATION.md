@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:42:00.481497+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:44:41.069039+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -79,6 +79,20 @@ SHA-256: `adf406c507e3945ce7ef3dd0bbb155ff2d04450ae212ef514be97e523b7f7025`
 Imports: ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../providers/restored_stream → app/providers/restored_stream.ep
 
 - Line 8: `define agent_recover_generation_owned with database as Int and run as Str and recovery_event as Str and choice_index as Str returning Str:`
+
+## app/agent/process_recovery.ep
+
+[Source](../../app/agent/process_recovery.ep) · 42 lines · 4988 bytes
+
+SHA-256: `af4c50fea9d884837d761d8d026c0e6ea2638bec122f2bd932c73dc1b1ac33d2`
+
+> The caller owns the abandoned worker lock and a writer transaction, and has
+> verified the session archive. Only an original waitpid-backed finish receipt
+> can settle a process call. A saved PID or missing process is never enough.
+
+Imports: run_state → app/agent/run_state.ep
+
+- Line 6: `define agent_recover_process_pending with database as Int and run as Str and call_id as Str returning Str:`
 
 ## app/agent/provider_profile.ep
 
@@ -203,16 +217,16 @@ Imports: ../context/checkpoint → app/context/checkpoint.ep
 
 ## app/agent/tool_recovery.ep
 
-[Source](../../app/agent/tool_recovery.ep) · 48 lines · 2786 bytes
+[Source](../../app/agent/tool_recovery.ep) · 51 lines · 2953 bytes
 
-SHA-256: `d04a0bb748717768e849786de15c841ceb03d525e6367fea4de2833ff5bdb3fc`
+SHA-256: `1ef7c24b451a6ab6af8f788068b7469cda4a48522a690654d032a6adcd584bb2`
 
 > Caller owns the native run lock and has verified the abandoned worker claim.
 > Recover only original saved results. Missing outcomes never authorize replay.
 
-Imports: ../retained_text → app/retained_text.ep, run_state → app/agent/run_state.ep
+Imports: ../retained_text → app/retained_text.ep, run_state → app/agent/run_state.ep, process_recovery → app/agent/process_recovery.ep
 
-- Line 6: `define agent_recover_tools_owned with database as Int and run as Str returning Int:`
+- Line 7: `define agent_recover_tools_owned with database as Int and run as Str returning Int:`
 
 ## app/agent/user_content.ep
 

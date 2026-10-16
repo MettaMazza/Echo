@@ -1,0 +1,42 @@
+import "run_state"
+
+# The caller owns the abandoned worker lock and a writer transaction, and has
+# verified the session archive. Only an original waitpid-backed finish receipt
+# can settle a process call. A saved PID or missing process is never enough.
+define agent_recover_process_pending with database as Int and run as Str and call_id as Str returning Str:
+    set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_process_launches';"))
+    if not (archive_list_text(schema and 0) equals "found"):
+        return ""
+    set values to [run, call_id]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT t.session,t.request_event,p.finished,f.payload FROM echo_tool_calls t JOIN echo_process_launches p ON p.run=t.run AND p.call_id=t.call_id AND p.session=t.session JOIN echo_events q ON q.event=t.request_event AND q.session=t.session AND q.kind='tool_call' JOIN echo_events r ON r.event=p.reservation AND r.session=t.session AND r.kind='process_reserved' JOIN echo_events s ON s.event=p.started AND s.session=t.session AND s.kind='process_started' JOIN echo_events f ON f.event=p.finished AND f.session=t.session AND f.kind='process_finished' WHERE t.run=?1 AND t.call_id=?2 AND t.state IN ('running','uncertain') AND json_extract(q.payload,'$.name')='workspace_execute' AND json_extract(q.payload,'$.run_id')=?1 AND json_extract(q.payload,'$.call_id')=?2 AND json_extract(r.payload,'$.run_id')=?1 AND json_extract(r.payload,'$.call_id')=?2 AND json_extract(s.payload,'$.run_id')=?1 AND json_extract(s.payload,'$.call_id')=?2 AND json_extract(f.payload,'$.run_id')=?1 AND json_extract(f.payload,'$.call_id')=?2 AND json_extract(s.payload,'$.reservation')=p.reservation AND json_extract(f.payload,'$.reservation')=p.reservation AND json_extract(s.payload,'$.pid')=json_extract(f.payload,'$.pid') AND q.sequence<r.sequence AND r.sequence<s.sequence AND s.sequence<f.sequence;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    set tokens to provider_json_tokens(archive_list_text(row and 4))
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set capture to provider_value(tokens and provider_member(tokens and 0 and "capture_status"))
+    set wait_status to provider_value(tokens and provider_member(tokens and 0 and "wait_status"))
+    if string_length(wait_status) equals 0 or else not (capture equals "complete" or else capture equals "cancelled" or else capture equals "persistence-failed" or else capture equals "read-failed" or else capture equals "cleanup-failed"):
+        return ""
+    set current to agent_run_read(database and run)
+    if current equals 0:
+        return ""
+    set request to archive_list_text(row and 2)
+    set event to concat(request and ":result")
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"parent_event\":" and provider_quote(archive_list_text(current and 3))))
+    set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"request_event\":" and provider_quote(request)))
+    set payload to concat(payload and ",\"result\":{\"status\":\"recovered-process-exit\",\"effect\":\"command-may-have-executed\",\"replayed\":false")
+    set payload to concat(payload and concat(",\"execution_status\":" and provider_quote(capture)))
+    set payload to concat(payload and concat(",\"wait_status\":" and provider_quote(wait_status)))
+    set payload to concat(payload and concat(",\"exit_event\":" and provider_quote(archive_list_text(row and 3))))
+    set sources to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE((SELECT event FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.call_id')=?2 AND json_extract(payload,'$.stream')='stdout' ORDER BY sequence LIMIT 1),''),COALESCE((SELECT event FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.call_id')=?2 AND json_extract(payload,'$.stream')='stderr' ORDER BY sequence LIMIT 1),'');" and values))
+    if not (archive_list_text(sources and 0) equals "found"):
+        return ""
+    set payload to concat(payload and concat(",\"stdout_event\":" and provider_quote(archive_list_text(sources and 1))))
+    set payload to concat(payload and concat(",\"stderr_event\":" and provider_quote(archive_list_text(sources and 2))))
+    set payload to concat(payload and ",\"recovery\":\"Original process exit recovered without executing again; inspect archived output and actual effects before further changes.\"}}")
+    if archive_append_pending(database and archive_list_text(row and 1) and event and "tool_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return ""
+    return event

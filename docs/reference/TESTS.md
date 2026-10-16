@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:42:00.481497+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:44:41.069039+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -100,6 +100,19 @@ SHA-256: `8a5a2a1d973fda260704689601f639f1806d100a08a855e3dafd8d07e842de00`
 Imports: ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
 - Line 7: `define main returning Int:`
+
+## tests/agent/test_process_result_recovery.ep
+
+[Source](../../tests/agent/test_process_result_recovery.ep) · 104 lines · 7311 bytes
+
+SHA-256: `bb8b90e984c73824ffc644058aeb33fdcfe659e46e0477f224759a8e1f721bad`
+
+> Single-threaded fixture owns the run; dispatch returned and reaped
+> its real child before the injected result transaction failure.
+
+Imports: ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 6: `define main returning Int:`
 
 ## tests/agent/test_provider_profile.ep
 
