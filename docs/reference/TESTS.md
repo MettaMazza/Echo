@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:36:07.387321+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:39:15.847559+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -2343,6 +2343,18 @@ Imports: ../../app/web/export → app/web/export.ep, ../../app/archive/export_re
 - Line 7: `define branch_fixture_finish with database as Int and run as Str and user_event as Str and request as Str and final as Str returning Int:`
 - Line 18: `define main returning Int:`
 
+## tests/web/test_cancel_queue.ep
+
+[Source](../../tests/web/test_cancel_queue.ep) · 49 lines · 4022 bytes
+
+SHA-256: `f2df5dd61f2bf9ff6b214fee7d6cca7db5997d8dab1efd191cdd4daa748592dc`
+
+
+Imports: ../../app/web/run_store → app/web/run_store.ep
+
+- Line 3: `define queue_cancel_fixture with database as Int and run as Str and session as Str and call_id as Str returning Int:`
+- Line 12: `define main returning Int:`
+
 ## tests/web/test_cancellation.ep
 
 [Source](../../tests/web/test_cancellation.ep) · 75 lines · 4221 bytes
@@ -2459,6 +2471,20 @@ SHA-256: `a1ce4ba6466d62de76db40e266cc3dabccbc879ab61ce815df6c19d2cd276e77`
 Imports: ../../app/web/http_api → app/web/http_api.ep, ../../app/agent/provider_profile → app/agent/provider_profile.ep
 
 - Line 4: `define main returning Int:`
+
+## tests/web/test_quarantine_monitor.ep
+
+[Source](../../tests/web/test_quarantine_monitor.ep) · 70 lines · 3996 bytes
+
+SHA-256: `eee96415cb3004011e596cff7064174035ec2ea56ac29d2eab43209dde2ce3da`
+
+> The connected peer sends nothing. Only cancellation can wake this read.
+> A saved cancellation survives reopening and reaches terminal run state.
+
+Imports: ../../app/rights/quarantine → app/rights/quarantine.ep, ../../app/web/worker → app/web/worker.ep
+
+- Line 4: `define request_stop_later with path as Str and charter as Str and completed as Int returning Int:`
+- Line 15: `define main returning Int:`
 
 ## tests/web/test_retry.ep
 

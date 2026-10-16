@@ -25,17 +25,46 @@ define agent_cancellation_pending with library as Int and reader as Int returnin
         return -1
     return 1
 
+# Cancellation drains only work still queued under the writer lock. A running
+# or uncertain call keeps its real outcome unresolved until its adapter checks
+# effects; cancellation never fabricates a successful rollback.
+define agent_cancel_queued_pending with database as Int and run as Str and session as Str and parent as Str returning Int:
+    set values to [run]
+    repeat while 1 equals 1:
+        set next_call to history_collect_one(checkpoint_prepare(database and "SELECT call_id,request_event FROM echo_tool_calls WHERE run=? AND state='queued' ORDER BY request_event LIMIT 1;" and values))
+        if archive_list_text(next_call and 0) equals "end":
+            return 0
+        if not (archive_list_text(next_call and 0) equals "found"):
+            return 1
+        set call_id to archive_list_text(next_call and 1)
+        set request to archive_list_text(next_call and 2)
+        set event to concat(request and ":result")
+        set payload to agent_event_envelope(run and parent)
+        set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+        set payload to concat(payload and concat(",\"request_event\":" and provider_quote(request)))
+        set payload to concat(payload and ",\"result\":{\"status\":\"cancelled-before-launch\",\"effects\":\"none\",\"cause\":\"run-cancelled\",\"recovery\":\"submit-a-new-request\"}}")
+        if tool_ledger_claim(database and run and call_id) is not equal to 0 or else archive_append_pending(database and session and event and "tool_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else tool_ledger_observe(database and run and call_id and event) is not equal to 0:
+            return 1
+    return 1
+
 define agent_cancel_run with database as Int and run as Str returning Int:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
     set row to agent_run_read(database and run)
     if row equals 0:
-        return 1
+        return archive_rollback(database)
     set state to archive_list_text(row and 2)
-    if state equals "cancelled" or else state equals "completed":
-        return 0
     set parent to archive_list_text(row and 3)
-    set event to agent_identity()
-    set payload to concat(agent_event_envelope(run and parent) and "}")
-    if archive_append(database and archive_list_text(row and 0) and event and "agent_cancelled" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
-        return 1
-    return agent_run_transition(database and run and state and parent and "cancelled" and event)
-
+    set session to archive_list_text(row and 0)
+    if not (state equals "cancelled" or else state equals "completed"):
+        set event to agent_identity()
+        set payload to concat(agent_event_envelope(run and parent) and "}")
+        if archive_append_pending(database and session and event and "agent_cancelled" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and state and parent and "cancelled" and event) is not equal to 0:
+            return archive_rollback(database)
+        set parent to event
+    if not (state equals "completed"):
+        if agent_cancel_queued_pending(database and run and session and parent) is not equal to 0:
+            return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0

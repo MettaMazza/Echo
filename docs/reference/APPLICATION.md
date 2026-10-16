@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:36:07.387321+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:39:15.847559+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -22,18 +22,22 @@ Imports: ../retained_text → app/retained_text.ep, generation → app/agent/gen
 
 ## app/agent/control.ep
 
-[Source](../../app/agent/control.ep) · 41 lines · 1660 bytes
+[Source](../../app/agent/control.ep) · 70 lines · 3931 bytes
 
-SHA-256: `2b2b7ad847d28a04bcd48ecc5268b17e60fe1a0738d2026882d2ed4017befe56`
+SHA-256: `4a13b201bad6c2b3e17598a0fb0c46059ad738f2310167f407be170ee813275d`
 
 > Shared cancellation check for agent work and compaction between requests.
+> Cancellation drains only work still queued under the writer lock. A running
+> or uncertain call keeps its real outcome unresolved until its adapter checks
+> effects; cancellation never fabricates a successful rollback.
 
 Imports: ../retained_text → app/retained_text.ep, checked_generation → app/agent/checked_generation.ep
 
 - Line 4: `external define ep_uuid_v4`
 - Line 6: `define agent_identity returning Str:`
 - Line 10: `define agent_cancellation_pending with library as Int and reader as Int returning Int:`
-- Line 28: `define agent_cancel_run with database as Int and run as Str returning Int:`
+- Line 31: `define agent_cancel_queued_pending with database as Int and run as Str and session as Str and parent as Str returning Int:`
+- Line 50: `define agent_cancel_run with database as Int and run as Str returning Int:`
 
 ## app/agent/generation.ep
 
@@ -138,9 +142,9 @@ Imports: tool_ledger → app/agent/tool_ledger.ep
 
 ## app/agent/runner.ep
 
-[Source](../../app/agent/runner.ep) · 95 lines · 5624 bytes
+[Source](../../app/agent/runner.ep) · 99 lines · 5823 bytes
 
-SHA-256: `0c656adda2b2f6f61ce2b47df558e544f5ed641e3f4aa381d7abd5892ee054dc`
+SHA-256: `c485cdc4094d69889767f9edcfbed8c23e898e2eb195394d08fbe5371ba337ce`
 
 > The model/tool loop has no iteration limit. Non-ready preflight decisions are
 > Capacity triggers archived recap/review/activation before resuming this run.
@@ -150,9 +154,9 @@ SHA-256: `0c656adda2b2f6f61ce2b47df558e544f5ed641e3f4aa381d7abd5892ee054dc`
 Imports: ../retained_text → app/retained_text.ep, control → app/agent/control.ep, provider_profile → app/agent/provider_profile.ep, ../context/compact → app/context/compact.ep
 
 - Line 6: `define agent_loop_inner_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
-- Line 62: `define agent_loop_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
-- Line 89: `define agent_loop_inner with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
-- Line 93: `define agent_loop with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
+- Line 66: `define agent_loop_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
+- Line 93: `define agent_loop_inner with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:`
+- Line 97: `define agent_loop with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
 
 ## app/agent/tool_dispatch.ep
 
@@ -3703,9 +3707,9 @@ Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_st
 
 ## app/web/cancellation.ep
 
-[Source](../../app/web/cancellation.ep) · 53 lines · 3055 bytes
+[Source](../../app/web/cancellation.ep) · 55 lines · 3136 bytes
 
-SHA-256: `82c5053c7fae0b9c19a4273682f1316546352bfde70c76abcb520d0b65a83272`
+SHA-256: `efa9ba406b0043ee0f2b7f402cc3c1f02a8f3adf81016e1aabf701ca367d3afb`
 
 > A durable request is distinct from completion. Only the owning active device
 > may request it; the worker records the actual terminal transition.
