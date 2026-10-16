@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:18:29.288765+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:23:38.066772+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1734,6 +1734,19 @@ SHA-256: `7a8729abcdce85ca017d121079cf17aa66d303ff058c378bbb854357b8f2fe32`
 Imports: ../../app/rights/operation_prepare → app/rights/operation_prepare.ep
 
 - Line 4: `define main returning Int:`
+
+## tests/security/test_operation_rollback.ep
+
+[Source](../../tests/security/test_operation_rollback.ep) · 59 lines · 4642 bytes
+
+SHA-256: `7aecfb1a4a6db605e3ba2853199b9931b14c89e80cbb8c64a8db81d3741f2966`
+
+> Deliberately leave the completion row uncommitted, as a crash
+> can occur after successful exchange and before SQLite COMMIT.
+
+Imports: ../../app/rights/operation_rollback → app/rights/operation_rollback.ep
+
+- Line 3: `define main returning Int:`
 
 ## tests/security/test_principals.ep
 

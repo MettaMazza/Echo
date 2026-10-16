@@ -22,6 +22,8 @@ define protected_operation_read with database as Int and identity as Str returni
     if statement equals 0:
         return history_status("operation-read-failed")
     set state to "initial"
+    set ordinal to 0
+    set head to ""
     repeat while 1 equals 1:
         set row to ep_sqlite3_step(statement)
         if row equals 101:
@@ -37,19 +39,26 @@ define protected_operation_read with database as Int and identity as Str returni
             set next to "prepared"
         else:
             set phase to provider_value(transition and provider_member(transition and 0 and "phase"))
-            if kind equals "protected_operation_transition" and event equals concat(session and concat(":" and phase)) and provider_value(transition and provider_member(transition and 0 and "prepared_digest")) equals ep_sha256(payload):
+            if kind equals "protected_operation_transition" and (event equals concat(session and concat(":" and phase)) or else event equals concat(session and concat(":transition:" and int_to_string(ordinal)))) and provider_value(transition and provider_member(transition and 0 and "prepared_digest")) equals ep_sha256(payload):
                 if state equals "prepared" and phase equals "applying":
                     set next to phase
                 else if (state equals "applying" or else state equals "uncertain") and (phase equals "applied" or else phase equals "not-applied" or else phase equals "uncertain"):
+                    set next to phase
+                else if (state equals "applied" or else state equals "rollback-not-applied") and phase equals "rolling-back":
+                    set next to phase
+                else if (state equals "rolling-back" or else state equals "rollback-uncertain") and (phase equals "rolled-back" or else phase equals "rollback-not-applied" or else phase equals "rollback-uncertain"):
                     set next to phase
         if transition equals 0 or else provider_unique_objects(transition) equals 0 or else string_length(next) equals 0:
             set closed to ep_sqlite3_finalize(statement)
             return history_status("operation-transition-invalid")
         set state to next
+        set ordinal to ordinal + 1
+        set head to concat(event and "")
     if ep_sqlite3_finalize(statement) is not equal to 0:
         return history_status("operation-read-failed")
     set result to history_status(state)
     set added to append_list(result and payload)
+    set added to append_list(result and head)
     return result
 
 # Internal transition writer; caller owns the transaction and has validated
@@ -61,4 +70,10 @@ define protected_operation_record with database as Int and identity as Str and p
     set payload to concat(payload and concat(",\"phase\":" and provider_quote(phase)))
     set payload to concat(payload and concat(",\"detail\":" and concat(provider_quote(detail) and "}")))
     set session to protected_operation_session(identity)
-    return archive_append_pending(database and session and concat(session and concat(":" and phase)) and "protected_operation_transition" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+    set values to create_list()
+    set added to append_list(values and session)
+    set count to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE session=?;" and values))
+    if not (archive_list_text(count and 0) equals "found"):
+        return 1
+    set event to concat(session and concat(":transition:" and archive_list_text(count and 1)))
+    return archive_append_pending(database and session and event and "protected_operation_transition" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))

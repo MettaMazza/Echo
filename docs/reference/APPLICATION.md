@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:18:29.288765+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:23:38.066772+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2481,11 +2481,29 @@ Imports: decision_gate → app/rights/decision_gate.ep, exchange → app/rights/
 - Line 17: `define protected_operation_regular with path as Str returning Int:`
 - Line 36: `define protected_operation_prepare with database as Int and charter as Str and run as Str and proposal as Str and identity as Str and inventory as Str and inventory_digest as Str and directory as Str and target as Str and stage as Str and recovery as Str and audit_request as Str and policy as Str and policy_digest as Str returning Str:`
 
+## app/rights/operation_rollback.ep
+
+[Source](../../app/rights/operation_rollback.ep) · 91 lines · 7533 bytes
+
+SHA-256: `6525246339d7f9e6a7973b13b64011c4ab75648bb2fcbb4d8da8f908872fc9a3`
+
+> Like the original ErnosDecent rollback path, recovery restores only the exact
+> recorded preimage. It is a host recovery-controller operation, never a user or
+> model tool. Revoked initiating authority cannot disable this recovery path.
+> Reconciliation observes only. A confirmed unperformed rollback can be retried
+> explicitly with a new numbered intent; an uncertain result cannot be replayed.
+
+Imports: operation_execute → app/rights/operation_execute.ep
+
+- Line 6: `define protected_rollback_binding with database as Int and charter as Str and payload as Str returning Int:`
+- Line 21: `define protected_operation_rollback with database as Int and charter as Str and identity as Str returning Str:`
+- Line 67: `define protected_rollback_reconcile with database as Int and charter as Str and identity as Str returning Str:`
+
 ## app/rights/operation_state.ep
 
-[Source](../../app/rights/operation_state.ep) · 64 lines · 4516 bytes
+[Source](../../app/rights/operation_state.ep) · 79 lines · 5540 bytes
 
-SHA-256: `f2a69125859badca1ef4c01c1cdafff845ad34ae96810656d10767607fae8ebf`
+SHA-256: `6c3fdae4aeeaef8ca9ef4fddfeb124934baaf1040ef77f99f4ca6e59058c57be`
 
 > Original preparation and every transition share an independently verifiable
 > operation chain. Caller keeps a writer transaction while acting on this state.
@@ -2495,7 +2513,7 @@ SHA-256: `f2a69125859badca1ef4c01c1cdafff845ad34ae96810656d10767607fae8ebf`
 Imports: operation_prepare → app/rights/operation_prepare.ep
 
 - Line 5: `define protected_operation_read with database as Int and identity as Str returning List:`
-- Line 57: `define protected_operation_record with database as Int and identity as Str and prepared as Str and phase as Str and detail as Str returning Int:`
+- Line 66: `define protected_operation_record with database as Int and identity as Str and prepared as Str and phase as Str and detail as Str returning Int:`
 
 ## app/rights/proposals.ep
 

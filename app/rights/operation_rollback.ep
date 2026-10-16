@@ -1,0 +1,91 @@
+import "operation_execute"
+
+# Like the original ErnosDecent rollback path, recovery restores only the exact
+# recorded preimage. It is a host recovery-controller operation, never a user or
+# model tool. Revoked initiating authority cannot disable this recovery path.
+define protected_rollback_binding with database as Int and charter as Str and payload as Str returning Int:
+    if string_length(charter_verified_text(charter)) equals 0:
+        return 0
+    set tokens to provider_json_tokens(payload)
+    set values to create_list()
+    set added to append_list(values and provider_value(tokens and provider_member(tokens and 0 and "proposal")))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT run,manifest,manifest_digest FROM echo_protected_proposals WHERE identity=?;" and values))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 1) equals provider_value(tokens and provider_member(tokens and 0 and "run"))) or else not (archive_list_text(row and 3) equals ep_sha256(archive_list_text(row and 2))) or else not (archive_list_text(row and 3) equals provider_value(tokens and provider_member(tokens and 0 and "manifest_digest"))):
+        return 0
+    set manifest to provider_json_tokens(archive_list_text(row and 2))
+    set target to concat(provider_value(tokens and provider_member(tokens and 0 and "directory")) and concat("/" and provider_value(tokens and provider_member(tokens and 0 and "target"))))
+    if not (provider_value(manifest and provider_member(manifest and 0 and "charter_sha256")) equals charter_pinned_digest()) or else not (provider_value(manifest and provider_member(manifest and 0 and "target")) equals target) or else not (provider_value(manifest and provider_member(manifest and 0 and "before_sha256")) equals provider_value(tokens and provider_member(tokens and 0 and "before_sha256"))) or else not (provider_value(manifest and provider_member(manifest and 0 and "proposed_sha256")) equals provider_value(tokens and provider_member(tokens and 0 and "after_sha256"))):
+        return 0
+    return 1
+
+define protected_operation_rollback with database as Int and charter as Str and identity as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set operation to protected_operation_read(database and identity)
+    set state to archive_list_text(operation and 0)
+    set payload to archive_list_text(operation and 1)
+    if protected_rollback_binding(database and charter and payload) equals 0:
+        return migration_fail(database and "rollback-binding-invalid")
+    if state equals "rolled-back":
+        if not (protected_operation_observe(payload) equals "before"):
+            return migration_fail(database and "terminal-operation-files-changed")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-rolled-back"
+    if not (state equals "applied" or else state equals "rollback-not-applied"):
+        return migration_fail(database and concat("operation-state:" and state))
+    if not (protected_operation_observe(payload) equals "after"):
+        return migration_fail(database and "rollback-preimage-or-recovery-changed")
+    if protected_operation_record(database and identity and payload and "rolling-back" and "Durable rollback intent: restore only the exact original preimage.") is not equal to 0:
+        return migration_fail(database and "rollback-intent-save-failed")
+    set intended to protected_operation_read(database and identity)
+    if not (archive_list_text(intended and 0) equals "rolling-back"):
+        return migration_fail(database and "rollback-intent-invalid")
+    set expected_head to archive_list_text(intended and 2)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "rollback-intent-commit-failed")
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "rollback-intent-saved-reconcile"
+    set current to protected_operation_read(database and identity)
+    if not (archive_list_text(current and 0) equals "rolling-back") or else not (archive_list_text(current and 1) equals payload) or else not (archive_list_text(current and 2) equals expected_head):
+        return migration_fail(database and "rollback-attempt-changed")
+    if protected_rollback_binding(database and charter and payload) equals 0 or else not (protected_operation_observe(payload) equals "after"):
+        return migration_fail(database and "rollback-intent-saved-reconcile")
+    set tokens to provider_json_tokens(payload)
+    set result to protected_exchange(provider_value(tokens and provider_member(tokens and 0 and "directory")) and provider_value(tokens and provider_member(tokens and 0 and "target")) and provider_value(tokens and provider_member(tokens and 0 and "stage")) and provider_value(tokens and provider_member(tokens and 0 and "after_sha256")) and provider_value(tokens and provider_member(tokens and 0 and "before_sha256")))
+    set phase to "rollback-uncertain"
+    if (result equals "exchanged" or else result equals "already-exchanged") and protected_operation_observe(payload) equals "before":
+        set phase to "rolled-back"
+    if protected_operation_record(database and identity and payload and phase and result) is not equal to 0:
+        return migration_fail(database and "rollback-outcome-uncommitted-reconcile")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "rollback-outcome-uncommitted-reconcile")
+    return phase
+
+# Reconciliation observes only. A confirmed unperformed rollback can be retried
+# explicitly with a new numbered intent; an uncertain result cannot be replayed.
+define protected_rollback_reconcile with database as Int and charter as Str and identity as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set operation to protected_operation_read(database and identity)
+    set state to archive_list_text(operation and 0)
+    set payload to archive_list_text(operation and 1)
+    if protected_rollback_binding(database and charter and payload) equals 0:
+        return migration_fail(database and "rollback-binding-invalid")
+    if not (state equals "rolling-back" or else state equals "rollback-uncertain" or else state equals "rolled-back" or else state equals "rollback-not-applied"):
+        return migration_fail(database and concat("operation-state:" and state))
+    set observed to protected_operation_observe(payload)
+    set phase to "rollback-uncertain"
+    if observed equals "before":
+        set phase to "rolled-back"
+    else if observed equals "after":
+        set phase to "rollback-not-applied"
+    if state equals "rolled-back" or else state equals "rollback-not-applied":
+        if not (phase equals state):
+            return migration_fail(database and "terminal-operation-files-changed")
+    else if not (phase equals state):
+        if protected_operation_record(database and identity and payload and phase and concat("Restart rollback observation: " and observed)) is not equal to 0:
+            return migration_fail(database and "rollback-reconciliation-save-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "rollback-reconciliation-commit-failed")
+    return phase
