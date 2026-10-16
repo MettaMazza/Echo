@@ -1,0 +1,24 @@
+import "../security/tool_authority"
+
+# Conversation ownership is durable, unlike a credential's current account
+# link. Migration preserves each legacy device's original principal; it never
+# retroactively transfers private history because that device was relinked.
+define session_principal_schema with database as Int returning Str:
+    set prior to tool_authority_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 8 and "durable-session-principals" and "CREATE TABLE echo_session_principals(session TEXT PRIMARY KEY REFERENCES echo_sessions(session),principal TEXT NOT NULL REFERENCES echo_principals(identity),provenance TEXT NOT NULL CHECK(provenance IN ('legacy-device','authenticated-owner'))); INSERT INTO echo_session_principals SELECT o.session,'device:'||o.device,'legacy-device' FROM echo_session_owners o; CREATE TRIGGER echo_session_principal_no_update BEFORE UPDATE ON echo_session_principals BEGIN SELECT RAISE(ABORT,'Session principal is immutable'); END; CREATE TRIGGER echo_session_principal_no_delete BEFORE DELETE ON echo_session_principals BEGIN SELECT RAISE(ABORT,'Session principal is immutable'); END; CREATE TRIGGER echo_session_principal_capture AFTER INSERT ON echo_session_owners BEGIN INSERT INTO echo_session_principals SELECT NEW.session,p.identity,'authenticated-owner' FROM echo_devices d JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE d.device=NEW.device AND d.revoked=0 AND p.revoked=0; SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM echo_session_principals WHERE session=NEW.session) THEN RAISE(ABORT,'Authenticated session principal required') END; END;")
+
+# This is the principal scope check for future cross-session retrieval. It is
+# not a replacement for current device routes until every surface is migrated.
+# Caller supplies an authenticated device; credential and principal revocation
+# are checked again here. Admin status does not bypass private ownership.
+define session_principal_allows with database as Int and device as Str and session as Str returning Int:
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return 0
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and principal)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_session_principals WHERE session=?1 AND principal=?2;" and values))
+    return archive_list_text(row and 0) equals "found"

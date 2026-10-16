@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T01:10:34.297325+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T01:13:58.748779+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1483,6 +1483,25 @@ Imports: ../retained_text → app/retained_text.ep, ../providers/json_tokens →
 - Line 6: `define voice_request_text with arguments as Str returning Str:`
 - Line 30: `define voice_request_arguments with profile as Str returning List:`
 - Line 100: `define voice_tool_schema returning Str:`
+
+## app/memory/session_ownership.ep
+
+[Source](../../app/memory/session_ownership.ep) · 24 lines · 2637 bytes
+
+SHA-256: `7c390e9d8fc950f37898c1407769698a8def3ef5b224d12efb3f926ad413e7e9`
+
+> Conversation ownership is durable, unlike a credential's current account
+> link. Migration preserves each legacy device's original principal; it never
+> retroactively transfers private history because that device was relinked.
+> This is the principal scope check for future cross-session retrieval. It is
+> not a replacement for current device routes until every surface is migrated.
+> Caller supplies an authenticated device; credential and principal revocation
+> are checked again here. Admin status does not bypass private ownership.
+
+Imports: ../security/tool_authority → app/security/tool_authority.ep
+
+- Line 6: `define session_principal_schema with database as Int returning Str:`
+- Line 16: `define session_principal_allows with database as Int and device as Str and session as Str returning Int:`
 
 ## app/mlx_count.ep
 

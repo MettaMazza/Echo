@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T01:10:34.297325+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T01:13:58.748779+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1558,6 +1558,17 @@ SHA-256: `18263815f60cc62c1dd9837e462e6bffcf5ad1773d550c62fd7cc1194874b3c5`
 
 
 Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/run_authority → app/security/run_authority.ep
+
+- Line 4: `define main returning Int:`
+
+## tests/security/test_session_principals.ep
+
+[Source](../../tests/security/test_session_principals.ep) · 39 lines · 3578 bytes
+
+SHA-256: `ed6fd855520d9ea71295ee107c4077100b3feab137a18a8443bcf3f9edbd7230`
+
+
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/memory/session_ownership → app/memory/session_ownership.ep
 
 - Line 4: `define main returning Int:`
 

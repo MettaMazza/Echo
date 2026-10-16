@@ -85,3 +85,6 @@ Concurrency candidate follow-up: loaded in approximately 23 seconds from cached 
 
 
 Authority self-awareness (16 October): system_inspect now includes a factual authority object for its own run. Native tests verify ordinary-user and admin observations, denial after role change/revocation, and unavailable missing-run identity. A later grant never relabels an older queued run as privileged. The observation lives in tool output, not the stable identity/system prefix; no identity wording was changed. This source change is not yet deployed. The two full-context candidate requests continue independently.
+
+
+Durable private session ownership (16 October): native candidate migration 8 and scope check passed legacy migration, device relinking, new-session creator capture, unlink, admin non-bypass, revocation, immutable binding and reopen tests. The mapping prevents future cross-session retrieval from treating a changed device-account link as permission to transfer historical private conversations. It is not yet wired into memory retrieval or current routes and is not deployed. Group/channel/system scopes and complete scoped storage remain outstanding.
