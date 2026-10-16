@@ -108,6 +108,17 @@ Each silo owns its transcript, working context, token budget, recap/checkpoints,
 
 Use distinct scopes for private user conversations, user-in-channel conversations, explicitly joined groups, channel-public memory, Echo's own system records and admin operations. A server ID is part of Discord scope. Identity links between UI and Discord are explicit and reversible.
 
+### Cross-session memory: episodic, semantic and procedural
+
+Cross-session memory is a Phase Two deliverable, not just transcript search or a recap. Persist all three memory types locally across new chats, context compaction, application restart and verified backup/restore. Keep private-user, joined-group, public-channel and Echo-self scopes distinct; recall follows the authenticated principal and current audience, not whichever session ran most recently.
+
+- **Episodic memory:** maintain a chronological autobiographical log of past interactions, shared experiences, decisions and personal milestones. Record event time separately from ingestion time, participants, originating session/project/channel, source event IDs and exact evidence links. Distinguish directly observed events, imported accounts and inferred interpretations; do not invent experiences or turn a summary into evidence of an event.
+- **Semantic memory:** maintain a dynamic knowledge graph of extracted facts, preferences and concepts about the user, the world and Echo itself. Give entities and relationships stable identities, provenance, visibility, confidence/evidence status and validity dates. Preserve contradictions and correction/supersession history; distinguish a user claim, a verified observation and an inference. Echo's capability and self-knowledge records must track the active build/model/configuration and become stale when those change.
+- **Procedural memory:** retain mastered workflows, tool-use strategies and behavioral patterns with prerequisites, scope, tool/version dependencies, ordered actions, expected outcomes, successful execution evidence and failure lessons. Distinguish proposed procedures from demonstrated ones. Revalidate stale procedures against current tools and authority; recalling a workflow never grants permission or silently executes its side effects.
+- **Formation and consolidation:** extract candidate memories from actual events and tool outcomes, deduplicate without losing source links, and consolidate across sessions with durable checkpoints. Interrupted extraction/reindexing must resume without duplicates or lost corrections. Preserve original records independently of summaries, embeddings and graph projections; rebuild derived indexes from those records.
+- **Retrieval and use:** support chronological episode recall, exact/semantic fact and relationship queries, and procedure discovery/composition in a new session. Retrieve relevant evidence within the current provider-derived context budget, with progressive rereading instead of silent source truncation. Show which memories informed a response and allow the user to inspect and correct them. Integrate procedure discovery into discover-before-create tool selection.
+- **Privacy and lifecycle:** apply current source permissions to every memory, graph edge, embedding, cached recall and derived procedure. Support deliberate sharing, correction, supersession, archive-aware forgetting and restoration with clear effects on originals versus derived records. A procedure distilled from private material retains its visibility until explicitly reviewed for sharing; group participation never imports personal histories automatically. External-provider mode cannot receive private/community memory outside its expressly permitted scope.
+
 ### Joined conversations
 
 1. When a user addresses Echo and tags another user in a permitted channel, create or offer the joined thread according to the reviewed server policy; deduplicate repeated events.
@@ -134,7 +145,7 @@ All names below are proposed capabilities, not claims that they are installed. E
 | --- | --- | --- |
 | Tool discovery | Search installed and dormant tools, inspect schemas/examples, dependency/capability map, compose existing tools, load/unload approved versions | Scoped safe discovery |
 | Conversation | Search/read originals, page full history, inspect/rebuild recaps, bookmarks, branch, resume, export, source inspection | Own authorised scope |
-| Memory | Semantic and exact search, preferences, lessons, graph links, corrections/supersession, provenance, selective sharing and forgetting | Own authorised scope |
+| Memory | Episodic timeline/experience/milestone recall; semantic and exact search, dynamic fact/preference/concept graph; procedural workflow discovery/learning/validation; corrections/supersession, provenance, selective sharing and forgetting | Own authorised scope |
 | Projects | Create projects, files/instructions, project search, task plans, artifacts, cross-session project continuity | Own project scope |
 | Research | Search/fetch web sources, citations, local document research, compare sources, browser navigation | Safe constrained worker; no host credentials |
 | Files/documents | List/read/search/create/edit/diff, PDF/text extraction, spreadsheets, structured data, archives, artifact preview/export | User workspace sandbox; host-wide admin variant |
@@ -247,7 +258,7 @@ Every deferred item is in Phase 2. Existing successes remain successes; an old b
 | D01 | Training/weight updates, original Stage H; STATUS deferred | Actual primary-model candidate trained, evaluated, served and rolled back with lineage. |
 | D02 | Connected research API/UI, vector steering, activation inspection; Stage G/STATUS | Model-callable and human-accessible controls; real capture/intervention/baseline restoration. |
 | D03 | Projects; Stage F/STATUS | Persistent project files/instructions and scoped cross-session work, tested through UI and restart. |
-| D04 | Semantic/cross-session memory; Stage F/STATUS | Scoped retrieval, provenance, corrections, permission revocation and isolation tests. |
+| D04 | Episodic, semantic and procedural cross-session memory; Stage F/STATUS and Maria’s memory expansion | Chronological autobiographical recall, dynamic knowledge graph, demonstrated workflows, scoped retrieval, provenance, corrections, forgetting, permission revocation and restart/restore isolation tests. |
 | D05 | Broader restoration, original private identity and SFT archive (My Brain excluded by Maria on 16 October 2026); STATUS | Inventory and import actual available sources, verify hashes/provenance and retrieval; missing records are explicitly requested, never fabricated. Final wording reviewed with Maria. |
 | D06 | Microphone permission and real recording acceptance; explicit user deferral | Actual Mac and phone recording, permissions, transcription, playback and recoverable interruption. |
 | D07 | Reliable reboot startup; OPERATIONS/STATUS | Cold OS reboot starts the supported stack, restores identities/work, reports drive/model failure accurately. |
@@ -381,15 +392,17 @@ On success, clear the busy indicator and continue the same task automatically, l
 
 **Exit:** each listed local action has working invocation, result inspection, failure handling and permission evidence; sub-agents and schedules retain their initiating authority.
 
-### 09 — Complete projects, semantic memory and continuity import
+### 09 — Complete projects, cross-session memory and continuity import
 
 **Depends on:** 06–08.
 
-- Implement project files/instructions/tasks and scoped cross-session search, embeddings, lessons, corrections and graph provenance.
-- Inventory and import available My Brain, SFT and identity/continuity sources with original hashes and attribution. Request genuinely missing sources; never invent them.
+- Implement project files/instructions/tasks, then the persistent episodic, semantic and procedural stores specified in section 5, with exact source links and scoped cross-session retrieval.
+- Implement event ingestion and chronological episode queries before semantic extraction/entity linking; implement correction/supersession and permissions before consolidation/caching; then add evidence-backed procedure learning and discovery using the step 08 tool registry.
+- Wire all three memory types into new-session retrieval, compaction recovery, source inspection/correction, project resumption and discover-before-create tool selection. Preserve schema/version lineage and rebuildable indexes.
+- Inventory and import available SFT and identity/continuity sources from GitHub with original hashes and attribution. My Brain import is excluded by Maria’s instruction. Request genuinely missing sources; never invent them.
 - Implement deliberate sharing and correction supersession. Prevent derived indexes from widening source visibility.
 
-**Exit:** project work resumes after restart; exact and semantic queries recover the right source and correction while cross-silo queries fail. D03/D04 and D05 source ingestion are complete; final identity wording awaits 29.
+**Exit:** a fresh session recalls a dated shared episode and milestone, follows a corrected fact through the knowledge graph, and discovers a previously demonstrated workflow with its execution evidence. Repeat after compaction, restart and independent restore; prove permission revocation, cross-silo denial, stale-procedure handling and correction/forgetting propagation. Projects resume with provenance intact. D03/D04 and D05 source ingestion are complete; final identity wording awaits 29.
 
 ### 10 — Complete media, attachment lifecycle and the usable UI
 
@@ -658,6 +671,10 @@ On success, clear the busy indicator and continue the same task automatically, l
 Every step number in this table refers to an executable step above. Completion of the last step requires the complete ledger, not merely completion of the most recent task.
 
 ## 14. End-to-end acceptance scenarios
+
+- Cross-session episodic recall recovers a dated interaction, shared experience and milestone with original evidence in a fresh chat, after compaction, after restart and from an independently restored backup; imported/inferred material remains labelled.
+- Semantic memory updates a preference and a fact, preserves contradictory evidence and supersession, traverses authorised graph relationships and invalidates stale Echo capability records after a build/model change. Corrections and forgetting propagate to cached recall and derived indexes without crossing silos.
+- Procedural memory reuses a demonstrated multi-tool workflow in a fresh session with current permissions, records its outcome, rejects or revalidates a stale dependency, and distinguishes an untested suggestion from a mastered procedure. Interrupted consolidation resumes without duplication; private procedures do not leak through shared tool discovery.
 
 - A normal member mentions Echo, gets a locally generated answer and can see a freely chosen reaction before the final response. An admin performs a privileged task; the same guest request is denied server-side.
 - Two users converse simultaneously, then join a thread through tagging. Private seeded facts remain private before, during and after group compaction, member removal and restart.

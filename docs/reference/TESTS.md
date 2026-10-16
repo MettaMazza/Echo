@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T00:02:35.211648+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:13:10.925727+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -329,6 +329,17 @@ SHA-256: `f4b40081d996736aaf3bd84ccc0f695d14962f8a7c63698c8c2d3df9398d98c9`
 
 
 Imports: ../../app/archive/export_restore → app/archive/export_restore.ep, fs → standard library or compiler dependency
+
+- Line 4: `define main returning Int:`
+
+## tests/archive/test_failed_run_bundle.ep
+
+[Source](../../tests/archive/test_failed_run_bundle.ep) · 42 lines · 2880 bytes
+
+SHA-256: `9718a7c12b3030425e83d59fff78c296a217c3ce08a84e63b0b834d39863477b`
+
+
+Imports: ../../app/archive/restore_bundle → app/archive/restore_bundle.ep, ../../app/workspace/process_journal → app/workspace/process_journal.ep
 
 - Line 4: `define main returning Int:`
 
@@ -889,6 +900,17 @@ SHA-256: `56e8550d1901364f89cd0d15d3e456f32ab6af68ec90a777de5190ee57ac4c4e`
 Imports: ../../app/lifecycle/service_profile → app/lifecycle/service_profile.ep, ../../app/workspace/native_process → app/workspace/native_process.ep, ../../app/providers/archived_stream → app/providers/archived_stream.ep, fs → standard library or compiler dependency
 
 - Line 6: `define main returning Int:`
+
+## tests/lifecycle/test_startup.ep
+
+[Source](../../tests/lifecycle/test_startup.ep) · 26 lines · 1382 bytes
+
+SHA-256: `ce95ffad0d27da594ca35b6e143f886a97b616bd71b2a42833dd1d41ba293f94`
+
+
+Imports: ../../app/lifecycle/startup → app/lifecycle/startup.ep
+
+- Line 3: `define main returning Int:`
 
 ## tests/media/image_wait_fixture.ep
 

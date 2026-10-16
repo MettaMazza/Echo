@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T00:02:35.211648+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:13:10.925727+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -263,13 +263,15 @@ Imports: ../retained_text → app/retained_text.ep, snapshot → app/archive/sna
 
 ## app/archive/backup_bundle.ep
 
-[Source](../../app/archive/backup_bundle.ep) · 159 lines · 9666 bytes
+[Source](../../app/archive/backup_bundle.ep) · 161 lines · 9832 bytes
 
-SHA-256: `316ae82f49fc1e7e154205ab80ee853fe167c4065d2e216fa997f76b6014996c`
+SHA-256: `dfb80b5b50de7071e9c8fdc1bb54fcf430df50347b3f1594877c7c0a0e8d5898`
 
 > Host-only profile. Each tree and individual file is explicit; weights are
 > not silently duplicated. Runtime ownership prevents Echo from restarting
 > while its database and files are copied. Other host editors must be stopped.
+> Failed runs are preserved, not retried or erased. Unobserved tools and
+> unfinished processes still refuse backup; restores retain execution hold.
 
 Imports: attachment_restore → app/archive/attachment_restore.ep, tree_snapshot → app/archive/tree_snapshot.ep, ../providers/archived_stream → app/providers/archived_stream.ep, ../lifecycle/service_profile → app/lifecycle/service_profile.ep
 
@@ -1350,6 +1352,20 @@ Imports: ../providers/json_access → app/providers/json_access.ep, ../workspace
 - Line 65: `define service_profile_vector with tokens as List and name as Str returning List:`
 - Line 78: `define service_profile_run with profile as Str and check_only as Int returning Int:`
 
+## app/lifecycle/startup.ep
+
+[Source](../../app/lifecycle/startup.ep) · 18 lines · 689 bytes
+
+SHA-256: `a8174ec27c7c75213a8fba9f115167c487aa9946bff5e49a1165cb1eb7d2e5e3`
+
+> Inspect before archive_open can create or update any application schema.
+> Deployment must stop old processes before migrations; this is not a live
+> migration lock or permission to run mixed application versions.
+
+Imports: migrations → app/lifecycle/migrations.ep, fs → standard library or compiler dependency
+
+- Line 7: `define startup_archive_compatible with path as Str and supported as Int returning Int:`
+
 ## app/media/image_logs.ep
 
 [Source](../../app/media/image_logs.ep) · 44 lines · 2057 bytes
@@ -2208,22 +2224,23 @@ Imports: ../lifecycle/operations → app/lifecycle/operations.ep
 
 ## app/server.ep
 
-[Source](../../app/server.ep) · 309 lines · 19565 bytes
+[Source](../../app/server.ep) · 323 lines · 20525 bytes
 
-SHA-256: `5898a1ac297296568e9e3ee528b1858347c9b77a087d00a2f04e92b1efb197b1`
+SHA-256: `378a89317d04b3d61eb1b7e7100219336219b37e599f311f81783e18946957db`
 
 > Let macOS retain native fault stacks for every role, including workers.
+> Every executable role checks before schema writes, recovery or dispatch.
 > Opt-in native crash reports preserve the OS stack instead of replacing
 > a fatal signal with a message-only exit. No compiler/runtime edits.
 > Held for this server process's lifetime, across all worker threads.
 
-Imports: transport/isolated_process → app/transport/isolated_process.ep, retained_text → app/retained_text.ep, transport/cooperative_accept → app/transport/cooperative_accept.ep, transport/http_stream → app/transport/http_stream.ep, transport/socket_write → app/transport/socket_write.ep, transport/file_response → app/transport/file_response.ep, ui/page → app/ui/page.ep, ui/assets → app/ui/assets.ep, fs → standard library or compiler dependency, web/routes → app/web/routes.ep, web/recovery → app/web/recovery.ep, archive/runtime_lock → app/archive/runtime_lock.ep, archive/attachment_restore → app/archive/attachment_restore.ep
+Imports: transport/isolated_process → app/transport/isolated_process.ep, retained_text → app/retained_text.ep, transport/cooperative_accept → app/transport/cooperative_accept.ep, transport/http_stream → app/transport/http_stream.ep, transport/socket_write → app/transport/socket_write.ep, transport/file_response → app/transport/file_response.ep, ui/page → app/ui/page.ep, ui/assets → app/ui/assets.ep, fs → standard library or compiler dependency, web/routes → app/web/routes.ep, web/recovery → app/web/recovery.ep, archive/runtime_lock → app/archive/runtime_lock.ep, archive/attachment_restore → app/archive/attachment_restore.ep, lifecycle/startup → app/lifecycle/startup.ep
 
-- Line 15: `define echo_send_response with library as Int and descriptor as Int and status as Str and content_type as Str and body as Str returning Int:`
-- Line 35: `define echo_serve_connection with library as Int and descriptor as Int and port as Int and javascript as Str and config as List returning Int:`
-- Line 79: `define echo_worker_owner returning Int:`
-- Line 118: `define echo_service_owner returning Int:`
-- Line 149: `define main returning Int:`
+- Line 16: `define echo_send_response with library as Int and descriptor as Int and status as Str and content_type as Str and body as Str returning Int:`
+- Line 36: `define echo_serve_connection with library as Int and descriptor as Int and port as Int and javascript as Str and config as List returning Int:`
+- Line 80: `define echo_worker_owner returning Int:`
+- Line 119: `define echo_service_owner returning Int:`
+- Line 153: `define main returning Int:`
 
 ## app/start_service.ep
 
