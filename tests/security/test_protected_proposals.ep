@@ -5,7 +5,7 @@ import "../../app/web/run_store"
 define inspection_fixture with database as Int and session as Str and call_id as Str and name as Str and manifest as Str and digest as Str and observed as Int returning Int:
     set request to concat("{\"run_id\":\"admin-run\",\"call_id\":" and provider_quote(call_id))
     set request to concat(request and concat(",\"name\":" and provider_quote(name)))
-    set request to concat(request and ",\"arguments\":{\"proposal\":\"attempt\"}}")
+    set request to concat(request and concat(",\"arguments\":" and concat(provider_quote("{\"proposal\":\"attempt\"}") and "}")))
     set request_event to concat(call_id and ":request")
     if archive_append(database and session and request_event and "tool_call" and request and "fixture") is not equal to 0 or else tool_ledger_queue(database and "admin-run" and call_id and session and request_event) is not equal to 0 or else tool_ledger_claim(database and "admin-run" and call_id) is not equal to 0:
         return 1
@@ -18,6 +18,29 @@ define inspection_fixture with database as Int and session as Str and call_id as
     if observed equals 1:
         return tool_ledger_observe(database and "admin-run" and call_id and result_event)
     return 0
+
+# Model request originals let the verifier distinguish seeing a disclosure
+# from merely queuing an inspection beside a review in the same generation.
+define review_fixture with database as Int and session as Str and call_id as Str and decision as Str and digest as Str and include_disclosure as Int returning Int:
+    set original to history_collect_one(archive_prepare(database and "SELECT json_extract(payload,'$.result') FROM echo_events WHERE event='inspect:result';"))
+    set body to "{\"messages\":[]}"
+    if include_disclosure equals 1:
+        set body to concat("{\"messages\":[{\"role\":\"tool\",\"tool_call_id\":\"inspect\",\"content\":" and concat(provider_quote(archive_list_text(original and 1)) and "}] }"))
+    set generation to concat(call_id and ":generation")
+    set envelope to concat("{\"run_id\":\"admin-run\",\"request_body\":" and concat(provider_quote(body) and "}"))
+    if include_disclosure equals -1:
+        set generation to "early-generation"
+    else if archive_append(database and session and generation and "model_request" and envelope and "fixture") is not equal to 0:
+        return 1
+    set arguments to concat("{\"proposal\":\"attempt\",\"inspection_call\":\"inspect\",\"manifest_digest\":" and provider_quote(digest))
+    set arguments to concat(arguments and concat(",\"decision\":" and concat(provider_quote(decision) and ",\"risk\":\"high\",\"reason\":\"Reviewed the exact disclosure.\"}")))
+    set request to concat("{\"run_id\":\"admin-run\",\"parent_event\":" and provider_quote(generation))
+    set request to concat(request and concat(",\"call_id\":" and provider_quote(call_id)))
+    set request to concat(request and concat(",\"name\":\"protected_change_review\",\"arguments\":" and concat(provider_quote(arguments) and "}")))
+    set event to concat(call_id and ":request")
+    if archive_append(database and session and event and "tool_call" and request and "fixture") is not equal to 0 or else tool_ledger_queue(database and "admin-run" and call_id and session and event) is not equal to 0:
+        return 2
+    return tool_ledger_claim(database and "admin-run" and call_id)
 
 # No host target is changed by this fixture; manifests are stored evidence only.
 define main returning Int:
@@ -62,6 +85,8 @@ define main returning Int:
     if sql_execute(database and "UPDATE echo_protected_proposals SET manifest='changed' WHERE identity='attempt';") equals 0 or else sql_execute(database and "DELETE FROM echo_protected_proposals WHERE identity='attempt';") equals 0:
         return 16
     set session to archive_list_text(admin_run and 1)
+    if archive_append(database and session and "early-generation" and "model_request" and "{\"run_id\":\"admin-run\",\"request_body\":\"{\\\"messages\\\":[]}\"}" and "fixture") is not equal to 0:
+        return 45
     if inspection_fixture(database and session and "inspect" and "protected_change_inspect" and manifest and ep_sha256(manifest) and 1) is not equal to 0:
         return 30
     if not (protected_inspection_event(database and "admin-run" and "inspect" and "attempt") equals "inspect:result"):
@@ -74,6 +99,16 @@ define main returning Int:
         return 36
     if string_length(protected_inspection_event(database and "admin-run" and "bad-digest" and "attempt")) is not equal to 0 or else string_length(protected_inspection_event(database and "admin-run" and "inspect" and "missing-proposal")) is not equal to 0:
         return 37
+    if review_fixture(database and session and "review" and "consent" and ep_sha256(manifest) and 1) is not equal to 0 or else review_fixture(database and session and "unseen" and "consent" and ep_sha256(manifest) and 0) is not equal to 0 or else review_fixture(database and session and "wrong-manifest" and "consent" and ep_sha256("other") and 1) is not equal to 0 or else review_fixture(database and session and "object" and "object" and ep_sha256(manifest) and 1) is not equal to 0 or else review_fixture(database and session and "silence" and "" and ep_sha256(manifest) and 1) is not equal to 0:
+        return 40
+    if review_fixture(database and session and "too-early" and "consent" and ep_sha256(manifest) and -1) is not equal to 0 or else string_length(protected_review_evidence(database and "admin-run" and "too-early")) is not equal to 0:
+        return 46
+    set review to provider_json_tokens(protected_review_evidence(database and "admin-run" and "review"))
+    set objection to provider_json_tokens(protected_review_evidence(database and "admin-run" and "object"))
+    if review equals 0 or else not (provider_value(review and provider_member(review and 0 and "decision")) equals "consent") or else objection equals 0 or else not (provider_value(objection and provider_member(objection and 0 and "decision")) equals "reject"):
+        return 41
+    if string_length(protected_review_evidence(database and "admin-run" and "unseen")) is not equal to 0 or else string_length(protected_review_evidence(database and "admin-run" and "wrong-manifest")) is not equal to 0 or else string_length(protected_review_evidence(database and "admin-run" and "silence")) is not equal to 0 or else string_length(protected_review_evidence(database and "guest-run" and "review")) is not equal to 0:
+        return 42
     if sql_close(database) is not equal to 0:
         return 17
     set database to archive_open(get_argument(1))
@@ -81,6 +116,8 @@ define main returning Int:
         return 18
     if not (protected_inspection_event(database and "admin-run" and "inspect" and "attempt") equals "inspect:result"):
         return 34
+    if string_length(protected_review_evidence(database and "admin-run" and "review")) equals 0:
+        return 43
     set second_run to web_submit_owned(database and "admin" and "second-run" and "" and "A new attempt needs a new identity")
     if not (archive_list_text(second_run and 0) equals "accepted") or else not (protected_proposal_store(database and get_argument(2) and "second-run" and "attempt" and manifest) equals "proposal-identity-conflict"):
         return 22
@@ -98,7 +135,9 @@ define main returning Int:
         return 20
     if string_length(protected_inspection_event(database and "admin-run" and "inspect" and "attempt")) is not equal to 0:
         return 35
+    if string_length(protected_review_evidence(database and "admin-run" and "review")) is not equal to 0:
+        return 44
     if sql_close(database) is not equal to 0:
         return 21
-    display "PASS: exact protected manifests, canonical charter binding, admin-only frozen authority, retry/conflict, immutable records, reopen, distinct-run replay rejection, corruption detection, exact observed inspection evidence, partial/pending/wrong-tool rejection and revocation. No execution approval is granted."
+    display "PASS: exact protected manifests, canonical charter binding, admin-only frozen authority, retry/conflict, immutable records, reopen, distinct-run replay rejection, corruption detection, exact observed inspection evidence, partial/pending/wrong-tool rejection and revocation. Exact prior disclosure in model input and explicit review decisions verified; no execution approval is granted."
     return 0

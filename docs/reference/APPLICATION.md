@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T02:53:13.756867+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:57:11.089981+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2318,9 +2318,9 @@ Imports: ../archive/file_digest → app/archive/file_digest.ep, ../providers/arc
 
 ## app/rights/proposals.ep
 
-[Source](../../app/rights/proposals.ep) · 152 lines · 11046 bytes
+[Source](../../app/rights/proposals.ep) · 210 lines · 16277 bytes
 
-SHA-256: `3fa22a02b4149c7a62127d277f1d4d46a48f42f10b2af8081b559855cd7142d2`
+SHA-256: `0617a3ed6ffcd93867e8898009bf13f5cf41bcc39e378a0ee1d14588fbea5a91`
 
 > Proposal storage only. No approval, executable access or mutation is granted.
 > A future protected controller must derive the category and target inventory
@@ -2337,6 +2337,10 @@ SHA-256: `3fa22a02b4149c7a62127d277f1d4d46a48f42f10b2af8081b559855cd7142d2`
 > observed tool call and its full original result, never a caller's assertion.
 > The future review controller must also prove this result preceded its review
 > request. No public inspection tool or protected execution is enabled here.
+> Read a model review only after its own archived model request included the
+> exact disclosure as a tool message. Merely ordering two tool calls in one
+> response cannot establish informed consent. This verifies evidence only;
+> steward authorisation, Observer review and execution gates remain separate.
 
 Imports: charter → app/rights/charter.ep, ../memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep
 
@@ -2347,6 +2351,7 @@ Imports: charter → app/rights/charter.ep, ../memory/knowledge_lifecycle → ap
 - Line 67: `define protected_proposal_store with database as Int and charter as Str and run as Str and identity as Str and manifest as Str returning Str:`
 - Line 105: `define protected_proposal_read with database as Int and run as Str and identity as Str returning List:`
 - Line 124: `define protected_inspection_event with database as Int and run as Str and call_id as Str and identity as Str returning Str:`
+- Line 163: `define protected_review_evidence with database as Int and run as Str and call_id as Str returning Str:`
 
 ## app/security/accounts.ep
 
