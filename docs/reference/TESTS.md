@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T05:38:32.056889+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:49:11.580421+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1666,6 +1666,17 @@ SHA-256: `e697cfa5864818805ab27e091334c07e83e7a20c714af8171b309dbd110c4531`
 Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency, ../../app/security/tool_authority → app/security/tool_authority.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
 - Line 10: `define main returning Int:`
+
+## tests/security/test_groups.ep
+
+[Source](../../tests/security/test_groups.ep) · 65 lines · 6910 bytes
+
+SHA-256: `88c7b0bb7bcd69537ba9212c166c681a8add93cbbaa839bc55e43a6399813fc0`
+
+
+Imports: ../../app/security/groups → app/security/groups.ep, ../../app/web/run_store → app/web/run_store.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/security/test_host_text.ep
 

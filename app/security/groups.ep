@@ -1,0 +1,126 @@
+import "../rights/review_upgrade"
+
+# Host-adapter namespace values must come from verified UI/connector routing,
+# never from model tool arguments. Group membership grants no admin capability.
+define group_schema with database as Int returning Str:
+    set prior to protected_refusal_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 17 and "explicit-group-audiences" and "CREATE TABLE echo_groups(identity TEXT PRIMARY KEY,creator TEXT NOT NULL REFERENCES echo_principals(identity),platform TEXT NOT NULL,server TEXT NOT NULL,channel TEXT NOT NULL,origin TEXT NOT NULL,UNIQUE(platform,server,channel,origin)); CREATE TABLE echo_group_membership(identity TEXT PRIMARY KEY,group_id TEXT NOT NULL REFERENCES echo_groups(identity),revision INTEGER NOT NULL CHECK(revision>0),principal TEXT NOT NULL REFERENCES echo_principals(identity),actor TEXT NOT NULL REFERENCES echo_principals(identity),state TEXT NOT NULL CHECK(state IN ('invited','joined','left','removed')),UNIQUE(group_id,revision)); CREATE TABLE echo_group_audiences(group_id TEXT NOT NULL REFERENCES echo_groups(identity),revision INTEGER NOT NULL CHECK(revision>0),principal TEXT NOT NULL REFERENCES echo_principals(identity),PRIMARY KEY(group_id,revision,principal)); CREATE TRIGGER echo_groups_no_update BEFORE UPDATE ON echo_groups BEGIN SELECT RAISE(ABORT,'Group identity is immutable'); END; CREATE TRIGGER echo_groups_no_delete BEFORE DELETE ON echo_groups BEGIN SELECT RAISE(ABORT,'Group identity is immutable'); END; CREATE TRIGGER echo_group_membership_no_update BEFORE UPDATE ON echo_group_membership BEGIN SELECT RAISE(ABORT,'Membership history is immutable'); END; CREATE TRIGGER echo_group_membership_no_delete BEFORE DELETE ON echo_group_membership BEGIN SELECT RAISE(ABORT,'Membership history is immutable'); END; CREATE TRIGGER echo_group_audiences_no_update BEFORE UPDATE ON echo_group_audiences BEGIN SELECT RAISE(ABORT,'Audience history is immutable'); END; CREATE TRIGGER echo_group_audiences_no_delete BEFORE DELETE ON echo_group_audiences BEGIN SELECT RAISE(ABORT,'Audience history is immutable'); END;")
+
+
+define group_text_valid with value as Str returning Int:
+    set index to 0
+    repeat while index < string_length(value):
+        if get_character(value and index) equals 0:
+            return 0
+        set index to index + 1
+    return 1
+
+define group_member_state with database as Int and group_id as Str and principal as Str returning Str:
+    set values to [group_id, principal]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT m.state FROM echo_group_membership m WHERE m.group_id=?1 AND m.principal=?2 ORDER BY m.revision DESC LIMIT 1;" and values))
+    if archive_list_text(row and 0) equals "end":
+        return "absent"
+    if not (archive_list_text(row and 0) equals "found"):
+        return "unavailable"
+    return archive_list_text(row and 1)
+
+# Membership changes create a fresh audience. A new member is never inserted
+# into an older audience, and private session ownership is never modified.
+define group_capture_audience with database as Int and group_id as Str and revision as Int returning Int:
+    set values to [group_id, int_to_string(revision)]
+    return archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_audiences(group_id,revision,principal) SELECT m.group_id,CAST(?2 AS INTEGER),m.principal FROM echo_group_membership m WHERE m.group_id=?1 AND m.state='joined' AND m.revision=(SELECT MAX(n.revision) FROM echo_group_membership n WHERE n.group_id=m.group_id AND n.principal=m.principal);" and values) and 101)
+
+define group_create with database as Int and device as Str and identity as Str and platform as Str and server as Str and room as Str and origin as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(platform) equals 0 or else string_length(origin) equals 0 or else group_text_valid(identity) equals 0 or else group_text_valid(platform) equals 0 or else group_text_valid(server) equals 0 or else group_text_valid(room) equals 0 or else group_text_valid(origin) equals 0:
+        return "invalid-group"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return migration_fail(database and "not-authorized")
+    set values to [identity]
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT creator,platform,server,channel,origin FROM echo_groups WHERE identity=?;" and values))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals principal) or else not (archive_list_text(old and 2) equals platform) or else not (archive_list_text(old and 3) equals server) or else not (archive_list_text(old and 4) equals room) or else not (archive_list_text(old and 5) equals origin):
+            return migration_fail(database and "group-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-created"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "group-read-failed")
+    set source_values to [platform,server,room,origin]
+    set source to history_collect_one(checkpoint_prepare(database and "SELECT identity FROM echo_groups WHERE platform=?1 AND server=?2 AND channel=?3 AND origin=?4;" and source_values))
+    if archive_list_text(source and 0) equals "found":
+        return migration_fail(database and "group-origin-conflict")
+    if not (archive_list_text(source and 0) equals "end"):
+        return migration_fail(database and "group-read-failed")
+    set values to [identity, principal, platform, server, room, origin]
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_groups VALUES(?1,?2,?3,?4,?5,?6);" and values) and 101) is not equal to 0:
+        return migration_fail(database and "group-write-failed")
+    set values to [concat("group-created:" and ep_sha256(identity)),identity,principal]
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_membership VALUES(?1,?2,1,?3,?3,'joined');" and values) and 101) is not equal to 0 or else group_capture_audience(database and identity and 1) is not equal to 0:
+        return migration_fail(database and "group-membership-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "created"
+
+# Exact retry is harmless, but a new action must name the current revision.
+# A mention/invitation alone cannot join somebody or import their private data.
+define group_change with database as Int and device as Str and operation as Str and group_id as Str and member as Str and state as Str and previous_revision as Int returning Str:
+    if string_length(operation) equals 0 or else group_text_valid(operation) equals 0 or else group_text_valid(group_id) equals 0 or else group_text_valid(member) equals 0 or else previous_revision < 1 or else previous_revision >= 9223372036854775807 or else not (state equals "invited" or else state equals "joined" or else state equals "left" or else state equals "removed"):
+        return "invalid-membership-change"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set actor to principal_for_device(database and device)
+    if string_length(actor) equals 0:
+        return migration_fail(database and "not-authorized")
+    set values to [operation]
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT group_id,revision,principal,actor,state FROM echo_group_membership WHERE identity=?;" and values))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals group_id) or else not (archive_list_text(old and 2) equals int_to_string(previous_revision + 1)) or else not (archive_list_text(old and 3) equals member) or else not (archive_list_text(old and 4) equals actor) or else not (archive_list_text(old and 5) equals state):
+            return migration_fail(database and "membership-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "membership-read-failed")
+    set values to [group_id]
+    set group to history_collect_one(checkpoint_prepare(database and "SELECT creator,(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=?1) FROM echo_groups WHERE identity=?1;" and values))
+    if not (archive_list_text(group and 0) equals "found"):
+        return migration_fail(database and "group-unavailable")
+    if not (archive_list_text(group and 2) equals int_to_string(previous_revision)):
+        return migration_fail(database and "membership-revision-conflict")
+    set actor_state to group_member_state(database and group_id and actor)
+    set member_state to group_member_state(database and group_id and member)
+    set permitted to 0
+    if state equals "invited" and actor_state equals "joined" and not (member_state equals "joined" or else member_state equals "invited") and string_length(principal_role(database and member)) > 0:
+        set permitted to 1
+    if state equals "joined" and actor equals member and member_state equals "invited":
+        set permitted to 1
+    if state equals "left" and actor equals member and member_state equals "joined":
+        set permitted to 1
+    if state equals "removed" and actor_state equals "joined" and actor equals archive_list_text(group and 1) and not (actor equals member) and (member_state equals "joined" or else member_state equals "invited"):
+        set permitted to 1
+    if permitted equals 0:
+        return migration_fail(database and "membership-not-authorized")
+    set values to [operation,group_id,int_to_string(previous_revision + 1),member,actor,state]
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_membership VALUES(?1,?2,CAST(?3 AS INTEGER),?4,?5,?6);" and values) and 101) is not equal to 0 or else group_capture_audience(database and group_id and previous_revision + 1) is not equal to 0:
+        return migration_fail(database and "membership-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+# Historical read requires both membership in that exact audience and current
+# membership. Fresh dispatch additionally requires the current group revision.
+# No role, administrator label or channel-name match bypasses these checks.
+define group_audience_allows with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str and revision as Int and current_only as Int returning Int:
+    if revision < 1 or else group_text_valid(group_id) equals 0 or else group_text_valid(platform) equals 0 or else group_text_valid(server) equals 0 or else group_text_valid(room) equals 0 or else not (current_only equals 0 or else current_only equals 1):
+        return 0
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return 0
+    set values to [group_id,principal,platform,server,room,int_to_string(revision),int_to_string(current_only)]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT a.group_id FROM echo_group_audiences a JOIN echo_groups g ON g.identity=a.group_id JOIN echo_principals p ON p.identity=a.principal AND p.revoked=0 WHERE a.group_id=?1 AND a.principal=?2 AND g.platform=?3 AND g.server=?4 AND g.channel=?5 AND a.revision=CAST(?6 AS INTEGER) AND (SELECT m.state FROM echo_group_membership m WHERE m.group_id=a.group_id AND m.principal=a.principal ORDER BY m.revision DESC LIMIT 1)='joined' AND (?7='0' OR a.revision=(SELECT MAX(m.revision) FROM echo_group_membership m WHERE m.group_id=a.group_id));" and values))
+    return archive_list_text(row and 0) equals "found"

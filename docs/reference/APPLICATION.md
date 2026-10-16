@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T05:38:32.056889+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:49:11.580421+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2830,6 +2830,32 @@ Imports: accounts → app/security/accounts.ep
 
 - Line 3: `define principal_device_link_schema with database as Int returning Str:`
 - Line 14: `define principal_host_device_link with database as Int and identity as Str and device as Str and expected as Str and target as Str and reason as Str returning Str:`
+
+## app/security/groups.ep
+
+[Source](../../app/security/groups.ep) · 126 lines · 12354 bytes
+
+SHA-256: `f8cbedf67cdec94564fbc0c0c336fd0a379a823a1a8d8e524096d73613e3d3db`
+
+> Host-adapter namespace values must come from verified UI/connector routing,
+> never from model tool arguments. Group membership grants no admin capability.
+> Membership changes create a fresh audience. A new member is never inserted
+> into an older audience, and private session ownership is never modified.
+> Exact retry is harmless, but a new action must name the current revision.
+> A mention/invitation alone cannot join somebody or import their private data.
+> Historical read requires both membership in that exact audience and current
+> membership. Fresh dispatch additionally requires the current group revision.
+> No role, administrator label or channel-name match bypasses these checks.
+
+Imports: ../rights/review_upgrade → app/rights/review_upgrade.ep
+
+- Line 5: `define group_schema with database as Int returning Str:`
+- Line 12: `define group_text_valid with value as Str returning Int:`
+- Line 20: `define group_member_state with database as Int and group_id as Str and principal as Str returning Str:`
+- Line 31: `define group_capture_audience with database as Int and group_id as Str and revision as Int returning Int:`
+- Line 35: `define group_create with database as Int and device as Str and identity as Str and platform as Str and server as Str and room as Str and origin as Str returning Str:`
+- Line 71: `define group_change with database as Int and device as Str and operation as Str and group_id as Str and member as Str and state as Str and previous_revision as Int returning Str:`
+- Line 118: `define group_audience_allows with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str and revision as Int and current_only as Int returning Int:`
 
 ## app/security/node_gate.ep
 
