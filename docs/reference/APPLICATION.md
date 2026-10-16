@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T00:29:05.133510+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:31:05.307180+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1497,16 +1497,16 @@ Imports: providers/native_python → app/providers/native_python.ep, providers/j
 
 ## app/principal_admin.ep
 
-[Source](../../app/principal_admin.ep) · 84 lines · 4525 bytes
+[Source](../../app/principal_admin.ep) · 98 lines · 5539 bytes
 
-SHA-256: `92479e668a361298b5a616de85524d1232f413800e23533a651419e338a43364`
+SHA-256: `78c54f77ed81dccd6e541643b8141f6c8d5095054069a14cb40e7599469a2146`
 
 > OS-local operator command. No browser or model schema exposes this program.
 > Guest sandbox workers cannot open the host database. Never infer authority
 > from an HTTP origin, device name, caller-supplied role or network address.
 > Check compatibility before archive_open can perform schema writes.
 
-Imports: web/run_store → app/web/run_store.ep, security/accounts → app/security/accounts.ep
+Imports: web/run_store → app/web/run_store.ep, security/device_links → app/security/device_links.ep
 
 - Line 7: `define main returning Int:`
 
@@ -2224,6 +2224,23 @@ Imports: revocation → app/security/revocation.ep
 - Line 14: `define principal_host_account with database as Int and identity as Str and platform as Str and subject as Str and principal as Str and revoked as Int and reason as Str returning Str:`
 - Line 77: `define principal_account_enroll with database as Int and platform as Str and subject as Str returning Str:`
 
+## app/security/device_links.ep
+
+[Source](../../app/security/device_links.ep) · 56 lines · 4587 bytes
+
+SHA-256: `e2efdedda38b0d530a2738d7be6c1f6d7d68e2d0a991e0ff2cf69abe92f91f37`
+
+> OS-local operator entry point. Expected binding is a compare-and-swap guard,
+> not authentication. The caller verifies the person and physical credential.
+> This changes authority only: session ownership, transcripts and device
+> revocation are not rewritten. Unlink by restoring the device's original
+> device:<identity> principal, provided that principal remains active.
+
+Imports: accounts → app/security/accounts.ep
+
+- Line 3: `define principal_device_link_schema with database as Int returning Str:`
+- Line 14: `define principal_host_device_link with database as Int and identity as Str and device as Str and expected as Str and target as Str and reason as Str returning Str:`
+
 ## app/security/principals.ep
 
 [Source](../../app/security/principals.ep) · 94 lines · 7580 bytes
@@ -2274,7 +2291,7 @@ Imports: principals → app/security/principals.ep
 
 [Source](../../app/server.ep) · 323 lines · 20525 bytes
 
-SHA-256: `c7f9b5b9c840ddf20a832c16793c14c4bf0894151ac61d0bd2ebe705b09ccdbc`
+SHA-256: `6083fd465ffad9e3535cbfeb2653559d34cf4178c679d38724b344da87695042`
 
 > Let macOS retain native fault stacks for every role, including workers.
 > Every executable role checks before schema writes, recovery or dispatch.

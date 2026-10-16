@@ -1,0 +1,56 @@
+import "accounts"
+
+define principal_device_link_schema with database as Int returning Str:
+    set prior to principal_account_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 5 and "device-link-audit" and "CREATE TABLE echo_device_link_events(identity TEXT PRIMARY KEY,device TEXT NOT NULL REFERENCES echo_devices(device),previous_principal TEXT NOT NULL REFERENCES echo_principals(identity),principal TEXT NOT NULL REFERENCES echo_principals(identity),actor TEXT NOT NULL,reason TEXT NOT NULL,occurred TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TRIGGER echo_device_links_no_update BEFORE UPDATE ON echo_device_link_events BEGIN SELECT RAISE(ABORT,'Device link history is immutable'); END; CREATE TRIGGER echo_device_links_no_delete BEFORE DELETE ON echo_device_link_events BEGIN SELECT RAISE(ABORT,'Device link history is immutable'); END;")
+
+# OS-local operator entry point. Expected binding is a compare-and-swap guard,
+# not authentication. The caller verifies the person and physical credential.
+# This changes authority only: session ownership, transcripts and device
+# revocation are not rewritten. Unlink by restoring the device's original
+# device:<identity> principal, provided that principal remains active.
+define principal_host_device_link with database as Int and identity as Str and device as Str and expected as Str and target as Str and reason as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(device) equals 0 or else string_length(expected) equals 0 or else string_length(target) equals 0 or else string_length(reason) equals 0:
+        return "invalid-device-link"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set values to create_list()
+    set added to append_list(values and identity)
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT device,previous_principal,principal,reason FROM echo_device_link_events WHERE identity=?;" and values))
+    if archive_list_text(saved and 0) equals "found":
+        if not (archive_list_text(saved and 1) equals device) or else not (archive_list_text(saved and 2) equals expected) or else not (archive_list_text(saved and 3) equals target) or else not (archive_list_text(saved and 4) equals reason):
+            return migration_fail(database and "device-link-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(saved and 0) equals "end"):
+        return migration_fail(database and "device-link-read-failed")
+    set values to create_list()
+    set added to append_list(values and device)
+    set current to history_collect_one(checkpoint_prepare(database and "SELECT principal FROM echo_principal_devices WHERE device=?;" and values))
+    if not (archive_list_text(current and 0) equals "found"):
+        return migration_fail(database and "device-unavailable")
+    if not (archive_list_text(current and 1) equals expected):
+        return migration_fail(database and "device-binding-changed")
+    if string_length(principal_role(database and target)) equals 0:
+        return migration_fail(database and "principal-unavailable")
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and device)
+    set added to append_list(values and expected)
+    set added to append_list(values and target)
+    set added to append_list(values and reason)
+    set receipt to checkpoint_prepare(database and "INSERT INTO echo_device_link_events(identity,device,previous_principal,principal,actor,reason) VALUES(?,?,?,?,'host-local',?);" and values)
+    if receipt equals 0 or else archive_finish(receipt and 101) is not equal to 0:
+        return migration_fail(database and "device-link-write-failed")
+    set values to create_list()
+    set added to append_list(values and target)
+    set added to append_list(values and device)
+    set change to checkpoint_prepare(database and "UPDATE echo_principal_devices SET principal=? WHERE device=?;" and values)
+    if change equals 0 or else archive_finish(change and 101) is not equal to 0:
+        return migration_fail(database and "device-link-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
