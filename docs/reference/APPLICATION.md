@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T00:58:46.494361+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T01:10:34.297325+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1203,9 +1203,9 @@ Imports: ../retained_text → app/retained_text.ep, system_awareness → app/con
 
 ## app/context/system_awareness.ep
 
-[Source](../../app/context/system_awareness.ep) · 60 lines · 4397 bytes
+[Source](../../app/context/system_awareness.ep) · 62 lines · 4564 bytes
 
-SHA-256: `d72b80714f07ad34a02a6d71d21028cebde1f920e87e151b72eba1739c0e18ee`
+SHA-256: `770dedc65049f0bb18543ec05dad82c10b1036b9d931af4ab2e86576556ee510`
 
 > Only operator-controlled files enter the system role. Conversation content,
 > attachments and tool observations never select identity or architecture files.
@@ -1214,11 +1214,11 @@ SHA-256: `d72b80714f07ad34a02a6d71d21028cebde1f920e87e151b72eba1739c0e18ee`
 > during deterministic checkpoint preview/reconstruction. No credentials or
 > unrelated sessions are returned. The run comes from the trusted dispatcher.
 
-Imports: ../retained_text → app/retained_text.ep, ../agent/provider_profile → app/agent/provider_profile.ep, ../providers/status → app/providers/status.ep, fs → standard library or compiler dependency
+Imports: ../retained_text → app/retained_text.ep, ../agent/provider_profile → app/agent/provider_profile.ep, ../providers/status → app/providers/status.ep, ../security/run_authority → app/security/run_authority.ep, fs → standard library or compiler dependency
 
-- Line 8: `define echo_system_prompt with database as Int and run as Str returning Str:`
-- Line 38: `define echo_system_inspect with database as Int and run as Str and arguments as Str returning Str:`
-- Line 59: `define echo_system_schema returning Str:`
+- Line 9: `define echo_system_prompt with database as Int and run as Str returning Str:`
+- Line 39: `define echo_system_inspect with database as Int and run as Str and arguments as Str returning Str:`
+- Line 61: `define echo_system_schema returning Str:`
 
 ## app/device_admin.ep
 
@@ -2292,9 +2292,9 @@ Imports: principals → app/security/principals.ep
 
 ## app/security/run_authority.ep
 
-[Source](../../app/security/run_authority.ep) · 27 lines · 3744 bytes
+[Source](../../app/security/run_authority.ep) · 46 lines · 5171 bytes
 
-SHA-256: `22c4de5ba698a74d25d08d90842331c44ddb3d70c2568c886f7bebdf58f2dc47`
+SHA-256: `8b927666b4c4b0ce8dfa74d35cab480e1ae1512c14254c5201a693b13a8cc75f`
 
 > Capture authority atomically with run creation. Existing historical runs
 > have no proven initiating role and are not silently backfilled as admins.
@@ -2302,11 +2302,14 @@ SHA-256: `22c4de5ba698a74d25d08d90842331c44ddb3d70c2568c886f7bebdf58f2dc47`
 > No later grant can elevate an older queued request; even revoke/restore or
 > unlink/relink cycles require a new run. Ordinary admin is not charter steward.
 > Unmigrated Phase One retains its existing sandbox only, never admin.
+> A factual per-run observation, not a grant and not stable system-prompt text.
+> A later promotion does not describe an older queued run as newly privileged.
 
 Imports: device_links → app/security/device_links.ep
 
 - Line 5: `define run_authority_schema with database as Int returning Str:`
 - Line 14: `define run_authority_allows with database as Int and run as Str and required as Str returning Int:`
+- Line 31: `define run_authority_observation with database as Int and run as Str returning Str:`
 
 ## app/security/tool_authority.ep
 

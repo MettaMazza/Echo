@@ -82,3 +82,6 @@ Concurrent full-context candidate started (16 October): the installed llama.cpp 
 
 
 Concurrency candidate follow-up: loaded in approximately 23 seconds from cached local weights. Both slots reported the full model context; simultaneous short generations were observed in both slots and completed in 6.01 seconds each (128-token measurement outputs, not a production output limit). Started two independently token-counted near-full-context recall requests with output room reserved within each model-derived capacity. The long test is still running; this is not full-context acceptance or production promotion.
+
+
+Authority self-awareness (16 October): system_inspect now includes a factual authority object for its own run. Native tests verify ordinary-user and admin observations, denial after role change/revocation, and unavailable missing-run identity. A later grant never relabels an older queued run as privileged. The observation lives in tool output, not the stable identity/system prefix; no identity wording was changed. This source change is not yet deployed. The two full-context candidate requests continue independently.
