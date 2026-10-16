@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T02:11:23.267854+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:17:07.105546+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1902,9 +1902,9 @@ Imports: ../../app/web/run_store → app/web/run_store.ep
 
 ## tests/web/prepare_compaction_preview.ep
 
-[Source](../../tests/web/prepare_compaction_preview.ep) · 46 lines · 2779 bytes
+[Source](../../tests/web/prepare_compaction_preview.ep) · 51 lines · 3303 bytes
 
-SHA-256: `03e9220c270b2b886b7128d5b0cc9fe529b2fde0678506200a78cb5b16032a05`
+SHA-256: `d3ecdae33ba943674a544ce1490c70807f63b4c781e9603800124aedeb358cfd`
 
 > Disposable browser acceptance fixture. These are explicitly seeded stages,
 > not a model compaction result. Never run this against a user archive.
