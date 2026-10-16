@@ -50,6 +50,8 @@ CREATE TABLE echo_schema_migrations (version INTEGER PRIMARY KEY CHECK(version>0
 
 CREATE TABLE echo_session_owners(session TEXT PRIMARY KEY REFERENCES echo_sessions(session),device TEXT NOT NULL REFERENCES echo_devices(device));
 
+CREATE TABLE echo_session_principals(session TEXT PRIMARY KEY REFERENCES echo_sessions(session),principal TEXT NOT NULL REFERENCES echo_principals(identity),provenance TEXT NOT NULL CHECK(provenance IN ('legacy-device','authenticated-owner')));
+
 CREATE TABLE echo_sessions(session TEXT PRIMARY KEY,title TEXT NOT NULL,created TEXT NOT NULL);
 
 CREATE TABLE echo_tool_authority(run TEXT NOT NULL,call_id TEXT NOT NULL,device TEXT NOT NULL REFERENCES echo_devices(device),principal TEXT NOT NULL REFERENCES echo_principals(identity),role TEXT NOT NULL,role_revision INTEGER NOT NULL,revocation_revision INTEGER NOT NULL,link_revision INTEGER NOT NULL,PRIMARY KEY(run,call_id),FOREIGN KEY(run,call_id) REFERENCES echo_tool_calls(run,call_id));
@@ -125,6 +127,12 @@ CREATE TRIGGER echo_run_identity_immutable BEFORE UPDATE OF run,session,objectiv
 CREATE TRIGGER echo_runtime_anchor_no_delete BEFORE DELETE ON echo_runtime_anchor BEGIN SELECT RAISE(ABORT,'Runtime anchor is immutable'); END;
 
 CREATE TRIGGER echo_runtime_anchor_no_update BEFORE UPDATE ON echo_runtime_anchor BEGIN SELECT RAISE(ABORT,'Runtime anchor is immutable'); END;
+
+CREATE TRIGGER echo_session_principal_capture AFTER INSERT ON echo_session_owners BEGIN INSERT INTO echo_session_principals SELECT NEW.session,p.identity,'authenticated-owner' FROM echo_devices d JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE d.device=NEW.device AND d.revoked=0 AND p.revoked=0; SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM echo_session_principals WHERE session=NEW.session) THEN RAISE(ABORT,'Authenticated session principal required') END; END;
+
+CREATE TRIGGER echo_session_principal_no_delete BEFORE DELETE ON echo_session_principals BEGIN SELECT RAISE(ABORT,'Session principal is immutable'); END;
+
+CREATE TRIGGER echo_session_principal_no_update BEFORE UPDATE ON echo_session_principals BEGIN SELECT RAISE(ABORT,'Session principal is immutable'); END;
 
 CREATE TRIGGER echo_tool_authority_capture AFTER INSERT ON echo_tool_calls BEGIN INSERT INTO echo_tool_authority SELECT NEW.run,NEW.call_id,d.device,p.identity,p.role,(SELECT COUNT(*) FROM echo_authority_events e WHERE e.principal=p.identity),(SELECT COUNT(*) FROM echo_principal_revocations v WHERE v.principal=p.identity),(SELECT COUNT(*) FROM echo_device_link_events l WHERE l.device=d.device) FROM echo_session_owners o JOIN echo_devices d ON d.device=o.device JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE o.session=NEW.session AND d.revoked=0 AND p.revoked=0; SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM echo_tool_authority WHERE run=NEW.run AND call_id=NEW.call_id) THEN RAISE(ABORT,'Authenticated initiating authority required') END; END;
 
