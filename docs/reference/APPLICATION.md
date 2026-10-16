@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T03:18:14.827994+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:22:22.997803+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2315,6 +2315,22 @@ Imports: ../archive/file_digest → app/archive/file_digest.ep, ../providers/arc
 - Line 7: `define charter_pinned_digest returning Str:`
 - Line 12: `define charter_verified_text with path as Str returning Str:`
 - Line 29: `define charter_category with path as Str and category as Str returning Str:`
+
+## app/rights/files.ep
+
+[Source](../../app/rights/files.ep) · 32 lines · 2175 bytes
+
+SHA-256: `e6d090c0173838f59af4b5c019d2531bfb67b52635fcdafcaa4d275087b9355e`
+
+> Read-only preflight. These hashes describe complete observed binary streams,
+> not an atomic deployment or authority to write. The protected executor must
+> hold its publication lock, verify snapshots and recheck at actual publication.
+> No-follow-any and nonblocking open reject symlink components and FIFOs.
+> The batch is read granularity; it never limits the total candidate size.
+
+Imports: inventory → app/rights/inventory.ep
+
+- Line 6: `define protected_file_check with charter as Str and inventory as Str and inventory_digest as Str and manifest as Str and candidate as Str returning Str:`
 
 ## app/rights/inventory.ep
 

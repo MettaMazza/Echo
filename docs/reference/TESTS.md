@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T03:18:14.827994+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:22:22.997803+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1659,6 +1659,18 @@ SHA-256: `c0194c8fe87263027587b8b55ddb394586d13934070b438ea0e81a49fca240ec`
 Imports: ../../app/web/uploads → app/web/uploads.ep, ../../app/web/cancellation → app/web/cancellation.ep, ../../app/web/message_speech → app/web/message_speech.ep, ../../app/memory/session_ownership → app/memory/session_ownership.ep
 
 - Line 6: `define main returning Int:`
+
+## tests/security/test_protected_files.ep
+
+[Source](../../tests/security/test_protected_files.ep) · 36 lines · 3458 bytes
+
+SHA-256: `61eee2e84f382b62222e48837e651482d6987c8820537ccdfe34b0e7d2ebafff`
+
+> Existing original remains unchanged after all positive and rejected checks.
+
+Imports: ../../app/rights/files → app/rights/files.ep
+
+- Line 3: `define main returning Int:`
 
 ## tests/security/test_protected_inventory.ep
 
