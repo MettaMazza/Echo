@@ -1,0 +1,57 @@
+import "../../app/web/attachments"
+import "../../app/agent/tool_recovery"
+import "../../app/agent/run_messages"
+import "../fixtures/generation_fixture"
+
+# Exercise the real streaming parser, durable queued request and dispatcher.
+define recall_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":" and provider_quote(call_id))
+    set delta to concat(delta and concat(",\"function\":{\"name\":" and provider_quote(name)))
+    set delta to concat(delta and concat(",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}")))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set body to session_request_body_owned(database and run and "fixture" and agent_run_messages(database and run))
+    if string_contains(body and "memory_search") equals 0 or else provider_json_tokens(body) equals 0:
+        return 2
+    set generated to agent_generate_local(database and run and request and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 3
+    if agent_tool_step(database and run) is not equal to 0 or else agent_tool_step(database and run) is not equal to 0:
+        return 4
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0 or else not (session_principal_schema(database) equals "applied"):
+        return 2
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture" and "secret") is not equal to 0:
+        return 3
+    set original to web_submit_owned(database and "owner" and "original" and "" and "My milestone is Café 🌍")
+    set later to web_submit_owned(database and "owner" and "recall" and "" and "Recall the milestone")
+    if recall_fixture_call(database and "recall" and "search-request" and "search" and "memory_search" and "{\"query\":\"milestone\",\"after\":0}") is not equal to 0:
+        return 4
+    set result to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.event'),json_extract(e.payload,'$.result.source_session') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='search' AND t.state='observed';"))
+    if not (archive_list_text(result and 1) equals "original:user") or else not (archive_list_text(result and 2) equals archive_list_text(original and 1)):
+        return 5
+    if recall_fixture_call(database and "recall" and "read-request" and "read" and "memory_read" and "{\"event\":\"original:user\",\"offset\":16,\"characters\":6}") is not equal to 0:
+        return 6
+    set result to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.text'),json_extract(e.payload,'$.result.next_offset') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='read' AND t.state='observed';"))
+    if not (archive_list_text(result and 1) equals "Café 🌍") or else not (archive_list_text(result and 2) equals "22"):
+        return 7
+    if recall_fixture_call(database and "recall" and "forged-request" and "forged" and "memory_search" and "{\"query\":\"\",\"after\":0,\"principal\":\"another-user\"}") is not equal to 0:
+        return 8
+    set result to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.status') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='forged' AND t.state='observed';"))
+    if not (archive_list_text(result and 1) equals "invalid-arguments"):
+        return 9
+    if string_contains(memory_tool_execute(database and "recall" and "read" and "memory_read") and "invalid-request") equals 0:
+        return 10
+    if sql_close(database) is not equal to 0:
+        return 11
+    display "PASS: streamed memory search/read tools return original cross-session Unicode evidence, reject scope injection and prevent replay of an observed call."
+    return 0

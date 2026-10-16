@@ -1,0 +1,66 @@
+import "session_ownership"
+import "../archive/history"
+
+# Resolve only the initiating run's own private principal. Neither a requested
+# principal nor an administrator role selects another person's memory.
+define memory_archive_principal with database as Int and run as Str returning Str:
+    if run_authority_allows(database and run and "user") equals 0:
+        return ""
+    set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_session_principals';"))
+    if not (archive_list_text(schema and 0) equals "found"):
+        return ""
+    set values to create_list()
+    set added to append_list(values and run)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT a.principal FROM echo_run_authority a JOIN echo_runs r ON r.run=a.run JOIN echo_session_principals s ON s.session=r.session AND s.principal=a.principal WHERE a.run=?;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+# A fixed boundary makes a scan finite without dropping older conversations.
+define memory_archive_boundary with database as Int and run as Str returning List:
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    set values to create_list()
+    set added to append_list(values and principal)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(MAX(e.sequence),0) FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal=? AND e.kind IN ('user','assistant_final');" and values))
+    if not (memory_archive_principal(database and run) equals principal):
+        return history_status("authorization-changed")
+    return row
+
+# Result: status, event, source session, sequence, kind, timestamp, digest.
+# This is chronological source recall, not inferred semantic knowledge.
+define memory_archive_next with database as Int and run as Str and literal as Str and after_sequence as Int and through_sequence as Int returning List:
+    if after_sequence < 0 or else through_sequence < after_sequence:
+        return history_status("invalid-range")
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    set values to create_list()
+    set added to append_list(values and principal)
+    set added to append_list(values and literal)
+    set added to append_list(values and int_to_string(after_sequence))
+    set added to append_list(values and int_to_string(through_sequence))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT e.event,e.session,e.sequence,e.kind,e.occurred,e.digest FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal=?1 AND e.kind IN ('user','assistant_final') AND e.sequence>?3 AND e.sequence<=?4 AND instr(e.payload,?2)>0 ORDER BY e.sequence LIMIT 1;" and values))
+    if not (memory_archive_principal(database and run) equals principal):
+        return history_status("authorization-changed")
+    return row
+
+# Guessing an event identifier is not permission. Authorise the original source
+# session before using the existing Unicode passage reader and original digest.
+define memory_archive_read with database as Int and run as Str and event as Str and offset as Int and characters as Int returning List:
+    if offset < 0 or else characters < 1:
+        return history_status("invalid-range")
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    set values to create_list()
+    set added to append_list(values and principal)
+    set added to append_list(values and event)
+    set source to history_collect_one(checkpoint_prepare(database and "SELECT e.session FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal=?1 AND e.event=?2 AND e.kind IN ('user','assistant_final');" and values))
+    if not (archive_list_text(source and 0) equals "found"):
+        return source
+    set row to history_read_piece(database and archive_list_text(source and 1) and event and offset and characters)
+    if not (memory_archive_principal(database and run) equals principal):
+        return history_status("authorization-changed")
+    return row

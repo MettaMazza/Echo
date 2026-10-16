@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T01:13:58.748779+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T01:22:11.285677+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1523,6 +1523,19 @@ Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/a
 
 - Line 10: `define main returning Int:`
 
+## tests/security/test_memory_tools.ep
+
+[Source](../../tests/security/test_memory_tools.ep) · 57 lines · 4612 bytes
+
+SHA-256: `2d74b555a34a218dd02c6954330422f828ba3a81979144088d815d95c59d9f55`
+
+> Exercise the real streaming parser, durable queued request and dispatcher.
+
+Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 7: `define recall_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
+- Line 27: `define main returning Int:`
+
 ## tests/security/test_principals.ep
 
 [Source](../../tests/security/test_principals.ep) · 50 lines · 3211 bytes
@@ -1534,6 +1547,17 @@ SHA-256: `83b7a08fbe0e6d406bbb06f016d49824c01c031a0b035380b6a68172104945aa`
 Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/principals → app/security/principals.ep, fs → standard library or compiler dependency
 
 - Line 5: `define main returning Int:`
+
+## tests/security/test_private_recall.ep
+
+[Source](../../tests/security/test_private_recall.ep) · 55 lines · 4459 bytes
+
+SHA-256: `901b60a1e229f98213394954d1abdf01ac234dd26eee6e2a42ea78249b3da545`
+
+
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/memory/archive_recall → app/memory/archive_recall.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/security/test_revocation.ep
 
