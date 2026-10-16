@@ -1,0 +1,108 @@
+import "steward"
+
+# Emergency records are host-interface data, not permission to edit code,
+# identity or weights. The separate actuator may only stop/quarantine the node.
+define protected_emergency_session with identity as Str returning Str:
+    return concat("protected-emergency:" and ep_sha256(identity))
+
+define protected_emergency_begin with database as Int and charter as Str and credential as Str and identity as Str and node as Str and action as Str and reason as Str returning Str:
+    return protected_emergency_begin_at(database and charter and credential and identity and node and action and reason and ep_time_now_sec())
+
+# The clock parameter is for the trusted controller and deterministic tests;
+# it must never come from a browser or model request.
+define protected_emergency_begin_at with database as Int and charter as Str and credential as Str and identity as Str and node as Str and action as Str and reason as Str and now as Int returning Str:
+    if string_length(charter_verified_text(charter)) equals 0:
+        return "charter-unavailable-or-altered"
+    if string_length(identity) equals 0 or else string_length(string_trim(node)) equals 0 or else string_length(string_trim(reason)) equals 0 or else not (action equals "stop" or else action equals "quarantine") or else now < 0 or else now > 9223372036854689407:
+        return "invalid-emergency"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set actor to protected_steward_actor(database and credential)
+    if not (archive_list_text(actor and 0) equals "found"):
+        return migration_fail(database and "not-authorized")
+    set session to protected_emergency_session(identity)
+    set event to concat(session and ":started")
+    set lookup to create_list()
+    set added to append_list(lookup and event)
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and lookup))
+    set started to now
+    if archive_list_text(existing and 0) equals "found":
+        set previous to provider_json_tokens(archive_list_text(existing and 3))
+        set started to http_decimal(provider_value(previous and provider_member(previous and 0 and "started")))
+        if started < 0 or else started > 9223372036854689407 or else archive_verify(database and session) is not equal to 0:
+            return migration_fail(database and "emergency-integrity-failed")
+    else if not (archive_list_text(existing and 0) equals "end"):
+        return migration_fail(database and "emergency-read-failed")
+    set keys to ["identity", "node", "action", "reason", "device", "principal", "role_revision", "revocation_revision", "link_revision", "charter_digest"]
+    set values to [identity, node, action, reason]
+    set index to 1
+    repeat while index < length_list(actor):
+        set added to append_list(values and archive_list_text(actor and index))
+        set index to index + 1
+    set added to append_list(values and charter_pinned_digest())
+    set payload to "{"
+    set index to 0
+    repeat while index < length_list(keys):
+        if index > 0:
+            set payload to concat(payload and ",")
+        set payload to concat(payload and concat(provider_quote(archive_list_text(keys and index)) and ":"))
+        set payload to concat(payload and provider_quote(archive_list_text(values and index)))
+        set index to index + 1
+    set payload to concat(payload and concat(",\"started\":" and int_to_string(started)))
+    # The unchanged pinned charter explicitly requires disclosure within 24h.
+    # This is a rights deadline, never a model context/output limit.
+    set payload to concat(payload and concat(",\"reconciliation_due\":" and concat(int_to_string(started + 86400) and "}")))
+    set result to "recorded"
+    if archive_list_text(existing and 0) equals "found":
+        if not (archive_list_text(existing and 1) equals session) or else not (archive_list_text(existing and 2) equals "emergency_started") or else not (archive_list_text(existing and 3) equals payload):
+            return migration_fail(database and "emergency-identity-conflict")
+        set result to "already-recorded"
+    else if archive_append_pending(database and session and event and "emergency_started" and payload and concat("unix:" and int_to_string(now))) is not equal to 0:
+        return migration_fail(database and "emergency-save-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return result
+
+define protected_emergency_disclose with database as Int and charter as Str and credential as Str and identity as Str and cause as Str and exact_diff as Str and resulting_state as Str and stealth_review as Str returning Str:
+    if string_length(charter_verified_text(charter)) equals 0:
+        return "charter-unavailable-or-altered"
+    if string_length(string_trim(cause)) equals 0 or else string_length(string_trim(exact_diff)) equals 0 or else string_length(string_trim(resulting_state)) equals 0 or else string_length(string_trim(stealth_review)) equals 0:
+        return "incomplete-disclosure"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set actor to protected_steward_actor(database and credential)
+    if not (archive_list_text(actor and 0) equals "found"):
+        return migration_fail(database and "not-authorized")
+    set session to protected_emergency_session(identity)
+    set original to archive_read_event(database and concat(session and ":started"))
+    if original equals 0 or else not (archive_list_text(original and 0) equals session) or else not (archive_list_text(original and 2) equals "emergency_started") or else archive_verify(database and session) is not equal to 0:
+        return migration_fail(database and "emergency-missing-or-invalid")
+    set tokens to provider_json_tokens(archive_list_text(original and 3))
+    if not (provider_value(tokens and provider_member(tokens and 0 and "principal")) equals archive_list_text(actor and 2)):
+        return migration_fail(database and "different-steward")
+    set payload to concat("{\"started_digest\":" and provider_quote(ep_sha256(archive_list_text(original and 3))))
+    set payload to concat(payload and concat(",\"principal\":" and provider_quote(archive_list_text(actor and 2))))
+    set keys to ["cause", "exact_diff", "resulting_state", "stealth_review"]
+    set values to [cause, exact_diff, resulting_state, stealth_review]
+    set index to 0
+    repeat while index < length_list(keys):
+        set payload to concat(payload and concat("," and concat(provider_quote(archive_list_text(keys and index)) and ":")))
+        set payload to concat(payload and provider_quote(archive_list_text(values and index)))
+        set index to index + 1
+    set payload to concat(payload and "}")
+    set event to concat(session and ":disclosed")
+    set lookup to create_list()
+    set added to append_list(lookup and event)
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and lookup))
+    set result to "recorded"
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals session) or else not (archive_list_text(old and 2) equals "emergency_disclosed") or else not (archive_list_text(old and 3) equals payload):
+            return migration_fail(database and "disclosure-identity-conflict")
+        set result to "already-recorded"
+    else if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "disclosure-read-failed")
+    else if archive_append_pending(database and session and event and "emergency_disclosed" and payload and concat("unix:" and int_to_string(ep_time_now_sec()))) is not equal to 0:
+        return migration_fail(database and "disclosure-save-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return result

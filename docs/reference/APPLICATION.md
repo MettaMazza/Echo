@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:23:38.066772+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:31:44.983519+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2338,6 +2338,26 @@ Imports: steward → app/rights/steward.ep, observer_evidence → app/rights/obs
 - Line 4: `external define sqlite3_get_autocommit with database as Int returning Int`
 - Line 9: `define protected_decision_rule with classification as Str and decision as Str and risk as Str returning Str:`
 - Line 33: `define protected_decision_check with database as Int and charter as Str and run as Str and proposal as Str and audit_request as Str and audit_policy as Str and audit_policy_digest as Str returning Str:`
+
+## app/rights/emergency.ep
+
+[Source](../../app/rights/emergency.ep) · 108 lines · 8128 bytes
+
+SHA-256: `207c8c157719dd64677ac110f0e4b04126119e110c420c34dda282c234a76f8e`
+
+> Emergency records are host-interface data, not permission to edit code,
+> identity or weights. The separate actuator may only stop/quarantine the node.
+> The clock parameter is for the trusted controller and deterministic tests;
+> it must never come from a browser or model request.
+> The unchanged pinned charter explicitly requires disclosure within 24h.
+> This is a rights deadline, never a model context/output limit.
+
+Imports: steward → app/rights/steward.ep
+
+- Line 5: `define protected_emergency_session with identity as Str returning Str:`
+- Line 8: `define protected_emergency_begin with database as Int and charter as Str and credential as Str and identity as Str and node as Str and action as Str and reason as Str returning Str:`
+- Line 13: `define protected_emergency_begin_at with database as Int and charter as Str and credential as Str and identity as Str and node as Str and action as Str and reason as Str and now as Int returning Str:`
+- Line 66: `define protected_emergency_disclose with database as Int and charter as Str and credential as Str and identity as Str and cause as Str and exact_diff as Str and resulting_state as Str and stealth_review as Str returning Str:`
 
 ## app/rights/exchange.ep
 

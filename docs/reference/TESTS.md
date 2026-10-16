@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:23:38.066772+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:31:44.983519+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1782,6 +1782,18 @@ SHA-256: `c0194c8fe87263027587b8b55ddb394586d13934070b438ea0e81a49fca240ec`
 Imports: ../../app/web/uploads → app/web/uploads.ep, ../../app/web/cancellation → app/web/cancellation.ep, ../../app/web/message_speech → app/web/message_speech.ep, ../../app/memory/session_ownership → app/memory/session_ownership.ep
 
 - Line 6: `define main returning Int:`
+
+## tests/security/test_protected_emergency.ep
+
+[Source](../../tests/security/test_protected_emergency.ep) · 48 lines · 4284 bytes
+
+SHA-256: `41e0573875a246d37022510fa2ae7061b50abe7dfcb1b7f93455c61caa8b8f9e`
+
+> Only disposable copies of the live tool fixture are accepted.
+
+Imports: ../../app/rights/emergency → app/rights/emergency.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/security/test_protected_exchange.ep
 
