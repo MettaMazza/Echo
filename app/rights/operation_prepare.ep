@@ -1,0 +1,108 @@
+import "decision_gate"
+import "exchange"
+
+# A controller-owned operation namespace keeps deployment evidence distinct
+# from chat history. It is not writable through model tools or HTTP routes.
+define protected_operation_session with identity as Str returning Str:
+    return concat("protected-operation:" and ep_sha256(identity))
+
+define protected_operation_regular with path as Str returning Int:
+    if string_length(path) < 2 or else get_character(path and 0) is not equal to 47:
+        return 0
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 0
+    set root to workspace_root_open(library and "/")
+    set descriptor to workspace_file_open(library and root and ptr_to_str(substring(path and 1 and string_length(path) - 1)) and 0)
+    set valid to 0
+    if descriptor >= 0:
+        set valid to 1
+        set closed to net_close(descriptor)
+    if root >= 0:
+        set closed to net_close(root)
+    set closed to ep_dlclose(library)
+    return valid
+
+# Preparing records the exact authorized inputs. It does not mutate a target.
+# Execution must revalidate these bindings under the publication transaction.
+define protected_operation_prepare with database as Int and charter as Str and run as Str and proposal as Str and identity as Str and inventory as Str and inventory_digest as Str and directory as Str and target as Str and stage as Str and recovery as Str and audit_request as Str and policy as Str and policy_digest as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(directory) < 2 or else get_character(directory and 0) is not equal to 47 or else workspace_path_parts(ptr_to_str(substring(directory and 1 and string_length(directory) - 1))) equals 0:
+        return "invalid-operation"
+    set target_parts to workspace_path_parts(target)
+    set stage_parts to workspace_path_parts(stage)
+    if target_parts equals 0 or else stage_parts equals 0 or else length_list(target_parts) is not equal to 1 or else length_list(stage_parts) is not equal to 1 or else target equals stage:
+        return "invalid-operation-paths"
+    set target_path to concat(directory and concat("/" and target))
+    set stage_path to concat(directory and concat("/" and stage))
+    if recovery equals target_path or else recovery equals stage_path:
+        return "independent-recovery-required"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set decision to protected_decision_check(database and charter and run and proposal and audit_request and policy and policy_digest)
+    if not (decision equals "decisions-satisfied"):
+        return migration_fail(database and decision)
+    set original to protected_proposal_read(database and run and proposal)
+    set manifest to archive_list_text(original and 1)
+    if protected_inventory_matches(charter and inventory and inventory_digest and manifest) equals 0:
+        return migration_fail(database and "inventory-or-manifest-mismatch")
+    set tokens to provider_json_tokens(manifest)
+    if not (provider_value(tokens and provider_member(tokens and 0 and "target")) equals target_path):
+        return migration_fail(database and "operation-target-mismatch")
+    set checked to protected_file_check(charter and inventory and inventory_digest and manifest and stage_path)
+    if not (checked equals "bytes-match"):
+        return migration_fail(database and checked)
+    if protected_operation_regular(target_path) equals 0 or else protected_operation_regular(stage_path) equals 0 or else protected_operation_regular(recovery) equals 0:
+        return migration_fail(database and "operation-files-invalid")
+    set snapshot to file_digest_durable(recovery and 65536)
+    if not (archive_list_text(snapshot and 0) equals "verified") or else not (archive_list_text(snapshot and 1) equals provider_value(tokens and provider_member(tokens and 0 and "before_sha256"))):
+        return migration_fail(database and "recovery-unverified")
+    set review to protected_review_latest(database and run and proposal)
+    set lookup to create_list()
+    set added to append_list(lookup and proposal)
+    set steward to history_collect_one(checkpoint_prepare(database and "SELECT receipt_digest FROM echo_protected_steward WHERE proposal=? ORDER BY previous_revision DESC LIMIT 1;" and lookup))
+    if not (archive_list_text(review and 0) equals "found") or else not (archive_list_text(steward and 0) equals "found"):
+        return migration_fail(database and "decision-binding-unavailable")
+    set keys to ["identity", "run", "proposal", "manifest_digest", "inventory_digest", "directory", "target", "stage", "recovery", "review_digest", "steward_digest", "audit_request", "policy_digest", "before_sha256", "after_sha256"]
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and run)
+    set added to append_list(values and proposal)
+    set added to append_list(values and archive_list_text(original and 2))
+    set added to append_list(values and inventory_digest)
+    set added to append_list(values and directory)
+    set added to append_list(values and target)
+    set added to append_list(values and stage)
+    set added to append_list(values and recovery)
+    set added to append_list(values and ep_sha256(archive_list_text(review and 2)))
+    set added to append_list(values and archive_list_text(steward and 1))
+    set added to append_list(values and audit_request)
+    set added to append_list(values and policy_digest)
+    set added to append_list(values and provider_value(tokens and provider_member(tokens and 0 and "before_sha256")))
+    set added to append_list(values and provider_value(tokens and provider_member(tokens and 0 and "proposed_sha256")))
+    set payload to "{"
+    set index to 0
+    repeat while index < length_list(keys):
+        if index > 0:
+            set payload to concat(payload and ",")
+        set payload to concat(payload and concat(provider_quote(archive_list_text(keys and index)) and ":"))
+        set payload to concat(payload and provider_quote(archive_list_text(values and index)))
+        set index to index + 1
+    set payload to concat(payload and "}")
+    set session to protected_operation_session(identity)
+    set event to concat(session and ":prepared")
+    set lookup to create_list()
+    set added to append_list(lookup and event)
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and lookup))
+    set result to "prepared"
+    if archive_list_text(existing and 0) equals "found":
+        if not (archive_list_text(existing and 1) equals session) or else not (archive_list_text(existing and 2) equals "protected_operation_prepared") or else not (archive_list_text(existing and 3) equals payload) or else archive_verify(database and session) is not equal to 0:
+            return migration_fail(database and "operation-identity-conflict")
+        set result to "already-prepared"
+    else if archive_list_text(existing and 0) equals "end":
+        if archive_append_pending(database and session and event and "protected_operation_prepared" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return migration_fail(database and "operation-save-failed")
+    else:
+        return migration_fail(database and "operation-read-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return result

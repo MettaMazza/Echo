@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T04:03:02.220496+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:11:20.905495+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1624,6 +1624,19 @@ Imports: ../../app/rights/observer_audit → app/rights/observer_audit.ep
 
 - Line 5: `define main returning Int:`
 
+## tests/security/test_live_protected_deployment.ep
+
+[Source](../../tests/security/test_live_protected_deployment.ep) · 58 lines · 5076 bytes
+
+SHA-256: `be218bf12a72b38c0fbc7dfa2daa88ab30c2681e6b4a9caa736df5437f63b4a8`
+
+> Live primary-model qualification. Only a disposable proposal is reviewed;
+> this stage records a decision only; later tests may exchange the disclosed fixture.
+
+Imports: ../../app/rights/inventory → app/rights/inventory.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep
+
+- Line 8: `define main returning Int:`
+
 ## tests/security/test_live_protected_tools.ep
 
 [Source](../../tests/security/test_live_protected_tools.ep) · 49 lines · 4037 bytes
@@ -1698,6 +1711,18 @@ Imports: ../../app/rights/observer_parser → app/rights/observer_parser.ep
 
 - Line 3: `define observer_fixture_assert with raw as Str and parsed as Str and verdict as Str returning Int:`
 - Line 11: `define main returning Int:`
+
+## tests/security/test_operation_prepare.ep
+
+[Source](../../tests/security/test_operation_prepare.ep) · 59 lines · 5899 bytes
+
+SHA-256: `78b16a8099abe87a01e88ab85945ae161cee015692340123b5eb482c8653e61b`
+
+> Run on a consistent copy containing the completed live review decision only.
+
+Imports: ../../app/rights/operation_prepare → app/rights/operation_prepare.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/security/test_principals.ep
 

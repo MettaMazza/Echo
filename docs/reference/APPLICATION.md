@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T04:03:02.220496+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T04:11:20.905495+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2441,6 +2441,23 @@ Imports: ../providers/archived_stream → app/providers/archived_stream.ep
 
 - Line 6: `define protected_observer_result with parsed as Int and verdict as Str and reason as Str returning Str:`
 - Line 11: `define protected_observer_parse with raw as Str returning Str:`
+
+## app/rights/operation_prepare.ep
+
+[Source](../../app/rights/operation_prepare.ep) · 108 lines · 7613 bytes
+
+SHA-256: `7086fef745c2b5a8e51478a0e480db28b239b0aadd5153ba2cbb8d91b1f3a058`
+
+> A controller-owned operation namespace keeps deployment evidence distinct
+> from chat history. It is not writable through model tools or HTTP routes.
+> Preparing records the exact authorized inputs. It does not mutate a target.
+> Execution must revalidate these bindings under the publication transaction.
+
+Imports: decision_gate → app/rights/decision_gate.ep, exchange → app/rights/exchange.ep
+
+- Line 6: `define protected_operation_session with identity as Str returning Str:`
+- Line 9: `define protected_operation_regular with path as Str returning Int:`
+- Line 28: `define protected_operation_prepare with database as Int and charter as Str and run as Str and proposal as Str and identity as Str and inventory as Str and inventory_digest as Str and directory as Str and target as Str and stage as Str and recovery as Str and audit_request as Str and policy as Str and policy_digest as Str returning Str:`
 
 ## app/rights/proposals.ep
 
