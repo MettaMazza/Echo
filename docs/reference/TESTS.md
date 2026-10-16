@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T02:22:28.977211+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:28:09.461031+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -863,6 +863,19 @@ SHA-256: `7e0ddf3ea77f1cc3ffbcdecb2bc7e3714061b9ea0cfb674af71a6d57a397a240`
 Imports: ../../app/agent/run_state → app/agent/run_state.ep, ../../app/archive/history → app/archive/history.ep, ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/context/budget → app/context/budget.ep, ../../app/transport/http_stream → app/transport/http_stream.ep, ../../app/transport/socket_write → app/transport/socket_write.ep
 
 - Line 8: `define main returning Int:`
+
+## tests/lifecycle/hold_archive_lock.ep
+
+[Source](../../tests/lifecycle/hold_archive_lock.ep) · 16 lines · 795 bytes
+
+SHA-256: `f7431ba9d7c5dd4efd5f05171993edcdf03f4d3541a07ed9e5369194535b18d3`
+
+> Orchestrated transport fixture. Lock only an explicitly named test archive;
+> the release file controls duration without changing application timeouts.
+
+Imports: ../../app/lifecycle/startup → app/lifecycle/startup.ep
+
+- Line 5: `define main returning Int:`
 
 ## tests/lifecycle/test_migration_interruption.ep
 

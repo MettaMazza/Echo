@@ -33,6 +33,29 @@ define echo_send_response with library as Int and descriptor as Int and status a
         return 1
     return 0
 
+# A busy archive must not turn a status request into an unexplained reset.
+# Consume the framed request without retaining its body before closing TCP.
+# No authentication, archive mutation or model work occurs on this refusal path.
+define echo_archive_busy_response returning Int:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set reader to http_stream_create(library and 3 and -1)
+    set request to http_stream_head(reader)
+    if not (archive_list_text(request and 0) equals "ready"):
+        return echo_send_response(library and 3 and "400 Bad Request" and "application/json" and "{\"status\":\"invalid-request\"}")
+    set expectation to web_header(get_list(request and 5) and "expect")
+    if archive_list_text(expectation and 0) equals "missing":
+        set body to http_body_create(archive_list_text(request and 3) and get_list(request and 4))
+        repeat while 1 equals 1:
+            # Transport chunk size, never a request-size ceiling.
+            set piece to http_body_next(reader and body and 65536)
+            set status to archive_list_text(piece and 0)
+            if status equals "done":
+                break
+            if not (status equals "data"):
+                return 1
+    set released to http_stream_release(reader)
+    return echo_send_response(library and 3 and "503 Service Unavailable" and "application/json" and "{\"status\":\"archive-busy\",\"stage\":\"startup\",\"effects\":\"none\",\"recovery\":\"Retry the same request after the archive writer releases its lock.\"}")
+
 define echo_serve_connection with library as Int and descriptor as Int and port as Int and javascript as Str and config as List returning Int:
     set recorded to echo_diagnostic("request-start" and "http" and descriptor)
     set reader to http_stream_create(library and descriptor and -1)
@@ -168,6 +191,10 @@ define main returning Int:
     if archive_status equals -1:
         set recorded to echo_diagnostic("startup-deferred" and "archive-busy" and 75)
         display "Archive is busy. No worker or service has started; retry the saved operation after the writer releases its lock."
+        if get_argument(get_argument_count() - 1) equals "--connection":
+            set replied to echo_archive_busy_response()
+            if replied is not equal to 0:
+                set recorded to echo_diagnostic("startup-busy-response-failed" and "transport" and replied)
         return 75
     if archive_status equals 0:
         set recorded to echo_diagnostic("startup-refused" and "incompatible-archive-schema" and 78)

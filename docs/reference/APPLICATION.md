@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T02:22:28.977211+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:28:09.461031+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2467,10 +2467,14 @@ Imports: tool_authority → app/security/tool_authority.ep
 
 ## app/server.ep
 
-[Source](../../app/server.ep) · 330 lines · 20931 bytes
+[Source](../../app/server.ep) · 357 lines · 22741 bytes
 
-SHA-256: `bc62209cadac949aacc4db981c1747366632d3192b4ab64b18e94a7cf3709d2c`
+SHA-256: `b5edd51f44dbe09dceeb1380966e9a1b4b2701900b799c8719f264e469ceb85a`
 
+> A busy archive must not turn a status request into an unexplained reset.
+> Consume the framed request without retaining its body before closing TCP.
+> No authentication, archive mutation or model work occurs on this refusal path.
+> Transport chunk size, never a request-size ceiling.
 > Let macOS retain native fault stacks for every role, including workers.
 > Every executable role checks before schema writes, recovery or dispatch.
 > Opt-in native crash reports preserve the OS stack instead of replacing
@@ -2480,10 +2484,11 @@ SHA-256: `bc62209cadac949aacc4db981c1747366632d3192b4ab64b18e94a7cf3709d2c`
 Imports: transport/isolated_process → app/transport/isolated_process.ep, retained_text → app/retained_text.ep, transport/cooperative_accept → app/transport/cooperative_accept.ep, transport/http_stream → app/transport/http_stream.ep, transport/socket_write → app/transport/socket_write.ep, transport/file_response → app/transport/file_response.ep, ui/page → app/ui/page.ep, ui/assets → app/ui/assets.ep, fs → standard library or compiler dependency, web/routes → app/web/routes.ep, web/recovery → app/web/recovery.ep, archive/runtime_lock → app/archive/runtime_lock.ep, archive/attachment_restore → app/archive/attachment_restore.ep, lifecycle/startup → app/lifecycle/startup.ep
 
 - Line 16: `define echo_send_response with library as Int and descriptor as Int and status as Str and content_type as Str and body as Str returning Int:`
-- Line 36: `define echo_serve_connection with library as Int and descriptor as Int and port as Int and javascript as Str and config as List returning Int:`
-- Line 80: `define echo_worker_owner returning Int:`
-- Line 119: `define echo_service_owner returning Int:`
-- Line 153: `define main returning Int:`
+- Line 39: `define echo_archive_busy_response returning Int:`
+- Line 59: `define echo_serve_connection with library as Int and descriptor as Int and port as Int and javascript as Str and config as List returning Int:`
+- Line 103: `define echo_worker_owner returning Int:`
+- Line 142: `define echo_service_owner returning Int:`
+- Line 176: `define main returning Int:`
 
 ## app/start_service.ep
 
