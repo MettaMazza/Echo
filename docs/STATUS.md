@@ -39,3 +39,7 @@ The service owner was also fault-tested: a SIGKILL listener exit was durably rec
 ## Unified multimodal default correction
 
 The active default now uses the same local Qwen 3.8 llama.cpp model for text, images and tool loops. The text-only MLX endpoint is retired from new chat selections, and automatic image model switching has been removed. Actual three-turn text/image/history-tool acceptance confirmed one model identity throughout. See [UNIFIED-MULTIMODAL.md](UNIFIED-MULTIMODAL.md).
+
+## Phase Two implementation started — 16 October 2026
+
+Maria authorised the full end-to-end goal. The source integration map, requirement ledger, native backup/restore verification and separately tested transactional migration foundation are in [Phase Two progress](phase2/PROGRESS.md). Production schema and prompts are unchanged. My Brain import was explicitly excluded; other continuity sources remain in scope. Phase Two is active, not complete.

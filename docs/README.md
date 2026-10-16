@@ -30,3 +30,11 @@ The generated reference covers every application and test source file, including
 
 - [Supporting configuration, compiler and planning inventory](forensics/repository-manifest.json)
 - [Exact model tool schemas](reference/TOOL-SCHEMAS.json)
+
+## Phase Two implementation
+
+- [Progress and next actions](phase2/PROGRESS.md)
+- [Requirement and acceptance ledger](phase2/REQUIREMENTS.json)
+- [Inspected source integrations](phase2/SOURCE-MAP.md)
+
+- [Phase Two foundation verification](phase2/FOUNDATION-VERIFICATION.json)

@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-15T23:40:53.205878+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:02:35.211648+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -842,6 +842,43 @@ Imports: ../../app/agent/run_state → app/agent/run_state.ep, ../../app/archive
 
 - Line 8: `define main returning Int:`
 
+## tests/lifecycle/test_migration_interruption.ep
+
+[Source](../../tests/lifecycle/test_migration_interruption.ep) · 43 lines · 2186 bytes
+
+SHA-256: `3e76ad0cee7981f4e64aad6a35a8832238288e41e015347cb3e60fa3b0c0be14`
+
+> Deliberately long disposable SQL, so the driver kills a live native
+> migration after observing its on-disk rollback journal.
+
+Imports: ../../app/lifecycle/migrations → app/lifecycle/migrations.ep, ../../app/archive/snapshot → app/archive/snapshot.ep, fs → standard library or compiler dependency
+
+- Line 5: `define main returning Int:`
+
+## tests/lifecycle/test_migrations.ep
+
+[Source](../../tests/lifecycle/test_migrations.ep) · 45 lines · 2907 bytes
+
+SHA-256: `0398e439c471cad3cf181f8a53c44e46c474ccda0c3605cff6fa79bb53fa5284`
+
+> A failing second statement must undo both earlier DDL and the receipt table.
+
+Imports: ../../app/lifecycle/migrations → app/lifecycle/migrations.ep, fs → standard library or compiler dependency
+
+- Line 4: `define main returning Int:`
+
+## tests/lifecycle/test_operations.ep
+
+[Source](../../tests/lifecycle/test_operations.ep) · 54 lines · 3788 bytes
+
+SHA-256: `169df1237f8869713a8d006e510deddae7b16e4838cccd7740239ef37bc9cca8`
+
+> A failure to persist an outcome cannot consume the current revision.
+
+Imports: ../../app/lifecycle/operations → app/lifecycle/operations.ep, fs → standard library or compiler dependency
+
+- Line 4: `define main returning Int:`
+
 ## tests/lifecycle/test_service.ep
 
 [Source](../../tests/lifecycle/test_service.ep) · 61 lines · 3631 bytes
@@ -1385,6 +1422,18 @@ SHA-256: `e5e039f918e2e4f5e7ad176849ec8d590a77b2eba4ab924f9d4f1b666f3972b1`
 Imports: ../../app/research/vector_controls → app/research/vector_controls.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/security/test_principals.ep
+
+[Source](../../tests/security/test_principals.ep) · 50 lines · 3211 bytes
+
+SHA-256: `83b7a08fbe0e6d406bbb06f016d49824c01c031a0b035380b6a68172104945aa`
+
+> Failing the role update must also roll back the authority receipt.
+
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/principals → app/security/principals.ep, fs → standard library or compiler dependency
+
+- Line 5: `define main returning Int:`
 
 ## tests/tools/test_history_dispatch.ep
 

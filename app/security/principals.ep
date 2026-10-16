@@ -1,0 +1,70 @@
+import "../lifecycle/operations"
+
+# A person is not a browser credential. Legacy devices each receive a distinct
+# user principal. No name, IP, localhost URL or existing pairing grants admin.
+# Device links can later be explicitly authorised; this migration never merges.
+define principal_schema with database as Int returning Str:
+    set operations to operation_schema(database)
+    if not (operations equals "applied" or else operations equals "already-applied"):
+        return operations
+    set schema to "CREATE TABLE echo_principals(identity TEXT PRIMARY KEY,role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin','steward')),revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1))); CREATE TABLE echo_principal_devices(device TEXT PRIMARY KEY REFERENCES echo_devices(device),principal TEXT NOT NULL REFERENCES echo_principals(identity)); CREATE TABLE echo_principal_accounts(platform TEXT NOT NULL,subject TEXT NOT NULL,principal TEXT NOT NULL REFERENCES echo_principals(identity),revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),PRIMARY KEY(platform,subject)); CREATE TABLE echo_authority_events(identity TEXT PRIMARY KEY,principal TEXT NOT NULL REFERENCES echo_principals(identity),previous_role TEXT NOT NULL,role TEXT NOT NULL,actor TEXT NOT NULL,reason TEXT NOT NULL,occurred TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TRIGGER echo_authority_no_update BEFORE UPDATE ON echo_authority_events BEGIN SELECT RAISE(ABORT,'Authority history is immutable'); END; CREATE TRIGGER echo_authority_no_delete BEFORE DELETE ON echo_authority_events BEGIN SELECT RAISE(ABORT,'Authority history is immutable'); END; INSERT INTO echo_principals(identity) SELECT 'device:'||device FROM echo_devices; INSERT INTO echo_principal_devices(device,principal) SELECT device,'device:'||device FROM echo_devices; CREATE TRIGGER echo_device_principal AFTER INSERT ON echo_devices BEGIN INSERT INTO echo_principals(identity) VALUES('device:'||NEW.device); INSERT INTO echo_principal_devices(device,principal) VALUES(NEW.device,'device:'||NEW.device); END;"
+    return migration_apply(database and 2 and "principals-and-authority" and schema)
+
+# Resolve only an already authenticated device. Revocation is rechecked at
+# lookup so queued dispatch must resolve again immediately before execution.
+define principal_for_device with database as Int and device as Str returning Str:
+    set values to create_list()
+    set added to append_list(values and device)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT p.identity FROM echo_principal_devices l JOIN echo_devices d ON d.device=l.device JOIN echo_principals p ON p.identity=l.principal WHERE d.device=? AND d.revoked=0 AND p.revoked=0;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+define principal_role with database as Int and principal as Str returning Str:
+    set values to create_list()
+    set added to append_list(values and principal)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT role FROM echo_principals WHERE identity=? AND revoked=0;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+# Host-control entry point. Never export this routine through an HTTP route or
+# model schema. The eventual host command authenticates by the OS-owned local
+# database boundary; an asserted actor string is an audit label, not authority.
+define principal_host_role with database as Int and identity as Str and principal as Str and role as Str and reason as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(reason) equals 0:
+        return "invalid-authority-change"
+    if not (role equals "user" or else role equals "admin" or else role equals "steward"):
+        return "invalid-role"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set values to create_list()
+    set added to append_list(values and identity)
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT principal,role,reason FROM echo_authority_events WHERE identity=?;" and values))
+    if archive_list_text(saved and 0) equals "found":
+        if not (archive_list_text(saved and 1) equals principal) or else not (archive_list_text(saved and 2) equals role) or else not (archive_list_text(saved and 3) equals reason):
+            return migration_fail(database and "authority-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(saved and 0) equals "end"):
+        return migration_fail(database and "authority-read-failed")
+    set previous to principal_role(database and principal)
+    if string_length(previous) equals 0:
+        return migration_fail(database and "principal-unavailable")
+    set added to append_list(values and principal)
+    set added to append_list(values and previous)
+    set added to append_list(values and role)
+    set added to append_list(values and reason)
+    set receipt to checkpoint_prepare(database and "INSERT INTO echo_authority_events(identity,principal,previous_role,role,actor,reason) VALUES(?,?,?,?,'host-local',?);" and values)
+    if receipt equals 0 or else archive_finish(receipt and 101) is not equal to 0:
+        return migration_fail(database and "authority-write-failed")
+    set values to create_list()
+    set added to append_list(values and role)
+    set added to append_list(values and principal)
+    set change to checkpoint_prepare(database and "UPDATE echo_principals SET role=? WHERE identity=? AND revoked=0;" and values)
+    if change equals 0 or else archive_finish(change and 101) is not equal to 0:
+        return migration_fail(database and "authority-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"

@@ -52,7 +52,7 @@ flowchart LR
     G --> C
 ```
 
-**374 application and test source files** are indexed with hashes, imports and definition signatures. The forensic reference distinguishes implemented behavior, observed tests and deferred work. It does not turn a file count into a test-coverage claim.
+**382 application and test source files** are indexed with hashes, imports and definition signatures. The forensic reference distinguishes implemented behavior, observed tests and deferred work. It does not turn a file count into a test-coverage claim.
 
 | You want to… | Start here |
 | --- | --- |
@@ -79,7 +79,7 @@ Model weights, live configuration, identity files, conversations, credentials an
 
 ## Where Echo goes next
 
-[Phase Two](phase2.md) is a dependency-ordered plan for Discord, scoped multi-user memory, richer tools, reusable tool creation, research and self-improvement interfaces, Gmail and optional external providers. It also carries forward explicitly deferred Phase One work. **These are planned capabilities.** The full decentralized agent network is a longer-term direction.
+[Phase Two](phase2.md) is a dependency-ordered plan for Discord, scoped multi-user memory, richer tools, reusable tool creation, research and self-improvement interfaces, Gmail and optional external providers. It also carries forward explicitly deferred Phase One work. **Implementation has begun; these capabilities are not yet qualified.** The full decentralized agent network is a longer-term direction.
 
 The final Phase Two prompt work is reserved for a joint review with Maria.
 

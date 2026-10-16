@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-15T23:40:53.205878+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:02:35.211648+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1290,6 +1290,47 @@ Imports: providers/native_python → app/providers/native_python.ep, providers/j
 
 - Line 8: `define main returning Int:`
 
+## app/lifecycle/migrations.ep
+
+[Source](../../app/lifecycle/migrations.ep) · 67 lines · 4895 bytes
+
+SHA-256: `f91c3d349d006d0e295fb61639c31af7ce7f18726992300b4a51e1c1c6684052`
+
+> Host-authored SQL from a pinned executable only, never browser/model input.
+> DDL and receipt commit together. Failed candidates never change live history.
+> Call before workers write. An older binary must refuse a newer schema.
+> Restore a verified backup for incompatible rollback; do not destroy new data.
+
+Imports: ../archive/history → app/archive/history.ep, ../context/checkpoint → app/context/checkpoint.ep
+
+- Line 6: `define migration_fail with database as Int and reason as Str returning Str:`
+- Line 11: `define migration_apply with database as Int and version as Int and name as Str and statements as Str returning Str:`
+- Line 54: `define migration_compatible with database as Int and supported as Int returning Int:`
+
+## app/lifecycle/operations.ep
+
+[Source](../../app/lifecycle/operations.ep) · 100 lines · 7833 bytes
+
+SHA-256: `cd35e53134283d1800010b0bd5e3bcb2781ba1a4050987dfbd5cdd21e4ae8573`
+
+> Scope and principal are resolved by the trusted caller, never claimed by a
+> tool. Store diagnostic codes and artifact references, not credentials/prompts.
+> Every state is an immutable receipt. There is no mutable status projection
+> that can commit without its matching audit record.
+> status, principal, kind, request_digest, revision, state, stage, cause,
+> effects, diagnostic reference, recovery action, result reference.
+> A different scope must not learn the owner or reuse its operation ID.
+> Compare revision while holding the writer lock. A lost response never grants
+> a second execution claim. Reopen reads running as running until an owner-death
+> check records uncertainty. Uncertainty cannot transition back into dispatch.
+
+Imports: migrations → app/lifecycle/migrations.ep
+
+- Line 7: `define operation_schema with database as Int returning Str:`
+- Line 13: `define operation_read with database as Int and scope as Str and identity as Str returning List:`
+- Line 19: `define operation_reserve with database as Int and scope as Str and identity as Str and principal as Str and kind as Str and request as Str returning Str:`
+- Line 54: `define operation_transition with database as Int and scope as Str and identity as Str and revision as Int and state as Str and stage as Str and cause as Str and effects as Str and diagnostic as Str and recovery as Str and result as Str returning Str:`
+
 ## app/lifecycle/service_profile.ep
 
 [Source](../../app/lifecycle/service_profile.ep) · 109 lines · 5923 bytes
@@ -1436,6 +1477,21 @@ SHA-256: `39fad251d1d5233cc960853008ca2397686a31dd77f3668f5ced689687bd2cf3`
 Imports: providers/native_python → app/providers/native_python.ep, providers/json_access → app/providers/json_access.ep, providers/archived_stream → app/providers/archived_stream.ep, fs → standard library or compiler dependency
 
 - Line 9: `define main returning Int:`
+
+## app/principal_admin.ep
+
+[Source](../../app/principal_admin.ep) · 64 lines · 3053 bytes
+
+SHA-256: `9ed71d05528d6f1a45f492d3a2a6d750b1c6d0653e9f6a584a92cc567bb83e3f`
+
+> OS-local operator command. No browser or model schema exposes this program.
+> Guest sandbox workers cannot open the host database. Never infer authority
+> from an HTTP origin, device name, caller-supplied role or network address.
+> Check compatibility before archive_open can perform schema writes.
+
+Imports: web/run_store → app/web/run_store.ep, security/principals → app/security/principals.ep
+
+- Line 7: `define main returning Int:`
 
 ## app/providers/archived_stream.ep
 
@@ -2127,6 +2183,28 @@ SHA-256: `341af71d59cc0ce9cd435b9fe8e3c14d4ed9e8f87160f064dc42b48485fb9e99`
 Imports: 
 
 - Line 4: `define archive_list_text with values as List and index as Int returning Str:`
+
+## app/security/principals.ep
+
+[Source](../../app/security/principals.ep) · 70 lines · 6128 bytes
+
+SHA-256: `770157f3c2f2f7088ee7907d4dd68299e9b0e66e3b7643321d67c25f233f4a22`
+
+> A person is not a browser credential. Legacy devices each receive a distinct
+> user principal. No name, IP, localhost URL or existing pairing grants admin.
+> Device links can later be explicitly authorised; this migration never merges.
+> Resolve only an already authenticated device. Revocation is rechecked at
+> lookup so queued dispatch must resolve again immediately before execution.
+> Host-control entry point. Never export this routine through an HTTP route or
+> model schema. The eventual host command authenticates by the OS-owned local
+> database boundary; an asserted actor string is an audit label, not authority.
+
+Imports: ../lifecycle/operations → app/lifecycle/operations.ep
+
+- Line 6: `define principal_schema with database as Int returning Str:`
+- Line 15: `define principal_for_device with database as Int and device as Str returning Str:`
+- Line 23: `define principal_role with database as Int and principal as Str returning Str:`
+- Line 34: `define principal_host_role with database as Int and identity as Str and principal as Str and role as Str and reason as Str returning Str:`
 
 ## app/server.ep
 

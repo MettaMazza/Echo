@@ -1,6 +1,6 @@
 # Echo Phase 2 — review plan
 
-**Status: proposed, not authorised for implementation.** Prepared 16 October 2026 for Maria. This document is the only project change authorised by the planning request. No Discord/Gmail connection, token use, installation, training, code change, prompt change or server administration is part of this turn.
+**Status: implementation authorised by Maria’s end-to-end Phase Two goal, 16 October 2026.** Work follows the dependency order below. Final prompt wording remains reserved for the joint review at step 29. Progress and evidence are recorded in docs/phase2/REQUIREMENTS.json and docs/phase2/PROGRESS.md.
 
 Echo’s full name is **Echo Ernos Smith**.
 
@@ -248,7 +248,7 @@ Every deferred item is in Phase 2. Existing successes remain successes; an old b
 | D02 | Connected research API/UI, vector steering, activation inspection; Stage G/STATUS | Model-callable and human-accessible controls; real capture/intervention/baseline restoration. |
 | D03 | Projects; Stage F/STATUS | Persistent project files/instructions and scoped cross-session work, tested through UI and restart. |
 | D04 | Semantic/cross-session memory; Stage F/STATUS | Scoped retrieval, provenance, corrections, permission revocation and isolation tests. |
-| D05 | Broader restoration, original private identity, My Brain and SFT archive; STATUS | Inventory and import actual available sources, verify hashes/provenance and retrieval; missing records are explicitly requested, never fabricated. Final wording reviewed with Maria. |
+| D05 | Broader restoration, original private identity and SFT archive (My Brain excluded by Maria on 16 October 2026); STATUS | Inventory and import actual available sources, verify hashes/provenance and retrieval; missing records are explicitly requested, never fabricated. Final wording reviewed with Maria. |
 | D06 | Microphone permission and real recording acceptance; explicit user deferral | Actual Mac and phone recording, permissions, transcription, playback and recoverable interruption. |
 | D07 | Reliable reboot startup; OPERATIONS/STATUS | Cold OS reboot starts the supported stack, restores identities/work, reports drive/model failure accurately. |
 | D08 | Portable installer/setup; STATUS/Stage I | Reproducible Ernos lifecycle tooling and clean-location installation with pinned dependencies and recovery documentation. |
@@ -265,7 +265,7 @@ Every deferred item is in Phase 2. Existing successes remain successes; an old b
 | D19 | Attachment removal versus historical erasure; ATTACHMENT-REPAIR | Review and implement explicit archive-aware trash/restore/forgetting semantics with rights and user scope. Current Remove only clears picker/next-message selection; do not label it permanent deletion. |
 | D20 | Documentation/build provenance and final evidence mapping; Stage C/I/A28 | Updated source inventory, dependency locks, self-compilation provenance, operations/runbooks, logical commits and requirement-to-evidence map for the final build. |
 
-At implementation kickoff, reconcile the full original A01–A28 matrix and latest evidence against this register. Carry over any additional unresolved/deferred row discovered, showing the evidence and proposed acceptance; do not silently invent new requirements or reclassify passed work as unfinished.
+At implementation kickoff, reconcile the full original A01–A29 matrix and latest evidence against this register. Carry over any additional unresolved/deferred row discovered, showing the evidence and proposed acceptance; do not silently invent new requirements or reclassify passed work as unfinished.
 
 ## 13. Dependency-ordered execution plan
 
@@ -290,7 +290,7 @@ On success, clear the busy indicator and continue the same task automatically, l
 ### Execution rules
 
 - Begin implementation only after Maria authorises it. This amended document does not itself start implementation.
-- Maintain one requirement ledger linking every section 4/6 tool action, every section 14 scenario, every D01–D20 item and every applicable original A01–A28 row to its implementation step, test and evidence. A family-level tick cannot conceal unfinished individual actions.
+- Maintain one requirement ledger linking every section 4/6 tool action, every section 14 scenario, every D01–D20 item and every applicable original A01–A29 row to its implementation step, test and evidence. A family-level tick cannot conceal unfinished individual actions.
 - For each step record source/build/configuration identity, actual change, checks, evidence paths, remaining failures and the next executable action. Commit coherent changes as they pass; keep secrets and private records out of Git.
 - Run relevant checks immediately. Keep passed evidence unless a later change invalidates it; rerun affected integration checks after changes, then run the final acceptance sequence once against the final candidate.
 - If an external input is missing, record the exact dependency and continue independent steps. Do not mark the dependent feature complete. Failure or unavailable credentials cannot silently remove a requirement.
@@ -566,7 +566,7 @@ On success, clear the busy indicator and continue the same task automatically, l
 
 **Depends on:** 16–26.
 
-- Execute all section 14 scenarios and reconcile every A01–A28 and D01–D20 row. Complete any remaining work discovered in the agreed scope.
+- Execute all section 14 scenarios and reconcile every A01–A29 and D01–D20 row. Complete any remaining work discovered in the agreed scope.
 - Test exact context/output limits, long outputs, cold versus cached timings, repeated compaction, interrupted compaction and original rereading on the final stack. Verify the compaction animation/message lifecycle, reduced motion, draft preservation, per-conversation isolation and accurate status after refresh, reconnect, failure, cancellation and restart.
 - Run the agreed simultaneous full-context/soak workload; inspect queue fairness, memory/storage growth and latency without silently reducing context.
 - Test Mac plus actual phone/tablet sessions, permissions, microphone, UI controls and accessibility. Inject service/model death, lost responses, disk full, memory pressure, drive loss and network interruption.

@@ -1,0 +1,64 @@
+import "web/run_store"
+import "security/principals"
+
+# OS-local operator command. No browser or model schema exposes this program.
+# Guest sandbox workers cannot open the host database. Never infer authority
+# from an HTTP origin, device name, caller-supplied role or network address.
+define main returning Int:
+    set count to get_argument_count()
+    if count < 3:
+        display "Supply database and migrate; inspect-device DEVICE; or role-device DEVICE ROLE UNIQUE_CHANGE_ID REASON."
+        return 1
+    set command to get_argument(2)
+    if not ((command equals "migrate" and count equals 3) or else (command equals "inspect-device" and count equals 4) or else (command equals "role-device" and count equals 7)):
+        return 1
+    set path to get_argument(1)
+    if not file_exists(path):
+        display "The existing host database is required."
+        return 1
+    # Check compatibility before archive_open can perform schema writes.
+    set database to sql_open(path)
+    if database equals 0:
+        return 1
+    if migration_compatible(database and 2) equals 0:
+        display "Schema is newer or invalid. Use the matching executable; do not downgrade in place."
+        set closed to sql_close(database)
+        return 1
+    if sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(path)
+    if database equals 0:
+        return 1
+    if command equals "migrate":
+        if web_run_schema(database) is not equal to 0:
+            set closed to sql_close(database)
+            return 1
+        set migrated to principal_schema(database)
+        display migrated
+        set closed to sql_close(database)
+        if closed is not equal to 0 or else not (migrated equals "applied" or else migrated equals "already-applied"):
+            return 1
+        return 0
+    set ready to history_collect_one(archive_prepare(database and "SELECT version FROM echo_schema_migrations WHERE version=2;"))
+    if not (archive_list_text(ready and 0) equals "found"):
+        display "Run explicit migration after verified backup before managing principals."
+        set closed to sql_close(database)
+        return 1
+    set principal to principal_for_device(database and get_argument(3))
+    if string_length(principal) equals 0:
+        display "Device is missing, revoked or has no active principal."
+        set closed to sql_close(database)
+        return 1
+    if get_argument(2) equals "inspect-device" and get_argument_count() equals 4:
+        display principal
+        display principal_role(database and principal)
+    else if get_argument(2) equals "role-device" and get_argument_count() equals 7:
+        set outcome to principal_host_role(database and get_argument(5) and principal and get_argument(4) and get_argument(6))
+        display outcome
+        if not (outcome equals "recorded" or else outcome equals "already-recorded"):
+            set closed to sql_close(database)
+            return 1
+    else:
+        set closed to sql_close(database)
+        return 1
+    return sql_close(database)

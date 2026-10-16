@@ -1,0 +1,100 @@
+import "migrations"
+
+# Scope and principal are resolved by the trusted caller, never claimed by a
+# tool. Store diagnostic codes and artifact references, not credentials/prompts.
+# Every state is an immutable receipt. There is no mutable status projection
+# that can commit without its matching audit record.
+define operation_schema with database as Int returning Str:
+    set schema to "CREATE TABLE echo_operations (identity TEXT NOT NULL, scope TEXT NOT NULL, principal TEXT NOT NULL, kind TEXT NOT NULL, request_digest TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>=0), state TEXT NOT NULL CHECK(state IN ('queued','running','uncertain','succeeded','failed')), stage TEXT NOT NULL, cause TEXT NOT NULL, effects TEXT NOT NULL CHECK(effects IN ('none','unknown','confirmed')), diagnostic TEXT NOT NULL, recovery TEXT NOT NULL, result TEXT NOT NULL, occurred TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')), PRIMARY KEY(identity,revision)); CREATE INDEX echo_operations_scope ON echo_operations(scope,identity,revision); CREATE TRIGGER echo_operations_no_update BEFORE UPDATE ON echo_operations BEGIN SELECT RAISE(ABORT,'Operation receipts are immutable'); END; CREATE TRIGGER echo_operations_no_delete BEFORE DELETE ON echo_operations BEGIN SELECT RAISE(ABORT,'Operation receipts are immutable'); END;"
+    return migration_apply(database and 1 and "durable-operations" and schema)
+
+# status, principal, kind, request_digest, revision, state, stage, cause,
+# effects, diagnostic reference, recovery action, result reference.
+define operation_read with database as Int and scope as Str and identity as Str returning List:
+    set values to create_list()
+    set added to append_list(values and scope)
+    set added to append_list(values and identity)
+    return history_collect_one(checkpoint_prepare(database and "SELECT principal,kind,request_digest,CAST(revision AS TEXT),state,stage,cause,effects,diagnostic,recovery,result FROM echo_operations WHERE scope=? AND identity=? ORDER BY revision DESC LIMIT 1;" and values))
+
+define operation_reserve with database as Int and scope as Str and identity as Str and principal as Str and kind as Str and request as Str returning Str:
+    if string_length(scope) equals 0 or else string_length(identity) equals 0 or else string_length(principal) equals 0 or else string_length(kind) equals 0:
+        return "invalid-operation"
+    set digest to ep_sha256(request)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set saved to operation_read(database and scope and identity)
+    if archive_list_text(saved and 0) equals "found":
+        if not (archive_list_text(saved and 1) equals principal) or else not (archive_list_text(saved and 2) equals kind) or else not (archive_list_text(saved and 3) equals digest):
+            return migration_fail(database and "operation-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-reserved"
+    if not (archive_list_text(saved and 0) equals "end"):
+        return migration_fail(database and "operation-read-failed")
+    set values to create_list()
+    set added to append_list(values and identity)
+    # A different scope must not learn the owner or reuse its operation ID.
+    set other to history_collect_one(checkpoint_prepare(database and "SELECT identity FROM echo_operations WHERE identity=? LIMIT 1;" and values))
+    if not (archive_list_text(other and 0) equals "end"):
+        return migration_fail(database and "operation-unavailable")
+    set added to append_list(values and scope)
+    set added to append_list(values and principal)
+    set added to append_list(values and kind)
+    set added to append_list(values and digest)
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_operations(identity,scope,principal,kind,request_digest,revision,state,stage,cause,effects,diagnostic,recovery,result) VALUES(?,?,?,?,?,0,'queued','accepted','','none','','dispatch-after-authority-check','');" and values)
+    if statement equals 0 or else archive_finish(statement and 101) is not equal to 0:
+        return migration_fail(database and "operation-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "reserved"
+
+# Compare revision while holding the writer lock. A lost response never grants
+# a second execution claim. Reopen reads running as running until an owner-death
+# check records uncertainty. Uncertainty cannot transition back into dispatch.
+define operation_transition with database as Int and scope as Str and identity as Str and revision as Int and state as Str and stage as Str and cause as Str and effects as Str and diagnostic as Str and recovery as Str and result as Str returning Str:
+    if revision < 0 or else string_length(stage) equals 0:
+        return "invalid-transition"
+    if not (effects equals "none" or else effects equals "unknown" or else effects equals "confirmed"):
+        return "invalid-effects"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set saved to operation_read(database and scope and identity)
+    if not (archive_list_text(saved and 0) equals "found"):
+        return migration_fail(database and "operation-unavailable")
+    if not (archive_list_text(saved and 4) equals int_to_string(revision)):
+        return migration_fail(database and "stale-revision-read-status")
+    set previous to archive_list_text(saved and 5)
+    set allowed to 0
+    if previous equals "queued" and state equals "running" and effects equals "unknown":
+        set allowed to 1
+    if previous equals "queued" and state equals "failed" and effects equals "none":
+        set allowed to 1
+    if previous equals "running" and state equals "uncertain" and effects equals "unknown":
+        set allowed to 1
+    if previous equals "running" or else previous equals "uncertain":
+        if state equals "succeeded" and effects equals "confirmed" and string_length(result) > 0:
+            set allowed to 1
+        if state equals "failed" and not (effects equals "unknown") and string_length(diagnostic) > 0:
+            set allowed to 1
+    if state equals "uncertain" or else state equals "failed":
+        if string_length(cause) equals 0 or else string_length(diagnostic) equals 0 or else string_length(recovery) equals 0:
+            set allowed to 0
+    if allowed equals 0:
+        return migration_fail(database and "transition-not-permitted")
+    set values to create_list()
+    set added to append_list(values and state)
+    set added to append_list(values and stage)
+    set added to append_list(values and cause)
+    set added to append_list(values and effects)
+    set added to append_list(values and diagnostic)
+    set added to append_list(values and recovery)
+    set added to append_list(values and result)
+    set added to append_list(values and identity)
+    set added to append_list(values and scope)
+    set added to append_list(values and int_to_string(revision))
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_operations(identity,scope,principal,kind,request_digest,revision,state,stage,cause,effects,diagnostic,recovery,result) SELECT identity,scope,principal,kind,request_digest,revision+1,?,?,?,?,?,?,? FROM echo_operations WHERE identity=? AND scope=? AND revision=?;" and values)
+    if statement equals 0 or else archive_finish(statement and 101) is not equal to 0:
+        return migration_fail(database and "operation-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"

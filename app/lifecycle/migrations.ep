@@ -1,0 +1,67 @@
+import "../archive/history"
+import "../context/checkpoint"
+
+# Host-authored SQL from a pinned executable only, never browser/model input.
+# DDL and receipt commit together. Failed candidates never change live history.
+define migration_fail with database as Int and reason as Str returning Str:
+    if sql_execute(database and "ROLLBACK;") is not equal to 0:
+        return "rollback-failed-close-connection"
+    return reason
+
+define migration_apply with database as Int and version as Int and name as Str and statements as Str returning Str:
+    if version < 1 or else string_length(name) equals 0 or else string_length(statements) equals 0:
+        return "invalid-migration"
+    set digest to ep_sha256(statements)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set schema to "CREATE TABLE IF NOT EXISTS echo_schema_migrations (version INTEGER PRIMARY KEY CHECK(version>0), name TEXT NOT NULL UNIQUE, digest TEXT NOT NULL, applied_at TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS echo_migrations_no_update BEFORE UPDATE ON echo_schema_migrations BEGIN SELECT RAISE(ABORT,'Migration receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_migrations_no_delete BEFORE DELETE ON echo_schema_migrations BEGIN SELECT RAISE(ABORT,'Migration receipts are immutable'); END;"
+    if sql_execute(database and schema) is not equal to 0:
+        return migration_fail(database and "receipt-schema-failed")
+    set row to history_collect_one(archive_prepare(database and "SELECT CAST(COALESCE(MAX(version),0) AS TEXT),CAST(COUNT(*) AS TEXT) FROM echo_schema_migrations;"))
+    if not (archive_list_text(row and 0) equals "found"):
+        return migration_fail(database and "receipt-read-failed")
+    if not (archive_list_text(row and 1) equals archive_list_text(row and 2)):
+        return migration_fail(database and "migration-history-gap")
+    set values to create_list()
+    set added to append_list(values and int_to_string(version))
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT name,digest FROM echo_schema_migrations WHERE version=?;" and values))
+    if archive_list_text(saved and 0) equals "found":
+        if not (archive_list_text(saved and 1) equals name) or else not (archive_list_text(saved and 2) equals digest):
+            return migration_fail(database and "migration-identity-mismatch")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-applied"
+    if not (archive_list_text(saved and 0) equals "end"):
+        return migration_fail(database and "receipt-read-failed")
+    set next to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN ?=CAST(COALESCE(MAX(version),0)+1 AS TEXT) THEN 'yes' ELSE 'no' END FROM echo_schema_migrations;" and values))
+    if not (archive_list_text(next and 0) equals "found") or else not (archive_list_text(next and 1) equals "yes"):
+        return migration_fail(database and "migration-out-of-order")
+    if sql_execute(database and statements) is not equal to 0:
+        return migration_fail(database and "migration-statements-failed")
+    set added to append_list(values and name)
+    set added to append_list(values and digest)
+    set receipt to checkpoint_prepare(database and "INSERT INTO echo_schema_migrations(version,name,digest,applied_at) VALUES(?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'));" and values)
+    if receipt equals 0:
+        return migration_fail(database and "receipt-write-failed")
+    if archive_finish(receipt and 101) is not equal to 0:
+        return migration_fail(database and "receipt-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "applied"
+
+# Call before workers write. An older binary must refuse a newer schema.
+# Restore a verified backup for incompatible rollback; do not destroy new data.
+define migration_compatible with database as Int and supported as Int returning Int:
+    if supported < 0:
+        return 0
+    set exists to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_schema_migrations';"))
+    if archive_list_text(exists and 0) equals "end":
+        return 1
+    if not (archive_list_text(exists and 0) equals "found"):
+        return 0
+    set values to create_list()
+    set added to append_list(values and int_to_string(supported))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN COALESCE(MAX(version),0)<=CAST(? AS INTEGER) AND COALESCE(MAX(version),0)=COUNT(*) THEN 'yes' ELSE 'no' END FROM echo_schema_migrations;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return 0
+    return archive_list_text(row and 1) equals "yes"
