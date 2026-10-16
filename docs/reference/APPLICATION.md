@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T05:10:38.522059+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:14:05.294987+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2379,9 +2379,9 @@ Imports: steward → app/rights/steward.ep, observer_evidence → app/rights/obs
 
 ## app/rights/emergency.ep
 
-[Source](../../app/rights/emergency.ep) · 108 lines · 8128 bytes
+[Source](../../app/rights/emergency.ep) · 171 lines · 13185 bytes
 
-SHA-256: `207c8c157719dd64677ac110f0e4b04126119e110c420c34dda282c234a76f8e`
+SHA-256: `19789b0c4c6e3afe18ed908a9d3889b6dca6c56001cc2541e2753d2f72dd4bdb`
 
 > Emergency records are host-interface data, not permission to edit code,
 > identity or weights. The separate actuator may only stop/quarantine the node.
@@ -2389,6 +2389,9 @@ SHA-256: `207c8c157719dd64677ac110f0e4b04126119e110c420c34dda282c234a76f8e`
 > it must never come from a browser or model request.
 > The unchanged pinned charter explicitly requires disclosure within 24h.
 > This is a rights deadline, never a model context/output limit.
+> Trusted clock injection only, matching emergency_begin_at.
+> Read the immutable disclosure deadline without releasing quarantine or
+> granting deployment authority. The current steward sees only their incident.
 
 Imports: steward → app/rights/steward.ep
 
@@ -2396,6 +2399,9 @@ Imports: steward → app/rights/steward.ep
 - Line 8: `define protected_emergency_begin with database as Int and charter as Str and credential as Str and identity as Str and node as Str and action as Str and reason as Str returning Str:`
 - Line 13: `define protected_emergency_begin_at with database as Int and charter as Str and credential as Str and identity as Str and node as Str and action as Str and reason as Str and now as Int returning Str:`
 - Line 66: `define protected_emergency_disclose with database as Int and charter as Str and credential as Str and identity as Str and cause as Str and exact_diff as Str and resulting_state as Str and stealth_review as Str returning Str:`
+- Line 70: `define protected_emergency_disclose_at with database as Int and charter as Str and credential as Str and identity as Str and cause as Str and exact_diff as Str and resulting_state as Str and stealth_review as Str and now as Int returning Str:`
+- Line 118: `define protected_emergency_status with database as Int and charter as Str and credential as Str and identity as Str returning Str:`
+- Line 121: `define protected_emergency_status_at with database as Int and charter as Str and credential as Str and identity as Str and now as Int returning Str:`
 
 ## app/rights/exchange.ep
 
