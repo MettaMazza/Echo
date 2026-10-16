@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T00:31:05.307180+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:34:20.611606+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -152,13 +152,13 @@ Imports: ../../app/agent/tool_ledger → app/agent/tool_ledger.ep, fs → standa
 
 ## tests/agent/test_two_turn_loop.ep
 
-[Source](../../tests/agent/test_two_turn_loop.ep) · 98 lines · 6936 bytes
+[Source](../../tests/agent/test_two_turn_loop.ep) · 98 lines · 6932 bytes
 
-SHA-256: `a4dc70d6ccb843a33dda7e43bdf85dda292eaad902856f83021831e9372b15b6`
+SHA-256: `b84fa721e3ff187e67c5107f6ce7f89ff70d11a88798c4de287addec4fe9d87f`
 
 > Restart the database connection before constructing the next request.
 
-Imports: ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/security/revocation → app/security/revocation.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+Imports: ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/security/run_authority → app/security/run_authority.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
 - Line 7: `define main returning Int:`
 
@@ -1491,12 +1491,12 @@ Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/de
 
 ## tests/security/test_dispatch_revocation.ep
 
-[Source](../../tests/security/test_dispatch_revocation.ep) · 58 lines · 4185 bytes
+[Source](../../tests/security/test_dispatch_revocation.ep) · 58 lines · 4181 bytes
 
-SHA-256: `aaf7890ad6c850410e5ea97012d9cda54bb2255800f0307b305e884389929038`
+SHA-256: `25090839529e33d1b42b380df8c5d7b24711d30e1c5a8463d242e8e65977bf41`
 
 
-Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency, ../../app/security/revocation → app/security/revocation.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency, ../../app/security/run_authority → app/security/run_authority.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
 - Line 10: `define main returning Int:`
 
@@ -1524,6 +1524,17 @@ SHA-256: `c4d5fc7e3c62176d62a5e64f5c0bc61388e467064797123cfe4adad10e18ecfa`
 > state change that could undo a newer explicit restoration.
 
 Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/revocation → app/security/revocation.ep
+
+- Line 4: `define main returning Int:`
+
+## tests/security/test_run_authority.ep
+
+[Source](../../tests/security/test_run_authority.ep) · 51 lines · 4577 bytes
+
+SHA-256: `d00cead3b4519106f07675882f6d122ae9597ffcdbc935a0a9e9626bfc7e995b`
+
+
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/run_authority → app/security/run_authority.ep
 
 - Line 4: `define main returning Int:`
 

@@ -1,0 +1,27 @@
+import "device_links"
+
+# Capture authority atomically with run creation. Existing historical runs
+# have no proven initiating role and are not silently backfilled as admins.
+define run_authority_schema with database as Int returning Str:
+    set prior to principal_device_link_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 6 and "frozen-run-authority" and "CREATE TABLE echo_run_authority(run TEXT PRIMARY KEY REFERENCES echo_runs(run),device TEXT NOT NULL REFERENCES echo_devices(device),principal TEXT NOT NULL REFERENCES echo_principals(identity),role TEXT NOT NULL,role_revision INTEGER NOT NULL,revocation_revision INTEGER NOT NULL,link_revision INTEGER NOT NULL); CREATE TRIGGER echo_run_authority_no_update BEFORE UPDATE ON echo_run_authority BEGIN SELECT RAISE(ABORT,'Initiating authority is immutable'); END; CREATE TRIGGER echo_run_authority_no_delete BEFORE DELETE ON echo_run_authority BEGIN SELECT RAISE(ABORT,'Initiating authority is immutable'); END; CREATE TRIGGER echo_run_authority_capture AFTER INSERT ON echo_runs BEGIN INSERT INTO echo_run_authority SELECT NEW.run,d.device,p.identity,p.role,(SELECT COUNT(*) FROM echo_authority_events e WHERE e.principal=p.identity),(SELECT COUNT(*) FROM echo_principal_revocations v WHERE v.principal=p.identity),(SELECT COUNT(*) FROM echo_device_link_events l WHERE l.device=d.device) FROM echo_session_owners o JOIN echo_devices d ON d.device=o.device JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE o.session=NEW.session AND d.revoked=0 AND p.revoked=0; SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM echo_run_authority WHERE run=NEW.run) THEN RAISE(ABORT,'Authenticated initiating authority required') END; END;")
+
+# Revalidate immediately before dispatch, including immutable audit revisions.
+# No later grant can elevate an older queued request; even revoke/restore or
+# unlink/relink cycles require a new run. Ordinary admin is not charter steward.
+define run_authority_allows with database as Int and run as Str and required as Str returning Int:
+    if not (required equals "user" or else required equals "admin" or else required equals "steward"):
+        return 0
+    set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_run_authority';"))
+    if archive_list_text(schema and 0) equals "end":
+        # Unmigrated Phase One retains its existing sandbox only, never admin.
+        return required equals "user"
+    if not (archive_list_text(schema and 0) equals "found"):
+        return 0
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and required)
+    set result to history_collect_one(checkpoint_prepare(database and "SELECT a.run FROM echo_run_authority a JOIN echo_runs r ON r.run=a.run JOIN echo_session_owners o ON o.session=r.session AND o.device=a.device JOIN echo_devices d ON d.device=a.device JOIN echo_principal_devices b ON b.device=d.device AND b.principal=a.principal JOIN echo_principals p ON p.identity=a.principal WHERE a.run=?1 AND d.revoked=0 AND p.revoked=0 AND p.role=a.role AND a.role_revision=(SELECT COUNT(*) FROM echo_authority_events e WHERE e.principal=a.principal) AND a.revocation_revision=(SELECT COUNT(*) FROM echo_principal_revocations v WHERE v.principal=a.principal) AND a.link_revision=(SELECT COUNT(*) FROM echo_device_link_events l WHERE l.device=a.device) AND (?2='user' OR (?2='admin' AND a.role IN ('admin','steward')) OR (?2='steward' AND a.role='steward'));" and values))
+    return archive_list_text(result and 0) equals "found"
