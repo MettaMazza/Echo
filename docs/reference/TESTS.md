@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T03:11:57.727330+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:18:14.827994+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1660,11 +1660,22 @@ Imports: ../../app/web/uploads → app/web/uploads.ep, ../../app/web/cancellatio
 
 - Line 6: `define main returning Int:`
 
+## tests/security/test_protected_inventory.ep
+
+[Source](../../tests/security/test_protected_inventory.ep) · 32 lines · 2929 bytes
+
+SHA-256: `b666485fb0b5078050cbf6191a129c00554422285d6d8609c392444a95441163`
+
+
+Imports: ../../app/rights/inventory → app/rights/inventory.ep
+
+- Line 3: `define main returning Int:`
+
 ## tests/security/test_protected_proposals.ep
 
-[Source](../../tests/security/test_protected_proposals.ep) · 191 lines · 18664 bytes
+[Source](../../tests/security/test_protected_proposals.ep) · 194 lines · 19140 bytes
 
-SHA-256: `4dc474faea703ca9cc0460b44d7544ae8a70f9d6161165d9ba542d39c5cda878`
+SHA-256: `822a99150a8d334f31a8a94ffde23aa3ca14ca322873cab28f2d8e4e4072b341`
 
 > Persist the same original event envelope used by the native tool ledger.
 > Model request originals let the verifier distinguish seeing a disclosure

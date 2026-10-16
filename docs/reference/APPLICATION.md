@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T03:11:57.727330+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:18:14.827994+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2316,17 +2316,39 @@ Imports: ../archive/file_digest → app/archive/file_digest.ep, ../providers/arc
 - Line 12: `define charter_verified_text with path as Str returning Str:`
 - Line 29: `define charter_category with path as Str and category as Str returning Str:`
 
+## app/rights/inventory.ep
+
+[Source](../../app/rights/inventory.ep) · 62 lines · 3910 bytes
+
+SHA-256: `725a6370d47c7ca68a412671818f9344af5bdf775a28b1812b1f5f9069cdb055`
+
+> The controller supplies these inventory bytes and their independently pinned
+> digest. Model arguments are never the source of the trusted inventory pin.
+> Inventory changes themselves require protected-definition review.
+> Produce an exact manifest that includes the trusted inventory digest. Legacy
+> proposal records remain readable but cannot pass the inventory-bound gate.
+> Re-derive rather than trusting the proposal's category, classification or pin.
+> This does not grant consent, prove current target bytes or authorize execution.
+
+Imports: proposals → app/rights/proposals.ep, ../workspace/files → app/workspace/files.ep
+
+- Line 7: `define protected_inventory_category with charter as Str and inventory as Str and expected_digest as Str and target as Str returning Str:`
+- Line 47: `define protected_inventory_manifest with charter as Str and inventory as Str and inventory_digest as Str and target as Str and before_hash as Str and after_hash as Str and payload as Str returning Str:`
+- Line 55: `define protected_inventory_matches with charter as Str and inventory as Str and inventory_digest as Str and manifest as Str returning Int:`
+
 ## app/rights/proposals.ep
 
-[Source](../../app/rights/proposals.ep) · 215 lines · 16761 bytes
+[Source](../../app/rights/proposals.ep) · 231 lines · 18292 bytes
 
-SHA-256: `244b308c5bdc8b6eeed3a823b6ce355460fa9c0c6d09c1fa851d5fbe28383a44`
+SHA-256: `3c4bcfdab297b75c0406f7a0a531d0b60f6f2691c3eead50cce67bab45219753`
 
 > Proposal storage only. No approval, executable access or mutation is granted.
 > A future protected controller must derive the category and target inventory
 > independently of model arguments before using this record for authorisation.
 > All disclosed bytes, including the payload and target hashes, participate in
 > the manifest digest. Category classification comes from the unchanged charter.
+> Inventory-bound variant preserves the original manifest spelling and binds
+> the complete registry version. Its trusted origin is checked by the controller.
 > The initiating principal is read from frozen authority, never supplied as a
 > claimed actor string. A changed role/revocation/device link invalidates use.
 > Exact retries reuse the saved proposal. A changed manifest or initiating run
@@ -2342,16 +2364,17 @@ SHA-256: `244b308c5bdc8b6eeed3a823b6ce355460fa9c0c6d09c1fa851d5fbe28383a44`
 > response cannot establish informed consent. This verifies evidence only;
 > steward authorisation, Observer review and execution gates remain separate.
 
-Imports: charter → app/rights/charter.ep, ../memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep
+Imports: charter → app/rights/charter.ep, ../agent/tool_ledger → app/agent/tool_ledger.ep, ../memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep
 
-- Line 7: `define protected_proposal_schema with database as Int returning Str:`
-- Line 13: `define protected_digest_valid with digest as Str returning Int:`
-- Line 26: `define protected_manifest with charter as Str and category as Str and target as Str and before_hash as Str and after_hash as Str and payload as Str returning Str:`
-- Line 55: `define protected_proposal_principal with database as Int and run as Str returning Str:`
-- Line 67: `define protected_proposal_store with database as Int and charter as Str and run as Str and identity as Str and manifest as Str returning Str:`
-- Line 105: `define protected_proposal_read with database as Int and run as Str and identity as Str returning List:`
-- Line 124: `define protected_inspection_event with database as Int and run as Str and call_id as Str and identity as Str returning Str:`
-- Line 163: `define protected_review_evidence with database as Int and run as Str and call_id as Str returning Str:`
+- Line 8: `define protected_proposal_schema with database as Int returning Str:`
+- Line 14: `define protected_digest_valid with digest as Str returning Int:`
+- Line 27: `define protected_manifest with charter as Str and category as Str and target as Str and before_hash as Str and after_hash as Str and payload as Str returning Str:`
+- Line 56: `define protected_manifest_pinned with charter as Str and category as Str and target as Str and before_hash as Str and after_hash as Str and payload as Str and inventory_digest as Str returning Str:`
+- Line 66: `define protected_proposal_principal with database as Int and run as Str returning Str:`
+- Line 78: `define protected_proposal_store with database as Int and charter as Str and run as Str and identity as Str and manifest as Str returning Str:`
+- Line 121: `define protected_proposal_read with database as Int and run as Str and identity as Str returning List:`
+- Line 140: `define protected_inspection_event with database as Int and run as Str and call_id as Str and identity as Str returning Str:`
+- Line 179: `define protected_review_evidence with database as Int and run as Str and call_id as Str returning Str:`
 
 ## app/rights/reviews.ep
 
