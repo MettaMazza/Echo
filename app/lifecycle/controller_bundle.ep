@@ -145,3 +145,66 @@ define controller_bundle_stage_files with library as Int and directory as Int an
     if controller_bundle_receipt(library and directory and root and "bundle.json" and manifest) is not equal to 0 or else controller_bundle_receipt(library and directory and root and "complete" and expected) is not equal to 0 or else ep_dlcall1(flush and directory) is not equal to 0:
         return "stage-receipt-or-directory-flush-failed"
     return "staged-not-activated"
+
+# A completion marker alone is never proof that a staged version is usable.
+# Revalidate its exact manifest, receipts, every inode, mode and complete digest.
+define controller_bundle_verify with manifest as Str and expected as Str and parent_path as Str returning Str:
+    if controller_bundle_valid(manifest and expected) equals 0:
+        return "invalid-bundle"
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "native-unavailable"
+    set root to concat(parent_path and concat("/" and expected))
+    set directory to protected_path_open(library and root and 1)
+    if directory < 0:
+        set closed to ep_dlclose(library)
+        return "untrusted-stage-directory"
+    set closed to net_close(directory)
+    set outcome to controller_bundle_verify_files(library and manifest and expected and root)
+    set closed to ep_dlclose(library)
+    return outcome
+
+define controller_bundle_verify_files with library as Int and manifest as Str and expected as Str and root as Str returning Str:
+    set inspect to ep_dlsym(library and "fstat")
+    if inspect equals 0:
+        return "native-unavailable"
+    set tokens to provider_json_tokens(manifest)
+    set files to provider_items(tokens and provider_member(tokens and 0 and "files"))
+    for each entry in files:
+        set path to concat(root and concat("/" and provider_value(tokens and provider_member(tokens and entry and "name"))))
+        set descriptor to protected_path_open(library and path and 0)
+        if descriptor < 0:
+            return "staged-file-untrusted"
+        set information to create_list()
+        set index to 0
+        repeat while index < 18:
+            set added to append_list(information and 0)
+            set index to index + 1
+        set pointer to get_list_data_ptr(information)
+        set inspected to ep_dlcall2(inspect and descriptor and pointer)
+        set closed to net_close(descriptor)
+        if inspected is not equal to 0 or else closed is not equal to 0:
+            return "staged-file-inspection-failed"
+        set mode to (peek_byte(pointer and 4) + peek_byte(pointer and 5) * 256) % 4096
+        set required to 384
+        if provider_value(tokens and provider_member(tokens and entry and "kind")) equals "executable":
+            set required to 448
+        if mode is not equal to required:
+            return "staged-file-mode-changed"
+        set digest to file_digest_durable(path and 65536)
+        if not (archive_list_text(digest and 0) equals "verified") or else not (archive_list_text(digest and 1) equals provider_value(tokens and provider_member(tokens and entry and "sha256"))):
+            return "staged-file-bytes-changed"
+    set names to ["bundle.json", "complete"]
+    set digests to [expected, ep_sha256(expected)]
+    set index to 0
+    repeat while index < length_list(names):
+        set path to concat(root and concat("/" and archive_list_text(names and index)))
+        set descriptor to protected_path_open(library and path and 0)
+        if descriptor < 0:
+            return "stage-receipt-untrusted-or-missing"
+        set closed to net_close(descriptor)
+        set digest to file_digest_durable(path and 65536)
+        if not (archive_list_text(digest and 0) equals "verified") or else not (archive_list_text(digest and 1) equals archive_list_text(digests and index)):
+            return "stage-receipt-changed"
+        set index to index + 1
+    return "verified-not-authorized-for-activation"

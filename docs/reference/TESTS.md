@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T05:25:33.835875+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:29:35.875035+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -925,6 +925,20 @@ SHA-256: `e14a5280f402e1b8cba783471c75a2b1e4c7c88d784e1872f4e43fd3e4b1774f`
 Imports: ../../app/lifecycle/controller_bundle → app/lifecycle/controller_bundle.ep, fs → standard library or compiler dependency
 
 - Line 4: `define main returning Int:`
+
+## tests/lifecycle/test_controller_bundle_privileged.ep
+
+[Source](../../tests/lifecycle/test_controller_bundle_privileged.ep) · 36 lines · 2582 bytes
+
+SHA-256: `ec04361dc29d981217e9d503581fc188e6c96c0f200cc5a78b1d1fc5eeed59c8`
+
+> Deliberately limited root qualification: one known inert payload and two
+> receipts under a digest-named directory in /private/var/root. No service starts,
+> no production archive is opened, and no existing installation is overwritten.
+
+Imports: ../../app/lifecycle/controller_bundle → app/lifecycle/controller_bundle.ep, fs → standard library or compiler dependency
+
+- Line 7: `define main returning Int:`
 
 ## tests/lifecycle/test_guardian_readiness.ep
 
