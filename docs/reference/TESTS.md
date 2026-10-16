@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T02:28:09.461031+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T02:37:27.857738+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -2452,6 +2452,21 @@ SHA-256: `ed564b16cc1977e569d30798f2cb32db549df580c5808e85b453daf5bf782fd2`
 Imports: ../../app/workspace/process_journal → app/workspace/process_journal.ep, ../../app/workspace/files → app/workspace/files.ep, fs → standard library or compiler dependency
 
 - Line 5: `define main returning Int:`
+
+## tests/workspace/test_network_isolation.ep
+
+[Source](../../tests/workspace/test_network_isolation.ep) · 70 lines · 3260 bytes
+
+SHA-256: `6e4299998cc129753e6591c96a2fb950044d1f2c931bc2395a7209470da19312`
+
+> sockaddr layouts and family constants are from the installed macOS SDK.
+> Every address must first connect in the unsandboxed positive-control run.
+> Connection refused or malformed addresses are not isolation evidence.
+
+Imports: ../../app/transport/socket_read → app/transport/socket_read.ep, ../../app/transport/http_head → app/transport/http_head.ep, ../../app/providers/archived_stream → app/providers/archived_stream.ep
+
+- Line 7: `define network_probe with library as Int and family as Int and port as Int and path as Str returning Int:`
+- Line 46: `define main returning Int:`
 
 ## tests/workspace/test_output_archive.ep
 

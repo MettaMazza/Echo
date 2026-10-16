@@ -1,0 +1,70 @@
+import "../../app/transport/socket_read"
+import "../../app/transport/http_head"
+import "../../app/providers/archived_stream"
+
+# sockaddr layouts and family constants are from the installed macOS SDK.
+# Every address must first connect in the unsandboxed positive-control run.
+define network_probe with library as Int and family as Int and port as Int and path as Str returning Int:
+    set bytes to create_list()
+    set index to 0
+    repeat while index < 14:
+        set added to append_list(bytes and 0)
+        set index to index + 1
+    set address to get_list_data_ptr(bytes)
+    set size to 16
+    if family equals 30:
+        set size to 28
+    else if family equals 1:
+        if string_length(path) > 103:
+            return -2
+        set size to string_length(path) + 3
+    set written to poke_byte(address and 0 and size)
+    set written to poke_byte(address and 1 and family)
+    if family equals 1:
+        set index to 0
+        repeat while index < string_length(path):
+            set written to poke_byte(address and index + 2 and get_character(path and index))
+            set index to index + 1
+    else:
+        set written to poke_byte(address and 2 and port / 256)
+        set written to poke_byte(address and 3 and port modulo 256)
+        if family equals 30:
+            set written to poke_byte(address and 23 and 1)
+        else:
+            set written to poke_byte(address and 4 and 127)
+            set written to poke_byte(address and 7 and 1)
+    set descriptor to socket_signed_result(ep_dlcall3(ep_dlsym(library and "socket") and family and 1 and 0))
+    if descriptor < 0:
+        return socket_errno(library)
+    set connected to socket_signed_result(ep_dlcall3(ep_dlsym(library and "connect") and descriptor and address and size))
+    set code to 0
+    if connected < 0:
+        set code to socket_errno(library)
+    set closed to net_close(descriptor)
+    return code
+
+define main returning Int:
+    if get_argument_count() is not equal to 5:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 2
+    set four to network_probe(library and 2 and http_decimal(get_argument(1)) and "")
+    set six to network_probe(library and 30 and http_decimal(get_argument(2)) and "")
+    set local to network_probe(library and 1 and 0 and get_argument(3))
+    display concat("IPv4 errno: " and int_to_string(four))
+    display concat("IPv6 errno: " and int_to_string(six))
+    display concat("Unix errno: " and int_to_string(local))
+    set closed to ep_dlclose(library)
+    if get_argument(4) equals "control":
+        if four is not equal to 0 or else six is not equal to 0 or else local is not equal to 0:
+            return 3
+        display "PASS: all three positive controls connected to live local listeners."
+        return 0
+    if not (get_argument(4) equals "sandbox"):
+        return 4
+    # Connection refused or malformed addresses are not isolation evidence.
+    if (four is not equal to 1 and four is not equal to 13) or else (six is not equal to 1 and six is not equal to 13) or else (local is not equal to 1 and local is not equal to 13):
+        return 5
+    display "PASS: IPv4, IPv6 and Unix sockets were denied with permission errors."
+    return 0
