@@ -1,0 +1,129 @@
+import "archive_recall"
+import "../tools/history_tools"
+
+# Facts and episodes are derived assertions. The immutable source remains the
+# evidence; repeating a model inference never converts it into an observation.
+define knowledge_schema with database as Int returning Str:
+    set prior to session_principal_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 9 and "private-evidence-graph" and "CREATE TABLE echo_memory_nodes(identity TEXT PRIMARY KEY,principal TEXT NOT NULL REFERENCES echo_principals(identity),name TEXT NOT NULL,UNIQUE(principal,name)); CREATE TABLE echo_memory_claims(sequence INTEGER PRIMARY KEY AUTOINCREMENT,identity TEXT NOT NULL UNIQUE,principal TEXT NOT NULL REFERENCES echo_principals(identity),kind TEXT NOT NULL CHECK(kind IN ('semantic','episodic')),subject TEXT NOT NULL REFERENCES echo_memory_nodes(identity),predicate TEXT NOT NULL,object TEXT NOT NULL REFERENCES echo_memory_nodes(identity),evidence TEXT NOT NULL CHECK(evidence IN ('source-account','inference','tool-observation')),source_event TEXT NOT NULL REFERENCES echo_events(event),source_digest TEXT NOT NULL,event_time TEXT NOT NULL,valid_until TEXT NOT NULL,supersedes TEXT REFERENCES echo_memory_claims(identity),recorded_at TEXT NOT NULL,canonical TEXT NOT NULL); CREATE UNIQUE INDEX echo_memory_single_successor ON echo_memory_claims(supersedes) WHERE supersedes IS NOT NULL; CREATE INDEX echo_memory_subject ON echo_memory_claims(principal,subject,predicate,sequence); CREATE INDEX echo_memory_object ON echo_memory_claims(principal,object,sequence); CREATE TRIGGER echo_memory_nodes_no_update BEFORE UPDATE ON echo_memory_nodes BEGIN SELECT RAISE(ABORT,'Memory node identity is immutable'); END; CREATE TRIGGER echo_memory_nodes_no_delete BEFORE DELETE ON echo_memory_nodes BEGIN SELECT RAISE(ABORT,'Memory node identity is immutable'); END; CREATE TRIGGER echo_memory_claims_no_update BEFORE UPDATE ON echo_memory_claims BEGIN SELECT RAISE(ABORT,'Memory assertion history is immutable'); END; CREATE TRIGGER echo_memory_claims_no_delete BEFORE DELETE ON echo_memory_claims BEGIN SELECT RAISE(ABORT,'Memory assertion history is immutable'); END;")
+
+define knowledge_abort with database as Int and status as Str returning Str:
+    if sql_execute(database and "ROLLBACK;") is not equal to 0:
+        return "rollback-failed"
+    return status
+
+# This primitive accepts already parsed fields from a trusted caller. Source
+# ownership, evidence class and correction lineage are still enforced here.
+# Empty event_time means unknown, not the time the system ingested the record.
+define knowledge_record with database as Int and run as Str and kind as Str and subject as Str and predicate as Str and object as Str and evidence as Str and source_event as Str and source_digest as Str and event_time as Str and valid_until as Str and supersedes as Str returning Str:
+    if not (kind equals "semantic" or else kind equals "episodic") or else string_length(subject) equals 0 or else string_length(predicate) equals 0 or else string_length(object) equals 0:
+        return "invalid-arguments"
+    if not (evidence equals "source-account" or else evidence equals "inference" or else evidence equals "tool-observation"):
+        return "invalid-arguments"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return knowledge_abort(database and "not-authorized")
+    set values to create_list()
+    set added to append_list(values and principal)
+    set added to append_list(values and source_event)
+    set added to append_list(values and source_digest)
+    set source to history_collect_one(checkpoint_prepare(database and "SELECT e.kind FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal=?1 AND e.event=?2 AND e.digest=?3;" and values))
+    if not (archive_list_text(source and 0) equals "found"):
+        return knowledge_abort(database and "source-not-found")
+    set source_kind to archive_list_text(source and 1)
+    if evidence equals "tool-observation":
+        if not (source_kind equals "tool_result" or else source_kind equals "process_output"):
+            return knowledge_abort(database and "evidence-kind-mismatch")
+    else if not (source_kind equals "user" or else source_kind equals "assistant_final" or else source_kind equals "tool_result" or else source_kind equals "process_output"):
+        return knowledge_abort(database and "evidence-kind-mismatch")
+    # A model-authored claim is always an inference unless it points to an
+    # independently recorded user account or tool observation.
+    if source_kind equals "assistant_final" and not (evidence equals "inference"):
+        return knowledge_abort(database and "evidence-kind-mismatch")
+    set dates to create_list()
+    set added to append_list(dates and event_time)
+    set added to append_list(dates and valid_until)
+    set valid to history_collect_one(checkpoint_prepare(database and "SELECT 'valid' WHERE (?1='' OR (substr(?1,5,1)='-' AND substr(?1,8,1)='-' AND date(substr(?1,1,10),'+0 days')=substr(?1,1,10) AND datetime(?1) IS NOT NULL)) AND (?2='' OR (substr(?2,5,1)='-' AND substr(?2,8,1)='-' AND date(substr(?2,1,10),'+0 days')=substr(?2,1,10) AND datetime(?2) IS NOT NULL)) AND (?1='' OR ?2='' OR julianday(?2)>=julianday(?1));" and dates))
+    if not (archive_list_text(valid and 0) equals "found"):
+        return knowledge_abort(database and "invalid-date-range")
+    set subject_id to ep_sha256(concat(provider_quote(principal) and provider_quote(subject)))
+    set object_id to ep_sha256(concat(provider_quote(principal) and provider_quote(object)))
+    set values to create_list()
+    set added to append_list(values and principal)
+    set added to append_list(values and kind)
+    set added to append_list(values and subject_id)
+    set added to append_list(values and predicate)
+    set added to append_list(values and object_id)
+    set added to append_list(values and evidence)
+    set added to append_list(values and source_event)
+    set added to append_list(values and source_digest)
+    set added to append_list(values and event_time)
+    set added to append_list(values and valid_until)
+    set added to append_list(values and supersedes)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_object('principal',?1,'kind',?2,'subject',?3,'predicate',?4,'object',?5,'evidence',?6,'source_event',?7,'source_digest',?8,'event_time',?9,'valid_until',?10,'supersedes',?11);" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return knowledge_abort(database and "database-error")
+    set canonical to archive_list_text(row and 1)
+    set identity to ep_sha256(canonical)
+    set lookup to create_list()
+    set added to append_list(lookup and identity)
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT canonical FROM echo_memory_claims WHERE identity=?;" and lookup))
+    if archive_list_text(existing and 0) equals "found":
+        if not (archive_list_text(existing and 1) equals canonical):
+            return knowledge_abort(database and "identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return knowledge_abort(database and "commit-failed")
+        return concat("already-recorded:" and identity)
+    if not (archive_list_text(existing and 0) equals "end"):
+        return knowledge_abort(database and "database-error")
+    if string_length(supersedes) > 0:
+        set correction to create_list()
+        set added to append_list(correction and supersedes)
+        set added to append_list(correction and principal)
+        set added to append_list(correction and kind)
+        set added to append_list(correction and subject_id)
+        set added to append_list(correction and predicate)
+        set previous to history_collect_one(checkpoint_prepare(database and "SELECT c.identity FROM echo_memory_claims c JOIN echo_events e ON e.event=c.source_event AND e.digest=c.source_digest JOIN echo_session_principals s ON s.session=e.session AND s.principal=c.principal WHERE c.identity=?1 AND c.principal=?2 AND c.kind=?3 AND c.subject=?4 AND c.predicate=?5 AND NOT EXISTS(SELECT 1 FROM echo_memory_claims n WHERE n.supersedes=c.identity);" and correction))
+        if not (archive_list_text(previous and 0) equals "found"):
+            return knowledge_abort(database and "correction-conflict")
+    set nodes to create_list()
+    set added to append_list(nodes and subject_id)
+    set added to append_list(nodes and principal)
+    set added to append_list(nodes and subject)
+    set added to append_list(nodes and object_id)
+    set added to append_list(nodes and object)
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_memory_nodes(identity,principal,name) VALUES(?1,?2,?3),(?4,?2,?5) ON CONFLICT(identity) DO NOTHING;" and nodes)
+    if statement equals 0 or else archive_finish(statement and 101) is not equal to 0:
+        return knowledge_abort(database and "node-write-failed")
+    set added to append_list(values and identity)
+    set added to append_list(values and canonical)
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_memory_claims(principal,kind,subject,predicate,object,evidence,source_event,source_digest,event_time,valid_until,supersedes,identity,canonical,recorded_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULLIF(?11,''),?12,?13,strftime('%Y-%m-%dT%H:%M:%fZ','now'));" and values)
+    if statement equals 0 or else archive_finish(statement and 101) is not equal to 0:
+        return knowledge_abort(database and "claim-write-failed")
+    if not (memory_archive_principal(database and run) equals principal):
+        return knowledge_abort(database and "authorization-changed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return knowledge_abort(database and "commit-failed")
+    return concat("recorded:" and identity)
+
+# Exact graph traversal by subject or object; empty node scans all records.
+# All versions remain available, and supersession is reported rather than
+# silently deleting contradictory evidence. Callers choose their cursor.
+define knowledge_next with database as Int and run as Str and node as Str and after_sequence as Int returning List:
+    if after_sequence < 0:
+        return history_status("invalid-range")
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    set values to create_list()
+    set added to append_list(values and principal)
+    set added to append_list(values and node)
+    set added to append_list(values and int_to_string(after_sequence))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT c.identity,c.sequence,c.kind,a.name,c.predicate,b.name,c.evidence,c.source_event,c.source_digest,c.event_time,c.valid_until,c.recorded_at,COALESCE(c.supersedes,''),COALESCE((SELECT n.identity FROM echo_memory_claims n WHERE n.supersedes=c.identity),'') FROM echo_memory_claims c JOIN echo_memory_nodes a ON a.identity=c.subject AND a.principal=c.principal JOIN echo_memory_nodes b ON b.identity=c.object AND b.principal=c.principal JOIN echo_events e ON e.event=c.source_event AND e.digest=c.source_digest JOIN echo_session_principals s ON s.session=e.session AND s.principal=c.principal WHERE c.principal=?1 AND (?2='' OR a.name=?2 OR b.name=?2) AND c.sequence>CAST(?3 AS INTEGER) ORDER BY c.sequence LIMIT 1;" and values))
+    if not (memory_archive_principal(database and run) equals principal):
+        return history_status("authorization-changed")
+    return row

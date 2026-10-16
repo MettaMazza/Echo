@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T01:35:12.349247+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T01:43:42.871153+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1534,6 +1534,32 @@ SHA-256: `a062ff19f57bec3d86e3dcda3e626739d8534a4a536bc41a238a9b6dac56ad9b`
 Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency, ../../app/security/tool_authority → app/security/tool_authority.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
 - Line 10: `define main returning Int:`
+
+## tests/security/test_knowledge.ep
+
+[Source](../../tests/security/test_knowledge.ep) · 74 lines · 6274 bytes
+
+SHA-256: `92b592f79061163ef8b031df0230df4d26fd2a359dd66ae544fda0fe24e8711a`
+
+> A separate contradictory claim is retained; it is not silently merged.
+
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/memory/knowledge → app/memory/knowledge.ep
+
+- Line 4: `define knowledge_fixture_digest with database as Int and event as Str returning Str:`
+- Line 10: `define main returning Int:`
+
+## tests/security/test_knowledge_tools.ep
+
+[Source](../../tests/security/test_knowledge_tools.ep) · 64 lines · 5672 bytes
+
+SHA-256: `1286bbbbd9a88cdd499369697b2542f139179389d8fd72722f62e9afba1469e2`
+
+> Exercise the real streaming parser, durable queued request and dispatcher.
+
+Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 7: `define knowledge_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
+- Line 27: `define main returning Int:`
 
 ## tests/security/test_memory_tools.ep
 
