@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T01:22:11.285677+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T01:33:39.744637+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -923,6 +923,18 @@ Imports: ../../app/lifecycle/startup → app/lifecycle/startup.ep
 
 - Line 3: `define main returning Int:`
 
+## tests/lifecycle/test_startup_busy.ep
+
+[Source](../../tests/lifecycle/test_startup_busy.ep) · 32 lines · 1321 bytes
+
+SHA-256: `7e579bad744b65497e57b5563c0c50849221241f40800905fd40b36bd33ab1f5`
+
+
+Imports: ../../app/lifecycle/startup → app/lifecycle/startup.ep, select → standard library or compiler dependency
+
+- Line 4: `define startup_wait_fixture with path as Str and completed as Int returning Int:`
+- Line 9: `define main returning Int:`
+
 ## tests/media/image_wait_fixture.ep
 
 [Source](../../tests/media/image_wait_fixture.ep) · 7 lines · 175 bytes
@@ -1558,6 +1570,18 @@ SHA-256: `901b60a1e229f98213394954d1abdf01ac234dd26eee6e2a42ea78249b3da545`
 Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/memory/archive_recall → app/memory/archive_recall.ep
 
 - Line 4: `define main returning Int:`
+
+## tests/security/test_private_web_scope.ep
+
+[Source](../../tests/security/test_private_web_scope.ep) · 53 lines · 4546 bytes
+
+SHA-256: `c0194c8fe87263027587b8b55ddb394586d13934070b438ea0e81a49fca240ec`
+
+> Metadata fixture; no host file is opened by these ownership queries.
+
+Imports: ../../app/web/uploads → app/web/uploads.ep, ../../app/web/cancellation → app/web/cancellation.ep, ../../app/web/message_speech → app/web/message_speech.ep, ../../app/memory/session_ownership → app/memory/session_ownership.ep
+
+- Line 6: `define main returning Int:`
 
 ## tests/security/test_revocation.ep
 

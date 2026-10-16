@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T01:22:11.285677+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T01:33:39.744637+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -661,17 +661,17 @@ Imports: tree_sidecars → app/archive/tree_sidecars.ep, fs → standard library
 
 ## app/archive/turn_attachments.ep
 
-[Source](../../app/archive/turn_attachments.ep) · 40 lines · 2983 bytes
+[Source](../../app/archive/turn_attachments.ep) · 41 lines · 3110 bytes
 
-SHA-256: `f584232e1003da9694fc2ac90346043ef2c593781322767b81cab527e18e851c`
+SHA-256: `5c2df94f1b0427e0230fca0be8f6fd76acb6af798dbb2bf39da9bde5c97c1df4`
 
 > Resolve selected identities under the submission transaction. The immutable
 > receipt records original provenance without placing host paths in context.
 
-Imports: ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep
+Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep
 
-- Line 6: `define turn_attachment_manifest with database as Int and device as Str and session as Str and event as Str and attachments as List returning Str:`
-- Line 36: `define turn_attachment_read with database as Int and session as Str and event as Str returning List:`
+- Line 7: `define turn_attachment_manifest with database as Int and device as Str and session as Str and event as Str and attachments as List returning Str:`
+- Line 37: `define turn_attachment_read with database as Int and session as Str and event as Str returning List:`
 
 ## app/backup.ep
 
@@ -1062,9 +1062,9 @@ Imports: ../retained_text → app/retained_text.ep, recap_fragment → app/conte
 
 ## app/context/recap_rebuild.ep
 
-[Source](../../app/context/recap_rebuild.ep) · 68 lines · 6437 bytes
+[Source](../../app/context/recap_rebuild.ep) · 69 lines · 6564 bytes
 
-SHA-256: `c8bdda91f7e0725dff9deecc0a944a870ce976ec74af16bfbae8bf3c992a8e42`
+SHA-256: `7790cd84b47ac4ceb355398eeaa71f044c3fadae3623caa8f7552189289ba722`
 
 > Requesting a rebuild is a durable tool observation, not an immediate edit.
 > The runner consumes observed requests only after all tool results are saved.
@@ -1072,11 +1072,11 @@ SHA-256: `c8bdda91f7e0725dff9deecc0a944a870ce976ec74af16bfbae8bf3c992a8e42`
 > after checkpoint activation but before this receipt reuses that checkpoint;
 > it does not regenerate another recap or mutate original source records.
 
-Imports: ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep, ../agent/run_state → app/agent/run_state.ep
+Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep, ../agent/run_state → app/agent/run_state.ep
 
-- Line 7: `define recap_rebuild_enqueue with database as Int and run as Str and call_id as Str and arguments as Str returning Str:`
-- Line 35: `define recap_rebuild_pending with database as Int and run as Str returning Str:`
-- Line 67: `define recap_rebuild_schema returning Str:`
+- Line 8: `define recap_rebuild_enqueue with database as Int and run as Str and call_id as Str and arguments as Str returning Str:`
+- Line 36: `define recap_rebuild_pending with database as Int and run as Str returning Str:`
+- Line 68: `define recap_rebuild_schema returning Str:`
 
 ## app/context/recap_repair.ep
 
@@ -1358,13 +1358,14 @@ Imports: ../providers/json_access → app/providers/json_access.ep, ../workspace
 
 ## app/lifecycle/startup.ep
 
-[Source](../../app/lifecycle/startup.ep) · 18 lines · 689 bytes
+[Source](../../app/lifecycle/startup.ep) · 22 lines · 907 bytes
 
-SHA-256: `a8174ec27c7c75213a8fba9f115167c487aa9946bff5e49a1165cb1eb7d2e5e3`
+SHA-256: `e975e9ab4900b192cfa94d8953dbc3f0e98feb19e59541bc6341241662b5dbca`
 
 > Inspect before archive_open can create or update any application schema.
 > Deployment must stop old processes before migrations; this is not a live
 > migration lock or permission to run mixed application versions.
+> Match normal archive access: a short writer lock is not a schema change.
 
 Imports: migrations → app/lifecycle/migrations.ep, fs → standard library or compiler dependency
 
@@ -1402,9 +1403,9 @@ Imports: ../retained_text → app/retained_text.ep, ../providers/json_tokens →
 
 ## app/media/image_tool.ep
 
-[Source](../../app/media/image_tool.ep) · 165 lines · 10696 bytes
+[Source](../../app/media/image_tool.ep) · 166 lines · 10823 bytes
 
-SHA-256: `4b29f0dcbfb11dc4f81a3dfbc590e52db47566c876001c20e444997badce6b0e`
+SHA-256: `247de1d73a86fad464781f6fc355b22eeb5d5498860f5e82bb8e9e3b7ed71faf`
 
 > Run/call identity comes from the dispatcher. Re-read the immutable request.
 > Each claimed call gets its own private directory outside writable workspaces.
@@ -1412,28 +1413,28 @@ SHA-256: `4b29f0dcbfb11dc4f81a3dfbc590e52db47566c876001c20e444997badce6b0e`
 > Leave an uncertain claim when logging failed; never report a fully saved
 > result or authorize automatic replay after partial archive persistence.
 
-Imports: ../retained_text → app/retained_text.ep, image_request → app/media/image_request.ep, ../security/tool_policy → app/security/tool_policy.ep, image_logs → app/media/image_logs.ep, ../web/attachments → app/web/attachments.ep, ../workspace/directories → app/workspace/directories.ep, ../providers/helper_process → app/providers/helper_process.ep
+Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, image_request → app/media/image_request.ep, ../security/tool_policy → app/security/tool_policy.ep, image_logs → app/media/image_logs.ep, ../web/attachments → app/web/attachments.ep, ../workspace/directories → app/workspace/directories.ep, ../providers/helper_process → app/providers/helper_process.ep
 
-- Line 10: `define image_tool_authority with database as Int and run as Str and call_id as Str returning List:`
-- Line 25: `define image_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
-- Line 51: `define image_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
+- Line 11: `define image_tool_authority with database as Int and run as Str and call_id as Str returning List:`
+- Line 26: `define image_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
+- Line 52: `define image_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
 
 ## app/media/speech_request.ep
 
-[Source](../../app/media/speech_request.ep) · 117 lines · 7593 bytes
+[Source](../../app/media/speech_request.ep) · 118 lines · 7720 bytes
 
-SHA-256: `2f871eff4cf03501056f97955fe2711bc984da8adb1f1de98df6ff314c7eaef9`
+SHA-256: `430a8d8544131ba2dad518319f231970fadb36c9b6cfd0db177bca8075516947`
 
 > This adapter accepts only an owned archive identity and spoken language.
 > Runtime paths, model weights and output filenames are host controlled.
 > No duration, output-token or segment-length override. Whisper processes
 > the entire recording using its native windows. JSON retains timestamps.
 
-Imports: ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep, ../archive/session_scope → app/archive/session_scope.ep
+Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep, ../archive/session_scope → app/archive/session_scope.ep
 
-- Line 7: `define speech_request_source with database as Int and session as Str and arguments as Str returning List:`
-- Line 65: `define speech_request_arguments with profile as Str and language as Str returning List:`
-- Line 116: `define speech_tool_schema returning Str:`
+- Line 8: `define speech_request_source with database as Int and session as Str and arguments as Str returning List:`
+- Line 66: `define speech_request_arguments with profile as Str and language as Str returning List:`
+- Line 117: `define speech_tool_schema returning Str:`
 
 ## app/media/speech_text.ep
 
@@ -1450,9 +1451,9 @@ Imports: ../providers/json_string → app/providers/json_string.ep
 
 ## app/media/speech_tool.ep
 
-[Source](../../app/media/speech_tool.ep) · 242 lines · 16361 bytes
+[Source](../../app/media/speech_tool.ep) · 243 lines · 16583 bytes
 
-SHA-256: `51c4100ba5219de5f1df0f21e0bea21228fa0dc3e8a495c3ccad8759d0e69590`
+SHA-256: `9f8556a350b10fa660d19e961859bddbffa7d99795ce86f5946f7d50a01495c8`
 
 > Run/call identity comes from the dispatcher. Re-read the immutable request.
 > Direct Speak actions have no model run. Their immutable request binds the
@@ -1464,11 +1465,11 @@ SHA-256: `51c4100ba5219de5f1df0f21e0bea21228fa0dc3e8a495c3ccad8759d0e69590`
 > Leave an uncertain claim when logging failed; never report a fully saved
 > result or authorize automatic replay after partial archive persistence.
 
-Imports: speech_text → app/media/speech_text.ep, ../security/tool_authority → app/security/tool_authority.ep, ../retained_text → app/retained_text.ep, speech_request → app/media/speech_request.ep, voice_request → app/media/voice_request.ep, ../archive/file_copy → app/archive/file_copy.ep, image_logs → app/media/image_logs.ep, ../web/attachments → app/web/attachments.ep, ../workspace/directories → app/workspace/directories.ep, ../providers/helper_process → app/providers/helper_process.ep
+Imports: ../security/principals → app/security/principals.ep, speech_text → app/media/speech_text.ep, ../security/tool_authority → app/security/tool_authority.ep, ../retained_text → app/retained_text.ep, speech_request → app/media/speech_request.ep, voice_request → app/media/voice_request.ep, ../archive/file_copy → app/archive/file_copy.ep, image_logs → app/media/image_logs.ep, ../web/attachments → app/web/attachments.ep, ../workspace/directories → app/workspace/directories.ep, ../providers/helper_process → app/providers/helper_process.ep
 
-- Line 13: `define speech_tool_authority with database as Int and run as Str and call_id as Str returning List:`
-- Line 35: `define speech_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
-- Line 61: `define speech_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
+- Line 14: `define speech_tool_authority with database as Int and run as Str and call_id as Str returning List:`
+- Line 36: `define speech_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
+- Line 62: `define speech_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
 
 ## app/media/voice_request.ep
 
@@ -1540,16 +1541,16 @@ Imports: providers/native_python → app/providers/native_python.ep, providers/j
 
 ## app/principal_admin.ep
 
-[Source](../../app/principal_admin.ep) · 98 lines · 5534 bytes
+[Source](../../app/principal_admin.ep) · 98 lines · 5538 bytes
 
-SHA-256: `a0fe75daeb9146742e9c7731464c57ea651f955d568ebf2ea9c226159e325483`
+SHA-256: `fc847e34abb23754257afad35f31a2fc35d3c405c24181c05bb647662f142f29`
 
 > OS-local operator command. No browser or model schema exposes this program.
 > Guest sandbox workers cannot open the host database. Never infer authority
 > from an HTTP origin, device name, caller-supplied role or network address.
 > Check compatibility before archive_open can perform schema writes.
 
-Imports: web/run_store → app/web/run_store.ep, security/tool_authority → app/security/tool_authority.ep
+Imports: web/run_store → app/web/run_store.ep, memory/session_ownership → app/memory/session_ownership.ep
 
 - Line 7: `define main returning Int:`
 
@@ -1579,18 +1580,18 @@ Imports: ../retained_text → app/retained_text.ep, chat_stream → app/provider
 
 ## app/providers/attachment_image.ep
 
-[Source](../../app/providers/attachment_image.ep) · 37 lines · 2689 bytes
+[Source](../../app/providers/attachment_image.ep) · 38 lines · 2816 bytes
 
-SHA-256: `45916950e741e6fa35508ecd9a079e90ff4373b281bc036df0f011c64bcfbee1`
+SHA-256: `9fa55eabe14b634a988b658f25cb89931bd5327a19d99075f915f365bf8b020a`
 
 > The caller supplies a trusted run session, never an arbitrary host path.
 > Returns status, typed content part, original source event and original digest.
 > Decoding and token cost belong to the loaded provider, not this serializer.
 > MIME spelling is metadata only. The provider validates actual image bytes.
 
-Imports: ../retained_text → app/retained_text.ep, ../archive/file_base64 → app/archive/file_base64.ep, ../tools/history_tools → app/tools/history_tools.ep
+Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../archive/file_base64 → app/archive/file_base64.ep, ../tools/history_tools → app/tools/history_tools.ep
 
-- Line 8: `define attachment_image_part with database as Int and session as Str and attachment as Str returning List:`
+- Line 9: `define attachment_image_part with database as Int and session as Str and attachment as Str returning List:`
 
 ## app/providers/chat_stream.ep
 
@@ -2286,9 +2287,9 @@ Imports: accounts → app/security/accounts.ep
 
 ## app/security/principals.ep
 
-[Source](../../app/security/principals.ep) · 94 lines · 7580 bytes
+[Source](../../app/security/principals.ep) · 110 lines · 9155 bytes
 
-SHA-256: `42bac3fc50b8a378a1e18567df8ba8b9268607b8ff2fdc0b7922f7636b7e8ce1`
+SHA-256: `8163fa9cb556b94b5b8d4a0081e5e5ec329b5969c21bef6446ef3d8adaf38130`
 
 > A person is not a browser credential. Legacy devices each receive a distinct
 > user principal. No name, IP, localhost URL or existing pairing grants admin.
@@ -2301,6 +2302,9 @@ SHA-256: `42bac3fc50b8a378a1e18567df8ba8b9268607b8ff2fdc0b7922f7636b7e8ce1`
 > Before explicit Phase Two migration, preserve only existing Phase One device
 > and sandbox rules. This compatibility branch grants no admin capabilities.
 > Once the principal table exists, missing links and read errors deny access.
+> SQL expressions are fixed caller-authored identifiers, never request input.
+> Legacy archives retain device isolation; migrated archives additionally bind
+> every source to its immutable principal in the same statement as the read.
 
 Imports: ../lifecycle/operations → app/lifecycle/operations.ep
 
@@ -2310,6 +2314,7 @@ Imports: ../lifecycle/operations → app/lifecycle/operations.ep
 - Line 34: `define principal_host_role with database as Int and identity as Str and principal as Str and role as Str and reason as Str returning Str:`
 - Line 75: `define principal_device_active with database as Int and device as Str returning Int:`
 - Line 83: `define principal_session_active with database as Int and session as Str returning Int:`
+- Line 102: `define principal_session_sql with database as Int and session_expression as Str and device_expression as Str returning Str:`
 
 ## app/security/revocation.ep
 
@@ -2332,9 +2337,9 @@ Imports: principals → app/security/principals.ep
 
 ## app/security/run_authority.ep
 
-[Source](../../app/security/run_authority.ep) · 46 lines · 5171 bytes
+[Source](../../app/security/run_authority.ep) · 46 lines · 5266 bytes
 
-SHA-256: `8b927666b4c4b0ce8dfa74d35cab480e1ae1512c14254c5201a693b13a8cc75f`
+SHA-256: `b4a1d182c1b99b84cc0738e20acf7129ded7e66e2137da9ced6bf5cfb39efc05`
 
 > Capture authority atomically with run creation. Existing historical runs
 > have no proven initiating role and are not silently backfilled as admins.
@@ -2353,9 +2358,9 @@ Imports: device_links → app/security/device_links.ep
 
 ## app/security/tool_authority.ep
 
-[Source](../../app/security/tool_authority.ep) · 28 lines · 3997 bytes
+[Source](../../app/security/tool_authority.ep) · 28 lines · 4092 bytes
 
-SHA-256: `4dc1fe9ab6b0b717332a63056b0adfcb942d420ab577326844bdb98a4262cdf0`
+SHA-256: `1ec1a8b6a390bef30339b6fc2c55c2a0252287c3b473ee8c5b7267295420fe57`
 
 > Freeze each queued tool request, including direct UI actions without a model
 > run. Historical requests are not assigned invented initiating authority.
@@ -2393,7 +2398,7 @@ Imports: tool_authority → app/security/tool_authority.ep
 
 [Source](../../app/server.ep) · 323 lines · 20589 bytes
 
-SHA-256: `79cb3311d3771699085107cf1cbc2845d69183bbe032ad1d554eecc0d1a490d6`
+SHA-256: `52073833b96af0dcb17b91525c3fdfe62648be713ee4d156516f7ab41526bf56`
 
 > Let macOS retain native fault stacks for every role, including workers.
 > Every executable role checks before schema writes, recovery or dispatch.
@@ -2436,64 +2441,64 @@ Imports: ../retained_text → app/retained_text.ep, ../providers/attachment_imag
 
 ## app/tools/attachment_text.ep
 
-[Source](../../app/tools/attachment_text.ep) · 89 lines · 5959 bytes
+[Source](../../app/tools/attachment_text.ep) · 90 lines · 6086 bytes
 
-SHA-256: `25cb5a89c2a714d770adc22c5a96975d413db5437e6adcea6042ef9b3548d0eb`
+SHA-256: `0cb28eb38c6d2591735434d49fdd37e050aa22bc27e49f1a71e9b49a4cb0a129`
 
 > UTF-8 decoded by Foundation; offsets count Unicode scalars, not bytes.
 
-Imports: ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep, ../archive/file_text → app/archive/file_text.ep, ../archive/pdf_cache → app/archive/pdf_cache.ep
+Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep, ../archive/file_text → app/archive/file_text.ep, ../archive/pdf_cache → app/archive/pdf_cache.ep
 
-- Line 6: `define attachment_text_execute with database as Int and session as Str and arguments as Str returning Str:`
-- Line 69: `define attachment_unicode_window with text as Str and offset as Int and characters as Int returning List:`
+- Line 7: `define attachment_text_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 70: `define attachment_unicode_window with text as Str and offset as Int and characters as Int returning List:`
 
 ## app/tools/attachment_tools.ep
 
-[Source](../../app/tools/attachment_tools.ep) · 102 lines · 12062 bytes
+[Source](../../app/tools/attachment_tools.ep) · 103 lines · 12189 bytes
 
-SHA-256: `32cd6ccc7aab92b3c37664dc364be11f6847a92ae45816670d769409c44638fd`
+SHA-256: `f3f0f59888c11c58bb9bf62eb02933854367855031cbd5b67a0b6ba526509d15`
 
 > Scope is the trusted run session. Model arguments cannot choose another
 > session, device, or host path. One cursor result keeps context use explicit.
 > Capability is configured by the host; no remote fallback.
 
-Imports: ../context/system_awareness → app/context/system_awareness.ep, history_tools → app/tools/history_tools.ep, ../media/speech_request → app/media/speech_request.ep, ../media/voice_request → app/media/voice_request.ep, compaction_tools → app/tools/compaction_tools.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep, attachment_text → app/tools/attachment_text.ep, workspace_tools → app/tools/workspace_tools.ep, execution_output → app/tools/execution_output.ep, attachment_image → app/tools/attachment_image.ep
+Imports: ../security/principals → app/security/principals.ep, ../context/system_awareness → app/context/system_awareness.ep, history_tools → app/tools/history_tools.ep, ../media/speech_request → app/media/speech_request.ep, ../media/voice_request → app/media/voice_request.ep, compaction_tools → app/tools/compaction_tools.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep, attachment_text → app/tools/attachment_text.ep, workspace_tools → app/tools/workspace_tools.ep, execution_output → app/tools/execution_output.ep, attachment_image → app/tools/attachment_image.ep
 
-- Line 14: `define attachment_tool_execute with database as Int and session as Str and arguments as Str returning Str:`
-- Line 43: `define session_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
-- Line 62: `define attachment_listing_schemas returning Str:`
-- Line 67: `define attachment_text_schemas returning Str:`
-- Line 72: `define workspace_tool_schemas returning Str:`
-- Line 80: `define session_base_tool_schemas returning Str:`
-- Line 90: `define session_tool_schemas returning Str:`
+- Line 15: `define attachment_tool_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 44: `define session_tool_execute with database as Int and session as Str and name as Str and arguments as Str returning Str:`
+- Line 63: `define attachment_listing_schemas returning Str:`
+- Line 68: `define attachment_text_schemas returning Str:`
+- Line 73: `define workspace_tool_schemas returning Str:`
+- Line 81: `define session_base_tool_schemas returning Str:`
+- Line 91: `define session_tool_schemas returning Str:`
 
 ## app/tools/compaction_tools.ep
 
-[Source](../../app/tools/compaction_tools.ep) · 89 lines · 6283 bytes
+[Source](../../app/tools/compaction_tools.ep) · 90 lines · 6410 bytes
 
-SHA-256: `0ce854f1bad8e55fdbed1541b3aa8f4e7d2cafc0f697e5db8a2fbe646e6f9e89`
+SHA-256: `87a517957feab85677ade5cbec08afcaa1eba2a05962fa3bfe4ca4fe218abb71`
 
 > Device ownership comes from the trusted session, never from tool arguments.
 > Exact checkpoint IDs may traverse this session's saved recaps only. Return
 > Unicode ranges of originals so inspecting a large recap has no fixed ceiling.
 
-Imports: ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep, ../context/checkpoint → app/context/checkpoint.ep
+Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep, ../context/checkpoint → app/context/checkpoint.ep
 
-- Line 8: `define compaction_tool_read with database as Int and session as Str and arguments as Str returning Str:`
-- Line 88: `define compaction_tool_schema returning Str:`
+- Line 9: `define compaction_tool_read with database as Int and session as Str and arguments as Str returning Str:`
+- Line 89: `define compaction_tool_schema returning Str:`
 
 ## app/tools/execution_output.ep
 
-[Source](../../app/tools/execution_output.ep) · 52 lines · 4049 bytes
+[Source](../../app/tools/execution_output.ep) · 53 lines · 4176 bytes
 
-SHA-256: `7050679c5f9e734c7e9c5fe6372535f100e612506151ed40f77bb06481c24d88`
+SHA-256: `ba05206e44b2b1bf73ab8d7232cc013b07ad4e55a280f309b27d0db35f1bf9f5`
 
 > Traverse only original output records, excluding model requests and later
 > search/read copies. Session comes from the current run, never from arguments.
 
-Imports: ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep
+Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep
 
-- Line 6: `define execution_output_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 7: `define execution_output_execute with database as Int and session as Str and arguments as Str returning Str:`
 
 ## app/tools/execution_tool.ep
 
@@ -2563,17 +2568,17 @@ Imports: ../memory/archive_recall → app/memory/archive_recall.ep, ../security/
 
 ## app/tools/workspace_tools.ep
 
-[Source](../../app/tools/workspace_tools.ep) · 96 lines · 6301 bytes
+[Source](../../app/tools/workspace_tools.ep) · 97 lines · 6428 bytes
 
-SHA-256: `af92f0a8ddd923d13a294cd39b2b479017c037605ebbe914bd16ec4d24cbbfbe`
+SHA-256: `63c4fce14bda9417c63330190eeb34bb30f7a426d5886329bcfa29a1b3bff512`
 
 > The run supplies the session. Device ownership is resolved from the archive;
 > neither ownership nor the host root can be selected by tool arguments.
 
-Imports: ../retained_text → app/retained_text.ep, ../workspace/sessions → app/workspace/sessions.ep, ../workspace/read_text → app/workspace/read_text.ep, ../workspace/directories → app/workspace/directories.ep, ../workspace/create_text → app/workspace/create_text.ep, os → standard library or compiler dependency
+Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../workspace/sessions → app/workspace/sessions.ep, ../workspace/read_text → app/workspace/read_text.ep, ../workspace/directories → app/workspace/directories.ep, ../workspace/create_text → app/workspace/create_text.ep, os → standard library or compiler dependency
 
-- Line 10: `define workspace_tool_execute with database as Int and session as Str and arguments as Str and operation as Str returning Str:`
-- Line 95: `define workspace_text_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 11: `define workspace_tool_execute with database as Int and session as Str and arguments as Str and operation as Str returning Str:`
+- Line 96: `define workspace_text_execute with database as Int and session as Str and arguments as Str returning Str:`
 
 ## app/transport/cooperative_accept.ep
 
@@ -3188,9 +3193,9 @@ Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_st
 
 ## app/web/attachments.ep
 
-[Source](../../app/web/attachments.ep) · 79 lines · 5840 bytes
+[Source](../../app/web/attachments.ep) · 79 lines · 6030 bytes
 
-SHA-256: `befd523de08862846061671f9abe7a796974cebb2b084485beaeda8123a187d3`
+SHA-256: `24aa7767fb89107de66ad2bbd626381c8f205d228cbe24d33a9da4a7f612bc96`
 
 > Host-only storage primitive. Path must be a closed, exclusively owned staging
 > file; browser names are metadata, never filesystem paths. Publication and
@@ -3227,9 +3232,9 @@ Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_st
 
 ## app/web/cancellation.ep
 
-[Source](../../app/web/cancellation.ep) · 53 lines · 2960 bytes
+[Source](../../app/web/cancellation.ep) · 53 lines · 3055 bytes
 
-SHA-256: `84abb52427d121f314b4f8868b2d5e1585975b7ce03ffb4dcf93aa13da9d23e7`
+SHA-256: `82c5053c7fae0b9c19a4273682f1316546352bfde70c76abcb520d0b65a83272`
 
 > A durable request is distinct from completion. Only the owning active device
 > may request it; the worker records the actual terminal transition.
@@ -3260,9 +3265,9 @@ Imports: devices → app/web/devices.ep, ../tools/compaction_tools → app/tools
 
 ## app/web/devices.ep
 
-[Source](../../app/web/devices.ep) · 117 lines · 6927 bytes
+[Source](../../app/web/devices.ep) · 117 lines · 7117 bytes
 
-SHA-256: `8b78b486f26e4af3e2fc78f7b372d40cb2c6fac3a3899505a34656da819a29d4`
+SHA-256: `d39fec2a66826f4db83e9da7f912000fc031bbde5ddac688df9c7415cbd513be`
 
 > Credentials are random bearer secrets supplied by the host pairing flow.
 > Only their digests are retained. Invitations are consumed in the same
@@ -3333,9 +3338,9 @@ Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_st
 
 ## app/web/message_speech.ep
 
-[Source](../../app/web/message_speech.ep) · 50 lines · 4076 bytes
+[Source](../../app/web/message_speech.ep) · 50 lines · 4171 bytes
 
-SHA-256: `439851a447bf6c594b922b8844c866e2088ea2b694b87b227fb0a32e6e6cc9d8`
+SHA-256: `c66f9dff5a24b63f6098991501bbbe35143be3e5ed4bdcdf21d8d8ee30017d39`
 
 > Idempotent direct speech of an owned, immutable assistant message. This uses
 > the existing speech executor and tool ledger without another model turn.
@@ -3399,9 +3404,9 @@ Imports: ../transport/isolated_process → app/transport/isolated_process.ep, ..
 
 ## app/web/run_store.ep
 
-[Source](../../app/web/run_store.ep) · 386 lines · 26264 bytes
+[Source](../../app/web/run_store.ep) · 386 lines · 26359 bytes
 
-SHA-256: `9bc38f18261476802cdaadecd11c6c2ce86bc7147126fbeeb10d23b31d3f634d`
+SHA-256: `39218a0fd2902f3386533c12449c4020b0373792f56aac7e816e4d25202f789e`
 
 > Submission identity is supplied once by the browser and retained on retries.
 > Message, session and ready run commit together before a worker is launched.
@@ -3485,9 +3490,9 @@ Imports: ../retained_text → app/retained_text.ep, http_api → app/web/http_ap
 
 ## app/web/uploads.ep
 
-[Source](../../app/web/uploads.ep) · 69 lines · 5345 bytes
+[Source](../../app/web/uploads.ep) · 69 lines · 5540 bytes
 
-SHA-256: `36a7800e826bf884a7ddfd411e6724634c26c70c0d70e215240b8f540c92ec04`
+SHA-256: `103582c7b9195fa299404c77bbf00331a9ee52c3cb4b30a2c84cc4ffe71c7a3c`
 
 > Root is host configuration. The opaque storage name is always host-generated.
 > The active body owner marks transport/storage failures; a saved receipt can
@@ -3614,19 +3619,19 @@ Imports: ../retained_text → app/retained_text.ep, sandbox_process → app/work
 
 ## app/workspace/execution_request.ep
 
-[Source](../../app/workspace/execution_request.ep) · 64 lines · 4724 bytes
+[Source](../../app/workspace/execution_request.ep) · 65 lines · 4851 bytes
 
-SHA-256: `f65b685f8fc17e2bbac538feea6c2be3f3f385ff4a56c008b266342bab25c3b6`
+SHA-256: `938c6ea7043abab735c2badb5e8ceda8f2a1014abc60023cf3352bfbd80b6b39`
 
 > Resolve an execution request from its original immutable tool event. No caller
 > or model arguments can override session, device, workspace root or environment.
 > Result: status, session, device, program, argv list. This grants no launch on
 > its own: the dispatcher must pin the workspace and recheck owner at dispatch.
 
-Imports: ../retained_text → app/retained_text.ep, sessions → app/workspace/sessions.ep, ../security/tool_policy → app/security/tool_policy.ep, ../agent/run_state → app/agent/run_state.ep
+Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, sessions → app/workspace/sessions.ep, ../security/tool_policy → app/security/tool_policy.ep, ../agent/run_state → app/agent/run_state.ep
 
-- Line 6: `define workspace_execution_denied with status as Str returning List:`
-- Line 15: `define workspace_execution_request with database as Int and run as Str and call_id as Str returning List:`
+- Line 7: `define workspace_execution_denied with status as Str returning List:`
+- Line 16: `define workspace_execution_request with database as Int and run as Str and call_id as Str returning List:`
 
 ## app/workspace/files.ep
 
@@ -3781,9 +3786,9 @@ Imports:
 
 ## app/workspace/sessions.ep
 
-[Source](../../app/workspace/sessions.ep) · 70 lines · 4437 bytes
+[Source](../../app/workspace/sessions.ep) · 70 lines · 4627 bytes
 
-SHA-256: `c17ca4dcb3ca59076ebba010255aa75517850e59e2374754b2115c00c72b8759`
+SHA-256: `ee072bc3681bf132522619fa6c4825b953090fdab51c765eb166a5de3a791399`
 
 > Bind an owned session to one host-configured root. A changed root is an
 > explicit migration, not an implicit new empty workspace. Reservation survives
