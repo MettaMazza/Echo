@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T10:30:04.142539+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:35:32.065595+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -2474,6 +2474,18 @@ SHA-256: `ae7c9e75a02f1f4009bd7235ea2c08a08824f0ef3d8111e1cb71b21a1229961f`
 Imports: ../../app/agent/run_messages → app/agent/run_messages.ep
 
 - Line 3: `define main returning Int:`
+
+## tests/tools/test_live_tool_discovery.ep
+
+[Source](../../tests/tools/test_live_tool_discovery.ep) · 36 lines · 3357 bytes
+
+SHA-256: `7f6d7c4089bc4bc0ef9a952b4e76c65cf70ce6431f16c8caf7772f61f5691f8c`
+
+> All decisions and calls in this fixture come from the installed primary model.
+
+Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../../app/agent/runner → app/agent/runner.ep
+
+- Line 5: `define main returning Int:`
 
 ## tests/tools/test_tool_discovery.ep
 
