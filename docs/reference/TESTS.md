@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T06:11:53.208370+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T06:21:40.383108+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1701,6 +1701,17 @@ Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app
 
 - Line 5: `define main returning Int:`
 
+## tests/security/test_group_workspace.ep
+
+[Source](../../tests/security/test_group_workspace.ep) · 59 lines · 4402 bytes
+
+SHA-256: `68819c9b652a93e7fab057e15987f14d073bfbbd33f5d8be3d4e5dc265665ead`
+
+
+Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/tools/workspace_tools → app/tools/workspace_tools.ep
+
+- Line 5: `define main returning Int:`
+
 ## tests/security/test_groups.ep
 
 [Source](../../tests/security/test_groups.ep) · 65 lines · 6910 bytes
@@ -1772,6 +1783,19 @@ Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app
 
 - Line 6: `define live_group_finish with database as Int and run as Str and model as Str and port as Int returning Int:`
 - Line 31: `define main returning Int:`
+
+## tests/security/test_live_group_workspace.ep
+
+[Source](../../tests/security/test_live_group_workspace.ep) · 74 lines · 7146 bytes
+
+SHA-256: `1fe2d6ac80d740a676d9c34a17d7835ea34960e106dd9dc4aed12ebe4616b15b`
+
+
+Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/context/session_messages → app/context/session_messages.ep
+
+- Line 6: `define live_group_finish with database as Int and run as Str and model as Str and port as Int returning Int:`
+- Line 31: `define verify_live_workspace with database as Int returning Int:`
+- Line 40: `define main returning Int:`
 
 ## tests/security/test_live_observer.ep
 

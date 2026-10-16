@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T06:11:53.208370+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T06:21:40.383108+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -174,9 +174,9 @@ Imports: ../retained_text → app/retained_text.ep, control → app/agent/contro
 
 ## app/agent/tool_dispatch.ep
 
-[Source](../../app/agent/tool_dispatch.ep) · 128 lines · 9307 bytes
+[Source](../../app/agent/tool_dispatch.ep) · 130 lines · 9700 bytes
 
-SHA-256: `9d00eae649bcfc1150c12106ed4a56090214ab1aabdc109ad74e705de8a2d719`
+SHA-256: `37145d4e57d417faf5892940bbbe8f9abf778faee15cd07a80a90a799107bc92`
 
 > One invocation executes at most the next cursor item. The enclosing run loops
 > until the ledger is observed; this is scheduling granularity, not a turn cap.
@@ -186,7 +186,7 @@ SHA-256: `9d00eae649bcfc1150c12106ed4a56090214ab1aabdc109ad74e705de8a2d719`
 Imports: ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
 
 - Line 16: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
-- Line 127: `define agent_tool_step with database as Int and run as Str returning Int:`
+- Line 129: `define agent_tool_step with database as Int and run as Str returning Int:`
 
 ## app/agent/tool_ledger.ep
 
@@ -2833,19 +2833,22 @@ Imports: accounts → app/security/accounts.ep
 
 ## app/security/group_gate.ep
 
-[Source](../../app/security/group_gate.ep) · 22 lines · 2255 bytes
+[Source](../../app/security/group_gate.ep) · 32 lines · 3514 bytes
 
-SHA-256: `c6ff51e3e0db15b9a61341d36d41fae4e7820fabe79a466dbd8b2c6fe901a0f4`
+SHA-256: `b6769b310fd8c4320486ddcf98f3be5f7a34a42029f393e400c98a4002ce4c66`
 
 > SQL expressions are supplied only by internal callers, never request data.
 > This clause supplements private ownership only for a recorded initiating run.
 > Supplemental group-session check for dispatchers that also enforce frozen
 > run and tool authority. This never substitutes for those permission checks.
+> Current group workspace access is separate from private ownership. Historical
+> audience segments remain archived but cannot accept fresh workspace actions.
 
 Imports: ../archive/history → app/archive/history.ep
 
 - Line 5: `define group_run_scope_sql with database as Int and run_expression as Str and session_expression as Str and device_expression as Str returning Str:`
 - Line 16: `define group_run_session_allows with database as Int and run as Str and session as Str returning Int:`
+- Line 26: `define group_device_session_sql with database as Int and session_expression as Str and device_expression as Str returning Str:`
 
 ## app/security/group_runs.ep
 
@@ -3185,9 +3188,9 @@ Imports: ../security/principals → app/security/principals.ep, ../retained_text
 
 ## app/tools/execution_tool.ep
 
-[Source](../../app/tools/execution_tool.ep) · 147 lines · 9778 bytes
+[Source](../../app/tools/execution_tool.ep) · 147 lines · 10008 bytes
 
-SHA-256: `117d3ca6e2148552ff2f744e2a763b28dd05492592170a2879cd5255d4800f1a`
+SHA-256: `73d37868ca32cc29cd653e8cc9b77f3eed166bd3dd5a7a9f801d422b2874a4a4`
 
 > Separate connection observes revocation and cancellation while capture owns
 > the worker connection. Closing the private writer wakes blocked pipe reads.
@@ -3280,17 +3283,22 @@ Imports: ../rights/reviews → app/rights/reviews.ep, ../security/tool_policy �
 
 ## app/tools/workspace_tools.ep
 
-[Source](../../app/tools/workspace_tools.ep) · 97 lines · 6428 bytes
+[Source](../../app/tools/workspace_tools.ep) · 127 lines · 8711 bytes
 
-SHA-256: `63c4fce14bda9417c63330190eeb34bb30f7a426d5886329bcfa29a1b3bff512`
+SHA-256: `ffaeb00dffa923b2d1f299d81bddc846c452edf601483b7372c245111cd73be9`
 
 > The run supplies the session. Device ownership is resolved from the archive;
 > neither ownership nor the host root can be selected by tool arguments.
+> Explicit device is accepted only from the authenticated dispatcher wrapper.
+> Resolve the exact queued arguments and initiating speaker. No model-supplied
+> device or session is accepted. Recheck authority before returning file data.
 
-Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../workspace/sessions → app/workspace/sessions.ep, ../workspace/read_text → app/workspace/read_text.ep, ../workspace/directories → app/workspace/directories.ep, ../workspace/create_text → app/workspace/create_text.ep, os → standard library or compiler dependency
+Imports: ../security/tool_policy → app/security/tool_policy.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../workspace/sessions → app/workspace/sessions.ep, ../workspace/read_text → app/workspace/read_text.ep, ../workspace/directories → app/workspace/directories.ep, ../workspace/create_text → app/workspace/create_text.ep, os → standard library or compiler dependency
 
-- Line 11: `define workspace_tool_execute with database as Int and session as Str and arguments as Str and operation as Str returning Str:`
-- Line 96: `define workspace_text_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 12: `define workspace_tool_execute with database as Int and session as Str and arguments as Str and operation as Str returning Str:`
+- Line 16: `define workspace_tool_execute_device with database as Int and trusted_device as Str and session as Str and arguments as Str and operation as Str returning Str:`
+- Line 103: `define workspace_text_execute with database as Int and session as Str and arguments as Str returning Str:`
+- Line 108: `define workspace_tool_execute_owned with database as Int and run as Str and call_id as Str returning Str:`
 
 ## app/transport/cooperative_accept.ep
 
@@ -4340,9 +4348,9 @@ Imports: ../retained_text → app/retained_text.ep, sandbox_process → app/work
 
 ## app/workspace/execution_request.ep
 
-[Source](../../app/workspace/execution_request.ep) · 65 lines · 4851 bytes
+[Source](../../app/workspace/execution_request.ep) · 67 lines · 5408 bytes
 
-SHA-256: `938c6ea7043abab735c2badb5e8ceda8f2a1014abc60023cf3352bfbd80b6b39`
+SHA-256: `9fb3bd5b45aa871073f99f491ebf908554480f09e70d783fd6916e9a3664ed50`
 
 > Resolve an execution request from its original immutable tool event. No caller
 > or model arguments can override session, device, workspace root or environment.
@@ -4540,9 +4548,9 @@ Imports:
 
 ## app/workspace/sessions.ep
 
-[Source](../../app/workspace/sessions.ep) · 70 lines · 4627 bytes
+[Source](../../app/workspace/sessions.ep) · 80 lines · 5452 bytes
 
-SHA-256: `ee072bc3681bf132522619fa6c4825b953090fdab51c765eb166a5de3a791399`
+SHA-256: `46cff7fa76851d42d8014a03986946b41c9397e1db297439c8784e362d620838`
 
 > Bind an owned session to one host-configured root. A changed root is an
 > explicit migration, not an implicit new empty workspace. Reservation survives
@@ -4550,8 +4558,8 @@ SHA-256: `ee072bc3681bf132522619fa6c4825b953090fdab51c765eb166a5de3a791399`
 > device and session are supplied by the authenticated host/run, never accepted
 > as filesystem-tool arguments. Root is host configuration, never model input.
 
-Imports: ../retained_text → app/retained_text.ep, files → app/workspace/files.ep, ../security/principals → app/security/principals.ep, ../archive/runtime_lock → app/archive/runtime_lock.ep, ../tools/history_tools → app/tools/history_tools.ep
+Imports: ../security/group_gate → app/security/group_gate.ep, ../retained_text → app/retained_text.ep, files → app/workspace/files.ep, ../security/principals → app/security/principals.ep, ../archive/runtime_lock → app/archive/runtime_lock.ep, ../tools/history_tools → app/tools/history_tools.ep
 
-- Line 10: `define workspace_session_schema with database as Int returning Int:`
-- Line 13: `define workspace_session_allowed with database as Int and device as Str and session as Str returning Int:`
-- Line 24: `define workspace_session_open with database as Int and library as Int and device as Str and session as Str and root_path as Str returning Int:`
+- Line 11: `define workspace_session_schema with database as Int returning Int:`
+- Line 14: `define workspace_session_allowed with database as Int and device as Str and session as Str returning Int:`
+- Line 28: `define workspace_session_open with database as Int and library as Int and device as Str and session as Str and root_path as Str returning Int:`
