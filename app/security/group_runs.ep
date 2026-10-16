@@ -1,0 +1,46 @@
+import "group_sessions"
+import "../agent/run_state"
+
+# Origin, original user event and run are committed together. The deferred
+# foreign key rejects abandoned origin records at commit. Tool capture copies
+# the initiating run's frozen authority, never a later role or another member.
+define group_run_schema with database as Int returning Str:
+    set prior to group_session_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 19 and "frozen-group-run-speaker" and "CREATE TABLE echo_group_run_origins(run TEXT PRIMARY KEY REFERENCES echo_runs(run) DEFERRABLE INITIALLY DEFERRED,session TEXT NOT NULL REFERENCES echo_group_sessions(session),device TEXT NOT NULL REFERENCES echo_devices(device)); CREATE TRIGGER echo_group_run_origin_no_update BEFORE UPDATE ON echo_group_run_origins BEGIN SELECT RAISE(ABORT,'Shared initiating speaker is immutable'); END; CREATE TRIGGER echo_group_run_origin_no_delete BEFORE DELETE ON echo_group_run_origins BEGIN SELECT RAISE(ABORT,'Shared initiating speaker is immutable'); END; CREATE TRIGGER echo_group_run_origin_before_run BEFORE INSERT ON echo_group_run_origins WHEN EXISTS(SELECT 1 FROM echo_runs WHERE run=NEW.run) BEGIN SELECT RAISE(ABORT,'Origin must precede run creation'); END; DROP TRIGGER echo_run_authority_capture; DROP TRIGGER echo_tool_authority_capture; CREATE TRIGGER echo_run_authority_capture AFTER INSERT ON echo_runs BEGIN INSERT INTO echo_run_authority SELECT NEW.run,d.device,p.identity,p.role,(SELECT COUNT(*) FROM echo_authority_events e WHERE e.principal=p.identity),(SELECT COUNT(*) FROM echo_principal_revocations v WHERE v.principal=p.identity),(SELECT COUNT(*) FROM echo_device_link_events l WHERE l.device=d.device) FROM echo_session_owners o JOIN echo_devices d ON d.device=o.device JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE o.session=NEW.session AND d.revoked=0 AND p.revoked=0; INSERT INTO echo_run_authority SELECT NEW.run,d.device,p.identity,p.role,(SELECT COUNT(*) FROM echo_authority_events e WHERE e.principal=p.identity),(SELECT COUNT(*) FROM echo_principal_revocations v WHERE v.principal=p.identity),(SELECT COUNT(*) FROM echo_device_link_events l WHERE l.device=d.device) FROM echo_group_run_origins g JOIN echo_devices d ON d.device=g.device JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE g.run=NEW.run AND g.session=NEW.session AND d.revoked=0 AND p.revoked=0; SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM echo_run_authority WHERE run=NEW.run) THEN RAISE(ABORT,'Authenticated initiating authority required') END; END; CREATE TRIGGER echo_tool_authority_capture AFTER INSERT ON echo_tool_calls BEGIN INSERT INTO echo_tool_authority SELECT NEW.run,NEW.call_id,d.device,p.identity,p.role,(SELECT COUNT(*) FROM echo_authority_events e WHERE e.principal=p.identity),(SELECT COUNT(*) FROM echo_principal_revocations v WHERE v.principal=p.identity),(SELECT COUNT(*) FROM echo_device_link_events l WHERE l.device=d.device) FROM echo_session_owners o JOIN echo_devices d ON d.device=o.device JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE o.session=NEW.session AND d.revoked=0 AND p.revoked=0; INSERT INTO echo_tool_authority SELECT a.run,NEW.call_id,a.device,a.principal,a.role,a.role_revision,a.revocation_revision,a.link_revision FROM echo_run_authority a JOIN echo_group_run_origins g ON g.run=a.run JOIN echo_runs r ON r.run=g.run AND r.session=g.session WHERE a.run=NEW.run AND g.session=NEW.session; SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM echo_tool_authority WHERE run=NEW.run AND call_id=NEW.call_id) THEN RAISE(ABORT,'Authenticated initiating authority required') END; END;")
+
+# Adapter-only admission. The session already binds the exact audience; the
+# verified connector supplies its namespace. It never accepts a model's claim.
+define group_run_submit with database as Int and device as Str and run as Str and session as Str and platform as Str and server as Str and room as Str and message as Str returning Str:
+    if string_length(run) equals 0 or else string_length(message) equals 0 or else group_text_valid(run) equals 0 or else group_text_valid(message) equals 0:
+        return "invalid-submission"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    if node_admission_allows(database) equals 0 or else group_session_allows(database and device and session and platform and server and room and 1) equals 0:
+        return migration_fail(database and "audience-not-authorized")
+    set identity to [run]
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT g.device,r.session,e.payload FROM echo_runs r LEFT JOIN echo_group_run_origins g ON g.run=r.run JOIN echo_events e ON e.event=r.objective_event WHERE r.run=?;" and identity))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals device) or else not (archive_list_text(old and 2) equals session) or else not (archive_list_text(old and 3) equals message):
+            return migration_fail(database and "submission-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-accepted"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "run-read-failed")
+    set session_values to [session]
+    set active to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_runs r WHERE r.session=? AND (r.state NOT IN ('completed','cancelled','failed') OR EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state<>'observed'));" and session_values))
+    if not (archive_list_text(active and 0) equals "found"):
+        return migration_fail(database and "run-read-failed")
+    if not (archive_list_text(active and 1) equals "0"):
+        return migration_fail(database and "session-active")
+    set values to [run,session,device]
+    set event to concat(run and ":user")
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_run_origins VALUES(?1,?2,?3);" and values) and 101) is not equal to 0 or else archive_append_pending(database and session and event and "user" and message and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_create(database and run and session and event) is not equal to 0:
+        return migration_fail(database and "run-write-failed")
+    if run_authority_allows(database and run and "user") is not equal to 1:
+        return migration_fail(database and "authority-not-current")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "accepted"

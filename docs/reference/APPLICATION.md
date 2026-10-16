@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T05:57:36.710058+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T06:02:28.524083+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2831,6 +2831,36 @@ Imports: accounts → app/security/accounts.ep
 - Line 3: `define principal_device_link_schema with database as Int returning Str:`
 - Line 14: `define principal_host_device_link with database as Int and identity as Str and device as Str and expected as Str and target as Str and reason as Str returning Str:`
 
+## app/security/group_gate.ep
+
+[Source](../../app/security/group_gate.ep) · 12 lines · 1555 bytes
+
+SHA-256: `59269d5a84982eea6f48995e26dce86e05f3188ba837985acbfd32f42f0b72ff`
+
+> SQL expressions are supplied only by internal callers, never request data.
+> This clause supplements private ownership only for a recorded initiating run.
+
+Imports: ../archive/history → app/archive/history.ep
+
+- Line 5: `define group_run_scope_sql with database as Int and run_expression as Str and session_expression as Str and device_expression as Str returning Str:`
+
+## app/security/group_runs.ep
+
+[Source](../../app/security/group_runs.ep) · 46 lines · 6967 bytes
+
+SHA-256: `a4f03b249a4f289463397a9f78b6b1d772c078ac9a7309fc04b6d65d5b7306d1`
+
+> Origin, original user event and run are committed together. The deferred
+> foreign key rejects abandoned origin records at commit. Tool capture copies
+> the initiating run's frozen authority, never a later role or another member.
+> Adapter-only admission. The session already binds the exact audience; the
+> verified connector supplies its namespace. It never accepts a model's claim.
+
+Imports: group_sessions → app/security/group_sessions.ep, ../agent/run_state → app/agent/run_state.ep
+
+- Line 7: `define group_run_schema with database as Int returning Str:`
+- Line 15: `define group_run_submit with database as Int and device as Str and run as Str and session as Str and platform as Str and server as Str and room as Str and message as Str returning Str:`
+
 ## app/security/group_sessions.ep
 
 [Source](../../app/security/group_sessions.ep) · 48 lines · 5269 bytes
@@ -2943,9 +2973,9 @@ Imports: principals → app/security/principals.ep
 
 ## app/security/run_authority.ep
 
-[Source](../../app/security/run_authority.ep) · 49 lines · 5353 bytes
+[Source](../../app/security/run_authority.ep) · 50 lines · 5538 bytes
 
-SHA-256: `9ae6f35ce9be8cb98418ce3a170c1452a7c1b5261a6878fced16d059bc770ce0`
+SHA-256: `d566e7064cedd1bdcf326b5eeab08c1a8f0d128d513f9d047855ef3c1ffe07c0`
 
 > Capture authority atomically with run creation. Existing historical runs
 > have no proven initiating role and are not silently backfilled as admins.
@@ -2956,17 +2986,17 @@ SHA-256: `9ae6f35ce9be8cb98418ce3a170c1452a7c1b5261a6878fced16d059bc770ce0`
 > A factual per-run observation, not a grant and not stable system-prompt text.
 > A later promotion does not describe an older queued run as newly privileged.
 
-Imports: node_gate → app/security/node_gate.ep, device_links → app/security/device_links.ep
+Imports: group_gate → app/security/group_gate.ep, node_gate → app/security/node_gate.ep, device_links → app/security/device_links.ep
 
-- Line 6: `define run_authority_schema with database as Int returning Str:`
-- Line 15: `define run_authority_allows with database as Int and run as Str and required as Str returning Int:`
-- Line 34: `define run_authority_observation with database as Int and run as Str returning Str:`
+- Line 7: `define run_authority_schema with database as Int returning Str:`
+- Line 16: `define run_authority_allows with database as Int and run as Str and required as Str returning Int:`
+- Line 35: `define run_authority_observation with database as Int and run as Str returning Str:`
 
 ## app/security/tool_authority.ep
 
-[Source](../../app/security/tool_authority.ep) · 31 lines · 4192 bytes
+[Source](../../app/security/tool_authority.ep) · 32 lines · 4377 bytes
 
-SHA-256: `f1fdf33192212b138eb3bea5cefd309067739b3bd6aff50e054faa76e47caa54`
+SHA-256: `35c79067f5b06cf31a1c782bc4de4cee77bd6a459d7ea366d07beae36b56fea3`
 
 > Freeze each queued tool request, including direct UI actions without a model
 > run. Historical requests are not assigned invented initiating authority.
@@ -2975,10 +3005,10 @@ SHA-256: `f1fdf33192212b138eb3bea5cefd309067739b3bd6aff50e054faa76e47caa54`
 > unlink/relink cycles require a new request. Ordinary admin is not charter steward.
 > Unmigrated Phase One retains its existing sandbox only, never admin.
 
-Imports: node_gate → app/security/node_gate.ep, run_authority → app/security/run_authority.ep
+Imports: group_gate → app/security/group_gate.ep, node_gate → app/security/node_gate.ep, run_authority → app/security/run_authority.ep
 
-- Line 6: `define tool_authority_schema with database as Int returning Str:`
-- Line 15: `define tool_authority_allows with database as Int and run as Str and call_id as Str and required as Str returning Int:`
+- Line 7: `define tool_authority_schema with database as Int returning Str:`
+- Line 16: `define tool_authority_allows with database as Int and run as Str and call_id as Str and required as Str returning Int:`
 
 ## app/security/tool_policy.ep
 
