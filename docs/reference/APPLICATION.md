@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T01:53:42.752639+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T01:57:20.241858+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2290,6 +2290,27 @@ SHA-256: `341af71d59cc0ce9cd435b9fe8e3c14d4ed9e8f87160f064dc42b48485fb9e99`
 Imports: 
 
 - Line 4: `define archive_list_text with values as List and index as Int returning Str:`
+
+## app/rights/charter.ep
+
+[Source](../../app/rights/charter.ep) · 48 lines · 2571 bytes
+
+SHA-256: `a00d24ac30256b161edf81b45826bb78f0106e8e43b0dfa20b4991b35b54c12c`
+
+> This is the exact ErnosDecent v2 charter hash, not rewritten policy prose.
+> A technical adaptation must receive a separately reviewed version and hash.
+> Hash the exact bytes subsequently parsed. A second path read is not used for
+> interpretation, so a concurrent replacement cannot substitute another policy.
+> Category membership is read from the canonical charter itself. Unknown
+> categories cannot silently become environmental changes or bypass review.
+> The protected controller must derive categories from its trusted executable
+> target inventory; a caller-supplied category is not execution authority.
+
+Imports: ../archive/file_digest → app/archive/file_digest.ep, ../providers/archived_stream → app/providers/archived_stream.ep, fs → standard library or compiler dependency
+
+- Line 7: `define charter_pinned_digest returning Str:`
+- Line 12: `define charter_verified_text with path as Str returning Str:`
+- Line 29: `define charter_category with path as Str and category as Str returning Str:`
 
 ## app/security/accounts.ep
 
