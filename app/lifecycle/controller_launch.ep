@@ -1,0 +1,53 @@
+import "controller_bundle"
+
+# Resolve only installed names from the exact package manifest. Source paths
+# identify build inputs and are never used as executable or argument paths.
+define controller_bundle_entry with manifest as Str and name as Str and kind as Str returning Int:
+    if controller_bundle_valid(manifest and ep_sha256(manifest)) equals 0:
+        return 0
+    set tokens to provider_json_tokens(manifest)
+    set files to provider_items(tokens and provider_member(tokens and 0 and "files"))
+    for each entry in files:
+        if provider_value(tokens and provider_member(tokens and entry and "name")) equals name and provider_value(tokens and provider_member(tokens and entry and "kind")) equals kind:
+            return 1
+    return 0
+
+# Bootstrap launch has no inherited environment or shell expansion. The selected
+# executable and its configuration must both belong to the verified package.
+# This profile is not a protected-change consent or operation authorization.
+define controller_bundle_profile with manifest as Str and expected as Str and parent as Str and executable as Str and configuration as Str returning Str:
+    if controller_bundle_valid(manifest and expected) equals 0 or else controller_bundle_entry(manifest and executable and "executable") equals 0 or else controller_bundle_entry(manifest and configuration and "data") equals 0:
+        return ""
+    if string_length(parent) < 2 or else get_character(parent and 0) is not equal to 47 or else service_native_text(parent) equals 0 or else workspace_path_parts(ptr_to_str(substring(parent and 1 and string_length(parent) - 1))) equals 0:
+        return ""
+    set root to concat(parent and concat("/" and expected))
+    set profile to concat("{\"executable\":" and provider_quote(concat(root and concat("/" and executable))))
+    set profile to concat(profile and concat(",\"directory\":" and provider_quote(root)))
+    set profile to concat(profile and concat(",\"arguments\":[" and concat(provider_quote(concat(root and concat("/" and configuration))) and "]")))
+    return concat(profile and ",\"environment\":[\"PATH=/usr/bin:/bin\"]}")
+
+# Root bootstrap only. Verify every installed byte, inode, mode and receipt
+# immediately before exec. The launch replaces this process, retaining signals
+# and exit status. An installed controller must separately enforce its ledger.
+define controller_bundle_launch with manifest as Str and expected as Str and parent as Str and executable as Str and configuration as Str and check_only as Int returning Int:
+    if not (check_only equals 0 or else check_only equals 1):
+        display "invalid-launch-mode"
+        return 1
+    set profile to controller_bundle_profile(manifest and expected and parent and executable and configuration)
+    if string_length(profile) equals 0:
+        display "invalid-installed-entry"
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 1
+    set effective_user to ep_dlsym(library and "geteuid")
+    if effective_user equals 0 or else ep_dlcall0(effective_user) is not equal to 0:
+        set closed to ep_dlclose(library)
+        display "root-launch-required"
+        return 1
+    set closed to ep_dlclose(library)
+    set verified to controller_bundle_verify(manifest and expected and parent)
+    if not (verified equals "verified-not-authorized-for-activation"):
+        display verified
+        return 1
+    return service_profile_run(profile and check_only)

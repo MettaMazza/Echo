@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T10:17:21.337220+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:22:44.393389+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1391,6 +1391,17 @@ Imports: providers/native_python → app/providers/native_python.ep, providers/j
 
 - Line 8: `define main returning Int:`
 
+## app/launch_controller.ep
+
+[Source](../../app/launch_controller.ep) · 14 lines · 778 bytes
+
+SHA-256: `c32874084bba02172210297a111735b156da10fac26cd9d3937b1ee90cfe6b57`
+
+
+Imports: lifecycle/controller_launch → app/lifecycle/controller_launch.ep, fs → standard library or compiler dependency
+
+- Line 4: `define main returning Int:`
+
 ## app/lifecycle/controller_bundle.ep
 
 [Source](../../app/lifecycle/controller_bundle.ep) · 210 lines · 12316 bytes
@@ -1417,6 +1428,27 @@ Imports: protected_path → app/lifecycle/protected_path.ep, service_profile →
 - Line 122: `define controller_bundle_stage_files with library as Int and directory as Int and root as Str and manifest as Str and expected as Str returning Str:`
 - Line 151: `define controller_bundle_verify with manifest as Str and expected as Str and parent_path as Str returning Str:`
 - Line 167: `define controller_bundle_verify_files with library as Int and manifest as Str and expected as Str and root as Str returning Str:`
+
+## app/lifecycle/controller_launch.ep
+
+[Source](../../app/lifecycle/controller_launch.ep) · 53 lines · 3496 bytes
+
+SHA-256: `a84e2a8de6626e4bd47043f16c10dee8d2baf2b758910163e657a6ceda1257f2`
+
+> Resolve only installed names from the exact package manifest. Source paths
+> identify build inputs and are never used as executable or argument paths.
+> Bootstrap launch has no inherited environment or shell expansion. The selected
+> executable and its configuration must both belong to the verified package.
+> This profile is not a protected-change consent or operation authorization.
+> Root bootstrap only. Verify every installed byte, inode, mode and receipt
+> immediately before exec. The launch replaces this process, retaining signals
+> and exit status. An installed controller must separately enforce its ledger.
+
+Imports: controller_bundle → app/lifecycle/controller_bundle.ep
+
+- Line 5: `define controller_bundle_entry with manifest as Str and name as Str and kind as Str returning Int:`
+- Line 18: `define controller_bundle_profile with manifest as Str and expected as Str and parent as Str and executable as Str and configuration as Str returning Str:`
+- Line 32: `define controller_bundle_launch with manifest as Str and expected as Str and parent as Str and executable as Str and configuration as Str and check_only as Int returning Int:`
 
 ## app/lifecycle/migrations.ep
 
