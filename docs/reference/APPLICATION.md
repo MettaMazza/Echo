@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T03:43:31.164547+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:50:13.209513+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2351,6 +2351,37 @@ Imports: proposals → app/rights/proposals.ep, ../workspace/files → app/works
 - Line 7: `define protected_inventory_category with charter as Str and inventory as Str and expected_digest as Str and target as Str returning Str:`
 - Line 47: `define protected_inventory_manifest with charter as Str and inventory as Str and inventory_digest as Str and target as Str and before_hash as Str and after_hash as Str and payload as Str returning Str:`
 - Line 55: `define protected_inventory_matches with charter as Str and inventory as Str and inventory_digest as Str and manifest as Str returning Int:`
+
+## app/rights/observer_audit.ep
+
+[Source](../../app/rights/observer_audit.ep) · 81 lines · 5779 bytes
+
+SHA-256: `8ac05884b5d4ed2fd5dade4c44557a6002d3bcbb031b99ed9f8362043b5efb7c`
+
+> Controller entry only: policy bytes and their trusted pin are not model tool
+> arguments. Final policy selection remains subject to the joint prompt review.
+> The complete outgoing request and provider stream are saved before a verdict
+> is exposed. This returns audit evidence only, never deployment permission.
+> A new attempt needs a new request identity; interrupted dispatch is not replayed.
+
+Imports: observer_parser → app/rights/observer_parser.ep, reviews → app/rights/reviews.ep, ../providers/prepare → app/providers/prepare.ep, ../providers/local_chat → app/providers/local_chat.ep
+
+- Line 8: `define protected_observer_input with database as Int and run as Str and proposal as Str returning Str:`
+- Line 19: `define protected_observer_body with model as Str and policy as Str and input as Str returning Str:`
+- Line 27: `define protected_observer_generate with database as Int and run as Str and proposal as Str and request as Str and policy as Str and policy_digest as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning Str:`
+
+## app/rights/observer_evidence.ep
+
+[Source](../../app/rights/observer_evidence.ep) · 50 lines · 3982 bytes
+
+SHA-256: `487348f6230aff3792b7e5e4ccc74c9f344fd7673d09381c40d5197aed3ee2be`
+
+> Reconstruct the answer from original stream events, not a trusted-looking
+> receipt alone. Caller must still apply all independent publication gates.
+
+Imports: observer_audit → app/rights/observer_audit.ep, ../providers/restored_stream → app/providers/restored_stream.ep
+
+- Line 6: `define protected_observer_evidence with database as Int and run as Str and proposal as Str and request as Str and policy as Str and policy_digest as Str returning Str:`
 
 ## app/rights/observer_parser.ep
 

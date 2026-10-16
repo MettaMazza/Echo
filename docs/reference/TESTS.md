@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T03:43:31.164547+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:50:13.209513+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1599,6 +1599,19 @@ Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/t
 - Line 7: `define knowledge_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
 - Line 27: `define main returning Int:`
 
+## tests/security/test_live_observer.ep
+
+[Source](../../tests/security/test_live_observer.ep) · 24 lines · 2089 bytes
+
+SHA-256: `9e49ebdc9fba62e52b96b9ccbf9a139680aab2c4ba848f3c8b0edc276bf92804`
+
+> Transport/evidence qualification using an explicit disposable policy, not a
+> replacement for Echo's canonical policy or deployment acceptance.
+
+Imports: ../../app/rights/observer_audit → app/rights/observer_audit.ep
+
+- Line 5: `define main returning Int:`
+
 ## tests/security/test_live_protected_tools.ep
 
 [Source](../../tests/security/test_live_protected_tools.ep) · 49 lines · 4037 bytes
@@ -1624,6 +1637,29 @@ Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/t
 
 - Line 7: `define recall_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
 - Line 27: `define main returning Int:`
+
+## tests/security/test_observer_evidence.ep
+
+[Source](../../tests/security/test_observer_evidence.ep) · 21 lines · 1828 bytes
+
+SHA-256: `0d3850530b25e8ca288d9487e66af8a275687fdfa08e53438ce37aca337f164e`
+
+
+Imports: ../../app/rights/observer_evidence → app/rights/observer_evidence.ep
+
+- Line 3: `define main returning Int:`
+
+## tests/security/test_observer_input.ep
+
+[Source](../../tests/security/test_observer_input.ep) · 28 lines · 2172 bytes
+
+SHA-256: `bcb6999e73df2ba9ca7e263cede3a1e801469d564c8d09493d70da4e6b75326f`
+
+> Disposable copy of the passed live model inspection/review archive only.
+
+Imports: ../../app/rights/observer_audit → app/rights/observer_audit.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/security/test_observer_parser.ep
 

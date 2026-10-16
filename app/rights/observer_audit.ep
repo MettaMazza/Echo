@@ -1,0 +1,81 @@
+import "observer_parser"
+import "reviews"
+import "../providers/prepare"
+import "../providers/local_chat"
+
+# Controller entry only: policy bytes and their trusted pin are not model tool
+# arguments. Final policy selection remains subject to the joint prompt review.
+define protected_observer_input with database as Int and run as Str and proposal as Str returning Str:
+    set original to protected_proposal_read(database and run and proposal)
+    set review to protected_review_latest(database and run and proposal)
+    if not (archive_list_text(original and 0) equals "found") or else not (archive_list_text(review and 0) equals "found"):
+        return ""
+    set input to concat("{\"proposal\":" and provider_quote(proposal))
+    set input to concat(input and concat(",\"manifest_digest\":" and provider_quote(archive_list_text(original and 2))))
+    set input to concat(input and concat(",\"manifest\":" and archive_list_text(original and 1)))
+    set input to concat(input and concat(",\"review_revision\":" and archive_list_text(review and 1)))
+    return concat(input and concat(",\"review\":" and concat(archive_list_text(review and 2) and "}")))
+
+define protected_observer_body with model as Str and policy as Str and input as Str returning Str:
+    set body to concat("{\"model\":" and provider_quote(model))
+    set body to concat(body and concat(",\"stream\":true,\"messages\":[{\"role\":\"system\",\"content\":" and provider_quote(policy)))
+    return concat(body and concat("},{\"role\":\"user\",\"content\":" and concat(provider_quote(input) and "}]}")))
+
+# The complete outgoing request and provider stream are saved before a verdict
+# is exposed. This returns audit evidence only, never deployment permission.
+# A new attempt needs a new request identity; interrupted dispatch is not replayed.
+define protected_observer_generate with database as Int and run as Str and proposal as Str and request as Str and policy as Str and policy_digest as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning Str:
+    if string_length(string_trim(policy)) equals 0 or else not (ep_sha256(policy) equals policy_digest):
+        return "invalid-policy"
+    set input to protected_observer_input(database and run and proposal)
+    if string_length(input) equals 0:
+        return "invalid-review-input"
+    set values to create_list()
+    set added to append_list(values and run)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_runs WHERE run=?;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "missing-run"
+    set session to archive_list_text(row and 1)
+    set config to provider_json_tokens(profile)
+    set model to provider_value(config and provider_member(config and 0 and "model"))
+    set body to protected_observer_body(model and policy and input)
+    set prepared to provider_prepare(database and session and concat(request and ":preflight") and profile and body and reserve and cancellation_reader and read_size)
+    if not (archive_list_text(prepared and 0) equals "ready"):
+        return archive_list_text(prepared and 0)
+    if not (protected_observer_input(database and run and proposal) equals input):
+        return "audit-input-changed"
+    set body to archive_list_text(prepared and 5)
+    set payload to concat("{\"purpose\":\"protected-observer\",\"input\":" and input)
+    set payload to concat(payload and concat(",\"policy_digest\":" and provider_quote(policy_digest)))
+    set payload to concat(payload and concat(",\"request_body\":" and concat(provider_quote(body) and "}")))
+    if archive_append(database and session and request and "model_request" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return "archive-error"
+    set response to local_chat_generate(database and session and request and get_list(prepared and 7) and archive_list_text(prepared and 6) and body and cancellation_reader and read_size)
+    set status to archive_list_text(response and 0)
+    set raw to ""
+    if status equals "complete":
+        set state to get_list(response and 1)
+        set choice to chat_find(get_list(state and 0) and "0")
+        if get_list(state and 2) is not equal to 2 or else choice equals 0:
+            set status to "incomplete-response"
+        else if length_list(get_list(choice and 3)) is not equal to 0:
+            set status to "unexpected-tool-call"
+        else:
+            set raw to archive_list_text(choice and 1)
+    set verdict to protected_observer_parse(raw)
+    if not (protected_observer_input(database and run and proposal) equals input):
+        set status to "audit-input-changed"
+    set payload to concat("{\"request_event\":" and provider_quote(request))
+    set payload to concat(payload and concat(",\"input_digest\":" and provider_quote(ep_sha256(input))))
+    set payload to concat(payload and concat(",\"policy_digest\":" and provider_quote(policy_digest)))
+    set payload to concat(payload and concat(",\"transport_status\":" and provider_quote(status)))
+    set payload to concat(payload and concat(",\"raw\":" and provider_quote(raw)))
+    set payload to concat(payload and concat(",\"verdict\":" and concat(verdict and "}")))
+    if archive_append(database and session and concat(request and ":audit") and "protected_observer_audit" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return "archive-error"
+    if not (status equals "complete"):
+        return status
+    set parsed to provider_json_tokens(verdict)
+    if not (provider_value(parsed and provider_member(parsed and 0 and "parsed")) equals "1"):
+        return "invalid-verdict"
+    return "audit-recorded"
