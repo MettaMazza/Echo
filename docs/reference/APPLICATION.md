@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T07:55:08.792275+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:00:18.649156+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2952,6 +2952,26 @@ Imports: group_runs → app/security/group_runs.ep
 
 - Line 5: `define group_output_schema with database as Int returning Str:`
 
+## app/security/group_route.ep
+
+[Source](../../app/security/group_route.ep) · 52 lines · 3622 bytes
+
+SHA-256: `d6593cbf51cc078c4e0c72127e6925e5607e285f88b58f01812f95c8f30066a8`
+
+> Connector adapters supply authenticated device and verified namespace. The
+> route returns the existing segment or creates one for the current audience;
+> it never branches from a previous segment or copies its context/workspace.
+> Membership can change between routing and submission. group_run_submit must
+> still recheck the returned segment inside its write transaction.
+> A stale route is never silently redirected after accepting a message. Exact
+> submission retries reuse their original run/segment; namespace and current
+> membership are revalidated by group_run_submit, including on retries.
+
+Imports: group_runs → app/security/group_runs.ep
+
+- Line 8: `define group_route with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str returning List:`
+- Line 36: `define group_route_submit with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str and run as Str and message as Str returning List:`
+
 ## app/security/group_runs.ep
 
 [Source](../../app/security/group_runs.ep) · 46 lines · 6967 bytes
@@ -3307,9 +3327,9 @@ Imports: ../workspace/guardian_receipt → app/workspace/guardian_receipt.ep, ..
 
 ## app/tools/execution_output.ep
 
-[Source](../../app/tools/execution_output.ep) · 88 lines · 6459 bytes
+[Source](../../app/tools/execution_output.ep) · 100 lines · 7222 bytes
 
-SHA-256: `b15b747df3745b26d684a39f7bb637756f3522966471e13ecb3ca7e5338b8994`
+SHA-256: `fba05430fd8311270c069669b3ae3b984e42a4e3584a7e83d851a01823d1606b`
 
 > Traverse only original output records, excluding model requests and later
 > search/read copies. Session comes from the current run, never from arguments.
@@ -3318,8 +3338,9 @@ SHA-256: `b15b747df3745b26d684a39f7bb637756f3522966471e13ecb3ca7e5338b8994`
 
 Imports: ../providers/local_json → app/providers/local_json.ep, ../security/group_gate → app/security/group_gate.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, history_tools → app/tools/history_tools.ep
 
-- Line 9: `define execution_output_execute with database as Int and session as Str and arguments as Str returning Str:`
-- Line 74: `define execution_decode_hex with database as Int and encoded as Str returning Str:`
+- Line 9: `define execution_output_execute_snapshot with database as Int and session as Str and arguments as Str returning Str:`
+- Line 76: `define execution_decode_hex with database as Int and encoded as Str returning Str:`
+- Line 92: `define execution_output_execute with database as Int and session as Str and arguments as Str returning Str:`
 
 ## app/tools/execution_tool.ep
 
@@ -4701,9 +4722,9 @@ Imports:
 
 ## app/workspace/sessions.ep
 
-[Source](../../app/workspace/sessions.ep) · 80 lines · 5452 bytes
+[Source](../../app/workspace/sessions.ep) · 82 lines · 5529 bytes
 
-SHA-256: `46cff7fa76851d42d8014a03986946b41c9397e1db297439c8784e362d620838`
+SHA-256: `db4b79138f694d10d607eac504e51fd2e002e92570175d52fdbf7188b118ca8d`
 
 > Bind an owned session to one host-configured root. A changed root is an
 > explicit migration, not an implicit new empty workspace. Reservation survives
@@ -4715,4 +4736,4 @@ Imports: ../security/group_gate → app/security/group_gate.ep, ../retained_text
 
 - Line 11: `define workspace_session_schema with database as Int returning Int:`
 - Line 14: `define workspace_session_allowed with database as Int and device as Str and session as Str returning Int:`
-- Line 28: `define workspace_session_open with database as Int and library as Int and device as Str and session as Str and root_path as Str returning Int:`
+- Line 30: `define workspace_session_open with database as Int and library as Int and device as Str and session as Str and root_path as Str returning Int:`

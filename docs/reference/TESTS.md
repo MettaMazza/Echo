@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T07:55:08.792275+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:00:18.649156+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -1706,9 +1706,9 @@ Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/a
 
 ## tests/security/test_group_output_policy.ep
 
-[Source](../../tests/security/test_group_output_policy.ep) · 85 lines · 7868 bytes
+[Source](../../tests/security/test_group_output_policy.ep) · 98 lines · 8887 bytes
 
-SHA-256: `45ea7c4cb96536966c13b7fd96325d2ef1811aa3fa3338585fac1727127bd4d2`
+SHA-256: `e2416677de9bee8d0371f588b335724880d46a46666e15ad7efda175e269a45e`
 
 
 Imports: ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/context/recap_sources → app/context/recap_sources.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
@@ -1725,6 +1725,17 @@ SHA-256: `df3ec0873bd778397c1d746fc0dd1e8cff7125f903698724f090e56b8f558133`
 > Read the retained actual live group process output on a disposable DB copy.
 
 Imports: ../../app/security/group_runs → app/security/group_runs.ep, ../../app/tools/execution_output → app/tools/execution_output.ep
+
+- Line 5: `define main returning Int:`
+
+## tests/security/test_group_route.ep
+
+[Source](../../tests/security/test_group_route.ep) · 60 lines · 5380 bytes
+
+SHA-256: `774a024f00192a123a204c861dc461bfbb01fb2290524f8c5bcf030cbdfc5a25`
+
+
+Imports: ../../app/security/group_route → app/security/group_route.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/context/session_messages → app/context/session_messages.ep
 
 - Line 5: `define main returning Int:`
 

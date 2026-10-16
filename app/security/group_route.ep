@@ -1,0 +1,52 @@
+import "group_runs"
+
+# Connector adapters supply authenticated device and verified namespace. The
+# route returns the existing segment or creates one for the current audience;
+# it never branches from a previous segment or copies its context/workspace.
+# Membership can change between routing and submission. group_run_submit must
+# still recheck the returned segment inside its write transaction.
+define group_route with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str returning List:
+    set values to [group_id]
+    set revision_row to history_collect_one(checkpoint_prepare(database and "SELECT MAX(revision) FROM echo_group_membership WHERE group_id=?;" and values))
+    if not (archive_list_text(revision_row and 0) equals "found"):
+        return history_status("route-read-failed")
+    set revision to string_to_int(archive_list_text(revision_row and 1))
+    if group_audience_allows(database and device and group_id and platform and server and room and revision and 1) equals 0:
+        return history_status("audience-not-authorized")
+    set values to [group_id,int_to_string(revision)]
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_group_sessions WHERE group_id=?1 AND revision=CAST(?2 AS INTEGER);" and values))
+    set session to ""
+    if archive_list_text(existing and 0) equals "found":
+        set session to archive_list_text(existing and 1)
+    else if archive_list_text(existing and 0) equals "end":
+        set session to concat("group-segment:" and concat(ep_sha256(group_id) and concat(":" and int_to_string(revision))))
+    else:
+        return history_status("route-read-failed")
+    set status to group_session_create(database and device and session and group_id and platform and server and room and revision)
+    if not (status equals "created" or else status equals "already-created"):
+        return history_status(status)
+    set result to history_status("routed")
+    set added to append_list(result and session)
+    set added to append_list(result and int_to_string(revision))
+    return result
+
+# A stale route is never silently redirected after accepting a message. Exact
+# submission retries reuse their original run/segment; namespace and current
+# membership are revalidated by group_run_submit, including on retries.
+define group_route_submit with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str and run as Str and message as Str returning List:
+    set values to [run,group_id]
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT s.session,s.revision FROM echo_group_run_origins g JOIN echo_group_sessions s ON s.session=g.session WHERE g.run=?1 AND s.group_id=?2;" and values))
+    set route to old
+    if archive_list_text(old and 0) equals "end":
+        set route to group_route(database and device and group_id and platform and server and room)
+        if not (archive_list_text(route and 0) equals "routed"):
+            return route
+    else if not (archive_list_text(old and 0) equals "found"):
+        return history_status("route-read-failed")
+    set session to archive_list_text(route and 1)
+    set status to group_run_submit(database and device and run and session and platform and server and room and message)
+    set result to history_status(status)
+    if status equals "accepted" or else status equals "already-accepted":
+        set added to append_list(result and session)
+        set added to append_list(result and archive_list_text(route and 2))
+    return result
