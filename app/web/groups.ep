@@ -1,0 +1,122 @@
+import "../security/group_route"
+import "shared_access"
+
+# Browser routes cannot forge a Discord/server namespace. Membership remains a
+# principal decision; no role text or invitation grants tool authority.
+define web_group_ready with database as Int returning Int:
+    set row to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_group_run_recipients';"))
+    return archive_list_text(row and 0) equals "found"
+
+define web_group_namespace with database as Int and identity as Str returning Int:
+    set values to [identity]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT identity FROM echo_groups WHERE identity=?1 AND platform='browser' AND server='local' AND channel=?1;" and values))
+    return archive_list_text(row and 0) equals "found"
+
+define web_group_fields with tokens as List and allowed as List returning Int:
+    if tokens equals 0 or else not (provider_kind(tokens and 0) equals "{") or else provider_unique_objects(tokens) equals 0:
+        return 0
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        set found to 0
+        set field to 0
+        repeat while field < length_list(allowed):
+            if key equals archive_list_text(allowed and field):
+                set found to 1
+            set field to field + 1
+        if found equals 0:
+            return 0
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    return 1
+
+define web_group_list with database as Int and device as Str returning Str:
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return "{\"status\":\"not-found\"}"
+    set values to [principal]
+    set statement to checkpoint_prepare(database and "SELECT json_object('group',g.identity,'creator',g.creator,'state',m.state,'revision',(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity)) FROM echo_groups g JOIN echo_group_membership m ON m.group_id=g.identity AND m.principal=?1 WHERE g.platform='browser' AND g.server='local' AND g.channel=g.identity AND m.revision=(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity AND principal=?1) AND m.state IN ('joined','invited') ORDER BY g.identity;" and values)
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set builder to create_builder()
+    set added to builder_append(builder and "{\"status\":\"found\",\"groups\":[")
+    set count to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"database-error\"}"
+        if count > 0:
+            set added to builder_append(builder and ",")
+        set added to builder_append(builder and ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        set count to count + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    set added to builder_append(builder and "]}")
+    return ptr_to_str(builder_to_string(builder))
+
+define web_group_manage with database as Int and device as Str and action as Str and tokens as List returning Str:
+    if web_group_ready(database) equals 0:
+        return "{\"status\":\"groups-not-installed\"}"
+    set field to provider_member(tokens and 0 and "group")
+    if not (provider_kind(tokens and field) equals "string"):
+        return "{\"status\":\"invalid-request\"}"
+    set identity to provider_value(tokens and field)
+    set status to "invalid-request"
+    if action equals "create":
+        if web_group_fields(tokens and ["group"]) equals 0:
+            return "{\"status\":\"invalid-request\"}"
+        set status to group_create(database and device and identity and "browser" and "local" and identity and identity)
+    else:
+        if web_group_namespace(database and identity) equals 0:
+            return "{\"status\":\"not-found\"}"
+        if action equals "open":
+            if web_group_fields(tokens and ["group"]) equals 0:
+                return "{\"status\":\"invalid-request\"}"
+            set route to group_route(database and device and identity and "browser" and "local" and identity)
+            set status to archive_list_text(route and 0)
+            if status equals "routed":
+                return concat("{\"status\":\"routed\",\"session\":" and concat(provider_quote(archive_list_text(route and 1)) and concat(",\"revision\":" and concat(archive_list_text(route and 2) and "}"))))
+        else if action equals "change":
+            if web_group_fields(tokens and ["group","operation","member","state","previous"]) equals 0:
+                return "{\"status\":\"invalid-request\"}"
+            set operation to provider_member(tokens and 0 and "operation")
+            set member to provider_member(tokens and 0 and "member")
+            set state to provider_member(tokens and 0 and "state")
+            if not (provider_kind(tokens and operation) equals "string") or else not (provider_kind(tokens and member) equals "string") or else not (provider_kind(tokens and state) equals "string"):
+                return "{\"status\":\"invalid-request\"}"
+            set status to group_change(database and device and provider_value(tokens and operation) and identity and provider_value(tokens and member) and provider_value(tokens and state) and history_tool_integer(tokens and "previous"))
+    return concat("{\"status\":" and concat(provider_quote(status) and "}"))
+
+define web_group_submit with database as Int and device as Str and tokens as List returning List:
+    if web_group_ready(database) equals 0 or else web_group_fields(tokens and ["group","submission","message","attachments"]) equals 0:
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    set group to provider_member(tokens and 0 and "group")
+    set submission to provider_member(tokens and 0 and "submission")
+    set message to provider_member(tokens and 0 and "message")
+    if not (provider_kind(tokens and group) equals "string") or else not (provider_kind(tokens and submission) equals "string") or else not (provider_kind(tokens and message) equals "string"):
+        return web_submit_result("invalid-request" and "" and "" and 0)
+    set identity to provider_value(tokens and group)
+    if web_group_namespace(database and identity) equals 0:
+        return web_submit_result("not-found" and "" and "" and 0)
+    set attachments to create_list()
+    set selected to provider_member(tokens and 0 and "attachments")
+    if selected is not equal to -1:
+        if not (provider_kind(tokens and selected) equals "["):
+            return web_submit_result("invalid-request" and "" and "" and 0)
+        set items to provider_items(tokens and selected)
+        set index to 0
+        repeat while index < length_list(items):
+            set item to get_list(items and index)
+            if not (provider_kind(tokens and item) equals "string"):
+                return web_submit_result("invalid-request" and "" and "" and 0)
+            set added to append_list(attachments and provider_value(tokens and item))
+            set index to index + 1
+    set result to group_route_submit_files(database and device and identity and "browser" and "local" and identity and provider_value(tokens and submission) and provider_value(tokens and message) and attachments)
+    set status to archive_list_text(result and 0)
+    if status equals "accepted" or else status equals "already-accepted":
+        return web_submit_result("accepted" and archive_list_text(result and 1) and provider_value(tokens and submission) and status equals "accepted")
+    return web_submit_result(status and "" and "" and 0)

@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T08:14:02.928579+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:29:42.063490+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -2774,6 +2774,18 @@ Imports: ../../app/web/export → app/web/export.ep, ../../app/archive/export_ve
 
 - Line 5: `define main returning Int:`
 
+## tests/web/test_group_browser.ep
+
+[Source](../../tests/web/test_group_browser.ep) · 88 lines · 6183 bytes
+
+SHA-256: `fc1b0274e9bb845f127d371a1148babc2f1eea45d20cba46605e162c924c2e97`
+
+> Uses the actual isolated server, HTTP authentication, process owner and model.
+
+Imports: ../fixtures/echo_http_client → tests/fixtures/echo_http_client.ep, ../../app/security/group_output_policy → app/security/group_output_policy.ep, ../../app/web/groups → app/web/groups.ep, ../../app/web/worker → app/web/worker.ep
+
+- Line 7: `define main returning Int:`
+
 ## tests/web/test_history_pages.ep
 
 [Source](../../tests/web/test_history_pages.ep) · 72 lines · 3851 bytes
@@ -2799,9 +2811,9 @@ Imports: ../../app/web/http_api → app/web/http_api.ep
 
 ## tests/web/test_idle_cancel.ep
 
-[Source](../../tests/web/test_idle_cancel.ep) · 38 lines · 2310 bytes
+[Source](../../tests/web/test_idle_cancel.ep) · 50 lines · 3228 bytes
 
-SHA-256: `1963298ce1e1715e1756db62075838e851878680be8ff12569e51a0dbf4a74b2`
+SHA-256: `8cbbbc38c27aa3bb1f075945aacd5b7970244fdd10a471a9f580132f4aab9b0c`
 
 
 Imports: ../../app/web/worker → app/web/worker.ep

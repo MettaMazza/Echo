@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T08:14:02.928579+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:29:42.063490+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -3192,9 +3192,9 @@ Imports: tool_authority → app/security/tool_authority.ep
 
 ## app/server.ep
 
-[Source](../../app/server.ep) · 357 lines · 22741 bytes
+[Source](../../app/server.ep) · 357 lines · 23073 bytes
 
-SHA-256: `b5edd51f44dbe09dceeb1380966e9a1b4b2701900b799c8719f264e469ceb85a`
+SHA-256: `535cb78b3c71e56c700f0a3916025f9f71a2d15636670c2e2299644b7c26d02d`
 
 > A busy archive must not turn a status request into an unexplained reset.
 > Consume the framed request without retaining its body before closing TCP.
@@ -4155,9 +4155,9 @@ Imports: ../retained_text → app/retained_text.ep, run_store → app/web/run_st
 
 ## app/web/cancellation.ep
 
-[Source](../../app/web/cancellation.ep) · 69 lines · 3849 bytes
+[Source](../../app/web/cancellation.ep) · 74 lines · 3859 bytes
 
-SHA-256: `04bbab0ea4374439b7c9a16f03dfdd4b2b16a43a56e4302714fd58067db026a6`
+SHA-256: `bbd2e136d1abfeed18f10b07da23978b545f5dfdccb5f79f41aabc01bf647db9`
 
 > A durable request is distinct from completion. Only the owning active device
 > may request it; the worker records the actual terminal transition.
@@ -4171,22 +4171,22 @@ SHA-256: `04bbab0ea4374439b7c9a16f03dfdd4b2b16a43a56e4302714fd58067db026a6`
 > Use the existing channel wait so this idle monitor cooperates
 > with allocation on the active inference worker.
 
-Imports: ../retained_text → app/retained_text.ep, http_api → app/web/http_api.ep, select → standard library or compiler dependency
+Imports: shared_access → app/web/shared_access.ep, ../retained_text → app/retained_text.ep, http_api → app/web/http_api.ep, select → standard library or compiler dependency
 
-- Line 5: `define web_cancel_schema with database as Int returning Int:`
-- Line 10: `define web_cancel_request with database as Int and device as Str and run as Str returning Int:`
-- Line 20: `define web_cancel_monitor with database_path as Str and run as Str and stop_reader as Int and cancellation_writer as Int and completed as Int returning Int:`
+- Line 6: `define web_cancel_schema with database as Int returning Int:`
+- Line 11: `define web_cancel_request with database as Int and device as Str and run as Str returning Int:`
+- Line 25: `define web_cancel_monitor with database_path as Str and run as Str and stop_reader as Int and cancellation_writer as Int and completed as Int returning Int:`
 
 ## app/web/compaction.ep
 
-[Source](../../app/web/compaction.ep) · 7 lines · 372 bytes
+[Source](../../app/web/compaction.ep) · 8 lines · 403 bytes
 
-SHA-256: `21d65619413179966e022efbcb1461ccfb50771273800671e082f8070d104aa3`
+SHA-256: `05f49e4156b544d8b8234e1723aa7d87bd508ab318df443fe938719a00d426e7`
 
 
-Imports: devices → app/web/devices.ep, ../tools/compaction_tools → app/tools/compaction_tools.ep
+Imports: attachments → app/web/attachments.ep, devices → app/web/devices.ep, ../tools/compaction_tools → app/tools/compaction_tools.ep
 
-- Line 4: `define web_compaction_read with database as Int and device as Str and session as Str and arguments as Str returning Str:`
+- Line 5: `define web_compaction_read with database as Int and device as Str and session as Str and arguments as Str returning Str:`
 
 ## app/web/devices.ep
 
@@ -4231,6 +4231,24 @@ Imports: ../retained_text → app/retained_text.ep, ../archive/export_verify →
 
 - Line 7: `define web_session_export_prefix with database as Int and device as Str and session as Str and boundary as Int returning Str:`
 - Line 45: `define web_session_export with database as Int and device as Str and session as Str returning Str:`
+
+## app/web/groups.ep
+
+[Source](../../app/web/groups.ep) · 122 lines · 7981 bytes
+
+SHA-256: `d5ed582c0fc397a8021a743295228d11d3164051b27d2b4588bbc70657289c11`
+
+> Browser routes cannot forge a Discord/server namespace. Membership remains a
+> principal decision; no role text or invitation grants tool authority.
+
+Imports: ../security/group_route → app/security/group_route.ep, shared_access → app/web/shared_access.ep
+
+- Line 6: `define web_group_ready with database as Int returning Int:`
+- Line 10: `define web_group_namespace with database as Int and identity as Str returning Int:`
+- Line 15: `define web_group_fields with tokens as List and allowed as List returning Int:`
+- Line 34: `define web_group_list with database as Int and device as Str returning Str:`
+- Line 61: `define web_group_manage with database as Int and device as Str and action as Str and tokens as List returning Str:`
+- Line 94: `define web_group_submit with database as Int and device as Str and tokens as List returning List:`
 
 ## app/web/http_api.ep
 
@@ -4310,9 +4328,9 @@ Imports: ../transport/isolated_process → app/transport/isolated_process.ep, ..
 
 ## app/web/routes.ep
 
-[Source](../../app/web/routes.ep) · 343 lines · 26553 bytes
+[Source](../../app/web/routes.ep) · 378 lines · 29178 bytes
 
-SHA-256: `0beaf4f7e8243e6ca5b0ecccc1a3d78056d6b7d7440eb5af3661d801342e2f97`
+SHA-256: `d012d333e33ff6dea38232ba516fc153f994dedca43b4d3faee324a20493e6b6`
 
 > Configuration: database path, model, provider port, workload reserve,
 > I/O batch size. It is immutable while workers use it.
@@ -4320,12 +4338,12 @@ SHA-256: `0beaf4f7e8243e6ca5b0ecccc1a3d78056d6b7d7440eb5af3661d801342e2f97`
 > This checks exact origin and unambiguous headers. Authentication below
 > resolves the credential against the durable device store.
 
-Imports: ../transport/isolated_process → app/transport/isolated_process.ep, ../retained_text → app/retained_text.ep, message_speech → app/web/message_speech.ep, trace → app/web/trace.ep, branches → app/web/branches.ep, worker → app/web/worker.ep, progress → app/web/progress.ep, export → app/web/export.ep, uploads → app/web/uploads.ep, compaction → app/web/compaction.ep, ../providers/status → app/providers/status.ep
+Imports: groups → app/web/groups.ep, ../transport/isolated_process → app/transport/isolated_process.ep, ../retained_text → app/retained_text.ep, message_speech → app/web/message_speech.ep, trace → app/web/trace.ep, branches → app/web/branches.ep, worker → app/web/worker.ep, progress → app/web/progress.ep, export → app/web/export.ep, uploads → app/web/uploads.ep, compaction → app/web/compaction.ep, ../providers/status → app/providers/status.ep
 
-- Line 16: `define web_config_provider with config as List returning Str:`
-- Line 21: `define web_reply with status as Str and body as Str returning List:`
-- Line 27: `define web_route with reader as List and request as List and port as Int and config as List returning List:`
-- Line 324: `define web_receive_upload with database as Int and device as Str and reader as List and request as List and batch as Int returning List:`
+- Line 17: `define web_config_provider with config as List returning Str:`
+- Line 22: `define web_reply with status as Str and body as Str returning List:`
+- Line 28: `define web_route with reader as List and request as List and port as Int and config as List returning List:`
+- Line 359: `define web_receive_upload with database as Int and device as Str and reader as List and request as List and batch as Int returning List:`
 
 ## app/web/run_store.ep
 
@@ -4370,6 +4388,20 @@ Imports: ../security/node_gate → app/security/node_gate.ep, ../retained_text �
 - Line 285: `define web_device_sessions_search with database as Int and device as Str and query as Str returning Str:`
 - Line 321: `define web_create_session with database as Int and device as Str and identity as Str returning List:`
 - Line 359: `define web_rename_session with database as Int and device as Str and session as Str and previous as Str and title as Str returning Str:`
+
+## app/web/shared_access.ep
+
+[Source](../../app/web/shared_access.ep) · 24 lines · 1536 bytes
+
+SHA-256: `fe310fdfa95246b7e762b3dd5f916aec79c0c7ea57442eace27bcfa0e41d8fc5`
+
+> Private ownership stays unchanged. Shared observation uses membership in the
+> recorded audience; controlling a run additionally requires its exact sender.
+
+Imports: attachments → app/web/attachments.ep
+
+- Line 5: `define web_shared_run_read_allowed with database as Int and device as Str and run as Str returning Int:`
+- Line 17: `define web_shared_run_control_allowed with database as Int and device as Str and run as Str returning Int:`
 
 ## app/web/source_reads.ep
 
@@ -4441,9 +4473,9 @@ Imports: ../retained_text → app/retained_text.ep, attachments → app/web/atta
 
 ## app/web/worker.ep
 
-[Source](../../app/web/worker.ep) · 211 lines · 14343 bytes
+[Source](../../app/web/worker.ep) · 212 lines · 14406 bytes
 
-SHA-256: `e920d9302ebf42ac389422fd1e4a24941faef5451ec10d54ae2e0051fd4bef7b`
+SHA-256: `66a8fffc36d30f1899e9341051ef6d9f735c709f98d1d7240a935af97e1ca430`
 
 > An explicit worker claim survives process death. It is never silently reused;
 > restart recovery must establish that the previous worker is no longer alive.
@@ -4460,20 +4492,20 @@ SHA-256: `e920d9302ebf42ac389422fd1e4a24941faef5451ec10d54ae2e0051fd4bef7b`
 > that excludes retry claims. Active or uncertain work keeps its durable request.
 > A failed OS launch must leave a visible, retryable durable claim.
 
-Imports: ../transport/isolated_process → app/transport/isolated_process.ep, ../retained_text → app/retained_text.ep, cancellation → app/web/cancellation.ep, activity → app/web/activity.ep
+Imports: shared_access → app/web/shared_access.ep, ../transport/isolated_process → app/transport/isolated_process.ep, ../retained_text → app/retained_text.ep, cancellation → app/web/cancellation.ep, activity → app/web/activity.ep
 
-- Line 6: `define web_worker_schema with database as Int returning Int:`
-- Line 11: `define web_worker_protocol with database as Int and run as Str and worker as Str returning Int:`
-- Line 19: `define web_worker_claim with database as Int and run as Str and worker as Str returning Int:`
-- Line 32: `define web_worker_ensure_claim with database as Int and device as Str and run as Str and worker as Str returning Int:`
-- Line 53: `define web_worker_retry_claim with database as Int and device as Str and run as Str and previous as Str and worker as Str returning Int:`
-- Line 76: `define web_worker_run with database_path as Str and run as Str and worker as Str and model as Str and port as Int and reserve as Int and batch as Int returning Int:`
-- Line 79: `define web_worker_run_provider with database_path as Str and run as Str and worker as Str and profile as Str and reserve as Int and batch as Int returning Int:`
-- Line 106: `define web_worker_run_owned with database_path as Str and run as Str and worker as Str and model as Str and port as Int and reserve as Int and batch as Int returning Int:`
-- Line 109: `define web_worker_run_owned_provider with database_path as Str and run as Str and worker as Str and profile as Str and reserve as Int and batch as Int returning Int:`
-- Line 159: `define web_worker_status with database as Int and run as Str returning Str:`
-- Line 185: `define web_worker_cancel_idle with database as Int and run as Str returning Int:`
-- Line 204: `define web_worker_dispatch with database as Int and database_path as Str and run as Str and worker as Str and profile as Str and reserve as Int and batch as Int returning Int:`
+- Line 7: `define web_worker_schema with database as Int returning Int:`
+- Line 12: `define web_worker_protocol with database as Int and run as Str and worker as Str returning Int:`
+- Line 20: `define web_worker_claim with database as Int and run as Str and worker as Str returning Int:`
+- Line 33: `define web_worker_ensure_claim with database as Int and device as Str and run as Str and worker as Str returning Int:`
+- Line 54: `define web_worker_retry_claim with database as Int and device as Str and run as Str and previous as Str and worker as Str returning Int:`
+- Line 77: `define web_worker_run with database_path as Str and run as Str and worker as Str and model as Str and port as Int and reserve as Int and batch as Int returning Int:`
+- Line 80: `define web_worker_run_provider with database_path as Str and run as Str and worker as Str and profile as Str and reserve as Int and batch as Int returning Int:`
+- Line 107: `define web_worker_run_owned with database_path as Str and run as Str and worker as Str and model as Str and port as Int and reserve as Int and batch as Int returning Int:`
+- Line 110: `define web_worker_run_owned_provider with database_path as Str and run as Str and worker as Str and profile as Str and reserve as Int and batch as Int returning Int:`
+- Line 160: `define web_worker_status with database as Int and run as Str returning Str:`
+- Line 186: `define web_worker_cancel_idle with database as Int and run as Str returning Int:`
+- Line 205: `define web_worker_dispatch with database as Int and database_path as Str and run as Str and worker as Str and profile as Str and reserve as Int and batch as Int returning Int:`
 
 ## app/workspace/capture_process.ep
 

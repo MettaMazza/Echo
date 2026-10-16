@@ -1,0 +1,88 @@
+import "../fixtures/echo_http_client"
+import "../../app/security/group_output_policy"
+import "../../app/web/groups"
+import "../../app/web/worker"
+
+# Uses the actual isolated server, HTTP authentication, process owner and model.
+define main returning Int:
+    if get_argument_count() equals 2:
+        set database to archive_open(get_argument(1))
+        if database equals 0 or else web_run_schema(database) is not equal to 0 or else not (group_output_schema(database) equals "applied"):
+            return 1
+        return sql_close(database)
+    if get_argument_count() is not equal to 3:
+        return 2
+    set port to string_to_int(get_argument(1))
+    set database to archive_open(get_argument(2))
+    for each name in ["a","b","c"]:
+        set device to ptr_to_str(name)
+        if string_length(web_device_authenticate(database and concat(device and "-secret"))) equals 0:
+            if web_pairing_invite(database and device) is not equal to 0 or else web_device_pair(database and device and device and device and concat(device and "-secret")) is not equal to 0:
+                return 3
+    set created to fixture_echo_request(port and "/api/group-create" and "{\"group\":\"browser-fixture\"}" and "a-secret")
+    if get_list(created and 1) is not equal to 200:
+        display archive_list_text(created and 2)
+        return 4
+    set invited to fixture_echo_request(port and "/api/group-change" and "{\"group\":\"browser-fixture\",\"operation\":\"invite-b\",\"member\":\"device:b\",\"state\":\"invited\",\"previous\":1}" and "a-secret")
+    set listed to fixture_echo_request(port and "/api/groups" and "{}" and "b-secret")
+    if get_list(invited and 1) is not equal to 200 or else string_contains(archive_list_text(listed and 2) and "invited") equals 0:
+        return 5
+    set unopened to fixture_echo_request(port and "/api/group-open" and "{\"group\":\"browser-fixture\"}" and "b-secret")
+    if get_list(unopened and 1) is not equal to 404:
+        return 6
+    set joined to fixture_echo_request(port and "/api/group-change" and "{\"group\":\"browser-fixture\",\"operation\":\"join-b\",\"member\":\"device:b\",\"state\":\"joined\",\"previous\":2}" and "b-secret")
+    if get_list(joined and 1) is not equal to 200:
+        return 7
+    set opened to fixture_echo_request(port and "/api/group-open" and "{\"group\":\"browser-fixture\"}" and "b-secret")
+    set opened_tokens to provider_json_tokens(archive_list_text(opened and 2))
+    set session to provider_value(opened_tokens and provider_member(opened_tokens and 0 and "session"))
+    if string_length(session) equals 0:
+        return 8
+    set submitted to fixture_echo_request(port and "/api/group-submit" and "{\"group\":\"browser-fixture\",\"submission\":\"browser-live\",\"message\":\"This is a shared browser acceptance test. Say shared-browser-ready and identify my recorded principal. Keep it brief.\"}" and "b-secret")
+    if get_list(submitted and 1) is not equal to 202:
+        display archive_list_text(submitted and 2)
+        return 9
+    set denied to fixture_echo_request(port and "/api/run" and "{\"run\":\"browser-live\"}" and "c-secret")
+    set forbidden_stop to fixture_echo_request(port and "/api/cancel" and "{\"run\":\"browser-live\"}" and "a-secret")
+    if get_list(denied and 1) is not equal to 404 or else get_list(forbidden_stop and 1) is not equal to 404:
+        return 10
+    repeat while 1 equals 1:
+        set observed to fixture_echo_request(port and "/api/run" and "{\"run\":\"browser-live\"}" and "a-secret")
+        if get_list(observed and 1) is not equal to 200:
+            return 11
+        set tokens to provider_json_tokens(archive_list_text(observed and 2))
+        set state to provider_value(tokens and provider_member(tokens and 0 and "state"))
+        if state equals "completed":
+            break
+        if state equals "cancelled" or else state equals "failed":
+            display archive_list_text(observed and 2)
+            return 12
+        set worker_state to provider_value(tokens and provider_member(tokens and 0 and "worker_status"))
+        if not (worker_state equals "running"):
+            display archive_list_text(observed and 2)
+            return 13
+        set slept to sleep_ms(1000)
+    set body to concat("{\"session\":" and concat(provider_quote(session) and "}"))
+    set transcript to fixture_echo_request(port and "/api/session" and body and "a-secret")
+    set outsider to fixture_echo_request(port and "/api/session" and body and "c-secret")
+    if get_list(transcript and 1) is not equal to 200 or else string_contains(archive_list_text(transcript and 2) and "shared-browser-ready") equals 0 or else get_list(outsider and 1) is not equal to 404:
+        return 14
+    if web_worker_ensure_claim(database and "a" and "browser-live" and "stolen-worker") is not equal to 1:
+        return 15
+    if not (group_run_submit(database and "b" and "stop-fixture" and session and "browser" and "local" and "browser-fixture" and "Pending cancellation fixture") equals "accepted"):
+        return 16
+    set stopped to fixture_echo_request(port and "/api/cancel" and "{\"run\":\"stop-fixture\"}" and "b-secret")
+    if get_list(stopped and 1) is not equal to 202:
+        return 17
+    set terminal to agent_run_read(database and "stop-fixture")
+    if not (archive_list_text(terminal and 2) equals "cancelled"):
+        return 20
+    set removed to fixture_echo_request(port and "/api/group-change" and "{\"group\":\"browser-fixture\",\"operation\":\"remove-b\",\"member\":\"device:b\",\"state\":\"removed\",\"previous\":3}" and "a-secret")
+    set departed to fixture_echo_request(port and "/api/session" and body and "b-secret")
+    if get_list(removed and 1) is not equal to 200 or else get_list(departed and 1) is not equal to 404:
+        return 18
+    for each name in ["a","b","c"]:
+        if web_device_revoke(database and ptr_to_str(name)) is not equal to 0:
+            return 19
+    display "PASS: real HTTP create/invite/list/join/open/submit, isolated worker and local-model completion, member transcript/status, outsider denial, sender-only worker/cancel control and departure denial."
+    return sql_close(database)

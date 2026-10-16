@@ -1,3 +1,4 @@
+import "shared_access"
 import "../retained_text"
 import "http_api"
 import "select"
@@ -8,10 +9,14 @@ define web_cancel_schema with database as Int returning Int:
 # A durable request is distinct from completion. Only the owning active device
 # may request it; the worker records the actual terminal transition.
 define web_cancel_request with database as Int and device as Str and run as Str returning Int:
-    set values to create_list()
-    set added to append_list(values and run)
-    set added to append_list(values and device)
-    return tool_ledger_change(database and concat("INSERT INTO echo_cancel_requests(run,device) SELECT r.run,d.device FROM echo_runs r JOIN echo_session_owners o ON o.session=r.session JOIN echo_devices d ON d.device=o.device WHERE " and concat(principal_session_sql(database and "r.session" and "d.device") and " AND r.run=?1 AND d.device=?2 AND d.revoked=0 ON CONFLICT(run) DO UPDATE SET device=excluded.device RETURNING run;")) and values)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if web_shared_run_control_allowed(database and device and run) equals 0:
+        return archive_rollback(database)
+    set values to [run,device]
+    if tool_ledger_change(database and "INSERT INTO echo_cancel_requests(run,device) VALUES(?1,?2) ON CONFLICT(run) DO UPDATE SET device=excluded.device RETURNING run;" and values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
 
 # The monitor owns the cancellation writer. Closing it wakes a blocked native
 # provider read/write/connect. A separate stop pipe ends the monitor when normal
