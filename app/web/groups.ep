@@ -95,6 +95,58 @@ define web_group_manage with database as Int and device as Str and action as Str
             set status to group_change(database and device and provider_value(tokens and operation) and identity and provider_value(tokens and member) and provider_value(tokens and state) and history_tool_integer(tokens and "previous"))
     return concat("{\"status\":" and concat(provider_quote(status) and "}"))
 
+# Read-only discovery never creates a segment. Eligibility is checked for each
+# historical audience, including privileged-history authority and departure.
+define web_group_state with database as Int and device as Str and identity as Str returning Str:
+    if sql_execute(database and "SAVEPOINT browser_group_state;") is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    set result to web_group_state_read(database and device and identity)
+    if sql_execute(database and "RELEASE browser_group_state;") is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    return result
+
+define web_group_state_read with database as Int and device as Str and identity as Str returning Str:
+    if web_group_ready(database) equals 0:
+        return "{\"status\":\"groups-not-installed\"}"
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0 or else web_group_namespace(database and identity) equals 0 or else not (group_member_state(database and identity and principal) equals "joined"):
+        return "{\"status\":\"not-found\"}"
+    set values to [identity]
+    set current to history_collect_one(checkpoint_prepare(database and "SELECT MAX(revision) FROM echo_group_membership WHERE group_id=?;" and values))
+    if not (archive_list_text(current and 0) equals "found"):
+        return "{\"status\":\"database-error\"}"
+    set revision to archive_list_text(current and 1)
+    set statement to checkpoint_prepare(database and "SELECT s.session,s.revision,COALESCE((SELECT r.run FROM echo_runs r JOIN echo_events e ON e.event=r.objective_event WHERE r.session=s.session ORDER BY e.sequence DESC LIMIT 1),'') FROM echo_group_sessions s WHERE s.group_id=? ORDER BY s.revision DESC;" and values)
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set builder to create_builder()
+    set added to builder_append(builder and concat("{\"status\":\"found\",\"revision\":" and concat(revision and ",\"sessions\":[")))
+    set count to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"database-error\"}"
+        set session to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        if web_attachment_session_allowed(database and device and session and 0) equals 1:
+            if count > 0:
+                set added to builder_append(builder and ",")
+            set segment_revision to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+            set writable to "false"
+            if segment_revision equals revision:
+                set writable to "true"
+            set added to builder_append(builder and concat("{\"session\":" and provider_quote(session)))
+            set added to builder_append(builder and concat(",\"revision\":" and segment_revision))
+            set added to builder_append(builder and concat(",\"writable\":" and writable))
+            set added to builder_append(builder and concat(",\"run\":" and concat(provider_quote(ptr_to_str(ep_sqlite3_column_text(statement and 2))) and "}")))
+            set count to count + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    set added to builder_append(builder and "]}")
+    return ptr_to_str(builder_to_string(builder))
+
 define web_group_submit with database as Int and device as Str and tokens as List returning List:
     if web_group_ready(database) equals 0 or else web_group_fields(tokens and ["group","submission","message","attachments","session"]) equals 0:
         return web_submit_result("invalid-request" and "" and "" and 0)

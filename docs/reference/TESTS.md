@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T08:47:50.366703+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T08:58:23.649543+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -2816,9 +2816,9 @@ Imports: ../fixtures/echo_http_client → tests/fixtures/echo_http_client.ep, ..
 
 ## tests/web/test_group_controls.ep
 
-[Source](../../tests/web/test_group_controls.ep) · 66 lines · 5156 bytes
+[Source](../../tests/web/test_group_controls.ep) · 92 lines · 7200 bytes
 
-SHA-256: `f90b769a0d7da3e35746faf78f389e3837c859461c8b05a2177026a7b6656a01`
+SHA-256: `267991eb44e36ff9695e339e5235035005a0bba189f6e13fe1acd7c5bf3b62c8`
 
 > Even an invitation changes the frozen audience revision. A prepared draft
 > must not be silently routed to that new segment by the browser endpoint.

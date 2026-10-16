@@ -67,7 +67,7 @@ define echo_busy with busy:
     set button to document.getElementById("send")
     set fresh to document.getElementById("new-chat")
     set input.disabled to busy
-    set button.disabled to busy
+    set button.disabled to busy || (window.echoGroup && not window.echoGroupWritable)
     set fresh.disabled to busy
     set picker to document.getElementById("provider-picker")
     if picker:
@@ -82,7 +82,7 @@ define echo_busy with busy:
     set export_button to document.getElementById("export-session")
     set export_button.disabled to not window.echoToken || not window.echoSession || window.echoGroup
     set attachment_input to document.getElementById("attachment-file")
-    set attachment_input.disabled to busy || not window.echoToken
+    set attachment_input.disabled to busy || not window.echoToken || (window.echoGroup && not window.echoGroupWritable)
     for each file_checkbox in document.querySelectorAll(".attachment-file_checkbox"):
         set file_checkbox.disabled to busy || not window.echoToken || not (not window.localStorage.getItem("echo.pending"))
     echo_audio_controls_refresh()
@@ -682,6 +682,7 @@ define echo_open_session with session:
         return 0
     set window.echoFollowLatest to true
     set window.echoGroup to session.group || ""
+    set window.echoGroupWritable to not session.group || session.writable == true
     window.localStorage.setItem("echo.group" and window.echoGroup)
     set window.echoSession to session.session
     set input to document.getElementById("message")
@@ -700,6 +701,7 @@ define echo_open_session with session:
     echo_poll()
     if not session.run:
         echo_busy(false)
+    echo_group_watch_start()
     return 0
 
 define echo_session_rename with session:
@@ -1035,6 +1037,9 @@ define echo_reconcile_pending:
 
 define echo_send with event:
     event.preventDefault()
+    if window.echoGroup && not window.echoGroupWritable:
+        echo_note("This group segment is not currently writable. Your draft is kept; open the current membership explicitly to continue.")
+        return 0
     if window.echoBusy:
         return 0
     set input to document.getElementById("message")
@@ -1102,6 +1107,7 @@ define echo_new_chat with event:
         return 0
     set window.echoGroup to ""
     window.localStorage.removeItem("echo.group")
+    echo_group_watch_start()
     set window.echoSession to ""
     set input to document.getElementById("message")
     set input.value to window.localStorage.getItem("echo.composer:new") || ""
@@ -2302,6 +2308,7 @@ define main:
     set window.echoRetryWorker to ""
     set window.echoToken to window.localStorage.getItem("echo.credential") || ""
     set window.echoGroup to window.localStorage.getItem("echo.group") || ""
+    set window.echoGroupWritable to not window.echoGroup
     set window.echoSession to window.localStorage.getItem("echo.session") || ""
     set window.echoRun to window.localStorage.getItem("echo.run") || ""
     set input to document.getElementById("message")
@@ -2440,6 +2447,7 @@ define main:
         echo_sessions()
         echo_groups_setup()
         echo_groups_refresh()
+        echo_group_watch_start()
         if not window.echoReadOnly:
             echo_provider_picker()
     )
@@ -2600,6 +2608,7 @@ define echo_group_open with group:
         if result.status != "routed":
             return Promise.reject(result.status)
         set result.group to group.group
+        set result.writable to true
         echo_open_session(result)
         echo_note("Shared with this group’s current members. Membership changes start a new segment; earlier records stay saved.")
         return 0
@@ -2669,6 +2678,8 @@ define echo_group_row with group and principal:
     return row
 
 define echo_groups_refresh:
+    set identity to null
+    set empty to null
     set list to document.getElementById("group-list")
     if not list || not window.echoToken:
         return 0
@@ -2731,4 +2742,140 @@ define echo_groups_setup:
     set list.id to "group-list"
     panel.appendChild(list)
     document.getElementById("history-sidebar").appendChild(panel)
+    return 0
+
+# One observer belongs to the selected group/segment. It never sends a message
+# or switches audiences, and late responses cannot repaint another selection.
+define echo_group_watch_start:
+    if window.echoGroupWatchTimer:
+        window.clearTimeout(window.echoGroupWatchTimer)
+    set marker to window.crypto.randomUUID()
+    set window.echoGroupWatchMarker to marker
+    set panel to document.getElementById("group-context")
+    if panel:
+        set panel.hidden to not window.echoGroup
+    if not window.echoGroup || not window.echoToken:
+        return 0
+    if not panel:
+        set panel to document.createElement("aside")
+        set panel.id to "group-context"
+        set status to document.createElement("p")
+        set status.id to "group-context-status"
+        status.setAttribute("role" and "status")
+        panel.appendChild(status)
+        set current to document.createElement("button")
+        set current.type to "button"
+        set current.textContent to "Open current membership"
+        current.addEventListener("click" and given ignored:
+            if not window.echoReadOnly:
+                set group to Object()
+                set group.group to window.echoGroup
+                echo_group_open(group)
+        )
+        panel.appendChild(current)
+        set history to document.createElement("details")
+        set heading to document.createElement("summary")
+        set heading.textContent to "Group conversation history"
+        history.appendChild(heading)
+        set choices to document.createElement("div")
+        set choices.id to "group-history-choices"
+        history.appendChild(choices)
+        panel.appendChild(history)
+        set transcript to document.getElementById("transcript")
+        transcript.parentNode.insertBefore(panel and transcript)
+    set window.echoGroupHistorySignature to ""
+    echo_group_watch(marker)
+    return 0
+
+define echo_group_history_choice with segment and group:
+    set button to document.createElement("button")
+    set button.type to "button"
+    set button.textContent to "Membership " + segment.revision
+    if segment.writable:
+        set button.textContent to button.textContent + " · Current"
+    if segment.session == window.echoSession:
+        button.setAttribute("aria-current" and "page")
+    set segment.group to group
+    button.addEventListener("click" and given ignored:
+        echo_open_session(segment)
+    )
+    return button
+
+define echo_group_watch with marker:
+    set selected to null
+    set status to null
+    set notice_text to ""
+    set transcript to null
+    set signature to ""
+    set choices to null
+    set next_check to null
+    if marker != window.echoGroupWatchMarker || not window.echoGroup || not window.echoToken:
+        return 0
+    set group to window.echoGroup
+    set session to window.echoSession
+    set query to Object()
+    set query.group to group
+    set request to echo_api("/api/group-state" and query).then(given result:
+        if marker != window.echoGroupWatchMarker || group != window.echoGroup || session != window.echoSession:
+            return 0
+        if result.status != "found" && result.status != "not-found":
+            return Promise.reject(result.status)
+        set selected to null
+        for each segment in result.sessions || Array():
+            if segment.session == session:
+                set selected to segment
+        set window.echoGroupWritable to selected && selected.writable == true
+        set status to document.getElementById("group-context-status")
+        if not selected:
+            set notice_text to "This shared history is no longer available to this identity. Your unsent draft stays on this browser."
+            set window.echoRun to ""
+            window.localStorage.removeItem("echo.run")
+            set window.echoHistoryMarker to window.crypto.randomUUID()
+            set transcript to document.getElementById("transcript")
+            set transcript.textContent to ""
+            echo_clear_draft()
+            echo_trace_clear_floating()
+            set window.echoTracePanels to Reflect.construct(Map and Array())
+            for each audio in document.querySelectorAll("audio"):
+                audio.pause()
+                audio.removeAttribute("src")
+            echo_busy(false)
+        else:
+            if selected.writable:
+                set notice_text to "Shared with membership " + selected.revision + ". New messages appear here automatically."
+            else:
+                set notice_text to "Reading earlier membership " + selected.revision + ". Current membership is " + result.revision + ". This segment and its drafts remain separate."
+            if selected.run != window.echoRun && not window.localStorage.getItem("echo.pending"):
+                set window.echoRun to selected.run
+                window.localStorage.setItem("echo.run" and selected.run)
+                echo_history()
+                echo_poll()
+            echo_busy(window.echoBusy)
+        if status.textContent != notice_text:
+            set status.textContent to notice_text
+        set signature to JSON.stringify(result.sessions || Array())
+        if signature != window.echoGroupHistorySignature:
+            set window.echoGroupHistorySignature to signature
+            set choices to document.getElementById("group-history-choices")
+            set choices.textContent to ""
+            for each segment in result.sessions || Array():
+                choices.appendChild(echo_group_history_choice(segment and group))
+        return 0
+    )
+    set catcher to get_list(request and "catch")
+    set settled to catcher.call(request and given error:
+        if marker == window.echoGroupWatchMarker:
+            set window.echoGroupWritable to false
+            set status to document.getElementById("group-context-status")
+            set status.textContent to "Reconnecting to shared history. Your draft stays here. " + error
+            echo_busy(window.echoBusy)
+        return 0
+    )
+    settled.then(given ignored:
+        if marker == window.echoGroupWatchMarker:
+            set next_check to given ignored:
+                echo_group_watch(marker)
+            set window.echoGroupWatchTimer to window.setTimeout(next_check and 1500)
+        return 0
+    )
     return 0
