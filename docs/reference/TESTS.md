@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T10:49:05.032724+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:54:23.103290+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -2514,6 +2514,17 @@ Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../..
 
 - Line 5: `define main returning Int:`
 
+## tests/tools/test_tool_candidate_files.ep
+
+[Source](../../tests/tools/test_tool_candidate_files.ep) · 42 lines · 2885 bytes
+
+SHA-256: `0081c7389962595648364ec4b83d1c08bc7b40484de17a8c00a968946ecd6f7f`
+
+
+Imports: ../../app/tools/tool_candidate_files → app/tools/tool_candidate_files.ep, fs → standard library or compiler dependency
+
+- Line 4: `define main returning Int:`
+
 ## tests/tools/test_tool_discovery.ep
 
 [Source](../../tests/tools/test_tool_discovery.ep) · 71 lines · 5537 bytes
@@ -2527,9 +2538,9 @@ Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../..
 
 ## tests/tools/test_tool_registry.ep
 
-[Source](../../tests/tools/test_tool_registry.ep) · 104 lines · 8206 bytes
+[Source](../../tests/tools/test_tool_registry.ep) · 114 lines · 9311 bytes
 
-SHA-256: `6ab8b8cff2420763a961de8359ac3a781f20cf8a99b266b4c7c9e10d933e5e22`
+SHA-256: `a0f5c2610a3f34242c3bab2e1e333f24af5e35facbca569508d21dd059d17a67`
 
 
 Imports: ../../app/tools/tool_registry → app/tools/tool_registry.ep, ../../app/web/run_store → app/web/run_store.ep, fs → standard library or compiler dependency, ../../app/agent/tool_dispatch → app/agent/tool_dispatch.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep

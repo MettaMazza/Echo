@@ -84,6 +84,28 @@ define tool_candidate_manifest_valid with manifest as Str returning Int:
 
 # The authoring run owns its draft. Exact retries preserve its original receipt;
 # changed bytes require a new version. No evaluator claim is trusted here.
+define tool_candidate_dependencies_check with database as Int and run as Str and manifest as Str returning Str:
+    set tokens to provider_json_tokens(manifest)
+    set dependencies to provider_items(tokens and provider_member(tokens and 0 and "dependencies"))
+    set seen to create_list()
+    for each item in dependencies:
+        set digest to provider_value(tokens and item)
+        for each prior in seen:
+            if ptr_to_str(prior) equals digest:
+                return "duplicate-dependency"
+        set added to append_list(seen and digest)
+        set values to create_list()
+        set added to append_list(values and run)
+        set added to append_list(values and digest)
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT c.manifest,c.digest FROM echo_tool_candidates c JOIN echo_run_authority a ON a.run=c.run JOIN echo_run_authority current ON current.run=?1 AND current.principal=a.principal WHERE c.digest=?2 ORDER BY c.sequence LIMIT 1;" and values))
+        if not (archive_list_text(row and 0) equals "found"):
+            return "dependency-missing-or-out-of-scope"
+        if not (ep_sha256(archive_list_text(row and 1)) equals digest) or else tool_candidate_manifest_valid(archive_list_text(row and 1)) equals 0:
+            return "dependency-record-invalid"
+    # References to immutable candidates do not prove accepted dependencies.
+    # Registration/load must independently require qualified active versions.
+    return "dependency-references-verified-not-qualified"
+
 define tool_candidate_save with database as Int and run as Str and manifest as Str returning Str:
     if tool_candidate_manifest_valid(manifest) equals 0:
         return "invalid-manifest"
@@ -108,6 +130,9 @@ define tool_candidate_save with database as Int and run as Str and manifest as S
         set discovery to tool_candidate_loaded_evidence(database and run and manifest)
         if not (discovery equals "loaded-discovery-verified"):
             return migration_fail(database and discovery)
+        set dependencies to tool_candidate_dependencies_check(database and run and manifest)
+        if not (dependencies equals "dependency-references-verified-not-qualified"):
+            return migration_fail(database and dependencies)
         set added to append_list(values and manifest)
         set added to append_list(values and ep_sha256(manifest))
         set statement to checkpoint_prepare(database and "INSERT INTO echo_tool_candidates(run,name,version,manifest,digest) VALUES(?1,?2,CAST(?3 AS INTEGER),?4,?5);" and values)

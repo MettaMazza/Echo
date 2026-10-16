@@ -1,0 +1,43 @@
+import "tool_registry"
+import "../workspace/files"
+
+# Host-selected evaluation root; manifest paths are always relative. Hash the
+# validated descriptor itself, so replacing the pathname cannot switch inputs.
+define tool_candidate_file_digest with root_path as Str and path as Str returning List:
+    if workspace_path_parts(path) equals 0:
+        return file_digest_result("invalid-relative-path" and "" and 0)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return file_digest_result("unavailable" and "" and 0)
+    set root to workspace_root_open(library and root_path)
+    if root < 0:
+        set released to ep_dlclose(library)
+        return file_digest_result("evaluation-root-unavailable" and "" and 0)
+    set descriptor to workspace_file_open(library and root and path and 0)
+    set closed to net_close(root)
+    if descriptor < 0 or else closed is not equal to 0:
+        if descriptor >= 0:
+            set closed to net_close(descriptor)
+        set released to ep_dlclose(library)
+        return file_digest_result("candidate-file-unavailable" and "" and 0)
+    return file_digest_owned_descriptor(library and descriptor and 65536 and 1)
+
+# Byte qualification only. This does not execute a candidate, grant capabilities,
+# accept tests or prove that a binary was built from the declared source.
+define tool_candidate_files_check with root_path as Str and manifest as Str returning Str:
+    if tool_candidate_manifest_valid(manifest) equals 0:
+        return "invalid-manifest"
+    set tokens to provider_json_tokens(manifest)
+    set source to provider_value(tokens and provider_member(tokens and 0 and "source"))
+    if string_length(source) < 4 or else not (ptr_to_str(substring(source and string_length(source) - 3 and 3)) equals ".ep"):
+        return "ernos-source-required"
+    for each field in ["source", "artifact"]:
+        set name to ptr_to_str(field)
+        set path to provider_value(tokens and provider_member(tokens and 0 and name))
+        set checked to tool_candidate_file_digest(root_path and path)
+        if not (archive_list_text(checked and 0) equals "verified"):
+            return concat(name and concat(":" and archive_list_text(checked and 0)))
+        set expected to provider_value(tokens and provider_member(tokens and 0 and concat(name and "_sha256")))
+        if not (archive_list_text(checked and 1) equals expected):
+            return concat(name and ":bytes-changed")
+    return "candidate-bytes-verified-not-evaluated"

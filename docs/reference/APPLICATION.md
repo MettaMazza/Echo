@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T10:49:05.032724+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:54:23.103290+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -433,9 +433,9 @@ Imports: ../retained_text → app/retained_text.ep, file_stage → app/archive/f
 
 ## app/archive/file_digest.ep
 
-[Source](../../app/archive/file_digest.ep) · 121 lines · 6075 bytes
+[Source](../../app/archive/file_digest.ep) · 140 lines · 7071 bytes
 
-SHA-256: `75355c42e8cd33b4c522f9466604a98ce689c4e7d4aeb16156fab8c658417d1b`
+SHA-256: `b5e3b56795641d587fcfe15705979e9b9424870bf70758fcdade42664b08d837`
 
 > Binary streaming SHA-256 via the installed macOS CommonCrypto ABI.
 > Batch size is I/O granularity, not a file-size ceiling. Never use C strings
@@ -444,6 +444,8 @@ SHA-256: `75355c42e8cd33b4c522f9466604a98ce689c4e7d4aeb16156fab8c658417d1b`
 > after fsync; nonblocking/no-symlink opening rejects special-file substitutions.
 > O_CLOEXEC | O_NOFOLLOW_ANY | O_NONBLOCK. Darwin rejects combining
 > O_NOFOLLOW_ANY with the separate O_NOFOLLOW flag.
+> Takes ownership of both the opened descriptor and native library. This keeps
+> scoped callers on the same inode they validated; no pathname is reopened.
 > CC_SHA256_CTX is 26 unsigned 32-bit words in the installed SDK.
 
 Imports: ../transport/socket_read → app/transport/socket_read.ep, string → standard library or compiler dependency
@@ -452,6 +454,7 @@ Imports: ../transport/socket_read → app/transport/socket_read.ep, string → s
 - Line 14: `define file_digest with path as Str and batch as Int returning List:`
 - Line 19: `define file_digest_durable with path as Str and batch as Int returning List:`
 - Line 22: `define file_digest_mode with path as Str and batch as Int and durable as Int returning List:`
+- Line 45: `define file_digest_owned_descriptor with library as Int and descriptor as Int and batch as Int and durable as Int returning List:`
 
 ## app/archive/file_publication.ep
 
@@ -3577,6 +3580,22 @@ Imports: tool_discovery → app/tools/tool_discovery.ep
 
 - Line 6: `define tool_candidate_loaded_evidence with database as Int and run as Str and manifest as Str returning Str:`
 
+## app/tools/tool_candidate_files.ep
+
+[Source](../../app/tools/tool_candidate_files.ep) · 43 lines · 2519 bytes
+
+SHA-256: `b8e14b3aa363386e634847dd63d3ede044d6b0f397538cf241ed5c3e146f8793`
+
+> Host-selected evaluation root; manifest paths are always relative. Hash the
+> validated descriptor itself, so replacing the pathname cannot switch inputs.
+> Byte qualification only. This does not execute a candidate, grant capabilities,
+> accept tests or prove that a binary was built from the declared source.
+
+Imports: tool_registry → app/tools/tool_registry.ep, ../workspace/files → app/workspace/files.ep
+
+- Line 6: `define tool_candidate_file_digest with root_path as Str and path as Str returning List:`
+- Line 27: `define tool_candidate_files_check with root_path as Str and manifest as Str returning Str:`
+
 ## app/tools/tool_discovery.ep
 
 [Source](../../app/tools/tool_discovery.ep) · 58 lines · 4044 bytes
@@ -3594,22 +3613,25 @@ Imports: ../context/session_messages → app/context/session_messages.ep
 
 ## app/tools/tool_registry.ep
 
-[Source](../../app/tools/tool_registry.ep) · 118 lines · 7573 bytes
+[Source](../../app/tools/tool_registry.ep) · 143 lines · 9346 bytes
 
-SHA-256: `39cdfd72cf270e77c397d17a4018372c076ab331f0d8386f24d564f0e17f6b09`
+SHA-256: `f125d1c3b6b788b8330d13694e84936130d1c8f7916e00ab6e1144dcc3c1eb61`
 
 > Candidate persistence is not registration or execution authority. Evaluation,
 > dependency verification and activation consume these immutable exact bytes.
 > An existing builtin cannot be shadowed by a saved custom definition.
 > The authoring run owns its draft. Exact retries preserve its original receipt;
 > changed bytes require a new version. No evaluator claim is trusted here.
+> References to immutable candidates do not prove accepted dependencies.
+> Registration/load must independently require qualified active versions.
 
 Imports: ../security/group_speech → app/security/group_speech.ep, ../security/tool_policy → app/security/tool_policy.ep, ../providers/archived_stream → app/providers/archived_stream.ep, tool_candidate_evidence → app/tools/tool_candidate_evidence.ep
 
 - Line 8: `define tool_registry_schema with database as Int returning Str:`
 - Line 14: `define tool_candidate_name_valid with name as Str returning Int:`
 - Line 26: `define tool_candidate_manifest_valid with manifest as Str returning Int:`
-- Line 87: `define tool_candidate_save with database as Int and run as Str and manifest as Str returning Str:`
+- Line 87: `define tool_candidate_dependencies_check with database as Int and run as Str and manifest as Str returning Str:`
+- Line 109: `define tool_candidate_save with database as Int and run as Str and manifest as Str returning Str:`
 
 ## app/tools/workspace_tools.ep
 
