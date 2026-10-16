@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T02:57:11.089981+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:02:25.886194+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -2318,9 +2318,9 @@ Imports: ../archive/file_digest → app/archive/file_digest.ep, ../providers/arc
 
 ## app/rights/proposals.ep
 
-[Source](../../app/rights/proposals.ep) · 210 lines · 16277 bytes
+[Source](../../app/rights/proposals.ep) · 215 lines · 16761 bytes
 
-SHA-256: `0617a3ed6ffcd93867e8898009bf13f5cf41bcc39e378a0ee1d14588fbea5a91`
+SHA-256: `244b308c5bdc8b6eeed3a823b6ce355460fa9c0c6d09c1fa851d5fbe28383a44`
 
 > Proposal storage only. No approval, executable access or mutation is granted.
 > A future protected controller must derive the category and target inventory
@@ -2352,6 +2352,26 @@ Imports: charter → app/rights/charter.ep, ../memory/knowledge_lifecycle → ap
 - Line 105: `define protected_proposal_read with database as Int and run as Str and identity as Str returning List:`
 - Line 124: `define protected_inspection_event with database as Int and run as Str and call_id as Str and identity as Str returning Str:`
 - Line 163: `define protected_review_evidence with database as Int and run as Str and call_id as Str returning Str:`
+
+## app/rights/reviews.ep
+
+[Source](../../app/rights/reviews.ep) · 92 lines · 7562 bytes
+
+SHA-256: `ea66584019e9624f676a2b6998aedbdeb09d024d1c38f6e1b3a73b9688594621`
+
+> Decisions are append-only and bind their exact disclosure and model input.
+> This ledger never grants steward, Observer or execution authorisation.
+> A retry returns the same receipt, including after tool observation. A different
+> decision needs its own model call and the current per-proposal revision.
+> Current state is derived from immutable receipts, not a mutable consent flag.
+> Return the revision and exact decision evidence only to the proposal owner.
+> Callers must still apply every independent deployment gate.
+
+Imports: proposals → app/rights/proposals.ep
+
+- Line 5: `define protected_review_schema with database as Int returning Str:`
+- Line 13: `define protected_review_store with database as Int and run as Str and call_id as Str returning Str:`
+- Line 64: `define protected_review_latest with database as Int and run as Str and identity as Str returning List:`
 
 ## app/security/accounts.ep
 

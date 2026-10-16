@@ -1,0 +1,92 @@
+import "proposals"
+
+# Decisions are append-only and bind their exact disclosure and model input.
+# This ledger never grants steward, Observer or execution authorisation.
+define protected_review_schema with database as Int returning Str:
+    set prior to protected_proposal_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 12 and "protected-review-receipts" and "CREATE TABLE echo_protected_reviews(sequence INTEGER PRIMARY KEY AUTOINCREMENT,proposal TEXT NOT NULL REFERENCES echo_protected_proposals(identity),run TEXT NOT NULL,call_id TEXT NOT NULL,principal TEXT NOT NULL REFERENCES echo_principals(identity),previous_revision INTEGER NOT NULL CHECK(previous_revision>=0),inspection_event TEXT NOT NULL REFERENCES echo_events(event),review_event TEXT NOT NULL UNIQUE REFERENCES echo_events(event),model_request TEXT NOT NULL REFERENCES echo_events(event),evidence TEXT NOT NULL,evidence_digest TEXT NOT NULL,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')),UNIQUE(run,call_id),UNIQUE(proposal,previous_revision),FOREIGN KEY(run,call_id) REFERENCES echo_tool_calls(run,call_id)); CREATE TRIGGER echo_protected_reviews_no_update BEFORE UPDATE ON echo_protected_reviews BEGIN SELECT RAISE(ABORT,'Protected decisions are immutable'); END; CREATE TRIGGER echo_protected_reviews_no_delete BEFORE DELETE ON echo_protected_reviews BEGIN SELECT RAISE(ABORT,'Protected decisions are immutable'); END;")
+
+# A retry returns the same receipt, including after tool observation. A different
+# decision needs its own model call and the current per-proposal revision.
+define protected_review_store with database as Int and run as Str and call_id as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set principal to protected_proposal_principal(database and run)
+    if string_length(principal) equals 0:
+        return migration_fail(database and "not-authorized")
+    set evidence to protected_review_evidence(database and run and call_id)
+    if string_length(evidence) equals 0:
+        return migration_fail(database and "review-evidence-invalid")
+    set tokens to provider_json_tokens(evidence)
+    set identity to provider_value(tokens and provider_member(tokens and 0 and "proposal"))
+    set revision to provider_value(tokens and provider_member(tokens and 0 and "previous_revision"))
+    set values to tool_ledger_identity(run and call_id)
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT principal,evidence,evidence_digest FROM echo_protected_reviews WHERE run=? AND call_id=?;" and values))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals principal) or else not (archive_list_text(old and 2) equals evidence) or else not (archive_list_text(old and 3) equals ep_sha256(evidence)):
+            return migration_fail(database and "review-integrity-failed")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "review-read-failed")
+    set current_values to create_list()
+    set added to append_list(current_values and identity)
+    set current to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_protected_reviews WHERE proposal=?;" and current_values))
+    if not (archive_list_text(current and 0) equals "found"):
+        return migration_fail(database and "review-read-failed")
+    if http_decimal(archive_list_text(current and 1)) > 0:
+        set history to protected_review_latest(database and run and identity)
+        if not (archive_list_text(history and 0) equals "found"):
+            return migration_fail(database and "review-history-invalid")
+    if not (archive_list_text(current and 1) equals revision):
+        return migration_fail(database and "revision-conflict")
+    set added to append_list(values and identity)
+    set added to append_list(values and principal)
+    set added to append_list(values and revision)
+    set added to append_list(values and provider_value(tokens and provider_member(tokens and 0 and "inspection_event")))
+    set added to append_list(values and provider_value(tokens and provider_member(tokens and 0 and "review_event")))
+    set added to append_list(values and provider_value(tokens and provider_member(tokens and 0 and "model_request")))
+    set added to append_list(values and evidence)
+    set added to append_list(values and ep_sha256(evidence))
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_protected_reviews(run,call_id,proposal,principal,previous_revision,inspection_event,review_event,model_request,evidence,evidence_digest) VALUES(?1,?2,?3,?4,CAST(?5 AS INTEGER),?6,?7,?8,?9,?10);" and values)
+    if statement equals 0 or else archive_finish(statement and 101) is not equal to 0:
+        return migration_fail(database and "review-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+# Current state is derived from immutable receipts, not a mutable consent flag.
+# Return the revision and exact decision evidence only to the proposal owner.
+# Callers must still apply every independent deployment gate.
+define protected_review_latest with database as Int and run as Str and identity as Str returning List:
+    set principal to protected_proposal_principal(database and run)
+    set proposal to protected_proposal_read(database and run and identity)
+    if string_length(principal) equals 0 or else not (archive_list_text(proposal and 0) equals "found"):
+        return history_status("not-authorized-or-missing")
+    set revision to 0
+    set evidence to ""
+    repeat while 1 equals 1:
+        set scan to create_list()
+        set added to append_list(scan and identity)
+        set added to append_list(scan and principal)
+        set added to append_list(scan and int_to_string(revision))
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT r.run,r.call_id,r.evidence,r.evidence_digest,r.previous_revision FROM echo_protected_reviews r WHERE r.proposal=?1 AND r.principal=?2 AND r.previous_revision>=CAST(?3 AS INTEGER) ORDER BY r.previous_revision LIMIT 1;" and scan))
+        if archive_list_text(row and 0) equals "end":
+            break
+        if not (archive_list_text(row and 0) equals "found"):
+            return history_status("review-read-failed")
+        if not (archive_list_text(row and 5) equals int_to_string(revision)) or else not (ep_sha256(archive_list_text(row and 3)) equals archive_list_text(row and 4)) or else not (protected_review_evidence(database and archive_list_text(row and 1) and archive_list_text(row and 2)) equals archive_list_text(row and 3)):
+            return history_status("review-integrity-or-authority-failed")
+        set evidence to archive_list_text(row and 3)
+        set revision to revision + 1
+    if not (protected_proposal_principal(database and run) equals principal):
+        return history_status("not-authorized")
+    if revision equals 0:
+        return history_status("end")
+    set result to history_status("found")
+    set added to append_list(result and int_to_string(revision))
+    set added to append_list(result and evidence)
+    return result

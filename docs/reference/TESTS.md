@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T02:57:11.089981+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:02:25.886194+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1649,9 +1649,9 @@ Imports: ../../app/web/uploads → app/web/uploads.ep, ../../app/web/cancellatio
 
 ## tests/security/test_protected_proposals.ep
 
-[Source](../../tests/security/test_protected_proposals.ep) · 143 lines · 14054 bytes
+[Source](../../tests/security/test_protected_proposals.ep) · 171 lines · 16999 bytes
 
-SHA-256: `d8e3b743ed754e35cdebb676b4dc1434c11e4589bb1138094470125654efd43d`
+SHA-256: `40e22eaa6d2c826ca115d441f9ebfbe193dff6939385d5311b69e26a909c3eea`
 
 > Persist the same original event envelope used by the native tool ledger.
 > Model request originals let the verifier distinguish seeing a disclosure
@@ -1660,11 +1660,11 @@ SHA-256: `d8e3b743ed754e35cdebb676b4dc1434c11e4589bb1138094470125654efd43d`
 > Simulate out-of-band damage in this disposable database. Ordinary writes
 > were denied above; inspection must independently reject mismatched bytes.
 
-Imports: ../../app/rights/proposals → app/rights/proposals.ep, ../../app/web/run_store → app/web/run_store.ep
+Imports: ../../app/rights/reviews → app/rights/reviews.ep, ../../app/web/run_store → app/web/run_store.ep
 
 - Line 5: `define inspection_fixture with database as Int and session as Str and call_id as Str and name as Str and manifest as Str and digest as Str and observed as Int returning Int:`
-- Line 24: `define review_fixture with database as Int and session as Str and call_id as Str and decision as Str and digest as Str and include_disclosure as Int returning Int:`
-- Line 46: `define main returning Int:`
+- Line 24: `define review_fixture with database as Int and session as Str and call_id as Str and decision as Str and digest as Str and include_disclosure as Int and previous_revision as Int returning Int:`
+- Line 47: `define main returning Int:`
 
 ## tests/security/test_revocation.ep
 
