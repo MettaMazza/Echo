@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T09:43:52.684712+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T09:51:10.360241+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -623,6 +623,45 @@ Imports: ../../app/web/compaction → app/web/compaction.ep, ../../app/web/run_s
 
 - Line 4: `define recap_read_field with body as Str and name as Str returning Str:`
 - Line 8: `define main returning Int:`
+
+## tests/context/test_group_recap_authority.ep
+
+[Source](../../tests/context/test_group_recap_authority.ep) · 67 lines · 4748 bytes
+
+SHA-256: `2e04565e084164423f2c49128532b2ca54c782565cb247764ce44d1d17e36425`
+
+> Start beyond the fixture's artificial capacity trigger: this test must
+> rebuild because of an explicit request while ordinary context still fits.
+
+Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../fixtures/runner_provider → tests/fixtures/runner_provider.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep, ../../app/web/run_store → app/web/run_store.ep
+
+- Line 6: `define rebuild_provider_fixture with listener as List and objective as Str and completed as Int and start as Int and finish as Int returning Int:`
+- Line 23: `define main returning Int:`
+
+## tests/context/test_group_recap_rebuild.ep
+
+[Source](../../tests/context/test_group_recap_rebuild.ep) · 118 lines · 7930 bytes
+
+SHA-256: `9427b9b86b1a570ebf10b7291670096c7ef99a1bf9535a29a04283242372e705`
+
+> Start beyond the fixture's artificial capacity trigger: this test must
+> rebuild because of an explicit request while ordinary context still fits.
+
+Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../fixtures/runner_provider → tests/fixtures/runner_provider.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep, ../../app/web/run_store → app/web/run_store.ep
+
+- Line 6: `define rebuild_provider_fixture with listener as List and objective as Str and completed as Int and start as Int and finish as Int returning Int:`
+- Line 23: `define main returning Int:`
+
+## tests/context/test_live_group_recap.ep
+
+[Source](../../tests/context/test_live_group_recap.ep) · 54 lines · 4406 bytes
+
+SHA-256: `ff0db80226296298edd2e56f21c009468f03bae9558616ffc50b385cf22be916`
+
+
+Imports: ../../app/security/group_speech → app/security/group_speech.ep, ../../app/agent/runner → app/agent/runner.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 5: `define main returning Int:`
 
 ## tests/context/test_merge_resume.ep
 

@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T09:43:52.684712+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T09:51:10.360241+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1115,9 +1115,9 @@ Imports: ../retained_text → app/retained_text.ep, recap_fragment → app/conte
 
 ## app/context/recap_rebuild.ep
 
-[Source](../../app/context/recap_rebuild.ep) · 69 lines · 6564 bytes
+[Source](../../app/context/recap_rebuild.ep) · 76 lines · 7773 bytes
 
-SHA-256: `7790cd84b47ac4ceb355398eeaa71f044c3fadae3623caa8f7552189289ba722`
+SHA-256: `f3efe522010ab9ae006813d717e02b731e28db11f67f93f1da95e6eb570e1f5c`
 
 > Requesting a rebuild is a durable tool observation, not an immediate edit.
 > The runner consumes observed requests only after all tool results are saved.
@@ -1125,11 +1125,11 @@ SHA-256: `7790cd84b47ac4ceb355398eeaa71f044c3fadae3623caa8f7552189289ba722`
 > after checkpoint activation but before this receipt reuses that checkpoint;
 > it does not regenerate another recap or mutate original source records.
 
-Imports: ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep, ../agent/run_state → app/agent/run_state.ep
+Imports: ../security/group_history → app/security/group_history.ep, ../security/principals → app/security/principals.ep, ../retained_text → app/retained_text.ep, ../tools/history_tools → app/tools/history_tools.ep, ../agent/run_state → app/agent/run_state.ep
 
-- Line 8: `define recap_rebuild_enqueue with database as Int and run as Str and call_id as Str and arguments as Str returning Str:`
-- Line 36: `define recap_rebuild_pending with database as Int and run as Str returning Str:`
-- Line 68: `define recap_rebuild_schema returning Str:`
+- Line 9: `define recap_rebuild_enqueue with database as Int and run as Str and call_id as Str and arguments as Str returning Str:`
+- Line 41: `define recap_rebuild_pending with database as Int and run as Str returning Str:`
+- Line 75: `define recap_rebuild_schema returning Str:`
 
 ## app/context/recap_repair.ep
 

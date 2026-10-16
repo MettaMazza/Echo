@@ -1,3 +1,4 @@
+import "../security/group_history"
 import "../security/principals"
 import "../retained_text"
 import "../tools/history_tools"
@@ -27,6 +28,10 @@ define recap_rebuild_enqueue with database as Int and run as Str and call_id as 
     set values to retained_list_1
     set row to history_collect_one(checkpoint_prepare(database and concat("SELECT t.request_event FROM echo_tool_calls t JOIN echo_runs r ON r.run=t.run AND r.session=t.session JOIN echo_session_owners o ON o.session=r.session JOIN echo_devices d ON d.device=o.device JOIN echo_events e ON e.event=t.request_event AND e.session=t.session WHERE " and concat(principal_session_sql(database and "o.session" and "o.device") and " AND t.run=?1 AND t.call_id=?2 AND t.state='running' AND r.state='tools' AND d.revoked=0 AND json_extract(e.payload,'$.name')='session_rebuild_recap' AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.call_id')=?2;")) and values))
     if not (archive_list_text(row and 0) equals "found"):
+        set shared to history_collect_one(checkpoint_prepare(database and "SELECT t.request_event,t.session FROM echo_tool_calls t JOIN echo_runs r ON r.run=t.run AND r.session=t.session JOIN echo_events e ON e.event=t.request_event AND e.session=t.session WHERE t.run=?1 AND t.call_id=?2 AND t.state='running' AND r.state='tools' AND e.kind='tool_call' AND json_extract(e.payload,'$.name')='session_rebuild_recap' AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.call_id')=?2;" and values))
+        if archive_list_text(shared and 0) equals "found" and group_run_session_allows(database and run and archive_list_text(shared and 2)) equals 1 and group_history_allows(database and archive_list_text(shared and 2)) equals 1:
+            set row to shared
+    if not (archive_list_text(row and 0) equals "found") or else tool_policy_allows(database and run and call_id and "session_rebuild_recap") equals 0:
         return "{\"status\":\"not-authorized\"}"
     return "{\"status\":\"queued\",\"instruction\":\"After the saved tool observations, Echo will rebuild from original records and independently review before activation. The previous recap remains active on failure. Do not claim completion until the rebuilt checkpoint is available. Corrections must remain grounded in original user/source records.\"}"
 
@@ -38,12 +43,14 @@ define recap_rebuild_pending with database as Int and run as Str returning Str:
     set retained_item_2_0 to run
     set retained_added to append_list(retained_list_2 and retained_item_2_0)
     set values to retained_list_2
-    set query to "SELECT t.session,t.request_event,e.sequence FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event AND q.session=t.session JOIN echo_events e ON e.event=t.result_event AND e.session=t.session WHERE t.run=?1 AND t.state='observed' AND json_extract(q.payload,'$.name')='session_rebuild_recap' AND json_extract(e.payload,'$.result.status')='queued' AND NOT EXISTS(SELECT 1 FROM echo_events f WHERE f.session=t.session AND f.event=t.request_event||':rebuild-completed' AND f.kind='recap_rebuild_completed') ORDER BY e.sequence LIMIT 1;"
+    set query to "SELECT t.session,t.request_event,e.sequence,t.call_id FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event AND q.session=t.session JOIN echo_events e ON e.event=t.result_event AND e.session=t.session WHERE t.run=?1 AND t.state='observed' AND json_extract(q.payload,'$.name')='session_rebuild_recap' AND json_extract(e.payload,'$.result.status')='queued' AND NOT EXISTS(SELECT 1 FROM echo_events f WHERE f.session=t.session AND f.event=t.request_event||':rebuild-completed' AND f.kind='recap_rebuild_completed') ORDER BY e.sequence LIMIT 1;"
     set pending to history_collect_one(checkpoint_prepare(database and query and values))
     if archive_list_text(pending and 0) equals "end":
         return "none"
     if not (archive_list_text(pending and 0) equals "found"):
         return "archive-error"
+    if tool_policy_allows(database and run and archive_list_text(pending and 4) and "session_rebuild_recap") equals 0 or else group_history_allows(database and archive_list_text(pending and 1)) equals 0:
+        return "not-authorized"
     set session to archive_list_text(pending and 1)
     set request to archive_list_text(pending and 2)
     set retained_list_3 to create_list()
