@@ -1,0 +1,63 @@
+import "principals"
+
+# Append a new migration; never modify the identity of an applied migration.
+define principal_revocation_schema with database as Int returning Str:
+    set prior to principal_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 3 and "principal-revocation-audit" and "CREATE TABLE echo_principal_revocations(identity TEXT PRIMARY KEY,principal TEXT NOT NULL REFERENCES echo_principals(identity),previous_revoked INTEGER NOT NULL,revoked INTEGER NOT NULL CHECK(revoked IN (0,1)),previous_role TEXT NOT NULL,role TEXT NOT NULL,actor TEXT NOT NULL,reason TEXT NOT NULL,occurred TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TRIGGER echo_revocations_no_update BEFORE UPDATE ON echo_principal_revocations BEGIN SELECT RAISE(ABORT,'Revocation history is immutable'); END; CREATE TRIGGER echo_revocations_no_delete BEFORE DELETE ON echo_principal_revocations BEGIN SELECT RAISE(ABORT,'Revocation history is immutable'); END;")
+
+# Host-only control, like role enrolment. Restoration returns an ordinary user;
+# privileged roles need a separate explicit audited grant. Device revocations
+# remain revoked, account links stay separate, and session ownership never moves.
+define principal_host_revocation with database as Int and identity as Str and principal as Str and revoked as Int and reason as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(principal) equals 0 or else string_length(reason) equals 0 or else (revoked is not equal to 0 and revoked is not equal to 1):
+        return "invalid-revocation"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set values to create_list()
+    set added to append_list(values and identity)
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT principal,CAST(revoked AS TEXT),reason FROM echo_principal_revocations WHERE identity=?;" and values))
+    if archive_list_text(saved and 0) equals "found":
+        if not (archive_list_text(saved and 1) equals principal) or else not (archive_list_text(saved and 2) equals int_to_string(revoked)) or else not (archive_list_text(saved and 3) equals reason):
+            return migration_fail(database and "revocation-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(saved and 0) equals "end"):
+        return migration_fail(database and "revocation-read-failed")
+    set values to create_list()
+    set added to append_list(values and principal)
+    set previous to history_collect_one(checkpoint_prepare(database and "SELECT CAST(revoked AS TEXT),role FROM echo_principals WHERE identity=?;" and values))
+    if not (archive_list_text(previous and 0) equals "found"):
+        return migration_fail(database and "principal-unavailable")
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and principal)
+    set added to append_list(values and archive_list_text(previous and 1))
+    set added to append_list(values and int_to_string(revoked))
+    set added to append_list(values and archive_list_text(previous and 2))
+    set added to append_list(values and reason)
+    set receipt to checkpoint_prepare(database and "INSERT INTO echo_principal_revocations(identity,principal,previous_revoked,revoked,previous_role,role,actor,reason) VALUES(?,?,?,?,?,'user','host-local',?);" and values)
+    if receipt equals 0 or else archive_finish(receipt and 101) is not equal to 0:
+        return migration_fail(database and "revocation-write-failed")
+    set values to create_list()
+    set added to append_list(values and int_to_string(revoked))
+    set added to append_list(values and principal)
+    set change to checkpoint_prepare(database and "UPDATE echo_principals SET revoked=?,role='user' WHERE identity=?;" and values)
+    if change equals 0 or else archive_finish(change and 101) is not equal to 0:
+        return migration_fail(database and "revocation-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+# Only the authenticated platform adapter supplies platform and subject.
+# Display names, mentions, message text and browser claims are not credentials.
+define principal_for_account with database as Int and platform as Str and subject as Str returning Str:
+    set values to create_list()
+    set added to append_list(values and platform)
+    set added to append_list(values and subject)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT p.identity FROM echo_principal_accounts a JOIN echo_principals p ON p.identity=a.principal WHERE a.platform=? AND a.subject=? AND a.revoked=0 AND p.revoked=0;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)

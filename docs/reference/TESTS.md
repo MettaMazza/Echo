@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T00:13:10.925727+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:23:49.838134+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -152,15 +152,15 @@ Imports: ../../app/agent/tool_ledger → app/agent/tool_ledger.ep, fs → standa
 
 ## tests/agent/test_two_turn_loop.ep
 
-[Source](../../tests/agent/test_two_turn_loop.ep) · 91 lines · 6177 bytes
+[Source](../../tests/agent/test_two_turn_loop.ep) · 98 lines · 6936 bytes
 
-SHA-256: `6336c51a8f0825fff120c2a02433ccfda5ff7a8273bcf8541be06f19de4d9baa`
+SHA-256: `a4dc70d6ccb843a33dda7e43bdf85dda292eaad902856f83021831e9372b15b6`
 
 > Restart the database connection before constructing the next request.
 
-Imports: ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+Imports: ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/web/run_store → app/web/run_store.ep, ../../app/security/revocation → app/security/revocation.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
-- Line 5: `define main returning Int:`
+- Line 7: `define main returning Int:`
 
 ## tests/agent/test_workspace_create_loop.ep
 
@@ -627,6 +627,17 @@ Imports: ../fixtures/runner_provider → tests/fixtures/runner_provider.ep
 - Line 3: `define merge_note_fixture with database as Int and identity as Str and start as Int and finish as Int and notes as Str returning Int:`
 - Line 11: `define merge_provider_fixture with listener as List and completed as Int returning Int:`
 - Line 28: `define main returning Int:`
+
+## tests/context/test_prompt_prefix.ep
+
+[Source](../../tests/context/test_prompt_prefix.ep) · 16 lines · 729 bytes
+
+SHA-256: `a763e409b77c43805b338665c779d668efa891ec998713b9e4c89f905d8c79d6`
+
+
+Imports: ../../app/context/system_awareness → app/context/system_awareness.ep
+
+- Line 3: `define main returning Int:`
 
 ## tests/context/test_recap_collect.ep
 
@@ -1445,6 +1456,28 @@ Imports: ../../app/research/vector_controls → app/research/vector_controls.ep
 
 - Line 3: `define main returning Int:`
 
+## tests/security/prepare_http_principals.ep
+
+[Source](../../tests/security/prepare_http_principals.ep) · 14 lines · 861 bytes
+
+SHA-256: `f060a9a884b275d125c3bc2ec9931e1bfd074e74833503b53b952c4635515cdc`
+
+
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/revocation → app/security/revocation.ep
+
+- Line 4: `define main returning Int:`
+
+## tests/security/test_dispatch_revocation.ep
+
+[Source](../../tests/security/test_dispatch_revocation.ep) · 58 lines · 4185 bytes
+
+SHA-256: `aaf7890ad6c850410e5ea97012d9cda54bb2255800f0307b305e884389929038`
+
+
+Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency, ../../app/security/revocation → app/security/revocation.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 10: `define main returning Int:`
+
 ## tests/security/test_principals.ep
 
 [Source](../../tests/security/test_principals.ep) · 50 lines · 3211 bytes
@@ -1456,6 +1489,21 @@ SHA-256: `83b7a08fbe0e6d406bbb06f016d49824c01c031a0b035380b6a68172104945aa`
 Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/principals → app/security/principals.ep, fs → standard library or compiler dependency
 
 - Line 5: `define main returning Int:`
+
+## tests/security/test_revocation.ep
+
+[Source](../../tests/security/test_revocation.ep) · 61 lines · 4678 bytes
+
+SHA-256: `c4d5fc7e3c62176d62a5e64f5c0bc61388e467064797123cfe4adad10e18ecfa`
+
+> A fixture account binding models a trusted platform adapter. This is not
+> evidence that a live Discord account has been linked or authenticated.
+> A delayed replay of an old revoke is only a receipt lookup, never a new
+> state change that could undo a newer explicit restoration.
+
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/revocation → app/security/revocation.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/tools/test_history_dispatch.ep
 
@@ -1854,14 +1902,14 @@ Imports: ../../app/web/worker → app/web/worker.ep
 
 ## tests/web/test_devices.ep
 
-[Source](../../tests/web/test_devices.ep) · 92 lines · 6682 bytes
+[Source](../../tests/web/test_devices.ep) · 96 lines · 6895 bytes
 
-SHA-256: `238e0ff71bcca28948e883ec9e1cc60b304bdb2e56c4e4508a1234f8333e95d7`
+SHA-256: `100bd554f68839a864e86599b4f9a5857c88c9bd15a2545ce854c213dc9338a8`
 
 
-Imports: ../../app/web/run_store → app/web/run_store.ep
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/revocation → app/security/revocation.ep
 
-- Line 3: `define main returning Int:`
+- Line 4: `define main returning Int:`
 
 ## tests/web/test_empty_session.ep
 
