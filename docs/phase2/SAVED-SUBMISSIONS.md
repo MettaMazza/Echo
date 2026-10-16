@@ -1,0 +1,11 @@
+# Saved submissions
+
+The candidate browser has a Saved submissions section for unresolved private or shared submissions. After a request has settled, the user can keep its exact serialized payload in this browser and release the global pending lock. This enables other chats without claiming the original failed, cancelling it, changing its ID or sending it again.
+
+The original submission ID, group, session, provider selection where applicable, message and selected-file references are preserved byte for byte. A saved copy is written and read back before the pending key is removed. A conflicting saved record prevents parking. Browser storage exceptions leave the original pending record in place and reach the normal error UI. Saved copies are namespaced by the paired browser device, and restoration refuses another device’s namespace or a different current pending payload.
+
+Check / retry original submission restores the original payload and uses the existing idempotent submission endpoint. It never generates a new ID or moves work into the currently selected chat. Existing authority and membership checks still apply. A lost group audience may prevent both retry and outcome retrieval; parking is recovery from the browser lock, not proof of non-delivery or permission to access lost history. A newer composer draft is preserved during checking. Saved copies remain after checking and across reloads.
+
+These copies live in browser storage, like pending submissions and drafts. They are not server archive backups, and clearing browser data removes them. File references do not make a second copy of source bytes or grant new file access. No inference/context limit is introduced.
+
+Verification: tests/web/outbox_browser.ep checks exact preservation, restoration, pending conflict and device namespace, with no network calls during parking/restoration. tests/web/outbox_application_browser.ep runs the complete UI against a disposable server with an unavailable original audience: park, New chat, reload, inspect, retry and newer-draft preservation all passed. The archive remained at zero runs. The existing gateway/truncated-JSON/submission-reconciliation browser regression also passed. Private evidence: evidence/phase2/outbox-verification.json and outbox-browser-receipt.sqlite. Production has not been updated with this candidate.

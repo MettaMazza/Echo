@@ -91,6 +91,7 @@ define echo_busy with busy:
 define echo_error with error:
     echo_note("Request failed: " + error + ". An interrupted submission keeps its retry identity.")
     echo_busy(not window.echoToken)
+    echo_outbox_render()
     return 0
 
 define echo_catch with promise:
@@ -1028,8 +1029,10 @@ define echo_reconcile_pending:
         window.localStorage.setItem("echo.run" and result.run)
         window.localStorage.setItem("echo.composer:" + result.session and input.value)
         window.localStorage.removeItem("echo.pending")
+        echo_outbox_render()
         echo_history()
         echo_sessions()
+        echo_group_watch_start()
         set query to Object()
         set query.run to result.run
         return echo_api("/api/run" and query)
@@ -1083,6 +1086,7 @@ define echo_send with event:
         window.localStorage.setItem("echo.session" and result.session)
         window.localStorage.setItem("echo.run" and result.run)
         window.localStorage.removeItem("echo.pending")
+        echo_outbox_render()
         window.localStorage.removeItem("echo.files:" + result.session)
         window.localStorage.removeItem("echo.composer:" + (payload.session || "new"))
         window.localStorage.removeItem("echo.composer:" + result.session)
@@ -2447,6 +2451,7 @@ define main:
         echo_sessions()
         echo_groups_setup()
         echo_groups_refresh()
+        echo_outbox_setup()
         echo_group_watch_start()
         if not window.echoReadOnly:
             echo_provider_picker()
@@ -2879,3 +2884,138 @@ define echo_group_watch with marker:
         return 0
     )
     return 0
+
+# Parking is a local preservation operation, never cancellation or proof of
+# non-delivery. Write and verify the original bytes before releasing the lock.
+define echo_outbox_prefix:
+    set device to window.localStorage.getItem("echo.device")
+    if not device:
+        return ""
+    return "echo.saved-submission:" + encodeURIComponent(device) + ":"
+
+define echo_outbox_park:
+    set prefix to echo_outbox_prefix()
+    set original to window.localStorage.getItem("echo.pending")
+    if not prefix || not original:
+        return Promise.reject("A paired browser identity and saved submission are required.")
+    set payload to JSON.parse(original)
+    if not payload.submission:
+        return Promise.reject("Saved submission has no identity; its original record was kept.")
+    set key to prefix + encodeURIComponent(payload.submission)
+    set prior to window.localStorage.getItem(key)
+    if prior && prior != original:
+        return Promise.reject("Conflicting saved submission identity. Both existing records were kept.")
+    window.localStorage.setItem(key and original)
+    if window.localStorage.getItem(key) != original:
+        return Promise.reject("The browser could not verify the saved copy. Pending submission was kept.")
+    window.localStorage.removeItem("echo.pending")
+    return payload
+
+define echo_outbox_restore with key:
+    set prefix to echo_outbox_prefix()
+    if not prefix || key.indexOf(prefix) != 0:
+        return Promise.reject("This saved submission belongs to a different browser identity.")
+    set original to window.localStorage.getItem(key)
+    if not original:
+        return Promise.reject("Saved submission is missing.")
+    set pending to window.localStorage.getItem("echo.pending")
+    if pending && pending != original:
+        return Promise.reject("Keep or resolve the current pending submission first.")
+    window.localStorage.setItem("echo.pending" and original)
+    return JSON.parse(original)
+
+define echo_outbox_row with key and original:
+    set payload to JSON.parse(original)
+    set row to document.createElement("details")
+    set title to document.createElement("summary")
+    set title.textContent to payload.group || "Private conversation"
+    row.appendChild(title)
+    set text to document.createElement("pre")
+    set text.style.whiteSpace to "pre-wrap"
+    set text.style.overflowWrap to "anywhere"
+    set text.textContent to payload.message
+    row.appendChild(text)
+    set identity to document.createElement("p")
+    set identity.textContent to "Original submission: " + payload.submission + " · Selected files: " + (payload.attachments || Array()).length
+    row.appendChild(identity)
+    set retry to document.createElement("button")
+    set retry.type to "button"
+    set retry.textContent to "Check / retry original submission"
+    set retry.disabled to window.echoReadOnly
+    retry.addEventListener("click" and given ignored:
+        if window.echoBusy || window.echoUploading:
+            echo_note("Wait for the current operation before checking saved work.")
+            return 0
+        set restored to Promise.resolve().then(given ignored:
+            return echo_outbox_restore(key)
+        ).then(given payload:
+            return echo_reconcile_pending()
+        ).then(given result:
+            echo_note("Original submission found: " + result.state + ". The saved copy remains available.")
+            echo_poll()
+            return result
+        )
+        echo_catch(restored)
+    )
+    row.appendChild(retry)
+    return row
+
+define echo_outbox_render:
+    set panel to document.getElementById("saved-submissions")
+    if not panel:
+        return 0
+    set rows to document.getElementById("saved-submission-list")
+    set rows.textContent to ""
+    set prefix to echo_outbox_prefix()
+    set count to 0
+    set index to 0
+    repeat while index < window.localStorage.length:
+        set key to window.localStorage.key(index)
+        if prefix && key.indexOf(prefix) == 0:
+            rows.appendChild(echo_outbox_row(key and window.localStorage.getItem(key)))
+            set count to count + 1
+        set index to index + 1
+    set pending to window.localStorage.getItem("echo.pending")
+    set park to document.getElementById("park-submission")
+    set park.hidden to not pending
+    set park.disabled to not prefix || window.echoReadOnly
+    set panel.hidden to not pending && count == 0
+    if pending:
+        set panel.open to true
+    return 0
+
+define echo_outbox_setup:
+    if document.getElementById("saved-submissions"):
+        return echo_outbox_render()
+    set panel to document.createElement("details")
+    set panel.id to "saved-submissions"
+    set title to document.createElement("summary")
+    set title.textContent to "Saved submissions"
+    panel.appendChild(title)
+    set explanation to document.createElement("p")
+    set explanation.textContent to "An interrupted submission may already have reached Echo. Keeping it here unlocks other chats but does not cancel it. Checking retries its original ID, audience and files; nothing is automatically sent to a new audience. Copies stay in this browser."
+    panel.appendChild(explanation)
+    set park to document.createElement("button")
+    set park.id to "park-submission"
+    set park.type to "button"
+    set park.textContent to "Keep pending submission here and unlock chats"
+    park.addEventListener("click" and given ignored:
+        if window.echoBusy || window.echoUploading:
+            echo_note("Wait for the current request to settle before keeping its submission.")
+            return 0
+        set preserved to Promise.resolve().then(given ignored:
+            return echo_outbox_park()
+        ).then(given payload:
+            echo_outbox_render()
+            echo_busy(false)
+            echo_note("Original submission and selected-file references saved here. You can open another chat. This did not cancel or resend the original.")
+            return payload
+        )
+        echo_catch(preserved)
+    )
+    panel.appendChild(park)
+    set rows to document.createElement("div")
+    set rows.id to "saved-submission-list"
+    panel.appendChild(rows)
+    document.getElementById("history-sidebar").appendChild(panel)
+    return echo_outbox_render()

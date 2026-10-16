@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T08:58:23.649543+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T09:06:23.073736+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -2539,6 +2539,33 @@ SHA-256: `be5ae24dc868ecc5534e65bf45ae25df2d2c4221c6dae74ffad697a62bc4d5c1`
 
 > Link with client.ep after renaming its main to echo_application_main.
 > Real DOM rendering must use admission metadata, never identity-looking text.
+
+Imports:
+
+- Line 3: `define main:`
+
+## tests/web/outbox_application_browser.ep
+
+[Source](../../tests/web/outbox_application_browser.ep) · 13 lines · 997 bytes
+
+SHA-256: `4010a6d4fd4b5c934e97311dbd7e43a85ebfe59abacd81ad42d48fa2aff40ee7`
+
+> Disposable full-app fixture for loss-of-audience recovery. Seed with
+> test_group_controls PATH seed and serve this linked client on a new origin.
+> Unlike the group fixture, reload keeps the saved outbox for durability checks.
+
+Imports:
+
+- Line 4: `define main:`
+
+## tests/web/outbox_browser.ep
+
+[Source](../../tests/web/outbox_browser.ep) · 50 lines · 3117 bytes
+
+SHA-256: `f4165a2e6d91361ab283124ed5c1d3df7962eef92d76b358350329d193753ca2`
+
+> Link after client.ep with its main renamed to echo_application_main.
+> Use a disposable test origin: no credentials or real messages are supplied.
 
 Imports:
 
