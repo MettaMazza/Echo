@@ -25,6 +25,7 @@ Your current task, earlier decisions and the sources behind an answer have somew
 | **Bring your files** | Upload images, UTF-8 text and PDFs. Preview image thumbnails, inspect source passages and expand the sources read beneath a reply. |
 | **Hear the answer** | Speak generates saved Kokoro audio beside the message, with playback, seeking and download. Local transcription is implemented; physical microphone permission acceptance remains deferred. |
 | **Follow the work** | Each response retains an expandable Thinking panel with archived activity, tool calls/results and reasoning output when the provider emits it. |
+| **Recall earlier chats** | Private cross-session search and original-source reading preserve event references and digests. Derived semantic/procedural memory is being developed in Phase Two. |
 | **Explore another direction** | Branch conversations, edit and regenerate messages, search history and export records. |
 | **Use your phone** | Pair individual browsers over local HTTPS. Ownership checks keep each paired browser’s sessions separate. |
 | **Inspect and recover** | Saved submissions, effect records, crash diagnostics and backup/restore tools make failures investigable. |
@@ -52,7 +53,7 @@ flowchart LR
     G --> C
 ```
 
-**414 application and test source files** are indexed with hashes, imports and definition signatures. The forensic reference distinguishes implemented behavior, observed tests and deferred work. It does not turn a file count into a test-coverage claim.
+**416 application and test source files** are indexed with hashes, imports and definition signatures. The forensic reference distinguishes implemented behavior, observed tests and deferred work. It does not turn a file count into a test-coverage claim.
 
 | You want to… | Start here |
 | --- | --- |

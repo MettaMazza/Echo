@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T01:43:42.871153+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T01:50:38.957004+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1548,11 +1548,23 @@ Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/memory/know
 - Line 4: `define knowledge_fixture_digest with database as Int and event as Str returning Str:`
 - Line 10: `define main returning Int:`
 
+## tests/security/test_knowledge_lifecycle.ep
+
+[Source](../../tests/security/test_knowledge_lifecycle.ep) · 74 lines · 6133 bytes
+
+SHA-256: `95af476b67cbdd62ab1078bb4e30a87af3812d3933cfcc5f1d0566777353505a`
+
+> Original evidence remains explicitly retrievable; derived recall excludes it.
+
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep, ../../app/archive/snapshot → app/archive/snapshot.ep
+
+- Line 5: `define main returning Int:`
+
 ## tests/security/test_knowledge_tools.ep
 
-[Source](../../tests/security/test_knowledge_tools.ep) · 64 lines · 5672 bytes
+[Source](../../tests/security/test_knowledge_tools.ep) · 84 lines · 7811 bytes
 
-SHA-256: `1286bbbbd9a88cdd499369697b2542f139179389d8fd72722f62e9afba1469e2`
+SHA-256: `159c20870f06ad0c4e1c2197a45e484525d8888a59e125516d33b1d31cbfd3c8`
 
 > Exercise the real streaming parser, durable queued request and dispatcher.
 

@@ -1,0 +1,64 @@
+import "knowledge"
+
+# Forgetting removes a derived assertion from ordinary recall. Original source
+# events and the audit remain intact; restoration is a new explicit transition.
+define knowledge_lifecycle_schema with database as Int returning Str:
+    set prior to knowledge_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 10 and "derived-memory-visibility" and "CREATE TABLE echo_memory_visibility(sequence INTEGER PRIMARY KEY AUTOINCREMENT,identity TEXT NOT NULL UNIQUE,claim TEXT NOT NULL REFERENCES echo_memory_claims(identity),principal TEXT NOT NULL REFERENCES echo_principals(identity),previous_revision INTEGER NOT NULL CHECK(previous_revision>=0),state TEXT NOT NULL CHECK(state IN ('visible','forgotten')),reason TEXT NOT NULL,run TEXT NOT NULL REFERENCES echo_runs(run),recorded_at TEXT NOT NULL); CREATE INDEX echo_memory_visibility_claim ON echo_memory_visibility(claim,sequence); CREATE TRIGGER echo_memory_visibility_no_update BEFORE UPDATE ON echo_memory_visibility BEGIN SELECT RAISE(ABORT,'Memory lifecycle history is immutable'); END; CREATE TRIGGER echo_memory_visibility_no_delete BEFORE DELETE ON echo_memory_visibility BEGIN SELECT RAISE(ABORT,'Memory lifecycle history is immutable'); END;")
+
+# Management lookup is explicit by identity. It returns state/revision only,
+# so a forgotten assertion does not reappear as recalled content.
+define knowledge_visibility_read with database as Int and run as Str and claim as Str returning List:
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    set values to create_list()
+    set added to append_list(values and principal)
+    set added to append_list(values and claim)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE((SELECT v.state FROM echo_memory_visibility v WHERE v.claim=c.identity ORDER BY v.sequence DESC LIMIT 1),'visible'),COALESCE((SELECT MAX(v.sequence) FROM echo_memory_visibility v WHERE v.claim=c.identity),0) FROM echo_memory_claims c JOIN echo_events e ON e.event=c.source_event AND e.digest=c.source_digest JOIN echo_session_principals s ON s.session=e.session AND s.principal=c.principal WHERE c.principal=?1 AND c.identity=?2;" and values))
+    if not (memory_archive_principal(database and run) equals principal):
+        return history_status("authorization-changed")
+    return row
+
+# CAS prevents an old forget/restore request from undoing a newer decision.
+# Exact retries return the prior receipt without reapplying its state.
+define knowledge_visibility_set with database as Int and run as Str and change as Str and claim as Str and previous_revision as Int and state as Str and reason as Str returning Str:
+    if string_length(change) equals 0 or else string_length(reason) equals 0 or else previous_revision < 0 or else not (state equals "visible" or else state equals "forgotten"):
+        return "invalid-arguments"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return knowledge_abort(database and "not-authorized")
+    set values to create_list()
+    set added to append_list(values and change)
+    set added to append_list(values and claim)
+    set added to append_list(values and principal)
+    set added to append_list(values and int_to_string(previous_revision))
+    set added to append_list(values and state)
+    set added to append_list(values and reason)
+    set added to append_list(values and run)
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN claim=?2 AND principal=?3 AND previous_revision=CAST(?4 AS INTEGER) AND state=?5 AND reason=?6 AND run=?7 THEN 'same' ELSE 'different' END FROM echo_memory_visibility WHERE identity=?1;" and values))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals "same"):
+            return knowledge_abort(database and "identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return knowledge_abort(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(old and 0) equals "end"):
+        return knowledge_abort(database and "database-error")
+    set current to knowledge_visibility_read(database and run and claim)
+    if not (archive_list_text(current and 0) equals "found"):
+        return knowledge_abort(database and "source-not-found")
+    if string_to_int(archive_list_text(current and 2)) is not equal to previous_revision:
+        return knowledge_abort(database and "revision-conflict")
+    set statement to checkpoint_prepare(database and "INSERT INTO echo_memory_visibility(identity,claim,principal,previous_revision,state,reason,run,recorded_at) VALUES(?1,?2,?3,CAST(?4 AS INTEGER),?5,?6,?7,strftime('%Y-%m-%dT%H:%M:%fZ','now'));" and values)
+    if statement equals 0 or else archive_finish(statement and 101) is not equal to 0:
+        return knowledge_abort(database and "write-failed")
+    if not (memory_archive_principal(database and run) equals principal):
+        return knowledge_abort(database and "authorization-changed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return knowledge_abort(database and "commit-failed")
+    return "recorded"

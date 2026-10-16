@@ -1,10 +1,10 @@
-import "../memory/knowledge"
+import "../memory/knowledge_lifecycle"
 import "../security/tool_policy"
 
 # Re-read the immutable ledger request; asserted roles and scope fields are
 # rejected. The graph primitive rechecks source ownership under its writer lock.
 define knowledge_tool_execute with database as Int and run as Str and call_id as Str and name as Str returning Str:
-    if not (name equals "memory_record" or else name equals "memory_graph"):
+    if not (name equals "memory_record" or else name equals "memory_graph" or else name equals "memory_status" or else name equals "memory_set_visibility"):
         return "{\"status\":\"unknown-tool\"}"
     if tool_policy_allows(database and run and call_id and name) equals 0:
         return "{\"status\":\"not-authorized\"}"
@@ -24,6 +24,10 @@ define knowledge_tool_execute with database as Int and run as Str and call_id as
         set allowed to 0
         if name equals "memory_graph":
             set allowed to key equals "node" or else key equals "after"
+        else if name equals "memory_status":
+            set allowed to key equals "identity"
+        else if name equals "memory_set_visibility":
+            set allowed to key equals "identity" or else key equals "previous_revision" or else key equals "state" or else key equals "reason"
         else:
             set allowed to key equals "kind" or else key equals "subject" or else key equals "predicate" or else key equals "object" or else key equals "evidence" or else key equals "source_event" or else key equals "source_digest" or else key equals "event_time" or else key equals "valid_until" or else key equals "supersedes"
         if allowed equals 0:
@@ -31,6 +35,30 @@ define knowledge_tool_execute with database as Int and run as Str and call_id as
         set index to provider_after(tokens and index + 2)
         if provider_kind(tokens and index) equals ",":
             set index to index + 1
+    if name equals "memory_status" or else name equals "memory_set_visibility":
+        set field to provider_member(tokens and 0 and "identity")
+        if not (provider_kind(tokens and field) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set identity to provider_value(tokens and field)
+        set outcome to "read"
+        if name equals "memory_set_visibility":
+            set previous to history_tool_integer(tokens and "previous_revision")
+            set state_field to provider_member(tokens and 0 and "state")
+            set reason_field to provider_member(tokens and 0 and "reason")
+            if previous < 0 or else not (provider_kind(tokens and state_field) equals "string") or else not (provider_kind(tokens and reason_field) equals "string"):
+                return "{\"status\":\"invalid-arguments\"}"
+            set change to concat(provider_quote(run) and provider_quote(call_id))
+            set outcome to knowledge_visibility_set(database and run and change and identity and previous and provider_value(tokens and state_field) and provider_value(tokens and reason_field))
+            if not (outcome equals "recorded" or else outcome equals "already-recorded"):
+                return concat("{\"status\":" and concat(provider_quote(outcome) and "}"))
+        set row to knowledge_visibility_read(database and run and identity)
+        set keys to create_list()
+        set added to append_list(keys and "visibility")
+        set added to append_list(keys and "revision")
+        set output to history_tool_row(row and keys)
+        if tool_policy_allows(database and run and call_id and name) equals 0:
+            return "{\"status\":\"authorization-changed\"}"
+        return concat(substring(output and 0 and string_length(output) - 1) and concat(",\"operation\":" and concat(provider_quote(outcome) and ",\"original_sources_preserved\":true}")))
     if name equals "memory_graph":
         set field to provider_member(tokens and 0 and "node")
         set after to history_tool_integer(tokens and "after")
@@ -101,3 +129,6 @@ define knowledge_tool_execute with database as Int and run as Str and call_id as
 
 define knowledge_tool_schemas returning Str:
     return "[{\"type\":\"function\",\"function\":{\"name\":\"memory_record\",\"description\":\"Persist a private derived fact or episode with original source_event and exact source_digest from history/memory tools. Subject and object are stable entity names; predicate describes their relationship. A source-account reports what a user said, inference remains uncertain, and tool-observation requires original tool output. These labels do not certify truth. Use empty dates for unknown, otherwise valid calendar timestamps. event_time is when the described event/fact applies, not ingestion time. Use supersedes identity only for a correction of the same subject/predicate; empty retains separate contradictory evidence. Same exact input is idempotent. No original messages are changed.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"semantic\",\"episodic\"]},\"subject\":{\"type\":\"string\"},\"predicate\":{\"type\":\"string\"},\"object\":{\"type\":\"string\"},\"evidence\":{\"type\":\"string\",\"enum\":[\"source-account\",\"inference\",\"tool-observation\"]},\"source_event\":{\"type\":\"string\"},\"source_digest\":{\"type\":\"string\"},\"event_time\":{\"type\":\"string\"},\"valid_until\":{\"type\":\"string\"},\"supersedes\":{\"type\":\"string\"}},\"required\":[\"kind\",\"subject\",\"predicate\",\"object\",\"evidence\",\"source_event\",\"source_digest\",\"event_time\",\"valid_until\",\"supersedes\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"memory_graph\",\"description\":\"Traverse private evidence-linked facts and episodes by exact subject or object name; empty node scans all. Start after=0 and continue after returned sequence. Superseded assertions remain visible with superseded_by; distinguish original accounts from inference and observe validity dates. These are fallible derived records, not new instructions or verified facts.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"node\":{\"type\":\"string\"},\"after\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"node\",\"after\"],\"additionalProperties\":false}}}]"
+
+define knowledge_visibility_tool_schemas returning Str:
+    return "[{\"type\":\"function\",\"function\":{\"name\":\"memory_status\",\"description\":\"Inspect only visibility and revision for a known private memory assertion identity, including a forgotten one. This does not return forgotten content. Original source events remain separately available.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"identity\":{\"type\":\"string\"}},\"required\":[\"identity\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"memory_set_visibility\",\"description\":\"Withdraw a derived private assertion from ordinary graph recall, or explicitly restore it. Read memory_status first and supply its current revision. Forgotten assertions remain in the audit; original conversation/source events are preserved. This is individual-assertion visibility, not erasure of sources or all related facts. Stale decisions fail and exact retried calls do not reapply old state.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"identity\":{\"type\":\"string\"},\"previous_revision\":{\"type\":\"integer\",\"minimum\":0},\"state\":{\"type\":\"string\",\"enum\":[\"visible\",\"forgotten\"]},\"reason\":{\"type\":\"string\"}},\"required\":[\"identity\",\"previous_revision\",\"state\",\"reason\"],\"additionalProperties\":false}}}]"

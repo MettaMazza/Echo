@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T01:43:42.871153+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T01:50:38.957004+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -156,9 +156,9 @@ Imports: ../retained_text → app/retained_text.ep, control → app/agent/contro
 
 ## app/agent/tool_dispatch.ep
 
-[Source](../../app/agent/tool_dispatch.ep) · 122 lines · 8679 bytes
+[Source](../../app/agent/tool_dispatch.ep) · 122 lines · 8825 bytes
 
-SHA-256: `fc400a5a8813e28acacc90e33e83ac51e0b79ca0993f7030a02d2b4a2af667c6`
+SHA-256: `4c3ae660e2362f15a4192b00f3ef1f61405f76814e2d52e556fe84c4b96bb661`
 
 > One invocation executes at most the next cursor item. The enclosing run loops
 > until the ledger is observed; this is scheduling granularity, not a turn cap.
@@ -1174,9 +1174,9 @@ Imports: ../retained_text → app/retained_text.ep, ../agent/run_messages → ap
 
 ## app/context/session_messages.ep
 
-[Source](../../app/context/session_messages.ep) · 164 lines · 10406 bytes
+[Source](../../app/context/session_messages.ep) · 168 lines · 10910 bytes
 
-SHA-256: `ee42664d5e7c7b9f0033f2cf9789b68de1191c92b652b308571caf63f0568e36`
+SHA-256: `8b9c89113cae0e2b8b83b38c4800cba758c9a30b02a7cbaacf2139154f542e57`
 
 > Admin-only schemas are selected from frozen initiating authority. Dispatch
 > repeats the check; advertising a schema is never itself permission.
@@ -1197,9 +1197,9 @@ Imports: ../retained_text → app/retained_text.ep, system_awareness → app/con
 
 - Line 10: `define session_request_body with model as Str and messages as Str returning Str:`
 - Line 17: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
-- Line 37: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
-- Line 42: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
-- Line 154: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
+- Line 41: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
+- Line 46: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
+- Line 158: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
 
 ## app/context/system_awareness.ep
 
@@ -1508,9 +1508,9 @@ Imports: session_ownership → app/memory/session_ownership.ep, ../archive/histo
 
 ## app/memory/knowledge.ep
 
-[Source](../../app/memory/knowledge.ep) · 129 lines · 11861 bytes
+[Source](../../app/memory/knowledge.ep) · 139 lines · 12607 bytes
 
-SHA-256: `8c5e7ad31bedb8ca2682e1776b41ae7c85ee008882ad56cb8d2c6de72df43a02`
+SHA-256: `97bde516bb73b6724b05cb296eaa376b20f525722fb9b636cf1f685471d01cb1`
 
 > Facts and episodes are derived assertions. The immutable source remains the
 > evidence; repeating a model inference never converts it into an observation.
@@ -1522,6 +1522,8 @@ SHA-256: `8c5e7ad31bedb8ca2682e1776b41ae7c85ee008882ad56cb8d2c6de72df43a02`
 > Exact graph traversal by subject or object; empty node scans all records.
 > All versions remain available, and supersession is reported rather than
 > silently deleting contradictory evidence. Callers choose their cursor.
+> This SQL fragment is shared by derived recall and future indexes. A missing
+> lifecycle schema means the earlier graph version; a read failure denies recall.
 
 Imports: archive_recall → app/memory/archive_recall.ep, ../tools/history_tools → app/tools/history_tools.ep
 
@@ -1529,6 +1531,26 @@ Imports: archive_recall → app/memory/archive_recall.ep, ../tools/history_tools
 - Line 12: `define knowledge_abort with database as Int and status as Str returning Str:`
 - Line 20: `define knowledge_record with database as Int and run as Str and kind as Str and subject as Str and predicate as Str and object as Str and evidence as Str and source_event as Str and source_digest as Str and event_time as Str and valid_until as Str and supersedes as Str returning Str:`
 - Line 116: `define knowledge_next with database as Int and run as Str and node as Str and after_sequence as Int returning List:`
+- Line 133: `define knowledge_visible_sql with database as Int returning Str:`
+
+## app/memory/knowledge_lifecycle.ep
+
+[Source](../../app/memory/knowledge_lifecycle.ep) · 64 lines · 5528 bytes
+
+SHA-256: `e67a94a2e37dd070eb9deea9bbd6c54ca478dd83193408447312a40e1c8f991d`
+
+> Forgetting removes a derived assertion from ordinary recall. Original source
+> events and the audit remain intact; restoration is a new explicit transition.
+> Management lookup is explicit by identity. It returns state/revision only,
+> so a forgotten assertion does not reappear as recalled content.
+> CAS prevents an old forget/restore request from undoing a newer decision.
+> Exact retries return the prior receipt without reapplying its state.
+
+Imports: knowledge → app/memory/knowledge.ep
+
+- Line 5: `define knowledge_lifecycle_schema with database as Int returning Str:`
+- Line 13: `define knowledge_visibility_read with database as Int and run as Str and claim as Str returning List:`
+- Line 27: `define knowledge_visibility_set with database as Int and run as Str and change as Str and claim as Str and previous_revision as Int and state as Str and reason as Str returning Str:`
 
 ## app/memory/session_ownership.ep
 
@@ -1565,16 +1587,16 @@ Imports: providers/native_python → app/providers/native_python.ep, providers/j
 
 ## app/principal_admin.ep
 
-[Source](../../app/principal_admin.ep) · 98 lines · 5538 bytes
+[Source](../../app/principal_admin.ep) · 98 lines · 5544 bytes
 
-SHA-256: `fc847e34abb23754257afad35f31a2fc35d3c405c24181c05bb647662f142f29`
+SHA-256: `bde981502057599369af45462ce789deb07e3b63e01685aca7e5eec0fc610007`
 
 > OS-local operator command. No browser or model schema exposes this program.
 > Guest sandbox workers cannot open the host database. Never infer authority
 > from an HTTP origin, device name, caller-supplied role or network address.
 > Check compatibility before archive_open can perform schema writes.
 
-Imports: web/run_store → app/web/run_store.ep, memory/session_ownership → app/memory/session_ownership.ep
+Imports: web/run_store → app/web/run_store.ep, memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep
 
 - Line 7: `define main returning Int:`
 
@@ -2400,9 +2422,9 @@ Imports: run_authority → app/security/run_authority.ep
 
 ## app/security/tool_policy.ep
 
-[Source](../../app/security/tool_policy.ep) · 50 lines · 2896 bytes
+[Source](../../app/security/tool_policy.ep) · 50 lines · 2976 bytes
 
-SHA-256: `75cd483921d2154709c50b7c81d7b2366dde92a691effa44b9a62a511bea8a1d`
+SHA-256: `1df7aed57932a28468b2dbd7f77f1e039668718e1f75f28173ef1bbaea74c65c`
 
 > Classification is explicit. A newly registered name is not automatically a
 > safe tool. Dynamic tools must later obtain an independently verified manifest.
@@ -2420,9 +2442,9 @@ Imports: tool_authority → app/security/tool_authority.ep
 
 ## app/server.ep
 
-[Source](../../app/server.ep) · 323 lines · 20589 bytes
+[Source](../../app/server.ep) · 323 lines · 20590 bytes
 
-SHA-256: `52073833b96af0dcb17b91525c3fdfe62648be713ee4d156516f7ab41526bf56`
+SHA-256: `72d04a61bff17b4baab474e7c62db7208fdc5fe596ca7d89ab937805928c1234`
 
 > Let macOS retain native fault stacks for every role, including workers.
 > Every executable role checks before schema writes, recovery or dispatch.
@@ -2579,17 +2601,18 @@ Imports: ../security/tool_policy → app/security/tool_policy.ep, ../workspace/r
 
 ## app/tools/knowledge_tools.ep
 
-[Source](../../app/tools/knowledge_tools.ep) · 103 lines · 9274 bytes
+[Source](../../app/tools/knowledge_tools.ep) · 134 lines · 12921 bytes
 
-SHA-256: `290ef54d851afee8140c2c25cbe70d90e7be67bc31325b367d5e9020ceabfa74`
+SHA-256: `8300f8010fb45ab81d591b990261bdc90406577bd25922e58f9b85ced4cb6fe7`
 
 > Re-read the immutable ledger request; asserted roles and scope fields are
 > rejected. The graph primitive rechecks source ownership under its writer lock.
 
-Imports: ../memory/knowledge → app/memory/knowledge.ep, ../security/tool_policy → app/security/tool_policy.ep
+Imports: ../memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep, ../security/tool_policy → app/security/tool_policy.ep
 
 - Line 6: `define knowledge_tool_execute with database as Int and run as Str and call_id as Str and name as Str returning Str:`
-- Line 102: `define knowledge_tool_schemas returning Str:`
+- Line 130: `define knowledge_tool_schemas returning Str:`
+- Line 133: `define knowledge_visibility_tool_schemas returning Str:`
 
 ## app/tools/memory_tools.ep
 
