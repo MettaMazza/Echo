@@ -172,9 +172,10 @@ define protected_inspection_event with database as Int and run as Str and call_i
         return ""
     return archive_list_text(row and 4)
 
-# Read a model review only after its own archived model request included the
-# exact disclosure as a tool message. Merely ordering two tool calls in one
-# response cannot establish informed consent. This verifies evidence only;
+# Consent requires its own archived model request to include the exact
+# disclosure as a tool message. Refusal/counterproposal may omit inspection;
+# it still binds an authenticated model call to the exact stored proposal.
+# Merely ordering two tool calls cannot establish consent. This verifies evidence;
 # steward authorisation, Observer review and execution gates remain separate.
 define protected_review_evidence with database as Int and run as Str and call_id as Str returning Str:
     if run_authority_allows(database and run and "admin") equals 0 or else tool_authority_allows(database and run and call_id and "admin") equals 0:
@@ -192,6 +193,13 @@ define protected_review_evidence with database as Int and run as Str and call_id
     set arguments to provider_json_tokens(provider_value(request and field))
     if arguments equals 0 or else provider_unique_objects(arguments) equals 0:
         return ""
+    for each name in ["proposal", "reason"]:
+        if not (provider_kind(arguments and provider_member(arguments and 0 and ptr_to_str(name))) equals "string"):
+            return ""
+    for each name in ["inspection_call", "manifest_digest"]:
+        set optional to provider_member(arguments and 0 and ptr_to_str(name))
+        if optional >= 0 and not (provider_kind(arguments and optional) equals "string"):
+            return ""
     set identity to provider_value(arguments and provider_member(arguments and 0 and "proposal"))
     set inspection_call to provider_value(arguments and provider_member(arguments and 0 and "inspection_call"))
     set digest to provider_value(arguments and provider_member(arguments and 0 and "manifest_digest"))
@@ -205,14 +213,21 @@ define protected_review_evidence with database as Int and run as Str and call_id
     if not (decision equals "consent" or else decision equals "object" or else decision equals "reject" or else decision equals "counter") or else not (risk equals "low" or else risk equals "medium" or else risk equals "high" or else risk equals "critical") or else string_length(string_trim(reason)) equals 0:
         return ""
     set proposal to protected_proposal_read(database and run and identity)
-    if not (archive_list_text(proposal and 0) equals "found") or else not (archive_list_text(proposal and 2) equals digest):
+    if not (archive_list_text(proposal and 0) equals "found"):
         return ""
-    set inspection to protected_inspection_event(database and run and inspection_call and identity)
-    if string_length(inspection) equals 0:
+    if string_length(digest) equals 0 and not (decision equals "consent"):
+        set digest to archive_list_text(proposal and 2)
+    if not (archive_list_text(proposal and 2) equals digest):
         return ""
-    set added to append_list(values and inspection)
-    set added to append_list(values and inspection_call)
-    set query to "SELECT q.event,m.event FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event AND q.session=t.session JOIN echo_events m ON m.event=json_extract(q.payload,'$.parent_event') AND m.session=t.session AND m.kind='model_request' JOIN echo_events i ON i.event=?3 AND i.session=t.session WHERE t.run=?1 AND t.call_id=?2 AND t.state IN ('running','observed') AND json_extract(m.payload,'$.run_id')=?1 AND i.sequence<m.sequence AND m.sequence<q.sequence AND EXISTS(SELECT 1 FROM json_each(json_extract(m.payload,'$.request_body'),'$.messages') message WHERE json_extract(message.value,'$.role')='tool' AND json_extract(message.value,'$.tool_call_id')=?4 AND json_extract(message.value,'$.content')=json_extract(i.payload,'$.result'));"
+    set inspection to ""
+    set query to "SELECT q.event,m.event FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event AND q.session=t.session JOIN echo_events m ON m.event=json_extract(q.payload,'$.parent_event') AND m.session=t.session AND m.kind='model_request' WHERE t.run=?1 AND t.call_id=?2 AND t.state IN ('running','observed') AND json_extract(m.payload,'$.run_id')=?1 AND m.sequence<q.sequence;"
+    if decision equals "consent" or else string_length(inspection_call) > 0:
+        set inspection to protected_inspection_event(database and run and inspection_call and identity)
+        if string_length(inspection) equals 0:
+            return ""
+        set added to append_list(values and inspection)
+        set added to append_list(values and inspection_call)
+        set query to "SELECT q.event,m.event FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event AND q.session=t.session JOIN echo_events m ON m.event=json_extract(q.payload,'$.parent_event') AND m.session=t.session AND m.kind='model_request' JOIN echo_events i ON i.event=?3 AND i.session=t.session WHERE t.run=?1 AND t.call_id=?2 AND t.state IN ('running','observed') AND json_extract(m.payload,'$.run_id')=?1 AND i.sequence<m.sequence AND m.sequence<q.sequence AND EXISTS(SELECT 1 FROM json_each(json_extract(m.payload,'$.request_body'),'$.messages') message WHERE json_extract(message.value,'$.role')='tool' AND json_extract(message.value,'$.tool_call_id')=?4 AND json_extract(message.value,'$.content')=json_extract(i.payload,'$.result'));"
     set witnessed to history_collect_one(checkpoint_prepare(database and query and values))
     if not (archive_list_text(witnessed and 0) equals "found"):
         return ""

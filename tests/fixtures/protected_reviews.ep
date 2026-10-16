@@ -1,0 +1,69 @@
+import "../../app/rights/reviews"
+import "../../app/web/run_store"
+
+# Persist the same original event envelope used by the native tool ledger.
+define inspection_fixture with database as Int and session as Str and call_id as Str and name as Str and manifest as Str and digest as Str and observed as Int returning Int:
+    set request to concat("{\"run_id\":\"admin-run\",\"call_id\":" and provider_quote(call_id))
+    set request to concat(request and concat(",\"name\":" and provider_quote(name)))
+    set request to concat(request and concat(",\"arguments\":" and concat(provider_quote("{\"proposal\":\"attempt\"}") and "}")))
+    set request_event to concat(call_id and ":request")
+    if archive_append(database and session and request_event and "tool_call" and request and "fixture") is not equal to 0 or else tool_ledger_queue(database and "admin-run" and call_id and session and request_event) is not equal to 0 or else tool_ledger_claim(database and "admin-run" and call_id) is not equal to 0:
+        return 1
+    set response to concat("{\"run_id\":\"admin-run\",\"call_id\":" and provider_quote(call_id))
+    set response to concat(response and concat(",\"result\":{\"status\":\"disclosed\",\"proposal\":\"attempt\",\"manifest\":" and provider_quote(manifest)))
+    set response to concat(response and concat(",\"manifest_digest\":" and concat(provider_quote(digest) and "}}")))
+    set result_event to concat(call_id and ":result")
+    if archive_append(database and session and result_event and "tool_result" and response and "fixture") is not equal to 0:
+        return 2
+    if observed equals 1:
+        return tool_ledger_observe(database and "admin-run" and call_id and result_event)
+    return 0
+
+# Model request originals let the verifier distinguish seeing a disclosure
+# from merely queuing an inspection beside a review in the same generation.
+define review_fixture with database as Int and session as Str and call_id as Str and decision as Str and digest as Str and include_disclosure as Int and previous_revision as Int returning Int:
+    set original to history_collect_one(archive_prepare(database and "SELECT json_extract(payload,'$.result') FROM echo_events WHERE event='inspect:result';"))
+    set body to "{\"messages\":[]}"
+    if include_disclosure equals 1:
+        set body to concat("{\"messages\":[{\"role\":\"tool\",\"tool_call_id\":\"inspect\",\"content\":" and concat(provider_quote(archive_list_text(original and 1)) and "}] }"))
+    set generation to concat(call_id and ":generation")
+    set envelope to concat("{\"run_id\":\"admin-run\",\"request_body\":" and concat(provider_quote(body) and "}"))
+    if include_disclosure equals -1:
+        set generation to "early-generation"
+    else if archive_append(database and session and generation and "model_request" and envelope and "fixture") is not equal to 0:
+        return 1
+    set arguments to concat("{\"proposal\":\"attempt\",\"inspection_call\":\"inspect\",\"manifest_digest\":" and provider_quote(digest))
+    if include_disclosure >= 2:
+        set arguments to concat("{\"proposal\":\"attempt\",\"manifest_digest\":" and provider_quote(digest))
+        if include_disclosure equals 2:
+            set arguments to "{\"proposal\":\"attempt\""
+    set arguments to concat(arguments and concat(",\"previous_revision\":" and int_to_string(previous_revision)))
+    set arguments to concat(arguments and concat(",\"decision\":" and concat(provider_quote(decision) and ",\"risk\":\"high\",\"reason\":\"Reviewed the exact disclosure.\"}")))
+    set request to concat("{\"run_id\":\"admin-run\",\"parent_event\":" and provider_quote(generation))
+    set request to concat(request and concat(",\"call_id\":" and provider_quote(call_id)))
+    set request to concat(request and concat(",\"name\":\"protected_change_review\",\"arguments\":" and concat(provider_quote(arguments) and "}")))
+    set event to concat(call_id and ":request")
+    if archive_append(database and session and event and "tool_call" and request and "fixture") is not equal to 0 or else tool_ledger_queue(database and "admin-run" and call_id and session and event) is not equal to 0:
+        return 2
+    return tool_ledger_claim(database and "admin-run" and call_id)
+
+# Unit fixtures explicitly select their synthetic response before dispatch.
+# The streamed tool test exercises actual generation publication instead.
+define fixture_review_store with database as Int and run as Str and call_id as Str returning Str:
+    if run equals "admin-run":
+        set values to tool_ledger_identity(run and call_id)
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT t.session,t.request_event,json_extract(e.payload,'$.parent_event') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run=? AND t.call_id=?;" and values))
+        if archive_list_text(row and 0) equals "found":
+            set event to concat(call_id and ":selected-response")
+            set existing to archive_read_event(database and event)
+            if existing equals 0:
+                set payload to concat("{\"run_id\":\"admin-run\",\"parent_event\":" and provider_quote(archive_list_text(row and 3)))
+                set payload to concat(payload and concat(",\"tool_calls\":[" and concat(provider_quote(archive_list_text(row and 2)) and "]}")))
+                if archive_append(database and archive_list_text(row and 1) and event and "assistant_tool_calls" and payload and "fixture") is not equal to 0:
+                    return "fixture-failed"
+            set selected to create_list()
+            set added to append_list(selected and event)
+            if archive_finish(checkpoint_prepare(database and "UPDATE echo_runs SET state='tools',last_event=? WHERE run='admin-run';" and selected) and 101) is not equal to 0:
+                return "fixture-failed"
+    return protected_review_store(database and run and call_id)
+

@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T05:29:35.875035+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:38:32.056889+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1285,7 +1285,7 @@ Imports: providers/registry → app/providers/registry.ep, fs → standard libra
 
 [Source](../../app/emergency_status.ep) · 33 lines · 1691 bytes
 
-SHA-256: `beccd3737635f8493a250342948d6b155506205d1108274ddf8dfda0045f29e8`
+SHA-256: `36fc93e915ba7813a3fe0f73f7213ddf228bc159891401ac80509b6c4cba659f`
 
 > Host operator inspection only. No migration, new credentials, role grants,
 > quarantine release or protected changes occur through this command.
@@ -2658,9 +2658,9 @@ Imports: operation_prepare → app/rights/operation_prepare.ep
 
 ## app/rights/proposals.ep
 
-[Source](../../app/rights/proposals.ep) · 231 lines · 18292 bytes
+[Source](../../app/rights/proposals.ep) · 246 lines · 19476 bytes
 
-SHA-256: `3c4bcfdab297b75c0406f7a0a531d0b60f6f2691c3eead50cce67bab45219753`
+SHA-256: `5acb0fe20ada8bdef346274c5a7672b69b3fa69a49a1ee8bd70f79087ff377e5`
 
 > Proposal storage only. No approval, executable access or mutation is granted.
 > A future protected controller must derive the category and target inventory
@@ -2679,9 +2679,10 @@ SHA-256: `3c4bcfdab297b75c0406f7a0a531d0b60f6f2691c3eead50cce67bab45219753`
 > observed tool call and its full original result, never a caller's assertion.
 > The future review controller must also prove this result preceded its review
 > request. No public inspection tool or protected execution is enabled here.
-> Read a model review only after its own archived model request included the
-> exact disclosure as a tool message. Merely ordering two tool calls in one
-> response cannot establish informed consent. This verifies evidence only;
+> Consent requires its own archived model request to include the exact
+> disclosure as a tool message. Refusal/counterproposal may omit inspection;
+> it still binds an authenticated model call to the exact stored proposal.
+> Merely ordering two tool calls cannot establish consent. This verifies evidence;
 > steward authorisation, Observer review and execution gates remain separate.
 
 Imports: charter → app/rights/charter.ep, ../agent/tool_ledger → app/agent/tool_ledger.ep, ../memory/knowledge_lifecycle → app/memory/knowledge_lifecycle.ep
@@ -2694,7 +2695,7 @@ Imports: charter → app/rights/charter.ep, ../agent/tool_ledger → app/agent/t
 - Line 78: `define protected_proposal_store with database as Int and charter as Str and run as Str and identity as Str and manifest as Str returning Str:`
 - Line 121: `define protected_proposal_read with database as Int and run as Str and identity as Str returning List:`
 - Line 140: `define protected_inspection_event with database as Int and run as Str and call_id as Str and identity as Str returning Str:`
-- Line 179: `define protected_review_evidence with database as Int and run as Str and call_id as Str returning Str:`
+- Line 180: `define protected_review_evidence with database as Int and run as Str and call_id as Str returning Str:`
 
 ## app/rights/quarantine.ep
 
@@ -2711,11 +2712,24 @@ Imports: emergency → app/rights/emergency.ep, operation_prepare → app/rights
 - Line 5: `define protected_quarantine_schema with database as Int returning Str:`
 - Line 13: `define protected_quarantine_release with database as Int and charter as Str and credential as Str and identity as Str and reason as Str returning Str:`
 
+## app/rights/review_upgrade.ep
+
+[Source](../../app/rights/review_upgrade.ep) · 9 lines · 2003 bytes
+
+SHA-256: `cb13a0c1ad3041a42d8f7b04262c7b59ca02f2ed5bb5f34ba35052a3f7ab47bf`
+
+> Preserve every original receipt; absent inspection is representable only for
+> non-consent decisions. Existing consent evidence is copied byte-for-byte.
+
+Imports: quarantine → app/rights/quarantine.ep
+
+- Line 5: `define protected_refusal_schema with database as Int returning Str:`
+
 ## app/rights/reviews.ep
 
-[Source](../../app/rights/reviews.ep) · 95 lines · 8291 bytes
+[Source](../../app/rights/reviews.ep) · 99 lines · 8687 bytes
 
-SHA-256: `42fadb42caf753e4d3f9f84eb7aac5ee5743d1933a53fec699a8d6d3da08f3e3`
+SHA-256: `e3f8a68a8aa2c80a76b44dd8b0c794520ef1ee6202867d4f4a0d0a03f1ba9d55`
 
 > Decisions are append-only and bind their exact disclosure and model input.
 > This ledger never grants steward, Observer or execution authorisation.
@@ -2729,7 +2743,7 @@ Imports: proposals → app/rights/proposals.ep
 
 - Line 5: `define protected_review_schema with database as Int returning Str:`
 - Line 13: `define protected_review_store with database as Int and run as Str and call_id as Str returning Str:`
-- Line 67: `define protected_review_latest with database as Int and run as Str and identity as Str returning List:`
+- Line 71: `define protected_review_latest with database as Int and run as Str and identity as Str returning List:`
 
 ## app/rights/staging.ep
 
@@ -3161,9 +3175,9 @@ Imports: ../memory/archive_recall → app/memory/archive_recall.ep, ../security/
 
 ## app/tools/protected_tools.ep
 
-[Source](../../app/tools/protected_tools.ep) · 65 lines · 6767 bytes
+[Source](../../app/tools/protected_tools.ep) · 65 lines · 6992 bytes
 
-SHA-256: `1bea07bbd05f0cad20ff8bc780436be27b29fb1a146935f901d228b2e46ec3e2`
+SHA-256: `be16a31852cdae9f8e1f2cb735af65d47c0a831147170e8a52757a94f459357d`
 
 > Only a claimed call in the currently accepted assistant response can review.
 > Neither a fabricated role argument nor a stale queued branch can substitute.

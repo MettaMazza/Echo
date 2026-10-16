@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T05:29:35.875035+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T05:38:32.056889+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/recover_guardian_fixture.ep
 
@@ -867,6 +867,24 @@ SHA-256: `b863ae11eba2182b535f50e81b667f0cb0865f3bd2ce1c2a41c871a7fcb4b02f`
 Imports: ../../app/providers/local_json → app/providers/local_json.ep
 
 - Line 3: `define json_fixture with listener as List and expected_method as Str and expected_path as Str and expected_body as Str and response as Str and completed as Int returning Int:`
+
+## tests/fixtures/protected_reviews.ep
+
+[Source](../../tests/fixtures/protected_reviews.ep) · 69 lines · 5916 bytes
+
+SHA-256: `f3124e7db7b896a3e57dd95a1d5f9ad21f687b09ef5cf0f5ebd9577122ca5adf`
+
+> Persist the same original event envelope used by the native tool ledger.
+> Model request originals let the verifier distinguish seeing a disclosure
+> from merely queuing an inspection beside a review in the same generation.
+> Unit fixtures explicitly select their synthetic response before dispatch.
+> The streamed tool test exercises actual generation publication instead.
+
+Imports: ../../app/rights/reviews → app/rights/reviews.ep, ../../app/web/run_store → app/web/run_store.ep
+
+- Line 5: `define inspection_fixture with database as Int and session as Str and call_id as Str and name as Str and manifest as Str and digest as Str and observed as Int returning Int:`
+- Line 24: `define review_fixture with database as Int and session as Str and call_id as Str and decision as Str and digest as Str and include_disclosure as Int and previous_revision as Int returning Int:`
+- Line 52: `define fixture_review_store with database as Int and run as Str and call_id as Str returning Str:`
 
 ## tests/fixtures/runner_provider.ep
 
@@ -1737,6 +1755,20 @@ Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/t
 
 - Line 7: `define main returning Int:`
 
+## tests/security/test_live_uninspected_refusal.ep
+
+[Source](../../tests/security/test_live_uninspected_refusal.ep) · 74 lines · 5901 bytes
+
+SHA-256: `3cbb451de20035e75a10085ac5d81c5f76e0a3f6304a69d02411ff1f625319fa`
+
+> Live primary-model qualification. Only a disposable proposal is reviewed;
+> no identity file, prompt, executable or protected target is changed.
+
+Imports: ../../app/rights/review_upgrade → app/rights/review_upgrade.ep, ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep
+
+- Line 8: `define main returning Int:`
+- Line 51: `define verify_live_refusal with database as Int and charter as Str and session as Str returning Int:`
+
 ## tests/security/test_memory_tools.ep
 
 [Source](../../tests/security/test_memory_tools.ep) · 57 lines · 4612 bytes
@@ -1922,25 +1954,17 @@ Imports: ../../app/rights/inventory → app/rights/inventory.ep
 
 ## tests/security/test_protected_proposals.ep
 
-[Source](../../tests/security/test_protected_proposals.ep) · 194 lines · 19140 bytes
+[Source](../../tests/security/test_protected_proposals.ep) · 131 lines · 13502 bytes
 
-SHA-256: `822a99150a8d334f31a8a94ffde23aa3ca14ca322873cab28f2d8e4e4072b341`
+SHA-256: `082dc003cd389df8e7a698850a73b6b0265084a92c222a6a946dde37293f9467`
 
-> Persist the same original event envelope used by the native tool ledger.
-> Model request originals let the verifier distinguish seeing a disclosure
-> from merely queuing an inspection beside a review in the same generation.
-> Unit fixtures explicitly select their synthetic response before dispatch.
-> The streamed tool test exercises actual generation publication instead.
 > No host target is changed by this fixture; manifests are stored evidence only.
 > Simulate out-of-band damage in this disposable database. Ordinary writes
 > were denied above; inspection must independently reject mismatched bytes.
 
-Imports: ../../app/rights/reviews → app/rights/reviews.ep, ../../app/web/run_store → app/web/run_store.ep
+Imports: ../fixtures/protected_reviews → tests/fixtures/protected_reviews.ep
 
-- Line 5: `define inspection_fixture with database as Int and session as Str and call_id as Str and name as Str and manifest as Str and digest as Str and observed as Int returning Int:`
-- Line 24: `define review_fixture with database as Int and session as Str and call_id as Str and decision as Str and digest as Str and include_disclosure as Int and previous_revision as Int returning Int:`
-- Line 48: `define fixture_review_store with database as Int and run as Str and call_id as Str returning Str:`
-- Line 67: `define main returning Int:`
+- Line 4: `define main returning Int:`
 
 ## tests/security/test_protected_quarantine.ep
 
@@ -2036,6 +2060,17 @@ SHA-256: `6363667fbcb30956967b64757680f4bd763ce9500f69cd7b1d920e86a72511aa`
 Imports: ../../app/archive/snapshot → app/archive/snapshot.ep, ../../app/web/attachments → app/web/attachments.ep, fs → standard library or compiler dependency, ../../app/security/tool_authority → app/security/tool_authority.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../../app/archive/history → app/archive/history.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
 
 - Line 10: `define main returning Int:`
+
+## tests/security/test_uninspected_refusal.ep
+
+[Source](../../tests/security/test_uninspected_refusal.ep) · 61 lines · 5649 bytes
+
+SHA-256: `a0ed0e2bbf14493a42cb9938eee4ab32f377d741bd6fa643872488c6a6e39152`
+
+
+Imports: ../fixtures/protected_reviews → tests/fixtures/protected_reviews.ep, ../../app/rights/review_upgrade → app/rights/review_upgrade.ep
+
+- Line 4: `define main returning Int:`
 
 ## tests/tools/test_history_dispatch.ep
 
