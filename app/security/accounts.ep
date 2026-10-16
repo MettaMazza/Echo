@@ -1,0 +1,71 @@
+import "revocation"
+
+define principal_account_schema with database as Int returning Str:
+    set prior to principal_revocation_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 4 and "account-link-audit" and "CREATE TABLE echo_account_link_events(identity TEXT PRIMARY KEY,platform TEXT NOT NULL,subject TEXT NOT NULL,previous_principal TEXT NOT NULL,previous_revoked INTEGER NOT NULL,principal TEXT NOT NULL REFERENCES echo_principals(identity),revoked INTEGER NOT NULL CHECK(revoked IN (0,1)),actor TEXT NOT NULL,reason TEXT NOT NULL,occurred TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TRIGGER echo_account_links_no_update BEFORE UPDATE ON echo_account_link_events BEGIN SELECT RAISE(ABORT,'Account link history is immutable'); END; CREATE TRIGGER echo_account_links_no_delete BEFORE DELETE ON echo_account_link_events BEGIN SELECT RAISE(ABORT,'Account link history is immutable'); END;")
+
+# Host-local authority after verifying the platform's stable subject identity.
+# This routine does not authenticate a Discord event or infer a role from a name.
+# Relinking requires explicitly unlinking the current binding first. A stale
+# unlink must name the current principal, preventing revocation of a replacement.
+# Linking changes authority association only, never session ownership/history.
+define principal_host_account with database as Int and identity as Str and platform as Str and subject as Str and principal as Str and revoked as Int and reason as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(platform) equals 0 or else string_length(subject) equals 0 or else string_length(principal) equals 0 or else string_length(reason) equals 0 or else (revoked is not equal to 0 and revoked is not equal to 1):
+        return "invalid-account-link"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set values to create_list()
+    set added to append_list(values and identity)
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT platform,subject,principal,CAST(revoked AS TEXT),reason FROM echo_account_link_events WHERE identity=?;" and values))
+    if archive_list_text(saved and 0) equals "found":
+        if not (archive_list_text(saved and 1) equals platform) or else not (archive_list_text(saved and 2) equals subject) or else not (archive_list_text(saved and 3) equals principal) or else not (archive_list_text(saved and 4) equals int_to_string(revoked)) or else not (archive_list_text(saved and 5) equals reason):
+            return migration_fail(database and "account-link-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(saved and 0) equals "end"):
+        return migration_fail(database and "account-link-read-failed")
+    set values to create_list()
+    set added to append_list(values and platform)
+    set added to append_list(values and subject)
+    set previous to history_collect_one(checkpoint_prepare(database and "SELECT principal,CAST(revoked AS TEXT) FROM echo_principal_accounts WHERE platform=? AND subject=?;" and values))
+    set previous_principal to ""
+    set previous_revoked to "-1"
+    if archive_list_text(previous and 0) equals "found":
+        set previous_principal to archive_list_text(previous and 1)
+        set previous_revoked to archive_list_text(previous and 2)
+        if revoked equals 1 and not (previous_principal equals principal):
+            return migration_fail(database and "account-binding-changed")
+        if revoked equals 0 and previous_revoked equals "0" and not (previous_principal equals principal):
+            return migration_fail(database and "account-already-linked")
+    else if not (archive_list_text(previous and 0) equals "end"):
+        return migration_fail(database and "account-link-read-failed")
+    else if revoked equals 1:
+        return migration_fail(database and "account-unavailable")
+    if revoked equals 0 and string_length(principal_role(database and principal)) equals 0:
+        return migration_fail(database and "principal-unavailable")
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and platform)
+    set added to append_list(values and subject)
+    set added to append_list(values and previous_principal)
+    set added to append_list(values and previous_revoked)
+    set added to append_list(values and principal)
+    set added to append_list(values and int_to_string(revoked))
+    set added to append_list(values and reason)
+    set receipt to checkpoint_prepare(database and "INSERT INTO echo_account_link_events(identity,platform,subject,previous_principal,previous_revoked,principal,revoked,actor,reason) VALUES(?,?,?,?,?,?,?,'host-local',?);" and values)
+    if receipt equals 0 or else archive_finish(receipt and 101) is not equal to 0:
+        return migration_fail(database and "account-link-write-failed")
+    set values to create_list()
+    set added to append_list(values and platform)
+    set added to append_list(values and subject)
+    set added to append_list(values and principal)
+    set added to append_list(values and int_to_string(revoked))
+    set changed to checkpoint_prepare(database and "INSERT INTO echo_principal_accounts(platform,subject,principal,revoked) VALUES(?,?,?,?) ON CONFLICT(platform,subject) DO UPDATE SET principal=excluded.principal,revoked=excluded.revoked;" and values)
+    if changed equals 0 or else archive_finish(changed and 101) is not equal to 0:
+        return migration_fail(database and "account-link-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"

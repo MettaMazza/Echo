@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T00:23:49.838134+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:26:30.522105+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1497,16 +1497,16 @@ Imports: providers/native_python → app/providers/native_python.ep, providers/j
 
 ## app/principal_admin.ep
 
-[Source](../../app/principal_admin.ep) · 74 lines · 3782 bytes
+[Source](../../app/principal_admin.ep) · 84 lines · 4525 bytes
 
-SHA-256: `b560da8dca4f0c53aef520c0c532acc183520292c0c8303f961146db35547d36`
+SHA-256: `92479e668a361298b5a616de85524d1232f413800e23533a651419e338a43364`
 
 > OS-local operator command. No browser or model schema exposes this program.
 > Guest sandbox workers cannot open the host database. Never infer authority
 > from an HTTP origin, device name, caller-supplied role or network address.
 > Check compatibility before archive_open can perform schema writes.
 
-Imports: web/run_store → app/web/run_store.ep, security/revocation → app/security/revocation.ep
+Imports: web/run_store → app/web/run_store.ep, security/accounts → app/security/accounts.ep
 
 - Line 7: `define main returning Int:`
 
@@ -2201,6 +2201,23 @@ Imports:
 
 - Line 4: `define archive_list_text with values as List and index as Int returning Str:`
 
+## app/security/accounts.ep
+
+[Source](../../app/security/accounts.ep) · 71 lines · 5994 bytes
+
+SHA-256: `ac80bfa99b0702d3f1e1c2079c6998dba82d5a5eaf4248f748e61170f95e8437`
+
+> Host-local authority after verifying the platform's stable subject identity.
+> This routine does not authenticate a Discord event or infer a role from a name.
+> Relinking requires explicitly unlinking the current binding first. A stale
+> unlink must name the current principal, preventing revocation of a replacement.
+> Linking changes authority association only, never session ownership/history.
+
+Imports: revocation → app/security/revocation.ep
+
+- Line 3: `define principal_account_schema with database as Int returning Str:`
+- Line 14: `define principal_host_account with database as Int and identity as Str and platform as Str and subject as Str and principal as Str and revoked as Int and reason as Str returning Str:`
+
 ## app/security/principals.ep
 
 [Source](../../app/security/principals.ep) · 94 lines · 7580 bytes
@@ -2251,7 +2268,7 @@ Imports: principals → app/security/principals.ep
 
 [Source](../../app/server.ep) · 323 lines · 20525 bytes
 
-SHA-256: `ca9c3fd9bf77a48698f303698cb472970d6e68da9c109debcae4e756580aaee6`
+SHA-256: `c7f9b5b9c840ddf20a832c16793c14c4bf0894151ac61d0bd2ebe705b09ccdbc`
 
 > Let macOS retain native fault stacks for every role, including workers.
 > Every executable role checks before schema writes, recovery or dispatch.

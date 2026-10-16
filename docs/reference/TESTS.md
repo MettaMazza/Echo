@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T00:23:49.838134+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:26:30.522105+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1464,6 +1464,17 @@ SHA-256: `f060a9a884b275d125c3bc2ec9931e1bfd074e74833503b53b952c4635515cdc`
 
 
 Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/revocation → app/security/revocation.ep
+
+- Line 4: `define main returning Int:`
+
+## tests/security/test_accounts.ep
+
+[Source](../../tests/security/test_accounts.ep) · 55 lines · 4792 bytes
+
+SHA-256: `45fee253f9b14ef67f10976a1fd4904bb797a105db88cb2c64f99fcd38548d10`
+
+
+Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/accounts → app/security/accounts.ep
 
 - Line 4: `define main returning Int:`
 
