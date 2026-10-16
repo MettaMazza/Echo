@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T10:39:45.865552+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T10:45:00.254905+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -3577,6 +3577,25 @@ Imports: ../context/session_messages → app/context/session_messages.ep
 
 - Line 6: `define tool_discovery_snapshot with database as Int and run as Str and arguments as Str returning Str:`
 - Line 51: `define tool_discovery_execute with database as Int and run as Str and arguments as Str returning Str:`
+
+## app/tools/tool_registry.ep
+
+[Source](../../app/tools/tool_registry.ep) · 114 lines · 7332 bytes
+
+SHA-256: `ab380189dbf6faee02ba96944ef40349be54daec2f94ab10fc50376cbc629bf7`
+
+> Candidate persistence is not registration or execution authority. Evaluation,
+> dependency verification and activation consume these immutable exact bytes.
+> An existing builtin cannot be shadowed by a saved custom definition.
+> The authoring run owns its draft. Exact retries preserve its original receipt;
+> changed bytes require a new version. No evaluator claim is trusted here.
+
+Imports: ../security/group_speech → app/security/group_speech.ep, ../security/tool_policy → app/security/tool_policy.ep, ../providers/archived_stream → app/providers/archived_stream.ep
+
+- Line 7: `define tool_registry_schema with database as Int returning Str:`
+- Line 13: `define tool_candidate_name_valid with name as Str returning Int:`
+- Line 25: `define tool_candidate_manifest_valid with manifest as Str returning Int:`
+- Line 86: `define tool_candidate_save with database as Int and run as Str and manifest as Str returning Str:`
 
 ## app/tools/workspace_tools.ep
 

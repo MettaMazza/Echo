@@ -1,0 +1,114 @@
+import "../security/group_speech"
+import "../security/tool_policy"
+import "../providers/archived_stream"
+
+# Candidate persistence is not registration or execution authority. Evaluation,
+# dependency verification and activation consume these immutable exact bytes.
+define tool_registry_schema with database as Int returning Str:
+    set prior to ptr_to_str(group_speech_schema(database))
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 22 and "tool-candidate-versions" and "CREATE TABLE echo_tool_candidates(sequence INTEGER PRIMARY KEY AUTOINCREMENT,run TEXT NOT NULL REFERENCES echo_runs(run),name TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),manifest TEXT NOT NULL,digest TEXT NOT NULL,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')),UNIQUE(run,name,version)); CREATE TRIGGER echo_tool_candidates_no_update BEFORE UPDATE ON echo_tool_candidates BEGIN SELECT RAISE(ABORT,'Tool candidate versions are immutable'); END; CREATE TRIGGER echo_tool_candidates_no_delete BEFORE DELETE ON echo_tool_candidates BEGIN SELECT RAISE(ABORT,'Tool candidate versions are immutable'); END;")
+
+define tool_candidate_name_valid with name as Str returning Int:
+    if string_length(name) equals 0:
+        return 0
+    set index to 0
+    repeat while index < string_length(name):
+        set character to get_character(name and index)
+        if not ((character >= 97 and character <= 122) or else character equals 95 or else (index > 0 and character >= 48 and character <= 57)):
+            return 0
+        set index to index + 1
+    # An existing builtin cannot be shadowed by a saved custom definition.
+    return string_length(tool_capability(name)) equals 0
+
+define tool_candidate_manifest_valid with manifest as Str returning Int:
+    set tokens to provider_json_tokens(manifest)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 0
+    set strings to ["name", "purpose", "source", "source_sha256", "artifact", "artifact_sha256", "failure_policy", "gap", "composition_decision"]
+    set arrays to ["capabilities", "dependencies", "tests", "side_effects", "discovery_receipts"]
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        set known to 0
+        for each field in strings:
+            if key equals ptr_to_str(field):
+                set known to 1
+        for each field in arrays:
+            if key equals ptr_to_str(field):
+                set known to 1
+        if key equals "version" or else key equals "input_schema" or else key equals "output_schema":
+            set known to 1
+        if known equals 0:
+            return 0
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    for each field in strings:
+        set member to provider_member(tokens and 0 and ptr_to_str(field))
+        if not (provider_kind(tokens and member) equals "string") or else string_length(string_trim(provider_value(tokens and member))) equals 0:
+            return 0
+    for each field in arrays:
+        set member to provider_member(tokens and 0 and ptr_to_str(field))
+        if not (provider_kind(tokens and member) equals "["):
+            return 0
+        set items to provider_items(tokens and member)
+        for each item in items:
+            if not (provider_kind(tokens and item) equals "string") or else string_length(string_trim(provider_value(tokens and item))) equals 0:
+                return 0
+    for each field in ["input_schema", "output_schema"]:
+        if not (provider_kind(tokens and provider_member(tokens and 0 and ptr_to_str(field))) equals "{"):
+            return 0
+    for each field in ["source_sha256", "artifact_sha256"]:
+        set digest to provider_value(tokens and provider_member(tokens and 0 and ptr_to_str(field)))
+        if string_length(digest) is not equal to 64:
+            return 0
+        set index to 0
+        repeat while index < 64:
+            set character to get_character(digest and index)
+            if not ((character >= 48 and character <= 57) or else (character >= 97 and character <= 102)):
+                return 0
+            set index to index + 1
+    set capabilities to provider_items(tokens and provider_member(tokens and 0 and "capabilities"))
+    if length_list(capabilities) equals 0:
+        return 0
+    for each item in capabilities:
+        if string_length(capability_role(provider_value(tokens and item))) equals 0:
+            return 0
+    set version to provider_index(tokens and provider_member(tokens and 0 and "version"))
+    if string_to_int(version) < 1 or else not (int_to_string(string_to_int(version)) equals version):
+        return 0
+    return tool_candidate_name_valid(provider_value(tokens and provider_member(tokens and 0 and "name")))
+
+# The authoring run owns its draft. Exact retries preserve its original receipt;
+# changed bytes require a new version. No evaluator claim is trusted here.
+define tool_candidate_save with database as Int and run as Str and manifest as Str returning Str:
+    if tool_candidate_manifest_valid(manifest) equals 0:
+        return "invalid-manifest"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    if run_authority_allows(database and run and "admin") equals 0 or else group_privileged_audience_allows(database and run) equals 0:
+        return migration_fail(database and "not-authorized")
+    set tokens to provider_json_tokens(manifest)
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and provider_value(tokens and provider_member(tokens and 0 and "name")))
+    set added to append_list(values and provider_index(tokens and provider_member(tokens and 0 and "version")))
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT manifest,digest FROM echo_tool_candidates WHERE run=?1 AND name=?2 AND version=CAST(?3 AS INTEGER);" and values))
+    set outcome to "candidate-saved-not-activated"
+    if archive_list_text(prior and 0) equals "found":
+        if not (archive_list_text(prior and 1) equals manifest) or else not (archive_list_text(prior and 2) equals ep_sha256(manifest)):
+            return migration_fail(database and "version-conflict")
+        set outcome to "candidate-already-saved-not-activated"
+    else:
+        if not (archive_list_text(prior and 0) equals "end"):
+            return migration_fail(database and "candidate-read-failed")
+        set added to append_list(values and manifest)
+        set added to append_list(values and ep_sha256(manifest))
+        set statement to checkpoint_prepare(database and "INSERT INTO echo_tool_candidates(run,name,version,manifest,digest) VALUES(?1,?2,CAST(?3 AS INTEGER),?4,?5);" and values)
+        if statement equals 0 or else archive_finish(statement and 101) is not equal to 0:
+            return migration_fail(database and "candidate-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return outcome
