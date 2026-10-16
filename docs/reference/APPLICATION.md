@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T03:02:25.886194+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:11:57.727330+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -156,19 +156,19 @@ Imports: ../retained_text → app/retained_text.ep, control → app/agent/contro
 
 ## app/agent/tool_dispatch.ep
 
-[Source](../../app/agent/tool_dispatch.ep) · 122 lines · 8825 bytes
+[Source](../../app/agent/tool_dispatch.ep) · 125 lines · 9145 bytes
 
-SHA-256: `4c3ae660e2362f15a4192b00f3ef1f61405f76814e2d52e556fe84c4b96bb661`
+SHA-256: `19349a48b639449059e9deda46751dfcc2d62ee8c7bc96a5465d991b60c29397`
 
 > One invocation executes at most the next cursor item. The enclosing run loops
 > until the ledger is observed; this is scheduling granularity, not a turn cap.
 > Do not advance another queued action past an unresolved earlier effect.
 > Existing direct callers have no external cancellation descriptor.
 
-Imports: ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
+Imports: ../retained_text → app/retained_text.ep, generation → app/agent/generation.ep, ../security/tool_policy → app/security/tool_policy.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/execution_tool → app/tools/execution_tool.ep, ../media/image_tool → app/media/image_tool.ep, ../media/speech_tool → app/media/speech_tool.ep, ../context/recap_rebuild → app/context/recap_rebuild.ep
 
-- Line 15: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
-- Line 121: `define agent_tool_step with database as Int and run as Str returning Int:`
+- Line 16: `define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:`
+- Line 124: `define agent_tool_step with database as Int and run as Str returning Int:`
 
 ## app/agent/tool_ledger.ep
 
@@ -1174,9 +1174,9 @@ Imports: ../retained_text → app/retained_text.ep, ../agent/run_messages → ap
 
 ## app/context/session_messages.ep
 
-[Source](../../app/context/session_messages.ep) · 168 lines · 10910 bytes
+[Source](../../app/context/session_messages.ep) · 173 lines · 11447 bytes
 
-SHA-256: `8b9c89113cae0e2b8b83b38c4800cba758c9a30b02a7cbaacf2139154f542e57`
+SHA-256: `e7785ce816c03e7adfdae616d17f7bff75e24c8b8d13ba4141b14c6810e8e380`
 
 > Admin-only schemas are selected from frozen initiating authority. Dispatch
 > repeats the check; advertising a schema is never itself permission.
@@ -1193,13 +1193,13 @@ SHA-256: `8b9c89113cae0e2b8b83b38c4800cba758c9a30b02a7cbaacf2139154f542e57`
 > that trusted runtime receipt in the resumed prompt so the model does not
 > mistake the earlier queued observation for still-pending work.
 
-Imports: ../retained_text → app/retained_text.ep, system_awareness → app/context/system_awareness.ep, ../archive/session_scope → app/archive/session_scope.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../agent/run_messages → app/agent/run_messages.ep
+Imports: ../retained_text → app/retained_text.ep, system_awareness → app/context/system_awareness.ep, ../archive/session_scope → app/archive/session_scope.ep, ../tools/attachment_tools → app/tools/attachment_tools.ep, ../tools/host_text → app/tools/host_text.ep, ../tools/memory_tools → app/tools/memory_tools.ep, ../tools/knowledge_tools → app/tools/knowledge_tools.ep, ../tools/protected_tools → app/tools/protected_tools.ep, ../agent/run_messages → app/agent/run_messages.ep
 
-- Line 10: `define session_request_body with model as Str and messages as Str returning Str:`
-- Line 17: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
-- Line 41: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
-- Line 46: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
-- Line 158: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
+- Line 11: `define session_request_body with model as Str and messages as Str returning Str:`
+- Line 18: `define session_request_body_owned with database as Int and run as Str and model as Str and messages as Str returning Str:`
+- Line 46: `define session_messages_snapshot with database as Int and session as Str and current_run as Str returning Str:`
+- Line 51: `define session_messages_checkpoint with database as Int and session as Str and current_run as Str and checkpoint as List returning Str:`
+- Line 163: `define session_messages with database as Int and session as Str and current_run as Str returning Str:`
 
 ## app/context/system_awareness.ep
 
@@ -2355,9 +2355,9 @@ Imports: charter → app/rights/charter.ep, ../memory/knowledge_lifecycle → ap
 
 ## app/rights/reviews.ep
 
-[Source](../../app/rights/reviews.ep) · 92 lines · 7562 bytes
+[Source](../../app/rights/reviews.ep) · 95 lines · 8291 bytes
 
-SHA-256: `ea66584019e9624f676a2b6998aedbdeb09d024d1c38f6e1b3a73b9688594621`
+SHA-256: `42fadb42caf753e4d3f9f84eb7aac5ee5743d1933a53fec699a8d6d3da08f3e3`
 
 > Decisions are append-only and bind their exact disclosure and model input.
 > This ledger never grants steward, Observer or execution authorisation.
@@ -2371,7 +2371,7 @@ Imports: proposals → app/rights/proposals.ep
 
 - Line 5: `define protected_review_schema with database as Int returning Str:`
 - Line 13: `define protected_review_store with database as Int and run as Str and call_id as Str returning Str:`
-- Line 64: `define protected_review_latest with database as Int and run as Str and identity as Str returning List:`
+- Line 67: `define protected_review_latest with database as Int and run as Str and identity as Str returning List:`
 
 ## app/security/accounts.ep
 
@@ -2504,9 +2504,9 @@ Imports: run_authority → app/security/run_authority.ep
 
 ## app/security/tool_policy.ep
 
-[Source](../../app/security/tool_policy.ep) · 50 lines · 2976 bytes
+[Source](../../app/security/tool_policy.ep) · 52 lines · 3142 bytes
 
-SHA-256: `1df7aed57932a28468b2dbd7f77f1e039668718e1f75f28173ef1bbaea74c65c`
+SHA-256: `d4acd118df02af49e941b69b3529a10ff3489b64085b376fbd0830a49a52fa94`
 
 > Classification is explicit. A newly registered name is not automatically a
 > safe tool. Dynamic tools must later obtain an independently verified manifest.
@@ -2519,8 +2519,8 @@ SHA-256: `1df7aed57932a28468b2dbd7f77f1e039668718e1f75f28173ef1bbaea74c65c`
 Imports: tool_authority → app/security/tool_authority.ep
 
 - Line 6: `define tool_capability with name as Str returning Str:`
-- Line 35: `define capability_role with capability as Str returning Str:`
-- Line 44: `define tool_policy_allows with database as Int and run as Str and call_id as Str and name as Str returning Int:`
+- Line 37: `define capability_role with capability as Str returning Str:`
+- Line 46: `define tool_policy_allows with database as Int and run as Str and call_id as Str and name as Str returning Int:`
 
 ## app/server.ep
 
@@ -2713,6 +2713,20 @@ Imports: ../memory/archive_recall → app/memory/archive_recall.ep, ../security/
 
 - Line 6: `define memory_tool_execute with database as Int and run as Str and call_id as Str and name as Str returning Str:`
 - Line 82: `define memory_tool_schemas returning Str:`
+
+## app/tools/protected_tools.ep
+
+[Source](../../app/tools/protected_tools.ep) · 65 lines · 6767 bytes
+
+SHA-256: `1bea07bbd05f0cad20ff8bc780436be27b29fb1a146935f901d228b2e46ec3e2`
+
+> Only a claimed call in the currently accepted assistant response can review.
+> Neither a fabricated role argument nor a stale queued branch can substitute.
+
+Imports: ../rights/reviews → app/rights/reviews.ep, ../security/tool_policy → app/security/tool_policy.ep
+
+- Line 6: `define protected_tool_execute with database as Int and run as Str and call_id as Str and name as Str returning Str:`
+- Line 64: `define protected_tool_schemas returning Str:`
 
 ## app/tools/workspace_tools.ep
 

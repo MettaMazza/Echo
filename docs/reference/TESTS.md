@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T03:02:25.886194+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T03:11:57.727330+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -1599,6 +1599,19 @@ Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/t
 - Line 7: `define knowledge_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
 - Line 27: `define main returning Int:`
 
+## tests/security/test_live_protected_tools.ep
+
+[Source](../../tests/security/test_live_protected_tools.ep) · 49 lines · 4037 bytes
+
+SHA-256: `9a187fccca0f9eefa4b72126ccd8cc7f558091e0d57d0df0408aa9366ccbc4ec`
+
+> Live primary-model qualification. Only a disposable proposal is reviewed;
+> no identity file, prompt, executable or protected target is changed.
+
+Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep
+
+- Line 7: `define main returning Int:`
+
 ## tests/security/test_memory_tools.ep
 
 [Source](../../tests/security/test_memory_tools.ep) · 57 lines · 4612 bytes
@@ -1649,13 +1662,15 @@ Imports: ../../app/web/uploads → app/web/uploads.ep, ../../app/web/cancellatio
 
 ## tests/security/test_protected_proposals.ep
 
-[Source](../../tests/security/test_protected_proposals.ep) · 171 lines · 16999 bytes
+[Source](../../tests/security/test_protected_proposals.ep) · 191 lines · 18664 bytes
 
-SHA-256: `40e22eaa6d2c826ca115d441f9ebfbe193dff6939385d5311b69e26a909c3eea`
+SHA-256: `4dc474faea703ca9cc0460b44d7544ae8a70f9d6161165d9ba542d39c5cda878`
 
 > Persist the same original event envelope used by the native tool ledger.
 > Model request originals let the verifier distinguish seeing a disclosure
 > from merely queuing an inspection beside a review in the same generation.
+> Unit fixtures explicitly select their synthetic response before dispatch.
+> The streamed tool test exercises actual generation publication instead.
 > No host target is changed by this fixture; manifests are stored evidence only.
 > Simulate out-of-band damage in this disposable database. Ordinary writes
 > were denied above; inspection must independently reject mismatched bytes.
@@ -1664,7 +1679,21 @@ Imports: ../../app/rights/reviews → app/rights/reviews.ep, ../../app/web/run_s
 
 - Line 5: `define inspection_fixture with database as Int and session as Str and call_id as Str and name as Str and manifest as Str and digest as Str and observed as Int returning Int:`
 - Line 24: `define review_fixture with database as Int and session as Str and call_id as Str and decision as Str and digest as Str and include_disclosure as Int and previous_revision as Int returning Int:`
-- Line 47: `define main returning Int:`
+- Line 48: `define fixture_review_store with database as Int and run as Str and call_id as Str returning Str:`
+- Line 67: `define main returning Int:`
+
+## tests/security/test_protected_tools.ep
+
+[Source](../../tests/security/test_protected_tools.ep) · 84 lines · 7621 bytes
+
+SHA-256: `81c8725816a77757c1ce91356de312492d02e944be9af8a5e3312f9ba6f9e5e4`
+
+> Exercise the real streaming parser, durable queued request and dispatcher.
+
+Imports: ../../app/web/attachments → app/web/attachments.ep, ../../app/agent/tool_recovery → app/agent/tool_recovery.ep, ../../app/agent/run_messages → app/agent/run_messages.ep, ../fixtures/generation_fixture → tests/fixtures/generation_fixture.ep
+
+- Line 7: `define protected_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:`
+- Line 27: `define main returning Int:`
 
 ## tests/security/test_revocation.ep
 

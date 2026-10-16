@@ -1,0 +1,84 @@
+import "../../app/web/attachments"
+import "../../app/agent/tool_recovery"
+import "../../app/agent/run_messages"
+import "../fixtures/generation_fixture"
+
+# Exercise the real streaming parser, durable queued request and dispatcher.
+define protected_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":" and provider_quote(call_id))
+    set delta to concat(delta and concat(",\"function\":{\"name\":" and provider_quote(name)))
+    set delta to concat(delta and concat(",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}")))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set body to session_request_body_owned(database and run and "fixture" and agent_run_messages(database and run))
+    if provider_json_tokens(body) equals 0:
+        return 2
+    set generated to agent_generate_local(database and run and request and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 3
+    if agent_tool_step(database and run) is not equal to 0 or else agent_tool_step(database and run) is not equal to 0:
+        return 4
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else not (protected_review_schema(database) equals "applied"):
+        return 2
+    if web_pairing_invite(database and "admin-invite") is not equal to 0 or else web_device_pair(database and "admin-invite" and "admin" and "Admin" and "fixture-admin") is not equal to 0 or else web_pairing_invite(database and "guest-invite") is not equal to 0 or else web_device_pair(database and "guest-invite" and "guest" and "Guest" and "fixture-guest") is not equal to 0:
+        return 3
+    if not (principal_host_role(database and "grant" and "device:admin" and "admin" and "Fixture admin") equals "recorded"):
+        return 4
+    set owner to web_submit_owned(database and "admin" and "admin-run" and "" and "Review the prepared protected proposal")
+    set guest to web_submit_owned(database and "guest" and "guest-run" and "" and "Cannot inspect admin proposals")
+    set manifest to protected_manifest(get_argument(2) and "identity" and "/fixture/identity" and ep_sha256("before") and ep_sha256("after") and "Full exact disclosure: café. No target is changed.")
+    if not (protected_proposal_store(database and get_argument(2) and "admin-run" and "proposal" and manifest) equals "recorded"):
+        return 5
+    set admin_body to session_request_body_owned(database and "admin-run" and "fixture" and agent_run_messages(database and "admin-run"))
+    set guest_body to session_request_body_owned(database and "guest-run" and "fixture" and agent_run_messages(database and "guest-run"))
+    if string_contains(admin_body and "protected_change_review") equals 0 or else string_contains(guest_body and "protected_change_inspect") is not equal to 0:
+        return 6
+    if protected_fixture_call(database and "admin-run" and "inspect-generation" and "inspect" and "protected_change_inspect" and "{\"proposal\":\"proposal\"}") is not equal to 0:
+        return 7
+    if not (protected_inspection_event(database and "admin-run" and "inspect" and "proposal") equals "inspect-generation:call:0:result"):
+        return 8
+    set disclosed to history_collect_one(archive_prepare(database and "SELECT json_extract(payload,'$.result.inspection_call') FROM echo_events WHERE event='inspect-generation:call:0:result';"))
+    if not (archive_list_text(disclosed and 1) equals "inspect"):
+        return 21
+    set arguments to concat("{\"proposal\":\"proposal\",\"inspection_call\":\"inspect\",\"manifest_digest\":" and provider_quote(ep_sha256(manifest)))
+    set arguments to concat(arguments and ",\"previous_revision\":0,\"decision\":\"consent\",\"risk\":\"low\",\"reason\":\"I reviewed the full disclosure.\"}")
+    if protected_fixture_call(database and "admin-run" and "review-generation" and "review" and "protected_change_review" and arguments) is not equal to 0:
+        return 9
+    set result to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.status'),json_extract(e.payload,'$.result.execution_authorized') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run='admin-run' AND t.call_id='review';"))
+    if not (archive_list_text(result and 1) equals "recorded") or else not (archive_list_text(result and 2) equals "0"):
+        return 10
+    if not (protected_review_store(database and "admin-run" and "review") equals "already-recorded"):
+        return 11
+    if protected_fixture_call(database and "guest-run" and "guest-generation" and "guest-inspect" and "protected_change_inspect" and "{\"proposal\":\"proposal\"}") is not equal to 0:
+        return 12
+    set result to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.status') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run='guest-run' AND t.call_id='guest-inspect';"))
+    if not (archive_list_text(result and 1) equals "tool-unavailable"):
+        return 13
+    if protected_fixture_call(database and "admin-run" and "forged-generation" and "forged" and "protected_change_inspect" and "{\"proposal\":\"proposal\",\"principal\":\"other\"}") is not equal to 0:
+        return 14
+    set result to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.status') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run='admin-run' AND t.call_id='forged';"))
+    if not (archive_list_text(result and 1) equals "invalid-arguments"):
+        return 15
+    if string_contains(protected_tool_execute(database and "admin-run" and "inspect" and "protected_change_inspect") and "invalid-request") equals 0:
+        return 16
+    set stale_payload to "{\"run_id\":\"admin-run\",\"parent_event\":\"forged-generation\",\"call_id\":\"stale\",\"name\":\"protected_change_inspect\",\"arguments\":\"{\\\"proposal\\\":\\\"proposal\\\"}\"}"
+    if archive_append(database and archive_list_text(owner and 1) and "stale-call" and "tool_call" and stale_payload and "fixture") is not equal to 0 or else tool_ledger_queue(database and "admin-run" and "stale" and archive_list_text(owner and 1) and "stale-call") is not equal to 0 or else tool_ledger_claim(database and "admin-run" and "stale") is not equal to 0:
+        return 18
+    if sql_execute(database and "UPDATE echo_runs SET state='tools',last_event='forged-generation:response' WHERE run='admin-run';") is not equal to 0:
+        return 19
+    if string_contains(protected_tool_execute(database and "admin-run" and "stale" and "protected_change_inspect") and "invalid-request") equals 0:
+        return 20
+    if sql_close(database) is not equal to 0:
+        return 17
+    display "PASS: streamed inspection then review through real generation, accepted-head dispatch, exact model input, immutable receipt, retry, guest and forged-scope denial. No deployment approval or target mutation."
+    return 0
