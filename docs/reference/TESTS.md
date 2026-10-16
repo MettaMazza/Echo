@@ -1,6 +1,6 @@
 # Tests source reference
 
-Generated 2026-10-16T00:34:20.611606+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:40:19.216910+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## tests/agent/test_attachment_loop.ep
 
@@ -983,9 +983,9 @@ Imports: ../../app/agent/runner → app/agent/runner.ep, ../fixtures/generation_
 
 ## tests/media/test_message_speech.ep
 
-[Source](../../tests/media/test_message_speech.ep) · 35 lines · 2308 bytes
+[Source](../../tests/media/test_message_speech.ep) · 38 lines · 2522 bytes
 
-SHA-256: `5ca4ab13751b0cb9b35e3995cdd8b3d6f935600d92a2653ac969679586b9a693`
+SHA-256: `351ecf657aea7421cb2d6a5f2eed80f3bd6e29d6138ff518206565f9f58fd4a4`
 
 > Real Kokoro process, isolated archive; no model invocation is needed.
 
@@ -1488,6 +1488,18 @@ SHA-256: `6fe69f3c4bbf6945b43009ad9fe6475011f1bd3ee77f4f8c72c403e51413f8fe`
 Imports: ../../app/web/run_store → app/web/run_store.ep, ../../app/security/device_links → app/security/device_links.ep
 
 - Line 4: `define main returning Int:`
+
+## tests/security/test_direct_speech_authority.ep
+
+[Source](../../tests/security/test_direct_speech_authority.ep) · 52 lines · 4488 bytes
+
+SHA-256: `29f85f87699ae34db68f311c1c580145af8284341b7fc16156f376a8a3655999`
+
+
+Imports: ../../app/web/message_speech → app/web/message_speech.ep
+
+- Line 3: `define queue_saved_speech with database as Int and session as Str and job as Str returning Int:`
+- Line 13: `define main returning Int:`
 
 ## tests/security/test_dispatch_revocation.ep
 

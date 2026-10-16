@@ -1,6 +1,6 @@
 # Application source reference
 
-Generated 2026-10-16T00:34:20.611606+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
+Generated 2026-10-16T00:40:19.216910+00:00. Exact hashes and lexical signatures; not a claim that every path was executed.
 
 ## app/agent/checked_generation.ep
 
@@ -1447,9 +1447,9 @@ Imports: ../providers/json_string → app/providers/json_string.ep
 
 ## app/media/speech_tool.ep
 
-[Source](../../app/media/speech_tool.ep) · 240 lines · 16232 bytes
+[Source](../../app/media/speech_tool.ep) · 242 lines · 16361 bytes
 
-SHA-256: `96999576074ce12a87c699649d61584fe558a193dad10949b03d6cbd81df14e8`
+SHA-256: `51c4100ba5219de5f1df0f21e0bea21228fa0dc3e8a495c3ccad8759d0e69590`
 
 > Run/call identity comes from the dispatcher. Re-read the immutable request.
 > Direct Speak actions have no model run. Their immutable request binds the
@@ -1461,11 +1461,11 @@ SHA-256: `96999576074ce12a87c699649d61584fe558a193dad10949b03d6cbd81df14e8`
 > Leave an uncertain claim when logging failed; never report a fully saved
 > result or authorize automatic replay after partial archive persistence.
 
-Imports: speech_text → app/media/speech_text.ep, ../security/run_authority → app/security/run_authority.ep, ../retained_text → app/retained_text.ep, speech_request → app/media/speech_request.ep, voice_request → app/media/voice_request.ep, ../archive/file_copy → app/archive/file_copy.ep, image_logs → app/media/image_logs.ep, ../web/attachments → app/web/attachments.ep, ../workspace/directories → app/workspace/directories.ep, ../providers/helper_process → app/providers/helper_process.ep
+Imports: speech_text → app/media/speech_text.ep, ../security/tool_authority → app/security/tool_authority.ep, ../retained_text → app/retained_text.ep, speech_request → app/media/speech_request.ep, voice_request → app/media/voice_request.ep, ../archive/file_copy → app/archive/file_copy.ep, image_logs → app/media/image_logs.ep, ../web/attachments → app/web/attachments.ep, ../workspace/directories → app/workspace/directories.ep, ../providers/helper_process → app/providers/helper_process.ep
 
 - Line 13: `define speech_tool_authority with database as Int and run as Str and call_id as Str returning List:`
-- Line 33: `define speech_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
-- Line 59: `define speech_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
+- Line 35: `define speech_tool_monitor with path as Str and run as Str and call_id as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:`
+- Line 61: `define speech_tool_execute with database as Int and run as Str and call_id as Str and cancellation as Int returning Str:`
 
 ## app/media/voice_request.ep
 
@@ -1497,16 +1497,16 @@ Imports: providers/native_python → app/providers/native_python.ep, providers/j
 
 ## app/principal_admin.ep
 
-[Source](../../app/principal_admin.ep) · 98 lines · 5532 bytes
+[Source](../../app/principal_admin.ep) · 98 lines · 5534 bytes
 
-SHA-256: `d70844c0e0f373f7c3d64ef2c5bc0e24fb8c20e7028ea9364195f81c298144ae`
+SHA-256: `a0fe75daeb9146742e9c7731464c57ea651f955d568ebf2ea9c226159e325483`
 
 > OS-local operator command. No browser or model schema exposes this program.
 > Guest sandbox workers cannot open the host database. Never infer authority
 > from an HTTP origin, device name, caller-supplied role or network address.
 > Check compatibility before archive_open can perform schema writes.
 
-Imports: web/run_store → app/web/run_store.ep, security/run_authority → app/security/run_authority.ep
+Imports: web/run_store → app/web/run_store.ep, security/tool_authority → app/security/tool_authority.ep
 
 - Line 7: `define main returning Int:`
 
@@ -2305,11 +2305,29 @@ Imports: device_links → app/security/device_links.ep
 - Line 5: `define run_authority_schema with database as Int returning Str:`
 - Line 14: `define run_authority_allows with database as Int and run as Str and required as Str returning Int:`
 
+## app/security/tool_authority.ep
+
+[Source](../../app/security/tool_authority.ep) · 28 lines · 3997 bytes
+
+SHA-256: `4dc1fe9ab6b0b717332a63056b0adfcb942d420ab577326844bdb98a4262cdf0`
+
+> Freeze each queued tool request, including direct UI actions without a model
+> run. Historical requests are not assigned invented initiating authority.
+> Revalidate immediately before dispatch, including immutable audit revisions.
+> No later grant can elevate an older queued request; even revoke/restore or
+> unlink/relink cycles require a new request. Ordinary admin is not charter steward.
+> Unmigrated Phase One retains its existing sandbox only, never admin.
+
+Imports: run_authority → app/security/run_authority.ep
+
+- Line 5: `define tool_authority_schema with database as Int returning Str:`
+- Line 14: `define tool_authority_allows with database as Int and run as Str and call_id as Str and required as Str returning Int:`
+
 ## app/server.ep
 
 [Source](../../app/server.ep) · 323 lines · 20525 bytes
 
-SHA-256: `e66b0e717d42706b5ca51d6cc628d6814f2745e33b5594abc2607ee7f087e1b4`
+SHA-256: `4a8099f862776f0e0bbf8e400a707e2a01a13888dde74fcbe5113e2892b7f350`
 
 > Let macOS retain native fault stacks for every role, including workers.
 > Every executable role checks before schema writes, recovery or dispatch.
