@@ -1,5 +1,8 @@
 # HTTP API and model tools
 
+> Current 1.5 additions and boundaries: [system audit](releases/1.5/SYSTEM-AUDIT.md), [status](releases/1.5/PHASE-TWO-STATUS.md), [verification](releases/1.5/VERIFICATION.md). Historical build/acceptance examples below retain their original dates. Current exact source contracts are in [the generated reference](reference/APPLICATION.md).
+
+
 Checked against source revision `12cd9ff6b14e865747e27d4d1149d43b63bf795a` on 2026-10-16. This documents the current local application API; it is not an OpenAI-compatible public service.
 
 ## Authentication and transport

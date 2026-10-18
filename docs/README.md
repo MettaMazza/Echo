@@ -1,5 +1,8 @@
 # Documentation index
 
+Start with the [Echo 1.5 forensic release](releases/1.5/README.md): current system audit, original 32-step status, verification and Phase Three sketch.
+
+
 - [Current status and open issues](STATUS.md)
 - [Architecture and execution flow](ARCHITECTURE.md)
 - [Build, verification and test reproduction](BUILD-AND-TEST.md)
@@ -38,3 +41,20 @@ The generated reference covers every application and test source file, including
 - [Inspected source integrations](phase2/SOURCE-MAP.md)
 
 - [Phase Two foundation verification](phase2/FOUNDATION-VERIFICATION.json)
+
+- [Tool discovery contracts and dependency reporting](phase2/TOOL-CONTRACTS.md)
+- [Scoped workspace files](phase2/WORKSPACE-FILES.md)
+- [CSV and TSV tables](phase2/DELIMITED-TABLES.md)
+- [Exact JSON selection](phase2/JSON-SELECTION.md)
+- [Archive creation and extraction](phase2/ARCHIVE-INSPECTION.md)
+- [Workbook reading, creation and editing](phase2/WORKBOOKS.md)
+
+- [Delegated tasks, authority and verification](phase2/DELEGATION.md)
+- [Local Ernos compilation and execution](phase2/ERNOS-PROGRAMS.md)
+
+- [Workspace plots](phase2/PLOTS.md)
+- [Local workspace databases](phase2/LOCAL-DATABASES.md)
+- [Admin Code/Git workflow](phase2/GIT-TOOLS.md)
+
+Project continuity backend and current integration status: [phase2/PROJECTS.md](phase2/PROJECTS.md).
+Step 08 reconciliation: [phase2/STEP-08-EVIDENCE.md](phase2/STEP-08-EVIDENCE.md).

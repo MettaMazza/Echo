@@ -1,0 +1,15 @@
+# Inference device-time sharing — 17 October 2026
+
+The live trace showed a fresh ~168k-token request prefilling while two recap reviewers generated. The previous recurrent-model scheduler alternated one pure prompt batch with one pure generation batch. A 512-token prompt batch took about 1.1 seconds, while a decode step emitted just one token per active generating slot. Generation fell below one token/second. Separate inference slots existed; the problem was scheduling GPU work by batch count rather than elapsed device time.
+
+`engine/patches/llama-b11429-device-time-sharing.patch` applies after the existing fair-prefill, periodic-checkpoint, separate-recurrent-batches and publish-prefix-cache patches. It preserves separate recurrent batches, but records the measured prompt-batch GPU time as debt and runs generation batches until they have received matching measured GPU time. Debt resets when there is no concurrent prompt/generation work. Calibration and request processing remain on the existing inference loop. No model, context, output limit, tool or conversation data is changed.
+
+The candidate built successfully with the native CMake build. On the same model and four 262,144-token slots, a streamed diagnostic generated 256 tokens at 5.38 tokens/second while a separate fresh 13,205-token prompt progressed concurrently. Its output completed in 48.21 seconds; the cold request completed in 67.70 seconds. The production engine was also working during this test, so these are loaded measurements, not an isolated A/B comparison or a universal speed claim. Diagnostic output caps apply only to the test requests. Production `--predict -1` remains unchanged.
+
+The tradeoff is explicit: simultaneous prefill receives less GPU time than when it nearly monopolised the device. It continues making progress, while existing generation gets a fair share. Cold full-context ingestion still requires reading the full input. The patch does not claim that this work is instantaneous or that more RAM creates a second GPU.
+
+## Live deployment
+
+The engine was deployed as `llama-time-share-20261017/llama-server` on port 8080; the application release remains `phase2-compaction-monitor-20261017-100927`. All three active runs resumed through the normal worker recovery path. All 73 captured original/tool/candidate/review receipts retained their original digests. The HTTP app and model health checks passed, and the live server reports four slots with 262,144 tokens each. The temporary candidate engine is stopped. No test workload remains running.
+
+This restart necessarily discarded the old engine's in-memory KV cache. The resumed full-context requests are rebuilding that cache; this is additional one-off ingestion, not a claim of immediate first-token latency. The scheduling change was exercised on the same model before promotion, but the post-restart large-context runs were still in ingestion when this deployment record was written. Live log: `/tmp/echo-production-time-share.log`. Local evidence: `evidence/phase2/latency-20261017/time-share-proof.json`, `time-share-preserved.json`, and `time-share-deployment.json`.

@@ -1,5 +1,8 @@
 # Architecture
 
+> Current 1.5 additions and boundaries: [system audit](releases/1.5/SYSTEM-AUDIT.md), [status](releases/1.5/PHASE-TWO-STATUS.md), [verification](releases/1.5/VERIFICATION.md). Historical build/acceptance examples below retain their original dates. Current exact source contracts are in [the generated reference](reference/APPLICATION.md).
+
+
 ## A message from browser to archive and back
 
 `app/server.ep` binds the local HTTP listener, loads the compiled browser bundle, checks configured prompt files, opens the archive and performs startup recovery. `web/routes.ep` applies host/origin checks, credential resolution and ownership checks before dispatch. `web/run_store.ep` durably records the user's submission and selected provider. A submission ID is an idempotency key: replaying the same accepted request recovers it rather than creating a second turn.

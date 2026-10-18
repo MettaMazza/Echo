@@ -1,20 +1,30 @@
+# Phase Two progress — Echo 1.5, 18 October 2026
+
+The current consolidated record is [Echo 1.5](../releases/1.5/README.md), including the [original 32-step reconciliation](../releases/1.5/PHASE-TWO-STATUS.md). Current deployed release: `phase2-stable-session-recall-20261018-r2`. Phase Two remains incomplete; later foundations do not close their integrations.
+
+The entries below are dated historical observations. Their older counts, remaining-work statements, pause state and deployment names are superseded by the consolidated record where they differ.
+
+## Historical record
+
 # Phase Two implementation progress
+
+17 October targeted repair: `phase2-recap-review-20261017` deployed; false compaction rewrites fixed and actual source review verified. See [evidence](COMPACTION-REVIEW-REPAIR-2026-10-17.md). This does not expand Phase Two scope.
 
 Authorised 16 October 2026. Goal remains active. No Phase Two feature is complete merely because it is planned or compiles.
 
-## Current delivery status — 16 October
+## Current delivery status — 17 October
 
-The plan has 32 dependency-ordered steps. REQUIREMENTS.json contains 413 requirement, carry-forward and acceptance-check rows; these are not 413 dependencies. Its statuses have not yet been comprehensively reconciled with the implementation evidence and must not be used as a completion percentage. No overall percentage is asserted here.
+Maria resumed Phase Two under the original 32-step plan, in dependency order, without scope expansion. The previous expanded ledger is historical reference and is not the work count or completion denominator. No new tasks have been added.
 
-Current production remains on schema10. Its verified releases include principal/admin and private-memory boundaries, native process guardian recovery and the compaction progress UI. Later candidate schemas11–21 contain protected-change and group work; their existence does not mean those features are deployed.
+Latest targeted deployment is `phase2-compact-recall-20261017`; see [compact recall evidence](COMPACT-CROSS-SESSION-MEMORY-2026-10-17.md). General Phase Two development is paused; this repair adds no plan steps. Earlier release `phase2-agents-20261017-063428` is historical; release manifests and the current host service profile are authoritative. Existing completed work remains valid unless a concrete change or failure invalidates it.
 
-The latest group work now has an integrated native primary-model test: two authenticated users, preserved sender attribution, history tool execution, completed replies and private-canary exclusion. Isolated browser group routing, shared workspace operations and attachment publication now have evidence in the later records below. Discord group routing, full group compaction acceptance and production rollout remain incomplete. The next implementation work is integrating those remaining surfaces; no group UI release is claimed.
+Step 08 is reconciled in STEP-08-EVIDENCE.md. Step 09 backend implementation and acceptance are reconciled in STEP-09-EVIDENCE.md. Current work is step 10: media, attachment lifecycle and the usable UI, including the project/sharing controls assigned there. Step 07 is closed on Codex’s side under Maria’s explicit human-dependency rule; its implementation and prepared release are recorded in STEP-07-EVIDENCE.md. Root installation/activation and integrated privileged acceptance remain unperformed, awaiting host authentication; final policy wording remains reserved for the joint review. Step 06 context-foundation evidence is recorded in STEP-06-EVIDENCE.md; later connector, memory and final acceptance work remains at its original numbered steps. Step 05 admin-worker live acceptance is recorded below. Guest workspace execution, admin host-text reads and admin host execution are now deployed; live host-command acceptance passed on 16 October (run 53dbf9f7-f873-4254-b61b-233f45baf665). Later protected-controller, group and candidate-tool work is preserved for its respective steps, not discarded or counted as proof of earlier completion. Final prompt work remains reserved for Maria at step 29. Newly discovered work outside the agreed Phase One/Two plans will be recorded for Phase Three in phase2.md.
 
-Discord, Gmail, the complete recursive code/weight improvement workflow, generated-tool lifecycle, optional external-provider qualification and final installer/performance/device acceptance have not been delivered in full. Joint final prompt review with Maria remains required near closure.
+### Step 09 components delivered
 
-Use FOUNDATION-VERIFICATION.json and the dated records below for scoped evidence. Older records preserve the history of what was tested at that point; later deployment records supersede older statements that the same component was not deployed. File counts, compilations and isolated fixture tests are not full-step acceptance.
+Project revisions, selection and cross-session model use are documented in [PROJECTS.md](PROJECTS.md). Dated episode queries and automatic event-date ingestion are documented in [EPISODIC-TIMELINE.md](EPISODIC-TIMELINE.md). Corrected-fact recall metadata and live graph traversal are documented in [CORRECTED-RECALL.md](CORRECTED-RECALL.md). Provenance-backed procedural memory, discovery, build revalidation and explicit forgetting/restoration are documented in [PROCEDURAL-MEMORY.md](PROCEDURAL-MEMORY.md). Attributed SFT and identity originals are documented in [SOURCE-IMPORT.md](SOURCE-IMPORT.md). Source import is deployed with native scope/digest checks and verified production receipts; its actual-model fresh-session search/read acceptance passed. The preceding memory components are deployed with native and live evidence; they do not close Step 09. Its remaining scope and exit criteria remain exactly those in the original plan. Combined compaction and independent-database-restoration acceptance passed; the review correction and retained evidence are documented in [MEMORY-RECOVERY.md](MEMORY-RECOVERY.md).
 
-## Automatic recall repair — 16 October
+## Historical automatic recall repair — 16 October
 
 Deployed `server_phase2_memory` on the existing schema10 archive after a consistent backup. Corrected `memory_search` pagination with explicit continuation arguments. Added incremental source-backed extraction across owned sessions, automatic graph recall, semantic/episodic/workflow records, visibility-aware context, and durable import/failure receipts. The current session is not re-extracted on every turn, preserving warm conversation caching. Identity and philosophical wording remain unchanged. The only private bundle edits replace two repeated obsolete technical memory descriptions; operator-requested conversation guidance is supplied separately by the runtime.
 
@@ -285,3 +295,250 @@ Versioned tool candidates (16 October): inspected the pinned ErnosDecent self_ex
 Verified discovery provenance for candidates (16 October): new candidate versions now require actual observed tool_search result references from the same run. The check verifies frozen tool authority, request/result/run/call linkage, original archive integrity and exact replay against the current loaded catalog under the candidate writer transaction. Native parser/dispatcher tests pass a genuine observation and reject absent, borrowed, duplicate, stale-catalog and damaged-archive evidence while preserving version/reopen/revocation behavior. Evidence: tool-candidate-discovery-verification.json. This verifies loaded discovery only; dormant coverage, semantic relevance/composition evaluation and executable qualification remain separate gates. No model authoring tool or production deployment is claimed.
 
 Candidate bytes and dependency references (16 October): added root-scoped source/artifact byte checks using the same validated open inode, with streaming SHA-256 and no file-size ceiling. Native checks pass exact hashes, changed bytes, .ep source requirement, traversal/link/FIFO/directory denial, restoration and pathname replacement after opening. The existing binary digest regression passes one-byte and larger reads. Candidate dependency digests must resolve to intact immutable definitions for the authoring principal; missing, foreign and duplicate references fail. Evidence: tool-candidate-files-verification.json. Byte checks do not prove a source-to-binary build, behavioral tests, accepted dependencies or execution approval; those remain separate evaluation/registration work. Production unchanged.
+
+
+## Latest-source deployment — 16 October 2026
+
+At Maria’s explicit request, rebuilt the current server, browser and audio/math assets, execution guardian, principal/device administration, service launcher, controller staging/launch commands and native research commands. Aligned server and administrative compatibility with schema22 and migrated through the existing complete migration chain. The copy migration and live migration each preserved every pre-existing table row; integrity and foreign-key checks passed. Original archive, identity, service profile, server and browser were retained before cutover.
+
+The active service profile now selects the versioned internal release `20261016-123350`, including its matching guardian and UI assets. The local primary model and HTTPS gateway are running. Group conversation UI and the newer callable tools are now in the deployed build. Stored candidate-tool definitions remain candidates; this deployment does not invent unfinished tool activation, Discord, Gmail, training or protected-controller service integration. The separate privileged ledger remains a component, not an activated root service.
+
+Private deployment receipts, build logs, source hashes and cutover backup: `evidence/phase2/release-20261016-123350/`. This supersedes earlier statements that production remains schema10 or that the current group interface is undeployed. Phase Two feature development has not otherwise resumed.
+
+
+### Resumption under the original plan — Step 05
+
+Implemented the admin `host_execute` worker by reusing immutable tool arguments, frozen authority, the existing process guardian, original output capture and cancellation/revocation. Guest workspace policy remains unchanged. Host configuration separates protected installation/state/model roots and connector-secret roots; neither can be overridden through tool arguments. Native admin/guest/late-promotion/revocation, protected-file/hardlink/secret isolation, and actual in-flight Stop/revocation checks pass. See HOST-EXECUTION.md. The first real-model run chose the correct tool but its authority monitor cancelled the command; the monitor now records its reason and distinguishes busy database reads from revoked authority. The live monitor reported SQLite error 1; the exact failing operation is not yet identified. Concurrent authority checks and a direct native execution against an isolated archive copy both pass, including with a clean environment. The live guardian path remains unresolved; these copy tests are not a Step 05 completion claim.
+
+Maria’s intervening repeated-Steer-tap bug was fixed and deployed: disabled sending button, persistent received/waiting/applied receipts, and idempotent retry wording. Ten immediate taps produced one request in the emitted-browser regression. Work returned to Step 05 immediately; no plan steps were added.
+
+
+### Live admin execution acceptance — 16 October 2026
+
+After the event-index fix and guardian diagnostic rebuild, the deployed primary model selected host_execute, ran /usr/bin/uname -s, retrieved actual stdout Darwin, and completed run 53dbf9f7-f873-4254-b61b-233f45baf665. The disposable principal was revoked afterwards. Receipt: evidence/phase2/phase2-host-worker-20261016-160141/host-live.json. Native admin/guest/frozen-authority and in-flight cancellation/revocation evidence remains in host-worker-20261016/. The earlier SQLite error did not recur; its original cause is not proven. Failed policy lookups now preserve SQLite diagnostics before subsequent queries can overwrite them. This replaces the prior live-host-execution failure status, not the remaining Phase Two scope.
+
+
+### Memory classification bug resolved — 16 October 2026
+
+Inspection of the recent greeting run found a real extraction failure: the model supplied kind workflow with category workflow, which rejected the entire batch as memory-invalid-source and left it eligible for repeated processing. Grounding now maps workflow/procedural aliases to the existing semantic/workflow representation, preserving source and quote validation. Native automatic-memory regression and full server build pass. Deployed release phase2-host-worker-20261016-162226 preserves active workers; new runs use the fix. No prompts or memory source records were rewritten. Step 06 still needs the remaining channel/admin/Echo-system scope routing; existing private/group contexts are retained.
+
+
+### Step 06 user-in-channel routing — 16 October 2026
+
+Implemented a stable principal/platform/server/channel route on existing isolated group storage. Personal channel audiences are fixed; inviting another user cannot convert that context to a joined conversation. Native integration passes assembled-context separation from private history, another user and another channel, audience-expansion denial and exact retry after reopen. Existing mutable-group routing regression passes. See CHANNEL-SILOS.md. Discord ingestion is not yet wired; channel-public/admin/Echo-system routes remain, so Step 06 is not marked complete.
+
+
+### Step 06 admin contexts — 16 October 2026
+
+Implemented and deployed explicit admin-only groups, including the browser creation selector and labelled listings. Admin role is required at creation, invitation/join, history, run and workspace access; explicit membership is still required. Native integration and existing browser-group controls regressions pass. Deployed HTTP acceptance passes guest denial, positive admin create/list/open and immediate demotion denial at list/open/state; test credential revoked. See ADMIN-CONTEXTS.md. Physical visual acceptance, channel-public and Echo-system routes remain; Step 06 stays open.
+
+
+### Step 06 Echo-system context routing — 16 October 2026
+
+Implemented host-configured service-principal routing with separate durable contexts and fixed audience. Native integration passes human-admin impersonation denial, assembled-context isolation from human private data and another system context, audience-expansion denial, reopen/exact retry and revocation. See SYSTEM-CONTEXTS.md. No production identity was silently enrolled and no role granted; autonomous-job integration remains. Channel-public routing and remaining Step 06 integration are still open.
+
+
+### Step 06 channel-public observations — 16 October 2026
+
+Implemented immutable registered channel namespaces, original observation storage, host-connector permission receipts and current-permission cursor reads. Native integration passes source replay/conflict, server/channel isolation, live-only/history permissions, continuous-access floor, revocation/re-entry, stale grant replay, restart and device revocation. See CHANNEL-PUBLIC.md. No Discord connection is claimed: actual platform permission ingestion and awareness consumption remain in the planned connector/awareness work. Step 06 integrated context/recovery qualification remains open.
+
+
+### Step 06 recap and restart qualification across scopes — 16 October 2026
+
+Extended the existing group recap integration fixture through real user-channel, admin and configured Echo-system routing. All four variants passed cancellation of a separately seeded private run, explicit recap generation/review/activation, injected failure after activation before completion receipt, database reopen, recovery of the same checkpoint, continuation of the original run and terminal reopen without repeated inference. Private canary data stayed outside each rebuilt context; private recap remained absent and its cancellation stayed terminal. Tests use a deterministic provider fixture, not fresh live-model judgments. Preserved archives/logs: evidence/phase2/silo-recovery-20261016/. This qualifies the shared context engine for these scopes; it does not claim Discord ingestion, a channel-public HUD consumer or production system-principal enrolment.
+
+
+### Step 06 shared scratchpads deployed — 16 October 2026
+
+Found and resolved private-only scratchpad admission/advertising. Shared contexts now use their exact audience segment; private notes keep their existing principal identity. Native real-dispatch regression passes member reads, private/channel isolation, reopen, removal and changed-audience separation. Existing private continuity regression also passes. Full server and guardian compiled and release phase2-host-worker-20261016-164944 was deployed with active workers preserved and no schema change. HTTP served-asset verification passed. No fresh live-model scratchpad choice is claimed. Local commit 7b6d764; docs/SILO-SCRATCHPADS.md and private evidence/phase2/silo-scratchpad-20261016/. Step 06 remains the active dependency.
+
+
+### Step 06 shared recap inspection deployed — 16 October 2026
+
+Fixed the private-owner-only query in the saved recap reader. Authorized members can now inspect exact-session shared recaps; existing derived-history checks remain. Extended the integration fixture to read back the actual generated recap, deny outsiders and reject a checkpoint selected through a different session. Group/channel/admin/system variants and the existing private-reader regression passed. Server/guardian rebuilt and release phase2-host-worker-20261016-165228 deployed, preserving active workers without schema changes. Commit 6152b2b. Evidence: shared-recap-reader-20261016/.
+
+
+### Step 06 live shared scratchpad qualification — 16 October 2026
+
+The installed primary model chose scratchpad write in one member's turn, then after reopening the database chose scratchpad read in another member's turn and retrieved the exact original note. Both turns completed; private-canary exclusion and archive verification passed. Fixed a fixture-only exact-one-read assumption after the model legitimately read twice; the corrected verifier reused the same archive. Evidence: live-silo-scratchpad-20261016/. Updated GROUP-BROWSER.md to distinguish its historical candidate records from current deployed schema24. No new feature scope or prompt change.
+
+
+### Step 06 dependency review — 16 October 2026
+
+Reviewed the original scope against current routing, retrieval, draft/job binding, locks and compaction implementation and retained native/live evidence. The storage/context foundation is qualified for step 07. See STEP-06-EVIDENCE.md for coverage and explicit later-step boundaries; no new checklist or denominator was introduced. Current work advances to the existing protected-change controller requirement, whose root-owned bundle/ledger primitives are qualified but whose installed service and runtime integration remain unfinished.
+
+
+### Step 07 isolated operation host entry — 16 October 2026
+
+Added control_protected, connecting root-owned pinned configuration and the isolated ledger to existing inspect/apply/reconcile/rollback/rollback-reconcile functions. It imports no runtime authority or approvals and does not bootstrap state. Native configuration checks and actual compiled unprivileged denial pass; privileged operation execution and installed service integration remain unqualified. See CONTROLLER-OPERATIONS.md and controller-operations-20261016/. No production service or prompt changed.
+
+
+### Step 07 resumable isolated initialization — 16 October 2026
+
+Added explicit root-gated initialization to the controller command. It pins complete installed configuration, rejects non-controller archives, records intent before existing rights migrations, and resumes a failed completion without creating identities or approvals. Native interruption/reopen/retry/conflict and foreign-archive checks pass. Host command compiled; sudo -n confirms password required, so privileged initialization/operation acceptance is not claimed. Evidence: controller-initialize-20261016/. Combined privileged fixture and installed service/runtime integration remain next.
+
+
+### Step 07 combined privileged fixture ready — 16 October 2026
+
+Prepared and compiled one root fixture covering the new host command's initialization, exact retry, synthetic consent/steward gates, altered-inventory denial, inert apply, reopened reconciliation, rollback and replay denial. Unprivileged invocation exits before writes. The exact binary/hash is retained and Maria has been asked to run it with macOS authentication; sudo -n requires a password. No privileged pass or installed service is claimed. The requested binary must remain unchanged until the result arrives. Evidence: controller-combined-20261016/.
+
+
+### Step 07 authenticated operation dispatch — 16 October 2026
+
+Added a service-facing dispatcher requiring the controller's own current steward credential and operation ownership. Apply/rollback compare caller authority before durable intent and immediately before exchange; host-only recovery remains separate. Native full inert operation roundtrip passes caller denial, apply/reconciliation/rollback, demotion/restore invalidation and replay checks. Evidence: controller-requests-20261016/. No service transport or production deployment claimed. The outstanding privileged test binary hash remains unchanged while awaiting Maria's authentication/result.
+
+### Step 07 local HTTP operation transport — 16 October 2026
+
+Added a strict local HTTP connection handler using controller-owned credentials and pinned service inputs. Native loopback integration passed authorized inspect/apply/reconcile/rollback, empty/wrong/admin/other-steward HTTP 403, duplicate/malformed/configuration-override HTTP 400, and replay refusal. Synthetic approvals and inert files only; production remains unchanged. Evidence: evidence/phase2/controller-http-20261016/. Root service startup, enrollment and runtime integration remain within step 07; privileged combined fixture still awaits the requested host authentication.
+
+### Step 07 controller service startup — 16 October 2026
+
+Added serve_controller with a shared root-protected configuration loader, explicit local port, verified bootstrap-completion pin and separate request processes with a clean environment. Each child reopens the private ledger and validates the listener configuration before authenticated dispatch. Parent records child PID and exit status. Native configuration/readiness/process-isolation tests passed and the service executable refuses unprivileged startup. Evidence: evidence/phase2/controller-service-20261016/. No root service installed; privileged acceptance, enrollment and runtime integration remain. The pending privileged fixture binary is unchanged; sudo still requires host authentication.
+
+### Step 07 controller-owned enrollment — 16 October 2026
+
+Added explicit root-host enrollment/revocation with a private secret-file input and atomic device, role and archive receipts. Native tests passed fault rollback, collisions, exact retry, hashed credential storage, revoke/reopen/no reactivation. The HTTP inert apply/rollback fixture now uses this enrollment path and passed. The built host command refuses unprivileged access. Evidence: evidence/phase2/controller-enrollment-20261016/. No production identity changes. Privileged qualification, human credential delivery and runtime review integration remain within step 07.
+
+### Step 07 human review HTTP integration — 16 October 2026
+
+Added authenticated exact proposal/review disclosure and human authorize/withdraw/reject routing through the existing stewardship ledger. Native process-isolated HTTP tests passed exact disclosure, wrong-review and stale-revision refusal, retry, withdrawal, renewed authorization and inert apply/rollback. Model review remains synthetic in this fixture; production review generation, UI credential delivery and privileged installation remain open. One earlier shared-thread fixture failure remains documented with an unproven cause; final acceptance here uses the actual service process design. Evidence: evidence/phase2/controller-review-http-20261016/.
+
+### Step 07 dedicated model-review execution — 16 October 2026
+
+Added a dispatcher exposing only the existing inspection/review schemas and recording no-effect refusal for unrelated model tool calls. Native integration passed with a refused host_read_text request. The running local Qwen model separately inspected a disposable proposal, recorded its own low-risk consent in a later generation, persisted provenance and completed its final reply; archive verification passed. Evidence: evidence/phase2/controller-review-agent-20261016/. Service job submission, trusted prompt/profile inputs, interrupted-review recovery, human credential delivery and privileged installation remain within step 07. No real target or live service changed.
+
+### Step 07 review recovery and authenticated proposal intake — 16 October 2026
+
+Added restricted inspection/review recovery that preserves an already committed review receipt, with reopen/fault-injection evidence. Added authenticated HTTP proposal submission against the pinned inventory and resumable exact retries after proposal-storage failure. The process-isolated native fixture passed both, then completed human review and inert apply/rollback; the service rebuilt. Evidence: evidence/phase2/controller-proposal-20261016/. Scheduler and trusted prompt/profile integration, generation interruption recovery, human credential delivery and privileged installation remain within step 07. No live service changed.
+
+### Step 07 trusted review inputs — 16 October 2026
+
+Added complete protected-file/digest configuration for a review prompt and provider profile, plus immutable per-run binding and exact system-message reconstruction. Native tests passed failed-write retry, reopen, replacement refusal, complete Unicode text retention, invalid configuration rejection and unprivileged loader denial. Evidence: evidence/phase2/controller-review-inputs-20261016/. Root-positive loading and scheduler use are not yet qualified; the next integration action is to select stored proposals, bind these inputs and execute/recover the restricted review loop under a single run owner. No live prompt or service changed.
+
+### Human dependencies: revised completion rule — 16 October 2026
+
+Maria explicitly directs that work which truly needs her to finalise is closed on Codex’s side and must not prevent completion of the goal. The original 32-step plan remains the denominator. Record such portions as **closed on Codex’s side — awaiting Maria**, separately from implementation, test and deployment status; finish all autonomous work first. No repeated manual-test requests.
+
+The prepared root-only controller acceptance fixture awaits macOS administrator authentication. Its human execution dependency is closed on Codex’s side; privileged acceptance remains unverified, and production controller installation is not claimed. This does not close unfinished controller implementation or automatically qualify dependent runtime behavior. Reserved step-29 joint prompt decisions similarly cannot hold goal closure once the review material is ready; no independent philosophical prompt rewriting is authorised. Other dependencies qualify only when a real human-only boundary is established, not assumed.
+
+### Step 07 review runner and service scheduling - 16 October 2026
+
+Implemented stored-proposal selection, exclusive native run ownership, restricted recovery/generation loop, pinned prompt use through context reconstruction and compaction, accepted-proposal worker launch and startup resumption. Final native request fixture and actual local-model runner passed; final service compiled and denied unprivileged invocation. Native, input and live databases all pass quick_check. Evidence: evidence/phase2/controller-review-runner-20261016/. Not deployed; installed root acceptance is unverified and its human authentication dependency is closed on Codex's side under Maria's instruction. Autonomous installation preparation and credential delivery integration remain open. No additional plan steps.
+
+### Step 07 host preparation entry - 16 October 2026
+
+Closed the functional gap between model/human decisions and the existing apply command: prepare_controller now resolves the stored proposal and records preparation through the full existing decision/byte/recovery gate. Native refusals, successful preparation, idempotent retry and subsequent HTTP apply/rollback passed. Host build and unprivileged denial passed; root-positive invocation remains explicitly unverified, with the human authentication dependency closed on Codex's side. Evidence: evidence/phase2/controller-prepare-20261016/. No production deployment.
+
+### Step 07 saved controller release - 16 October 2026
+
+All six controller commands rebuilt successfully and saved as a versioned executable bundle at artifacts/controller/20261016-c665b59/. Bundled preflight verified all manifest hashes, exit 0, bytes-verified. Source snapshot, linked-library reports and build logs retained. No service activation or live configuration change. Remaining autonomous work: installed configuration/input assembly and human-interface credential integration; actual root authentication remains separately closed on Codex's side.
+
+### Step 07 prepared configuration packages - 16 October 2026
+
+Saved separate inputs and service manifests under artifacts/controller/20261016-c665b59/configuration/. Both bundled preflights pass. Native validation passes actual configuration, unchanged charter, complete inventory/category validation and all package bytes. Review identity is copied verbatim from the installed bundle. Observer policy remains explicitly unconfigured pending the reserved joint review; required audits refuse, and that human decision is closed on Codex's side. Packages are not installed or activated. Enrollment/delivery and actual filesystem protection still require integration; inventory membership alone does not establish physical isolation.
+
+### Step 07 steward console - 16 October 2026
+
+Added the Ernos human review console and pinned-script serving. Existing authenticated review decisions remain the only mutation route. HTTP page/missing-script checks, existing permission/apply/rollback fixture, configuration checks and emitted-client behavior probes passed. Native fixture quick_check is ok. No production activation; actual browser rendering, credential delivery and refreshed release packaging remain distinct. Evidence: evidence/phase2/controller-console-20261016/.
+
+### Step 07 private credential provisioning - 16 October 2026
+
+Added the root-only OS-random credential command so enrollment no longer requires manually composing a secret file. Native creation/no-overwrite/input/refusal checks passed; file mode0600, single link and 64-byte size verified without printing or copying the secret. This provisions no live principal. Root invocation and human credential delivery remain distinct from implemented provisioning. Evidence: evidence/phase2/controller-credential-20261016/.
+
+### Step 07 refreshed console release - 16 October 2026
+
+Saved artifacts/controller/20261016-6080686 with rebuilt commands, credential provisioning, pinned console script, current source inventory and regenerated input/service manifests. Both preflights and rebuilt native release validation pass. Earlier package retained. No live credential, enrollment, root installation or service activation. Human-only authentication remains closed on Codex's side; remaining executable installer/credential-delivery integration is still autonomous work.
+
+### Step 07 resumable installer - 16 October 2026
+
+Implemented bootstrap_controller joining pinned package staging/verification, private-ledger creation/initialization and credential/enrollment provisioning. Native plan checks and unprivileged host refusal passed. Saved executable, source hashes and exact release references in artifacts/controller/installer-20261016/. No privileged installation or human credential retrieval occurred; their genuine authentication dependencies are closed on Codex's side awaiting Maria. Existing revocation is preserved on retries. Evidence: evidence/phase2/controller-bootstrap-20261016/.
+
+### Step 07 emergency disclosure console - 16 October 2026
+
+Connected the existing emergency report to the authenticated controller HTTP service and human console, including periodic read-only refresh and in-page deadline notices. Native overdue/isolation/override-denial checks and emitted-client refresh/stale-credential tests pass; service builds. No incident mutation or live deployment. Evidence: evidence/phase2/controller-emergency-console-20261016/.
+
+### Step 07 full operation disclosure and browser check - 16 October 2026
+
+Operation inspection now returns the complete verified before/after record chain, not only a state string. Native apply/rollback disclosure and exact payload hashes passed; client record/state display passed. Real browser layout/error/disabled-control checks ran in a disposable no-authority fixture, which is now stopped. Evidence: controller-operation-disclosure-20261016 and controller-console-browser-20261016. No privileged deployment claim. Current release packages need this final disclosure update before closing autonomous installation preparation.
+
+### Step 07 disposition and dependency handoff - 16 October 2026
+
+Final release artifacts/controller/20261016-355059f contains all eight freshly built commands, pinned console and exact input/configuration manifests. Both package preflights, actual release validation and installer-plan validation passed. Non-interactive sudo was rechecked and still requires a password. Under Maria's instruction, this genuine authentication dependency and reserved joint policy decision are closed on Codex's side, not marked deployed/tested. Original step 07 implementation/preparation is closed with those exceptions; the four original requirement rows and their evidence are in STEP-07-EVIDENCE.md. Continuing to original step 08; no new step count.
+
+
+### Step 08: scoped job control (16 October)
+
+Added job_control schema/dispatch for scoped run listing, result references and durable cancellation. Native dispatcher tests cover private/group isolation, current authority, requests versus terminal states, active worker preservation, idle ready/failed/waiting cancellation, retries, reopen and revocation. Existing idle cancellation regression and full server build pass. Evidence: job-control-20261016/. Built but not deployed. Recurring schedules, delegated launch and other remaining step 08 families are not claimed complete.
+
+
+### Step 08: durable schedule storage (16 October)
+
+Inspected the ErnosDecent scheduling path. Added candidate schema 25 with immutable definitions/occurrences, atomic due reservation, one-off/interval timing, explicit catch-up/coalescing, scoped cancellation and original-authority revalidation. Native persistence, retry, missed-run, reopen and authority-change tests pass; SQLite quick_check is ok. Evidence: schedule-store-20261016/. Not installed or wired to a recurring worker; tool/worker integration and delegation remain in step 08.
+
+
+### Step 08: scheduled occurrence to ordinary run (16 October)
+
+Atomic schedule_materialize now preserves the original private/shared session, exact initiating authority, full instruction and archived provider binding. Native busy/retry/reopen/group-isolation checks pass. An isolated scheduled occurrence completed through the ordinary worker using the actual local Qwen model with its expected marker; archive integrity is ok. Evidence: schedule-run-20261016/. Background ticking, model-facing schedule tools and automatic process dispatch are not yet installed.
+
+
+### Step 08: schedule tool interface (16 October)
+
+Added schedule create/list/inspect/occurrences/cancel, authority-scoped schema/dispatch and discovery contract. Native streaming checks and actual local-model create-inspect-cancel loop pass; both evidence archives pass quick_check. Evidence: schedule-tool-20261016/. Background ticking and automatic worker process launch remain unfinished; production not migrated.
+
+
+### Step 08: automatic schedule service (16 October)
+
+Candidate server now starts and supervises a separate scheduler process on schema 25 archives. An isolated full server automatically launched the ordinary owned worker and completed a due occurrence using local Qwen. Forced scheduler restart and full server restart produced no duplicate occurrence; parent shutdown ended the scheduler. Evidence: schedule-service-20261016/. Production unchanged; original step 08 broader tool/delegation work remains.
+
+
+### Step 08: saved candidate discovery (16 October)
+
+Added tool_candidates schema/dispatch, exact manifest bytes/digest and paged name/purpose search across authorised source records. Native registry save regression and actual discovery dispatch pass private/shared/foreign isolation, restart, corruption refusal and revocation. Evidence: candidate-discovery-20261016/. No activation/qualification or complete composition claim; production unchanged.
+
+### Step 08: public destination parsing (16 October)
+
+Native URL parsing and binary IPv4/IPv6 public-address classification pass the application fixture, including numeric local aliases, credentials, zones, relative URLs and live public DNS. Registry snapshots and exact source/binary hashes are retained in evidence/phase2/research-network-20261016/. Corrected an application loop that did not advance after continue; compiler unchanged. This is only the destination foundation: pinned HTTP transport, redirect handling and research tool integration remain unfinished. Production unchanged.
+
+### Step 08: public web fetch (16 October)
+
+Implemented web_fetch with a separate Ernos/native-curl helper, approved-address pinning, redirect revalidation, full response/header preservation and scoped attachment publication. Actual streamed dispatch passed private/shared calls, foreign isolation, revoked authority, forged arguments and complete-byte digest readback. Public redirect to loopback was refused; a relative redirect chain completed. Cancellation terminated/reaped the helper with retained request evidence. The actual local Qwen model fetched example.com, read the saved original with attachment_read_text and completed its reply. Evidence: web-fetch-20261016/. Production unchanged. Search/browser and other unfinished original step 08 families remain; fetch MIME-specific extraction and interrupted partial-source recovery are identified in WEB-RESEARCH.md. No new plan steps.
+
+### Step 08: web search and source navigation (16 October)
+
+Reused the ErnosDecent DuckDuckGo HTML search approach with the pinned public fetch worker. Added UTF-8 query encoding, retained extracted HTML title/text/links, source-digest-bound web_follow, and explicit search challenge/no-result/unavailable statuses. Native parsing and external-entity isolation checks pass. Streamed tool tests passed search, same-conversation navigation and foreign denial. Actual local Qwen searched ErnosPlain, read results, followed a result, inspected destination sources and completed. Full source/derived attachment hashes and SQLite integrity verified. Evidence: web-research-20261016/. Production unchanged. Static navigation limits and remaining step 08 work remain explicit; no new plan steps.
+
+Current-system deployment (16 October, release phase2-research-20261016-195157): rebuilt the actual current worktree, switched the host service without killing the existing conversation worker, then migrated the live archive to schema 25 after that worker completed. The independent scheduler is running. Research helper/artifact roots are configured. Local HTTP and phone HTTPS serve matching release browser bytes; candidate pairing/identity/session access and migrated-copy integrity passed. See DEPLOYMENT-20261016-RESEARCH.md for exact evidence and rollback constraints. Step 08 remains the active original plan step.
+
+Step 08 scoped files (16 October): workspace_list is implemented in Ernos and registered as workspace.read, with native scoped directory handles, caller-selected paging, Unicode/error handling and post-operation authority checks. Native, streamed-dispatch and shared-workspace tests passed, including traversal/symlink/outsider/revocation checks. See WORKSPACE-FILES.md and private workspace-list-20261016 evidence. This addition is not yet deployed; file search/edit/diff and other original step-08 families remain. The preceding deployed research acceptance has now completed with successful web_fetch and attachment_read_text; its temporary device was revoked.
+
+Step 08 file stage (16 October): search, digest-checked editing with retained originals, and line-aligned comparison are implemented alongside listing. Native long-text/Unicode/stale-conflict/backup checks, the actual streamed dispatcher and shared-member/outsider checks passed. Release phase2-files-20261016-201157 is deployed with the rebuilt server and guardian; no schema change or active-worker termination. Local/phone HTTP checks passed. The real-model acceptance run is still running (its handle and private credential are retained in the release directory); do not mark that acceptance complete without live-files-pass.json and credential revocation. Other original step-08 tool families remain. Each completed validated stage is now deployed per Maria’s updated goal instruction.
+
+
+Latency and clock correction (16 October): deployed two full-context inference slots, retaining 262,144 tokens each, and a 65,536 MiB host prompt cache after logs proved the default 8,192 MiB cache rejected large conversation states. Observed both slots active concurrently; the short diagnostic completed while the other request continued. Clock observations now accompany user turns with full local/UTC date, time and offset; system_inspect provides a fresh reading. Native clock and submission/reconstruction/archive-integrity checks passed; release phase2-clock-20261016-202957 is live. The previous file verification run was cancelled to remove contention and its credential revoked; its successful tool observations remain, but final-response acceptance was not completed. See INFERENCE-LATENCY.md. This is a bug correction within the existing plan, not another plan step.
+
+Recall prefix correction (16 October): moved fresh scoped recall after stable conversation history, preserving its complete contents and visibility rules. The regression changes a memory visibility record and proves the preceding history bytes stay identical while the forgotten memory disappears. Automatic recall, foreign isolation, restart and checkpoint/session reconstruction checks pass. Deployed phase2-recall-cache-20261016-203443 without restarting inference; local/phone HTTP checks passed. Evidence and rationale are in INFERENCE-LATENCY.md. Step 08 remains active.
+
+Memory latency incident (16 October): traced a 269-second synchronous extraction and repeated memory-invalid-source failures over the same 93 sources. Six records used correction as kind. Normalized that explicit kind to semantic/correction while preserving source/quote validation; regression passed. Verified/replayed the already completed archived stream first on a copy, then live, without inference; all 93 sources have indexing receipts. Reversed the recall-suffix experiment because it would reprocess large memories on every tool step. Deployed phase2-memory-recovery-20261016-204535; model and active user worker preserved, local/phone HTTP checks passed. See INFERENCE-LATENCY.md. Table work remains unfinished and uninstalled while the latency bug takes priority.
+
+Step 08 delimited-table progress (16 October): `workspace_read_table` now implements scoped CSV/TSV reading with exact string cells, full-source SHA256, paging and malformed-tail validation. Native parsing/digest and unauthorized/revoked access regressions passed on the internal runtime filesystem. Deployed phase2-tables-20261016-205222; HTTP and LAN HTTPS responded 200. `tests/tools/test_live_table.ep` is running against actual local Qwen in a separate fixture; model-driven acceptance remains pending. See DELIMITED-TABLES.md. This supersedes the earlier note that table wiring was uninstalled; XLSX and the wider step 08 document family remain outstanding.
+
+Step 08 follow-up: actual local Qwen table invocation completed and archive verification passed. Exact JSON subtree selection is implemented and deployed in phase2-json-20261016-205848 with native parsing, digest and scoped-access evidence; JSON chat invocation remains unrecorded. See DELIMITED-TABLES.md and JSON-SELECTION.md.
+
+Step 08 archive inspection: native ZIP/TAR/gzip metadata, source hash, paging, malformed input, inert traversal names, scoped dispatch and revocation checks passed. `workspace_archive_list` is implemented and committed; archive release build is running. See ARCHIVE-INSPECTION.md. This is metadata inspection, not extraction or workbook support.
+
+Step 08 archive extraction: selected-file extraction now checks source digest, rejects link/non-regular entries, stages binary bytes and publishes with exclusive rename to an explicit workspace path. Native no-overwrite/source-change/path/link and authenticated/revoked checks passed. Release phase2-extract-20261016-210727 is deployed; local and LAN endpoints respond. Model-driven archive invocation remains pending. See ARCHIVE-INSPECTION.md.
+
+
+### Step 08: XLSX stored-data reader (16 October)
+
+Implemented workbook package/relationship discovery, sheet catalogue, hidden state and paged cells with exact numeric spelling, shared/inline text, formula/cached-value distinction and date-system metadata through native libarchive/libxml2 and Ernos. Scoped dispatch and outsider/revocation denial passed; server build passed. WORKBOOKS.md records code, format references, limits and evidence. Actual local Qwen invocation passed catalogue/sheet reads, file-only values, event-chain verification and completed-run reopen. Deployed phase2-workbook-20261016-213758 with both /api/status endpoints returning 200 and the model process preserved. Workbook writing/calculation/rendering and the rest of step 08 are not marked complete. No step or completion denominator added.
+
+
+Step 08 workbook creation: workspace_create_workbook now creates multiple typed sheets with literal strings, numeric/boolean/empty cells and explicit formula caches. Native/scoped tests, archive regression and actual primary-model create/read/reopen acceptance passed. Deployed phase2-workbook-create-20261016-214515 with HTTP/LAN status 200 and model preserved. WORKBOOKS.md maps implementation/evidence and limitations. Workbook editing remains outstanding; no new plan steps.
+
+
+Step 08 workbook editing: workspace_edit_workbook publishes explicit existing-XML-part replacements into a new workbook, preserving source, unselected payloads and exact UTF-8 entry names. Native/scoped and actual-primary-model edit/readback/reopen checks passed; ZIP/TAR/gzip regression passed. Fixed a predeployment macOS Unicode-normalization issue using validated raw ZIP header names and UTF-8 output. Deployed phase2-workbook-edit-20261016-215926, HTTP/LAN status 200, model retained. WORKBOOKS.md records limitations and evidence. Step 08 remains active; no new plan steps.
+
+### Step 08 — delegated execution deployed, 16 October 2026
+
+Delegation now creates separate private/group task contexts, retains exact initiating authority and provider selection, launches via the ordinary scheduler/worker path, returns complete terminal result provenance, and supports scoped cancellation. Native admission/control/migration checks and actual local-model private/shared child runs pass; the full model-facing delegate/status/scheduler loop passes. Schema 26 and release `phase2-delegation-20261016-222245` are deployed, with pre-migration backup and model process retained. Documentation: DELEGATION.md; evidence: delegation-20261016/. This advances delegation within original step 08, not the remaining tool families or later steps.

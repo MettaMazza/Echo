@@ -19,4 +19,4 @@ Include the source revision, platform, provider/adapter, operation, observed sta
 
 ## Scope of this documentation
 
-The first-party source inventory is complete navigation, not a claim that every branch was manually audited or every test was run. Dependency source and model weights remain upstream acquisitions. Model metadata, configuration and measured evidence are separate facts. Phase Two remains a plan; its features must not appear as implemented in the README until tested and documented.
+The first-party source inventory is complete navigation, not a claim that every branch was manually audited or every test was run. Dependency source and model weights remain upstream acquisitions. Model metadata, configuration and measured evidence are separate facts. Phase Two implementation is underway. Follow phase2/PROGRESS.md and the feature evidence documents; planned capabilities must not appear as implemented until their code and appropriate evidence exist.

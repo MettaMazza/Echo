@@ -1,10 +1,21 @@
 # Echo Phase 2 — review plan
 
-**Status: implementation authorised by Maria’s end-to-end Phase Two goal, 16 October 2026.** Work follows the dependency order below. Final prompt wording remains reserved for the joint review at step 29. Progress and evidence are recorded in docs/phase2/REQUIREMENTS.json and docs/phase2/PROGRESS.md.
+Current implementation reconciliation: [Echo 1.5, original 32 steps](docs/releases/1.5/PHASE-TWO-STATUS.md). This checkpoint does not close Phase Two.
+
+
+**Status: implementation authorised by Maria’s end-to-end Phase Two goal, 16 October 2026.** Work follows the dependency order below. Final prompt wording remains reserved for the joint review at step 29. Progress is tracked against the original 32 execution steps in docs/phase2/PROGRESS.md. Existing detailed evidence records are references, not additional tasks or completion denominators.
+
+## Completion rule approved by Maria — 16 October 2026
+
+Anything that genuinely requires Maria personally to finalise is **closed on Codex’s side — awaiting Maria** and does not block completion of the agent’s Phase Two goal. Complete all independently executable preparation first; record the precise remaining human action, reason it cannot be performed autonomously, affected capability, and available evidence. Do not repeatedly ask Maria to run tests or perform handoff commands. Broad authorisation is already granted.
+
+This status is distinct from implemented, tested and deployed: never report an unperformed privileged installation, external authentication or joint prompt decision as performed. It does not excuse unfinished work Codex can do. Preserve dependency order for executable work; where a genuine human dependency prevents a dependent live check, record that dependency explicitly and finish all independent implementation and verification. No new steps or completion denominator are introduced.
+
+Known applications: macOS administrator authentication where non-interactive access is unavailable; any external account login/consent that actually requires Maria; and the explicitly reserved joint prompt wording review at step 29. Prepare each item fully before closing Codex’s part. Prompt wording stays unchanged until the joint review. The earlier requirement to wait for joint prompt review before closing the entire goal is superseded by this instruction.
 
 Echo’s full name is **Echo Ernos Smith**.
 
-Phase 2 delivers a local-first community agent: Discord, individual and joined conversations, situational awareness, an extensive permissioned tool system, Gmail, optional external inference, recursive self-improvement, weight training, steering and interpretability. It also includes all deferred Phase 1 work. At the end, return to Maria for a dedicated joint prompt session before closing Phase 2. Do not independently rewrite or finalise the prompts.
+Phase 2 delivers a local-first community agent: Discord, individual and joined conversations, situational awareness, an extensive permissioned tool system, Gmail, optional external inference, recursive self-improvement, weight training, steering and interpretability. It also includes all deferred Phase 1 work. At the end, prepare the dedicated joint prompt review and record it as closed on Codex’s side — awaiting Maria under the completion rule above. It does not block closing the agent’s Phase Two goal. Do not independently rewrite or finalise the prompts.
 
 ## 1. Commitments carried forward
 
@@ -300,8 +311,10 @@ On success, clear the busy indicator and continue the same task automatically, l
 
 ### Execution rules
 
+**Maria’s scope instruction, 16 October 2026:** Resume and finish the existing 32 steps in dependency order. Do not create additional steps or expand the task count. Reuse completed implementation and valid evidence. Deviate only to fix a bug or code issue, then return immediately to the current step. Work not explicitly accounted for in the Phase One or Phase Two plans belongs to Phase Three and is recorded below; it is not a new Phase Two completion gate. The former expanded requirements ledger is historical reference only.
+
 - Begin implementation only after Maria authorises it. This amended document does not itself start implementation.
-- Maintain one requirement ledger linking every section 4/6 tool action, every section 14 scenario, every D01–D20 item and every applicable original A01–A29 row to its implementation step, test and evidence. A family-level tick cannot conceal unfinished individual actions.
+- Track delivery using the existing 32 steps, linking their existing implementation and relevant evidence. Do not split them into additional tracked tasks or derive percentages from individual checks.
 - For each step record source/build/configuration identity, actual change, checks, evidence paths, remaining failures and the next executable action. Commit coherent changes as they pass; keep secrets and private records out of Git.
 - Run relevant checks immediately. Keep passed evidence unless a later change invalidates it; rerun affected integration checks after changes, then run the final acceptance sequence once against the final candidate.
 - If an external input is missing, record the exact dependency and continue independent steps. Do not mark the dependent feature complete. Failure or unavailable credentials cannot silently remove a requirement.
@@ -704,3 +717,7 @@ During plan review agree the guest-safe tool set, standing community/mail autono
 - Bot actions depend on permissions and role hierarchy: [Discord permissions specification](https://github.com/discord/discord-api-docs/blob/main/developers/topics/permissions.mdx). Message/reaction tools and content access depend on the supported endpoints and intents: [Discord message API](https://docs.discord.com/developers/resources/message).
 - Gmail permissions differ by operation, including permanent deletion and settings: [Gmail API scopes](https://developers.google.com/workspace/gmail/api/auth/scopes). Implement and verify the needed scopes rather than treating mailbox OAuth as unrestricted account access.
 - Local evidence documents: [Phase 1 plan](plans/Echo%20Phase%201%20Plan.md), [status](docs/STATUS.md), [operations](docs/OPERATIONS.md), [prompt migration](docs/PROMPT-MIGRATION.md), [attachment repair](docs/ATTACHMENT-REPAIR.md). Status headings are dated snapshots; later repair records supersede earlier details.
+
+## Phase Three — newly discovered work outside the agreed plans
+
+See the [Phase Three sketch](docs/releases/1.5/PHASE-THREE.md): the full decentralized exchange network and future peer-admission/trust design remain deferred directions. Phase Three is still being sketched. Existing Phase Two promises remain in the original 32 steps.

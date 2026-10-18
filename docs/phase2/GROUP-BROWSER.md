@@ -1,6 +1,6 @@
 # Shared browser HTTP integration
 
-This is candidate implementation with live browser evidence, not a deployed group interface. The production archive remains schema 10. A separately seeded schema-20 archive and isolated server are used for acceptance. The server source now accepts archive versions through 20; it does not migrate production automatically.
+Current deployment: the shared browser interface and schema24 are installed. The latest release is recorded in `PROGRESS.md` and `../../environments/echo-service.json`. The qualification records below describe the isolated schema20/21 builds used when those features were introduced; their references to candidate status or schema10 production are historical, not current deployment status. Shared scratchpads and saved-recap inspection were subsequently deployed; see `../SILO-SCRATCHPADS.md` and `../SILO-RECOVERY.md`.
 
 All endpoints use the existing bearer-device authentication and exact Origin/Host checks. Browser-created groups use the fixed `browser` / `local` namespace; the channel identifier equals the group identifier. Request data cannot select Discord or another connector's namespace. Membership grants no administrator role.
 

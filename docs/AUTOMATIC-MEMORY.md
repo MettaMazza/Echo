@@ -35,3 +35,10 @@ Raw conversations, extraction requests, test archives, source lists and private 
 The schema10 production service now runs `server_phase2_memory`. A consistent pre-change archive and configuration backup is retained locally. The existing owner's history was backfilled with 28 records from 180 source events. Only two repeated technical memory descriptions changed in the private identity bundle; the remaining bytes, including philosophical and identity wording, are unchanged.
 
 The fresh real-history conversation recalled the owner and earlier corrections. Its follow-up reused 27,246 cached tokens and processed 29 new prompt tokens in 293 ms, followed by 1,582 ms generation. A separate local-model cycle passed identity, shared-experience and workflow extraction/recall. `tests/web/test_live_memory_server.ep` then passed against the actual production HTTP service, including automatic extraction, new-session recall, foreign-device denial and credential cleanup. Both loopback and Wi-Fi HTTPS returned 200. These are observed runs, not a promise of identical latency or perfect behaviour on every future response.
+
+
+### Workflow classification recovery
+
+The extractor may return `workflow` or `procedural` as a memory kind alongside category `workflow`. Grounding normalises those two aliases to the existing `semantic`/`workflow` representation before strict validation. Source ownership, exact quotations and permitted categories are still checked. Other invalid kinds are not accepted. This prevents one correctly sourced workflow from rejecting the full batch and leaving all its sources pending for repeated extraction.
+
+The original provider output remains archived. The native automatic-memory regression verifies both aliases, idempotent ingestion, restart, forgetting, cross-session recall and foreign-source rejection.

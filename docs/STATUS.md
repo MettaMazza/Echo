@@ -1,4 +1,22 @@
-# Current status — 16 October 2026
+# Current status — Echo 1.5, 18 October 2026
+
+The current consolidated record is [Echo 1.5](releases/1.5/README.md), including the [original 32-step reconciliation](releases/1.5/PHASE-TWO-STATUS.md). Current deployed release: `phase2-stable-session-recall-20261018-r2`. Phase Two remains incomplete; later foundations do not close their integrations.
+
+The entries below are dated historical observations. Their older counts, remaining-work statements, pause state and deployment names are superseded by the consolidated record where they differ.
+
+## Historical record
+
+# Current status — 18 October 2026
+
+18 October: Ernos Plain is now the explicit default for all Echo-authored code and tools, with documented exceptions, syntax support and actionable compiler-preflight recovery. Live author/build/run/error-recovery/attachment verification passed. See [Ernos authoring and feedback](phase2/ERNOS-AUTHORING-FEEDBACK-2026-10-18.md).
+
+Latest targeted repair: `phase2-general-task-tracking-r2-20261018` gives parent Echo the same durable task checklist as delegated agents, resolves bare installed commands correctly, and directs execution output to the decoded reader. Native checks and a real multi-step model/tool/chat pipeline passed; ordinary chat remains tool-free. See [general task verification](phase2/GENERAL-TASK-TRACKING-2026-10-18.md).
+
+Earlier targeted repair: `phase2-selected-recall-20261017` selects automatic private recall instead of injecting every eligible record. Live fresh greeting: 32,709 total / 7,852 memory tokens. Two live replies were verified through the session API; see [selective recall evidence and limitations](phase2/SELECTIVE-RECALL-2026-10-17.md). All original memories remain retrievable.
+
+Previous targeted repair: `phase2-recap-review-20261017` is deployed. Typed review findings stop positive observations causing recap rewrite loops; compaction yields to interactive inference. The actual 62-record review passed in 124.369 seconds without a rewrite; real semantic defects remain rejected. Existing audit workers and archives were preserved. See [review repair evidence](phase2/COMPACTION-REVIEW-REPAIR-2026-10-17.md).
+
+Previous targeted repair: `phase2-compact-recall-20261017` is deployed. Private cross-session recall now groups source metadata, preserves exact claim quotations and stops accumulating indexed originals in later snapshots. Live request memory is 83,650 tokens; total request is 109,078, admitted without compaction. Existing audit workers were preserved on their earlier executable. See [compact recall evidence](phase2/COMPACT-CROSS-SESSION-MEMORY-2026-10-17.md). General Phase Two development remains paused; this is not overall latency or Phase Two acceptance. Older status sections below are dated history.
 
 16 October continuity tools: scoped session/message index, captured reasoning read-back, persistent revisioned scratchpad, explicit graph continuation and decoded execution output. Sandbox ancestor-directory listing is denied. Read-lock cancellation regression is covered separately; recall extraction was not shortened. See CONTINUITY-TOOLS.md.
 
@@ -59,3 +77,45 @@ Maria authorised the full end-to-end goal. The source integration map, requireme
 The current host now runs the guardian-backed server on schema 10. An authenticated production conversation exercised the local model, a real command, durable guardian/exit records and final reply; a second device was denied access. Temporary test credentials were revoked. A consistent pre-cutover backup and executable/prompt/browser hashes are retained privately. This update does not deploy the schema-15 emergency controls or establish completion of Phase Two.
 
 Compaction indicator is deployed (16 October): animated preparation/review stages explain the delay and retained originals; worker failure stops the animation. Reduced-motion styling includes the spinner. Both loopback and LAN HTTPS served the verified browser build after a backed-up restart with unchanged archive rows. This deployment does not close the remaining compaction performance acceptance gate.
+
+
+## Latest-source deployment — 16 October 2026
+
+At Maria’s explicit request, rebuilt the current server, browser and audio/math assets, execution guardian, principal/device administration, service launcher, controller staging/launch commands and native research commands. Aligned server and administrative compatibility with schema22 and migrated through the existing complete migration chain. The copy migration and live migration each preserved every pre-existing table row; integrity and foreign-key checks passed. Original archive, identity, service profile, server and browser were retained before cutover.
+
+The active service profile now selects the versioned internal release `20261016-123350`, including its matching guardian and UI assets. The local primary model and HTTPS gateway are running. Group conversation UI and the newer callable tools are now in the deployed build. Stored candidate-tool definitions remain candidates; this deployment does not invent unfinished tool activation, Discord, Gmail, training or protected-controller service integration. The separate privileged ledger remains a component, not an activated root service.
+
+Private deployment receipts, build logs, source hashes and cutover backup: `evidence/phase2/release-20261016-123350/`. This supersedes earlier statements that production remains schema10 or that the current group interface is undeployed. Phase Two feature development has not otherwise resumed.
+
+
+Composer update: Enter sends/queues and Shift+Enter inserts a newline. Typing remains available during replies. Per-device/session queued messages survive refresh and can be removed. Steer now cancels the current owned run and delivers the correction after cancellation; existing tool effects remain archived. Real-browser checks verified keyboard handling, refresh persistence, removal, automatic next-message delivery, retained unsent draft and correction delivery after cancellation. See MESSAGE-QUEUE.md and private evidence/phase2/queue-ui/verification.json. The bundle was updated without restarting active conversations.
+
+
+Linked-browser/audio update (16 October): deployed schema23 with independent linked credentials for the same account, one-use expiring codes, browser unlink and current private-conversation following. Original rows were verified unchanged across migration. Audio now uses a stable player outside transcript redraw and pauses the preceding player on new playback. Native linking, live HTTP shared-session/revocation and real-browser audio continuity/exclusivity checks passed. See DEVICE-LINKING-AND-AUDIO.md.
+
+
+## 16 October: linked conversation libraries and steering UI
+Deployed schema24 and the updated browser. Explicitly linked existing accounts share their private conversation library without rewriting original session/principal records. Visible pages refresh the sidebar/new-turn state every three seconds and on focus. Native merge/isolation/reopen checks and live HTTP combined-history/rename checks passed. Browser watcher probes passed; live queued steering cancelled its original turn and submitted the correction once, with visible confirmation. The disposable follow-up was stopped after delivery verification. Queue cards, count, removal controls and dedicated steering status are styled in the composer. See DEVICE-LINKING-AND-AUDIO.md and MESSAGE-QUEUE.md for exact scope.
+
+
+## 16 October: original audio UI restored and reasoning lookup corrected
+Restored native audio controls inside each message. Connected message nodes survive transcript updates, preserving playback; starting another clip pauses the first. Browser verification passed. Reasoning capture was present: two failed requests used non-response IDs and received ambiguous end results. reasoning_read now resolves request/run IDs to original response events, reports missing IDs clearly, and memory_messages supplies reasoning_event and capture length. Native isolation/alias regression and read-only replay of both real failures passed. Deployed the new server and browser without a schema change; the already-running reply retained its original worker. New turns use the updated tool. See REASONING-RETRIEVAL.md.
+
+## 16 October 2026 — same-run guidance and linked recall correction
+
+Deployed `midturn-linked-recall-20261016-153834` (schema 24 unchanged). Steer now records guidance against the active run; it no longer cancels and submits another turn. An obsolete generation is interrupted at a stream event boundary and resumed with the original objective, completed observations and new guidance. Unlaunched tools are reconsidered; running tool effects are preserved. Received/applied guidance appears in Thinking. See MESSAGE-QUEUE.md for prefill timing and text-only guidance details.
+
+Linked-account scope now reaches model-facing message/session/reasoning recall, automatic context, graph reads, attachment listing and text retrieval. A read-only check against the actual Mac run retrieved the phone conversation and its original handover attachment with verification. Original principals and tool authority remain intact.
+
+Native streaming and tool-boundary tests passed, along with outsider isolation and browser submission checks. The live local-model test accepted guidance while generating and returned exactly `silly goose`: same run, two generation requests, one received guidance, one application, one final response, zero cancellation events. Evidence: `evidence/phase2/midturn-linked-recall-20261016-153834/`. Broad Phase Two remains paused; this entry covers these requested corrections only.
+
+
+## 18 October — semantic automatic recall
+
+Deployed `phase2-semantic-recall-r3-20261018`. Local embedding similarity replaces the broad keyword-admission rule for automatic private memory. Original memory remains accessible through tools; full model context is unchanged. The passing live two-turn test completed both visible replies: greeting in 7.32 seconds with a warm cache; broad follow-up in 62.71 seconds including three memory calls. Broad initial input fell from 95,672 to 33,838 tokens. The test exposed and corrected a passage-iteration crash before this release. See [semantic recall evidence](phase2/SEMANTIC-RECALL-2026-10-17.md) for exact scope, failures, verification and limitations. This entry does not close unrelated Phase Two work.
+
+18 October 06:10 follow-up: r4 supersedes r3 after a fresh-session allocation crash in recall candidate construction. Named, retained parameter lists replace temporary list literals in the new recall path. Two post-deployment live turns completed and appeared in the session API. See the semantic recall evidence document for the incident and exact results.
+
+## 18 October — correction precedence
+
+Deployed `phase2-correction-precedence-r2-20261018`. Recorded corrections now quarantine all derivatives of corrected private-memory sources, invalidate frozen recall, block relearning from those originals, and accompany historical memory/tool reads. Transitive corrections preserve the latest correction. Five verified contaminated history messages were linked to the existing Corvus/Dewthread correction without changing original bytes or digests. Native regressions and the final deployed live original-read/model-reply/session-API check passed. See [correction precedence](phase2/CORRECTION-PRECEDENCE-2026-10-18.md) for scope and evidence.

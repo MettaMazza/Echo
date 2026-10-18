@@ -1,5 +1,8 @@
 # Build and verification
 
+> Current 1.5 additions and boundaries: [system audit](releases/1.5/SYSTEM-AUDIT.md), [status](releases/1.5/PHASE-TWO-STATUS.md), [verification](releases/1.5/VERIFICATION.md). Historical build/acceptance examples below retain their original dates. Current exact source contracts are in [the generated reference](reference/APPLICATION.md).
+
+
 ## Prerequisites and source provenance
 
 The current native build uses the self-hosted Ernos compiler from MettaMazza/Ernos-Programming-Language at `4b3ebd1359886999b4f043a4663b9470ee8d474c`, with the retained import-identity overlay in `engine/ernos-overrides`. See `PROVENANCE.md`. The Mac needs Clang/Apple Command Line Tools and the dependency libraries expected by the pinned compiler. The compiler source, runtime header and standard library must be installed together. Building from an unrelated compiler version is not verified here.
