@@ -1,0 +1,66 @@
+import "delegation_run"
+
+# The checklist is an immutable archive snapshot scoped to this run.
+# A newer authenticated user or parent guidance event makes the old plan revisable.
+define task_checklist_child with database as Int and run as Str returning Int:
+    set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE name='echo_delegations';"))
+    if not (archive_list_text(schema and 0) equals "found"):
+        return 0
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT child FROM echo_delegations WHERE child=?;" and [run]))
+    return archive_list_text(row and 0) equals "found"
+
+define task_checklist_read with database as Int and run as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE kind='task_checklist' AND json_extract(payload,'$.run_id')=? ORDER BY sequence DESC LIMIT 1;" and [run]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    set event to archive_read_event(database and archive_list_text(row and 1))
+    if event equals 0:
+        return ""
+    return archive_list_text(event and 3)
+
+define task_checklist_state with database as Int and run as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN EXISTS(SELECT 1 FROM echo_events g WHERE g.kind='user_guidance' AND json_extract(g.payload,'$.run_id')=?1 AND g.sequence>e.sequence) THEN 'revise' WHEN EXISTS(SELECT 1 FROM json_each(e.payload,'$.items') i WHERE json_extract(i.value,'$.status')='pending') THEN 'pending' ELSE 'complete' END FROM echo_events e WHERE e.kind='task_checklist' AND json_extract(e.payload,'$.run_id')=?1 ORDER BY e.sequence DESC LIMIT 1;" and [run]))
+    if archive_list_text(row and 0) equals "found":
+        return archive_list_text(row and 1)
+    if task_checklist_child(database and run):
+        return "missing"
+    return "available"
+
+# Full snapshots preserve item identity and collected evidence across restart and
+# compaction. A retry uses the original tool call identity, not a second write.
+define task_checklist_save with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if run_authority_allows(database and run and "user") equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set valid to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN json_type(?1)='object' AND json_type(?1,'$.items')='array' AND json_array_length(?1,'$.items')>0 AND NOT EXISTS(SELECT 1 FROM json_each(?1) WHERE key<>'items') AND NOT EXISTS(SELECT 1 FROM json_each(?1,'$.items') i WHERE json_type(i.value)<>'object' OR COALESCE(json_type(i.value,'$.id'),'')<>'text' OR length(trim(json_extract(i.value,'$.id')))=0 OR COALESCE(json_type(i.value,'$.requirement'),'')<>'text' OR length(trim(json_extract(i.value,'$.requirement')))=0 OR COALESCE(json_extract(i.value,'$.status'),'') NOT IN ('pending','done','unresolved') OR COALESCE(json_type(i.value,'$.evidence'),'')<>'text' OR (json_extract(i.value,'$.status')<>'pending' AND length(trim(json_extract(i.value,'$.evidence')))=0) OR EXISTS(SELECT 1 FROM json_each(i.value) WHERE key NOT IN ('id','requirement','status','evidence'))) AND (SELECT COUNT(*) FROM json_each(?1,'$.items'))=(SELECT COUNT(DISTINCT json_extract(value,'$.id')) FROM json_each(?1,'$.items')) THEN 'valid' ELSE 'invalid' END;" and [arguments]))
+    if not (archive_list_text(valid and 1) equals "valid"):
+        return "{\"status\":\"invalid-checklist\",\"recovery\":\"Provide nonempty items with unique id, requirement, pending/done/unresolved status and evidence. Resolved items need observed evidence or an explicit limitation.\"}"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    set identity to concat(run and concat(":checklist:" and call_id))
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE event=?;" and [identity]))
+    if archive_list_text(existing and 0) equals "found":
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"already-saved\"}"
+    set prior to task_checklist_read(database and run)
+    set state to task_checklist_state(database and run)
+    if string_length(prior) > 0 and not (state equals "revise"):
+        set removed to history_collect_one(checkpoint_prepare(database and "SELECT (SELECT abs(json_array_length(?1,'$.items')-json_array_length(?2,'$.items'))) + COUNT(*) FROM json_each(?1,'$.items') old WHERE NOT EXISTS(SELECT 1 FROM json_each(?2,'$.items') new WHERE json_extract(new.value,'$.id')=json_extract(old.value,'$.id') AND json_extract(new.value,'$.requirement')=json_extract(old.value,'$.requirement'));" and [prior,arguments]))
+        if not (archive_list_text(removed and 1) equals "0"):
+            set ignored to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"requirements-must-be-preserved\",\"recovery\":\"Retain all assigned items and their IDs. Mark an unavailable requirement unresolved with evidence; do not silently delete it. Only new user or parent guidance permits replacing requirements.\"}"
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"run-unavailable\"}"
+    set canonical to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,'$.run_id',?2);" and [arguments,run]))
+    set payload to archive_list_text(canonical and 1)
+    if archive_append_pending(database and archive_list_text(row and 0) and identity and "task_checklist" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"write-failed\"}"
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"commit-failed\"}"
+    return concat("{\"status\":\"saved\",\"checklist_state\":" and concat(provider_quote(task_checklist_state(database and run)) and "}"))

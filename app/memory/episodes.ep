@@ -1,0 +1,78 @@
+import "knowledge"
+
+import "episode_order"
+import "group_episodes"
+
+# Cursor is tied to principal and filters and freezes the ingestion boundary.
+# Visibility and source ownership are still checked on every page.
+define episode_page with database as Int and run as Str and cursor as Str and entries as Int and category as Str returning Str:
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return group_episode_page(database and run and cursor and entries and category)
+    if entries < 1:
+        return "{\"status\":\"invalid-arguments\"}"
+    set binding to ep_sha256(concat(provider_quote(principal) and provider_quote(category)))
+    set boundary to 0
+    set unknown to 0
+    set time to ""
+    set sequence to 0
+    if string_length(cursor) > 0:
+        set tokens to provider_json_tokens(cursor)
+        if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+            return "{\"status\":\"invalid-cursor\"}"
+        if not (provider_value(tokens and provider_member(tokens and 0 and "binding")) equals binding):
+            return "{\"status\":\"cursor-scope-changed\"}"
+        set boundary to history_tool_integer(tokens and "through")
+        set unknown to history_tool_integer(tokens and "unknown")
+        set sequence to history_tool_integer(tokens and "sequence")
+        set field to provider_member(tokens and 0 and "time")
+        if boundary < 0 or else sequence < 0 or else sequence > boundary or else not (unknown equals 0 or else unknown equals 1) or else not (provider_kind(tokens and field) equals "string"):
+            return "{\"status\":\"invalid-cursor\"}"
+        set time to provider_value(tokens and field)
+    else:
+        set query to memory_scope_query(database and "SELECT COALESCE(MAX(sequence),0) FROM echo_memory_claims WHERE principal IN (__MEMORY_SCOPE__);")
+        set row to history_collect_one(checkpoint_prepare(database and query and [principal]))
+        if not (archive_list_text(row and 0) equals "found"):
+            return "{\"status\":\"database-error\"}"
+        set boundary to string_to_int(archive_list_text(row and 1))
+    set visible to knowledge_visible_sql(database)
+    set order_time to episode_order_time_sql()
+    set query to "WITH episodes AS (SELECT c.*,a.name AS subject_name,b.name AS description,e.session AS source_session,e.occurred AS source_recorded_at,"
+    set query to concat(query and order_time)
+    set query to concat(query and " AS order_time,COALESCE((SELECT json_extract(p.payload,'$.project') FROM echo_events p WHERE p.session=e.session AND p.kind='project_selected' AND p.sequence<=e.sequence ORDER BY p.sequence DESC LIMIT 1),'') AS project FROM echo_memory_claims c JOIN echo_memory_nodes a ON a.identity=c.subject AND a.principal=c.principal JOIN echo_memory_nodes b ON b.identity=c.object AND b.principal=c.principal JOIN echo_events e ON e.event=c.source_event AND e.digest=c.source_digest JOIN echo_session_principals s ON s.session=e.session AND s.principal=c.principal WHERE c.kind='episodic' AND c.principal IN (__MEMORY_SCOPE__) AND c.sequence<=CAST(?2 AS INTEGER) AND (?3='' OR c.predicate=?3) AND ")
+    set query to concat(query and visible)
+    set query to concat(query and "), ordered AS (SELECT *,CASE WHEN order_time='' THEN 1 ELSE 0 END AS unknown_time FROM episodes) SELECT json_object('identity',identity,'sequence',sequence,'subject',subject_name,'category',predicate,'description',description,'evidence',evidence,'event_time',event_time,'source_recorded_at',source_recorded_at,'ingested_at',recorded_at,'order_time',order_time,'unknown_time',unknown_time,'time_basis',CASE WHEN event_time<>'' THEN 'reported-event-time' WHEN order_time<>'' THEN 'source-recording-time' ELSE 'unknown' END,'source_event',source_event,'source_digest',source_digest,'source_session',source_session,'source_principal',principal,'project',project,'supersedes',COALESCE(supersedes,''),'superseded_by',COALESCE((SELECT n.identity FROM echo_memory_claims n WHERE n.supersedes=ordered.identity),'')) FROM ordered WHERE (unknown_time,order_time,sequence)>(CAST(?4 AS INTEGER),?5,CAST(?6 AS INTEGER)) ORDER BY unknown_time,order_time,sequence;")
+    set query to memory_scope_query(database and query)
+    set values to [principal,int_to_string(boundary),category,int_to_string(unknown),time,int_to_string(sequence)]
+    set statement to checkpoint_prepare(database and query and values)
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set output to "["
+    set count to 0
+    set step to ep_sqlite3_step(statement)
+    repeat while step equals 100 and count < entries:
+        set item to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set fields to provider_json_tokens(item)
+        if count > 0:
+            set output to concat(output and ",")
+        set output to concat(output and item)
+        set unknown to history_tool_integer(fields and "unknown_time")
+        set sequence to history_tool_integer(fields and "sequence")
+        set time to provider_value(fields and provider_member(fields and 0 and "order_time"))
+        set count to count + 1
+        set step to ep_sqlite3_step(statement)
+    set finished to ep_sqlite3_finalize(statement)
+    if not (step equals 100 or else step equals 101) or else finished is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    if not (memory_archive_principal(database and run) equals principal):
+        return "{\"status\":\"authorization-changed\"}"
+    set next to concat("{\"binding\":" and provider_quote(binding))
+    set next to concat(next and concat(",\"through\":" and int_to_string(boundary)))
+    set next to concat(next and concat(",\"unknown\":" and int_to_string(unknown)))
+    set next to concat(next and concat(",\"time\":" and provider_quote(time)))
+    set next to concat(next and concat(",\"sequence\":" and concat(int_to_string(sequence) and "}")))
+    set result to concat("{\"status\":\"found\",\"episodes\":" and concat(output and "]"))
+    set result to concat(result and concat(",\"next_cursor\":" and provider_quote(next)))
+    if step equals 101:
+        return concat(result and ",\"end\":true}")
+    return concat(result and ",\"end\":false}")

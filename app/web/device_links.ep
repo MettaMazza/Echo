@@ -1,0 +1,99 @@
+import "devices"
+import "../tools/tool_registry"
+
+# Linked browsers have distinct bearer credentials for an explicitly selected
+# existing account. Explicit merges share a library without rewriting originals.
+define device_link_schema with database as Int returning Str:
+    set prior to ptr_to_str(tool_registry_schema(database))
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    set linked to ptr_to_str(migration_apply(database and 23 and "linked-browser-credentials" and "CREATE TABLE echo_device_link_codes(digest TEXT PRIMARY KEY,account TEXT NOT NULL REFERENCES echo_devices(device),expires INTEGER NOT NULL,consumed INTEGER NOT NULL DEFAULT 0); CREATE TABLE echo_linked_browsers(identity TEXT PRIMARY KEY,account TEXT NOT NULL REFERENCES echo_devices(device),name TEXT NOT NULL,credential_hash TEXT NOT NULL UNIQUE,revoked INTEGER NOT NULL DEFAULT 0,created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);"))
+    if not (linked equals "applied" or else linked equals "already-applied"):
+        return linked
+    return migration_apply(database and 24 and "unified-conversation-accounts" and "CREATE TABLE echo_conversation_accounts(device TEXT PRIMARY KEY REFERENCES echo_devices(device),account TEXT NOT NULL REFERENCES echo_devices(device)); INSERT INTO echo_conversation_accounts SELECT device,device FROM echo_devices; CREATE TRIGGER echo_conversation_account_capture AFTER INSERT ON echo_devices BEGIN INSERT INTO echo_conversation_accounts VALUES(NEW.device,NEW.device); END; CREATE TABLE echo_conversation_merges(identity INTEGER PRIMARY KEY AUTOINCREMENT,source TEXT NOT NULL,target TEXT NOT NULL,occurred TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TRIGGER echo_conversation_merges_no_update BEFORE UPDATE ON echo_conversation_merges BEGIN SELECT RAISE(ABORT,'Merge history is immutable'); END; CREATE TRIGGER echo_conversation_merges_no_delete BEFORE DELETE ON echo_conversation_merges BEGIN SELECT RAISE(ABORT,'Merge history is immutable'); END;")
+
+define device_link_create with database as Int and account as Str and secret as Str returning Int:
+    if principal_device_active(database and account) equals 0 or else string_length(secret) equals 0:
+        return 1
+    set values to [ep_sha256(secret), account]
+    return web_device_write(database and "INSERT INTO echo_device_link_codes(digest,account,expires) VALUES(?1,?2,CAST(strftime('%s','now') AS INTEGER)+600);" and values)
+
+define device_link_redeem with database as Int and secret as Str and identity as Str and name as Str and credential as Str returning Str:
+    return device_link_redeem_merge(database and secret and identity and name and credential and "")
+
+define device_link_redeem_merge with database as Int and secret as Str and identity as Str and name as Str and credential as Str and previous_credential as Str returning Str:
+    if string_length(secret) equals 0 or else string_length(identity) equals 0 or else string_length(credential) equals 0:
+        return ""
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return ""
+    set values to [ep_sha256(secret)]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT account FROM echo_device_link_codes WHERE digest=?1 AND consumed=0 AND expires>CAST(strftime('%s','now') AS INTEGER);" and values))
+    set account to archive_list_text(row and 1)
+    if not (archive_list_text(row and 0) equals "found") or else principal_device_active(database and account) equals 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return ""
+    if web_device_write(database and "UPDATE echo_device_link_codes SET consumed=1 WHERE digest=?1;" and values) is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return ""
+    set values to [identity, account, name, ep_sha256(credential)]
+    if web_device_write(database and "INSERT INTO echo_linked_browsers(identity,account,name,credential_hash) VALUES(?1,?2,?3,?4);" and values) is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return ""
+    if string_length(previous_credential) > 0:
+        set previous to web_device_authenticate(database and previous_credential)
+        if string_length(previous) equals 0 or else device_link_merge_pending(database and account and previous) is not equal to 0:
+            set ignored to sql_execute(database and "ROLLBACK;")
+            return ""
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return ""
+    return account
+
+define device_link_revoke with database as Int and account as Str and identity as Str returning Int:
+    if principal_device_active(database and account) equals 0:
+        return 1
+    return web_device_write(database and "UPDATE echo_linked_browsers SET revoked=1 WHERE account=?1 AND identity=?2;" and [account, identity])
+
+define device_link_list with database as Int and account as Str returning Str:
+    set statement to checkpoint_prepare(database and "SELECT identity,name FROM echo_linked_browsers WHERE account=?1 AND revoked=0 ORDER BY created,identity;" and [account])
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set output to "{\"status\":\"found\",\"browsers\":["
+    set separator to ""
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set ignored to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"database-error\"}"
+        set output to concat(output and separator)
+        set output to concat(output and concat("{\"identity\":" and provider_quote(ptr_to_str(ep_sqlite3_column_text(statement and 0)))))
+        set output to concat(output and concat(",\"name\":" and concat(provider_quote(ptr_to_str(ep_sqlite3_column_text(statement and 1))) and "}")))
+        set separator to ","
+    set ignored to ep_sqlite3_finalize(statement)
+    return concat(output and "]}")
+
+# Both arguments must come from verified credentials, never client device IDs.
+# Called within the code redemption transaction, or its own merge transaction.
+define device_link_merge_pending with database as Int and target as Str and source as Str returning Int:
+    if principal_device_active(database and target) equals 0 or else principal_device_active(database and source) equals 0:
+        return 1
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT a.account,b.account FROM echo_conversation_accounts a,echo_conversation_accounts b WHERE a.device=?1 AND b.device=?2;" and [target, source]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return 1
+    set destination to archive_list_text(row and 1)
+    set previous to archive_list_text(row and 2)
+    if destination equals previous:
+        return 0
+    if web_device_write(database and "INSERT INTO echo_conversation_merges(source,target) VALUES(?1,?2);" and [previous, destination]) is not equal to 0:
+        return 1
+    return web_device_write(database and "UPDATE echo_conversation_accounts SET account=?2 WHERE account=?1;" and [previous, destination])
+
+define device_link_merge with database as Int and target as Str and source as Str returning Int:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if device_link_merge_pending(database and target and source) is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return 1
+    return sql_execute(database and "COMMIT;")

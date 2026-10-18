@@ -1,3 +1,5 @@
+import "recap_prompt"
+import "attachment_revision"
 import "../retained_text"
 import "recap_sources"
 import "recap_contract"
@@ -5,9 +7,19 @@ import "../providers/prepare"
 import "../providers/local_chat"
 
 define recap_request_body with model as Str and sources as Str returning Str:
-    set body to concat("{\"model\":" and provider_quote(model))
-    set body to concat(body and concat(",\"stream\":true,\"messages\":[{\"role\":\"system\",\"content\":" and provider_quote(concat(recap_generation_instruction() and " For progressive fragment notes, update previous_candidate using next_fragment and return the complete cumulative recap, not just changes. Preserve prior supported content, add new facts and corrections, and keep unresolved fragment-boundary uncertainty. The original_event identifies the evidence to cite; note_event is processing provenance, not an original source. A fragment can split a sentence. Preserve its unfinished meaning for the next piece. Reduce repetition while retaining task-relevant detail so the cumulative recap can leave space for further source processing. Processing coverage is tracked separately; never claim that an intermediate draft covers unseen notes."))))
-    return concat(body and concat("},{\"role\":\"user\",\"content\":" and concat(provider_quote(sources) and "}]}")))
+    set operation to concat(recap_generation_instruction() and " For progressive fragment notes, update previous_candidate using next_fragment and return the complete cumulative recap, not just changes. Preserve prior supported content, add new facts and corrections, and keep unresolved fragment-boundary uncertainty. The original_event identifies the evidence to cite; note_event is processing provenance, not an original source. A fragment can split a sentence. Preserve its unfinished meaning for the next piece. Reduce repetition while retaining task-relevant detail so the cumulative recap can leave space for further source processing. Processing coverage is tracked separately; never claim that an intermediate draft covers unseen notes.")
+    set tokens to provider_json_tokens(sources)
+    set originals to provider_member(tokens and 0 and "original_sources")
+    if provider_kind(tokens and originals) equals "{":
+        set after to provider_after(tokens and originals)
+        if after > originals:
+            set start to get_list(get_list(tokens and originals) and 1)
+            set finish to get_list(get_list(tokens and after - 1) and 2)
+            set original_sources to substring(sources and start and finish - start)
+            set repair_data to concat(substring(sources and 0 and start) and concat("null" and substring(sources and finish and string_length(sources) - finish)))
+            set operation to concat(operation and concat("\nRepair the previous candidate using the originals in the preceding message and the candidate and feedback below. Return the full recap contract. The null original_sources field is replaced by that preceding message; no original evidence is omitted.\n" and repair_data))
+            return recap_cached_body(model and original_sources and operation)
+    return recap_cached_body(model and sources and operation)
 
 define recap_generation_result with status as Str and candidate as Str returning List:
     set result to create_list()
@@ -29,10 +41,14 @@ define recap_generate_provider with database as Int and session as Str and endpo
 # Internal entry point for a verified frozen source or covered-notes package.
 # The response still requires source validation and separate semantic review.
 define recap_generate_sources_provider with database as Int and session as Str and endpoint as Str and sources as Str and request as Str and profile as Str and reserve as Int and cancellation_reader as Int and read_size as Int returning List:
+    set visibility_revision to attachment_context_revision(database and session)
+    if string_length(visibility_revision) equals 0:
+        return recap_generation_result("archive-error" and "")
     set provider_config to provider_json_tokens(profile)
     set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
     set port to http_decimal(provider_index(provider_config and provider_member(provider_config and 0 and "port")))
     set body to recap_request_body(model and sources)
+    set body to recap_structured_body(body and profile and 0)
     set decision to provider_prepare(database and session and concat(request and ":preflight") and profile and body and reserve and cancellation_reader and read_size)
     if not (archive_list_text(decision and 0) equals "ready"):
         return recap_generation_result(archive_list_text(decision and 0) and "")
@@ -57,8 +73,12 @@ define recap_generate_sources_provider with database as Int and session as Str a
     set status to "structure-valid"
     if valid is not equal to 0:
         set status to "structure-invalid"
+    if not (attachment_context_revision(database and session) equals visibility_revision):
+        return recap_generation_result("attachment-context-changed" and "")
     set payload to concat("{\"source_end\":" and provider_quote(endpoint))
+    set payload to concat(payload and concat(",\"attachment_context_revision\":" and provider_quote(visibility_revision)))
     set payload to concat(payload and concat(",\"validation\":" and provider_quote(status)))
+    set payload to concat(payload and ",\"prompt_contract\":\"source-bound-v1\"")
     set payload to concat(payload and concat(",\"candidate\":" and concat(provider_quote(candidate) and "}")))
     if archive_append(database and session and concat(request and ":candidate") and "recap_candidate" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
         return recap_generation_result("archive-error" and "")

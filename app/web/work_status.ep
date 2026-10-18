@@ -1,0 +1,91 @@
+import "projects"
+import "shared_access"
+import "activity"
+
+# Human read-only work pagination uses current device/session authority. Each
+# delegated target is checked separately; parent membership cannot disclose a
+# child whose audience is no longer visible. Cursor size is not a history cap.
+define web_work_status_snapshot with database as Int and device as Str and session as Str and family as Str and after as Int returning Str:
+    set owner to web_account_resource_device(database and device and "session" and session)
+    if principal_device_active(database and device) equals 0 or else web_attachment_session_allowed(database and owner and session and 0) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    if after < 0 or else not (family equals "runs" or else family equals "schedules"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set query to "SELECT r.run,r.session,r.state,r.objective_event,r.last_event,r.rowid,EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=r.run),COALESCE((SELECT d.parent FROM echo_delegations d WHERE d.child=r.run),''),COALESCE((SELECT p.objective_event FROM echo_delegations d JOIN echo_runs p ON p.run=d.parent WHERE d.child=r.run),'') FROM echo_runs r WHERE (r.session=?1 OR EXISTS(SELECT 1 FROM echo_delegations d JOIN echo_runs p ON p.run=d.parent WHERE d.child=r.run AND p.session=?1)) AND r.rowid>CAST(?2 AS INTEGER) ORDER BY r.rowid LIMIT 1;"
+    set keys to ["run","session","state","objective_event","last_event","next_after","cancellation_requested","parent_run","parent_objective"]
+    set run_column to 1
+    set cursor_column to 6
+    if family equals "schedules":
+        set query to "SELECT s.identity,s.origin_run,s.instruction,c.status,CAST(c.next_due AS TEXT),CAST(s.interval_ms AS TEXT),s.missed_policy,s.definition_event,s.rowid FROM echo_schedules s JOIN echo_schedule_state c ON c.identity=s.identity JOIN echo_runs r ON r.run=s.origin_run WHERE r.session=?1 AND s.rowid>CAST(?2 AS INTEGER) ORDER BY s.rowid LIMIT 1;"
+        set keys to ["identity","run","instruction","state","next_due","interval_ms","missed_policy","definition_event","next_after"]
+        set run_column to 2
+        set cursor_column to 9
+    set values to [session,int_to_string(after)]
+    repeat while 1 equals 1:
+        set row to history_collect_one(checkpoint_prepare(database and query and values))
+        if not (archive_list_text(row and 0) equals "found"):
+            return history_tool_row(row and keys)
+        set run to archive_list_text(row and run_column)
+        set target_owner to web_account_resource_device(database and device and "run" and run)
+        if web_shared_run_read_allowed(database and target_owner and run) equals 1:
+            set result to history_tool_row(row and keys)
+            if family equals "runs":
+                set values_worker to create_list()
+                set added to append_list(values_worker and run)
+                set worker to history_collect_one(checkpoint_prepare(database and "SELECT status FROM echo_web_workers WHERE run=?;" and values_worker))
+                set worker_status to archive_list_text(worker and 1)
+                set activity to web_run_activity(database and run)
+                set compaction to web_run_compaction(database and run)
+                set result to substring(result and 0 and string_length(result) - 1)
+                set result to concat(result and concat(",\"activity\":" and provider_quote(activity)))
+                set result to concat(result and concat(",\"worker_status\":" and provider_quote(worker_status)))
+                set result to concat(result and concat(",\"compaction\":" and concat(compaction and "}")))
+            return result
+        set advanced to set_list(values and 1 and archive_list_text(row and cursor_column))
+    return "{\"status\":\"database-error\"}"
+
+define web_work_status with database as Int and device as Str and session as Str and family as Str and after as Int returning Str:
+    if sql_execute(database and "SAVEPOINT echo_work_read;") is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    set result to web_work_status_snapshot(database and device and session and family and after)
+    if sql_execute(database and "RELEASE echo_work_read;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK TO echo_work_read;")
+        set ignored to sql_execute(database and "RELEASE echo_work_read;")
+        return "{\"status\":\"database-error\"}"
+    return result
+
+# Caller chooses transport batch size; no record is clipped or discarded.
+define web_work_page with database as Int and device as Str and tokens as List returning Str:
+    if project_object_keys(tokens and 0 and ["session","family","after","amount"]) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set session to provider_member(tokens and 0 and "session")
+    set family to provider_member(tokens and 0 and "family")
+    set after to history_tool_integer(tokens and "after")
+    set amount to history_tool_integer(tokens and "amount")
+    if not (provider_kind(tokens and session) equals "string") or else not (provider_kind(tokens and family) equals "string") or else after < 0 or else amount < 1:
+        return "{\"status\":\"invalid-arguments\"}"
+    if sql_execute(database and "SAVEPOINT echo_work_page;") is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    set result to "{\"status\":\"found\",\"entries\":["
+    set count to 0
+    set more to "true"
+    repeat while count < amount:
+        set item to web_work_status_snapshot(database and device and provider_value(tokens and session) and provider_value(tokens and family) and after)
+        set fields to provider_json_tokens(item)
+        set status to provider_value(fields and provider_member(fields and 0 and "status"))
+        if status equals "end":
+            set more to "false"
+            break
+        if not (status equals "found"):
+            set closed to sql_execute(database and "RELEASE echo_work_page;")
+            return item
+        if count > 0:
+            set result to concat(result and ",")
+        set result to concat(result and item)
+        set after to string_to_int(provider_value(fields and provider_member(fields and 0 and "next_after")))
+        set count to count + 1
+    if sql_execute(database and "RELEASE echo_work_page;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK TO echo_work_page;")
+        set ignored to sql_execute(database and "RELEASE echo_work_page;")
+        return "{\"status\":\"database-error\"}"
+    return concat(result and concat("],\"next_after\":" and concat(provider_quote(int_to_string(after)) and concat(",\"more\":" and concat(more and "}")))))

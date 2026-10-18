@@ -1,0 +1,145 @@
+import "controller_requests"
+
+define controller_review_status with status as Str returning Str:
+    set quoted to provider_quote(status)
+    set text to concat("{\"status\":" and quoted)
+    return concat(text and "}")
+
+# The steward sees exact proposal and Echo review bytes from the controller's
+# own ledger. This read grants no consent and records no human decision.
+define controller_steward_disclosure with database as Int and credential as Str and identity as Str returning Str:
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return controller_review_status("controller-read-unavailable")
+    set actor to protected_steward_actor(database and credential)
+    if not (archive_list_text(actor and 0) equals "found"):
+        set failed to migration_fail(database and "controller-caller-not-authorized")
+        return controller_review_status(failed)
+    set values to create_list()
+    set added to append_list(values and identity)
+    set source to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_protected_proposals WHERE identity=?;" and values))
+    if not (archive_list_text(source and 0) equals "found"):
+        set failed to migration_fail(database and "proposal-unavailable")
+        return controller_review_status(failed)
+    set run to archive_list_text(source and 1)
+    set proposal to protected_proposal_read(database and run and identity)
+    set review to protected_review_latest(database and run and identity)
+    if not (archive_list_text(proposal and 0) equals "found") or else not (archive_list_text(review and 0) equals "found" or else archive_list_text(review and 0) equals "end") or else protected_steward_integrity(database and identity) equals 0:
+        set failed to migration_fail(database and "proposal-or-review-integrity-failed")
+        return controller_review_status(failed)
+    set count to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_protected_steward WHERE proposal=?;" and values))
+    if not (archive_list_text(count and 0) equals "found"):
+        set failed to migration_fail(database and "steward-history-unavailable")
+        return controller_review_status(failed)
+    set revision to "0"
+    set evidence to "null"
+    if archive_list_text(review and 0) equals "found":
+        set revision to archive_list_text(review and 1)
+        set evidence to archive_list_text(review and 2)
+    set result to "{\"status\":\"disclosed\",\"proposal\":"
+    set quoted to provider_quote(identity)
+    set result to concat(result and quoted)
+    set result to concat(result and ",\"manifest\":")
+    set result to concat(result and archive_list_text(proposal and 1))
+    set result to concat(result and ",\"manifest_digest\":")
+    set quoted to provider_quote(archive_list_text(proposal and 2))
+    set result to concat(result and quoted)
+    set result to concat(result and ",\"review_revision\":")
+    set result to concat(result and revision)
+    set result to concat(result and ",\"review\":")
+    set result to concat(result and evidence)
+    set result to concat(result and ",\"steward_revision\":")
+    set result to concat(result and archive_list_text(count and 1))
+    set result to concat(result and "}")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(database and "controller-read-failed")
+        return controller_review_status(failed)
+    return result
+
+define controller_review_dispatch with database as Int and tokens as List and credential as Str returning Str:
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return controller_review_status("invalid-operation-request")
+    set action to provider_value(tokens and provider_member(tokens and 0 and "action"))
+    if not (action equals "inspect" or else action equals "decide"):
+        return controller_review_status("invalid-operation-request")
+    set index to 1
+    set count to 0
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        set allowed to key equals "action" or else key equals "proposal"
+        set kind to "string"
+        if action equals "decide":
+            set allowed to allowed or else key equals "identity" or else key equals "manifest_digest" or else key equals "review_revision" or else key equals "previous_revision" or else key equals "decision" or else key equals "reason"
+            if key equals "review_revision" or else key equals "previous_revision":
+                set kind to "number"
+        if allowed equals 0 or else not (provider_kind(tokens and index + 2) equals kind):
+            return controller_review_status("invalid-operation-request")
+        set count to count + 1
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set proposal to provider_value(tokens and provider_member(tokens and 0 and "proposal"))
+    if action equals "inspect" and count equals 2 and string_length(proposal) > 0:
+        return controller_steward_disclosure(database and credential and proposal)
+    if not (action equals "decide") or else count is not equal to 8:
+        return controller_review_status("invalid-operation-request")
+    set identity to provider_value(tokens and provider_member(tokens and 0 and "identity"))
+    set digest to provider_value(tokens and provider_member(tokens and 0 and "manifest_digest"))
+    set review to http_decimal(provider_value(tokens and provider_member(tokens and 0 and "review_revision")))
+    set previous to http_decimal(provider_value(tokens and provider_member(tokens and 0 and "previous_revision")))
+    set decision to provider_value(tokens and provider_member(tokens and 0 and "decision"))
+    set reason to provider_value(tokens and provider_member(tokens and 0 and "reason"))
+    set status to protected_steward_decide(database and credential and identity and proposal and digest and review and previous and decision and reason)
+    if status equals "not-authorized":
+        set status to "controller-caller-not-authorized"
+    return controller_review_status(status)
+
+# Complete before/after evidence under one authenticated read snapshot.
+define controller_operation_disclosure with database as Int and credential as Str and identity as Str returning Str:
+    if string_length(credential) equals 0 or else sql_execute(database and "BEGIN;") is not equal to 0:
+        return controller_review_status("controller-read-unavailable")
+    if string_length(protected_operation_actor_stamp(database and identity and credential)) equals 0:
+        set failed to migration_fail(database and "controller-caller-not-authorized")
+        return controller_review_status(failed)
+    set operation to protected_operation_read(database and identity)
+    if length_list(operation) < 3:
+        set failed to migration_fail(database and archive_list_text(operation and 0))
+        return controller_review_status(failed)
+    set session to protected_operation_session(identity)
+    set values to create_list()
+    set added to append_list(values and session)
+    set statement to checkpoint_prepare(database and "SELECT event,kind,payload FROM echo_events WHERE session=? ORDER BY sequence;" and values)
+    if statement equals 0:
+        set failed to migration_fail(database and "operation-read-failed")
+        return controller_review_status(failed)
+    set body to concat("{\"status\":" and provider_quote(archive_list_text(operation and 0)))
+    set body to concat(body and ",\"operation\":")
+    set body to concat(body and provider_quote(identity))
+    set body to concat(body and ",\"records\":[")
+    set count to 0
+    repeat while 1 equals 1:
+        set row to ep_sqlite3_step(statement)
+        if row equals 101:
+            break
+        if row is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            set failed to migration_fail(database and "operation-read-failed")
+            return controller_review_status(failed)
+        set event to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        set kind to concat(ptr_to_str(ep_sqlite3_column_text(statement and 1)) and "")
+        set payload to concat(ptr_to_str(ep_sqlite3_column_text(statement and 2)) and "")
+        if count > 0:
+            set body to concat(body and ",")
+        set body to concat(body and "{\"event\":")
+        set body to concat(body and provider_quote(event))
+        set body to concat(body and ",\"kind\":")
+        set body to concat(body and provider_quote(kind))
+        set body to concat(body and ",\"payload_sha256\":")
+        set body to concat(body and provider_quote(ep_sha256(payload)))
+        set body to concat(body and ",\"payload\":")
+        set body to concat(body and payload)
+        set body to concat(body and "}")
+        set count to count + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(database and "operation-read-failed")
+        return controller_review_status(failed)
+    return concat(body and "]}")

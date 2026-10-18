@@ -1,0 +1,377 @@
+import "../../app/lifecycle/controller_prepare"
+import "../../app/lifecycle/controller_http"
+import "../../app/lifecycle/controller_enrollment"
+import "../../app/lifecycle/controller_review_runner"
+import "../fixtures/echo_http_client"
+import "../../app/lifecycle/controller_operations"
+import "../../app/agent/tool_recovery"
+import "../../app/agent/run_messages"
+import "../fixtures/generation_fixture"
+
+define protected_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":" and provider_quote(call_id))
+    set delta to concat(delta and concat(",\"function\":{\"name\":" and provider_quote(name)))
+    set delta to concat(delta and concat(",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}")))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set body to controller_review_request_body("fixture" and agent_run_messages(database and run))
+    if provider_json_tokens(body) equals 0:
+        return 2
+    set generated to agent_generate_local(database and run and request and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 3
+    if name equals "protected_change_inspect":
+        if agent_run_claim_tool(database and run and call_id) is not equal to 0 or else controller_review_recover_call(database and run and call_id) is not equal to 0 or else controller_review_tool_step(database and run) is not equal to 0:
+            return 10
+        return 0
+    if name equals "protected_change_review":
+        if sql_execute(database and "CREATE TRIGGER fixture_review_crash BEFORE INSERT ON echo_events WHEN NEW.kind='tool_result' BEGIN SELECT RAISE(ABORT,'fixture result interruption'); END;") is not equal to 0:
+            return 5
+        if controller_review_tool_step(database and run) is not equal to 1:
+            return 6
+        set receipts to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_protected_reviews;"))
+        if not (archive_list_text(receipts and 1) equals "1") or else sql_execute(database and "DROP TRIGGER fixture_review_crash;") is not equal to 0:
+            return 7
+        set database_info to history_collect_one(archive_prepare(database and "PRAGMA database_list;"))
+        set reopened to archive_open(archive_list_text(database_info and 3))
+        if controller_review_recover_call(reopened and run and call_id) is not equal to 0 or else controller_review_recover_call(reopened and run and call_id) is not equal to 0:
+            return 8
+        set receipts to history_collect_one(archive_prepare(reopened and "SELECT COUNT(*) FROM echo_protected_reviews;"))
+        if not (archive_list_text(receipts and 1) equals "1") or else sql_close(reopened) is not equal to 0 or else controller_review_tool_step(database and run) is not equal to 0:
+            return 9
+        return 0
+    if controller_review_tool_step(database and run) is not equal to 0 or else controller_review_tool_step(database and run) is not equal to 0:
+        return 4
+    if name equals "host_read_text" and controller_review_recover_call(database and run and call_id) is not equal to 1:
+        return 11
+    return 0
+
+define controller_fixture_child returning Int:
+    set database to archive_open(get_argument(2))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set listener to create_list()
+    set added to append_list(listener and library)
+    set added to append_list(listener and 3)
+    set port to http_decimal(get_argument(6))
+    set added to append_list(listener and port)
+    set descriptor to local_socket_accept(listener)
+    if descriptor < 0:
+        return 1
+    set result to controller_http_connection(library and descriptor and port and database and get_argument(3) and get_argument(4) and get_argument(5) and "" and "" and "")
+    set closed to net_close(descriptor)
+    set closed to local_socket_close(listener)
+    if sql_close(database) is not equal to 0:
+        return 1
+    return result
+
+define controller_fixture_request with database as Int and charter as Str and inventory as Str and digest as Str and body as Str and credential as Str returning List:
+    return controller_fixture_path(database and charter and inventory and digest and "/operation" and body and credential)
+
+define controller_fixture_path with database as Int and charter as Str and inventory as Str and digest as Str and path as Str and body as Str and credential as Str returning List:
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return local_json_result("fixture-listen-failed" and 0 and "")
+    set port to get_list(listener and 2)
+    set database_info to history_collect_one(archive_prepare(database and "PRAGMA database_list;"))
+    set database_path to archive_list_text(database_info and 3)
+    set arguments to create_list()
+    set added to append_list(arguments and "--http-fixture")
+    set added to append_list(arguments and database_path)
+    set added to append_list(arguments and charter)
+    set added to append_list(arguments and inventory)
+    set added to append_list(arguments and digest)
+    set port_text to int_to_string(port)
+    set added to append_list(arguments and port_text)
+    set process to controller_process_start(arguments and get_list(listener and 1))
+    set closed to local_socket_close(listener)
+    if process < 0:
+        return local_json_result("fixture-process-failed" and 0 and "")
+    set response to local_json_result("not-sent" and 0 and "")
+    if path equals "/" or else path equals "/console.js":
+        set transport to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        set connection to local_socket_connect(transport and port and -1)
+        if not (archive_list_text(connection and 0) equals "connected"):
+            return connection
+        set descriptor to get_list(connection and 1)
+        set reader to http_stream_create(transport and descriptor and -1)
+        set response to fixture_echo_exchange(reader and "GET" and port and path and "" and credential and 65536)
+        set released to http_stream_release(reader)
+        set closed to net_close(descriptor)
+        set unloaded to ep_dlclose(transport)
+    else:
+        set response to fixture_echo_request(port and path and body and credential)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set wait_function to ep_dlsym(library and "waitpid")
+    set result to create_list()
+    set added to append_list(result and 0)
+    set waited to ep_dlcall3(wait_function and process and get_list_data_ptr(result) and 0)
+    set closed to ep_dlclose(library)
+    if waited is not equal to process or else get_list(result and 0) is not equal to 0:
+        return local_json_result("fixture-handler-failed" and get_list(result and 0) and "")
+    return response
+
+define service_fixture_operation with configuration as Str and action as Str and identity as Str returning Str:
+    set content to file_read(configuration)
+    set tokens to provider_json_tokens(content)
+    set directory to provider_value(tokens and provider_member(tokens and 0 and "ledger_directory"))
+    set database to archive_open(concat(directory and "/ledger.sqlite"))
+    set result to ""
+    if action equals "initialize":
+        set result to controller_schema_initialize(database and identity)
+    else:
+        set charter to provider_value(tokens and provider_member(tokens and 0 and "charter"))
+        set inventory to file_read(provider_value(tokens and provider_member(tokens and 0 and "inventory")))
+        set digest to provider_value(tokens and provider_member(tokens and 0 and "inventory_sha256"))
+        if not (ep_sha256(inventory) equals digest):
+            set result to "controller-input-changed"
+        else:
+            set body to concat("{\"action\":" and provider_quote(action))
+            set body to concat(body and concat(",\"operation\":" and provider_quote(identity)))
+            set body to concat(body and "}")
+            set response to controller_fixture_request(database and charter and inventory and digest and body and "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+            if not (archive_list_text(response and 0) equals "ready"):
+                return "fixture-http-failed"
+            set reply to provider_json_tokens(archive_list_text(response and 2))
+            set result to provider_value(reply and provider_member(reply and 0 and "status"))
+    set closed to sql_close(database)
+    return result
+
+define root_operation_expect with configuration as Str and action as Str and expected as Str returning Int:
+    set result to service_fixture_operation(configuration and action and "fixture-operation")
+    if not (result equals expected):
+        display concat(action and concat(": " and result))
+        return 1
+    return 0
+
+# Unprivileged inert fixture for the authenticated service dispatcher. The
+# separately requested root fixture is unchanged; no service is installed.
+define main returning Int:
+    if get_argument_count() equals 7 and get_argument(1) equals "--http-fixture":
+        return controller_fixture_child()
+    if get_argument_count() is not equal to 3:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        display "Native library unavailable."
+        return 2
+    set root to get_argument(2)
+    if ep_dlcall2(ep_dlsym(library and "mkdir") and str_to_ptr(root) and 448) is not equal to 0:
+        display "Fresh fixture directory required; existing files unchanged."
+        return 3
+    set charter to concat(root and "/charter.json")
+    set policy_path to concat(root and "/policy.txt")
+    set inventory_path to concat(root and "/inventory.json")
+    set configuration to concat(root and "/controller.json")
+    set target to concat(root and "/runtime.bin")
+    set candidate to concat(root and "/candidate.bin")
+    set recovery to concat(root and "/recovery.bin")
+    set original to "Original inert fixture bytes."
+    set replacement to "Replacement inert fixture bytes."
+    set charter_text to charter_verified_text(get_argument(1))
+    if string_length(charter_text) equals 0:
+        return 4
+    set inventory to concat("{\"version\":1,\"targets\":[{\"path\":" and concat(provider_quote(target) and ",\"category\":\"agency\"}]}"))
+    if write_file(charter and charter_text) is not equal to 1 or else write_file(policy_path and "") is not equal to 1 or else write_file(inventory_path and inventory) is not equal to 1 or else write_file(target and original) is not equal to 1 or else write_file(candidate and replacement) is not equal to 1 or else write_file(recovery and original) is not equal to 1:
+        return 5
+    set content to concat("{\"ledger_directory\":" and provider_quote(root))
+    set content to concat(content and ",\"ledger_name\":\"ledger.sqlite\"")
+    for each pair in [["charter",charter],["inventory",inventory_path],["policy",policy_path],["inventory_sha256",ep_sha256(inventory)],["policy_sha256",ep_sha256("")]]:
+        set content to concat(content and concat("," and provider_quote(archive_list_text(pair and 0))))
+        set content to concat(content and concat(":" and provider_quote(archive_list_text(pair and 1))))
+    set content to concat(content and "}")
+    if write_file(configuration and content) is not equal to 1:
+        return 6
+    for each path in [charter,policy_path,inventory_path,configuration,target,candidate,recovery]:
+        if ep_dlcall2(ep_dlsym(library and "chmod") and str_to_ptr(ptr_to_str(path)) and 384) is not equal to 0:
+            return 7
+    set closed to ep_dlclose(library)
+    set pin to ep_sha256(content)
+    if not (service_fixture_operation(configuration and "initialize" and pin) equals "initialized") or else not (service_fixture_operation(configuration and "initialize" and pin) equals "already-initialized"):
+        return 8
+    set database to archive_open(concat(root and "/ledger.sqlite"))
+    if database equals 0:
+        return 9
+    for each device in ["admin"]:
+        if web_pairing_invite(database and device) is not equal to 0 or else web_device_pair(database and device and device and "Synthetic fixture actor" and concat(device and "-secret")) is not equal to 0 or else not (principal_host_role(database and concat("grant-" and device) and concat("device:" and device) and device and "Synthetic inert test only") equals "recorded"):
+            return 10
+    if not (controller_enrollment_record(database and "enroll" and "steward-enrollment" and "steward" and "Synthetic fixture steward" and "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" and "Synthetic inert test only") equals "recorded"):
+        return 31
+    set page to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/" and "" and "")
+    if get_list(page and 1) is not equal to 200 or else string_contains(archive_list_text(page and 2) and "Protected changes") equals 0 or else string_contains(archive_list_text(page and 2) and "id=\"credential\"") equals 0:
+        return 47
+    set script to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/console.js" and "" and "")
+    if get_list(script and 1) is not equal to 503 or else string_contains(archive_list_text(script and 2) and "controller-console-not-configured") equals 0:
+        return 48
+    set submitted to web_submit_owned(database and "admin" and "admin-run" and "" and "Inspect and review this inert fixture.")
+    if protected_fixture_call(database and "admin-run" and "forbidden-generation" and "forbidden" and "host_read_text" and "{\"path\":\"/etc/passwd\"}") is not equal to 0:
+        return 40
+    set forbidden_result to history_collect_one(archive_prepare(database and "SELECT payload FROM echo_events WHERE kind='tool_result' AND json_extract(payload,'$.call_id')='forbidden';"))
+    if not (archive_list_text(forbidden_result and 0) equals "found") or else string_contains(archive_list_text(forbidden_result and 1) and "protected-review-only") equals 0:
+        return 41
+    set manifest to protected_inventory_manifest(charter and inventory and ep_sha256(inventory) and target and ep_sha256(original) and ep_sha256(replacement) and "Inert fixture only: exchange these exact bytes and restore the original. Synthetic test decisions.")
+    set submission_body to concat("{\"proposal\":\"http-submitted-proposal\",\"manifest\":" and provider_quote(manifest))
+    set submission_body to concat(submission_body and "}")
+    if sql_execute(database and "CREATE TRIGGER fixture_proposal_failure BEFORE INSERT ON echo_protected_proposals WHEN NEW.identity='http-submitted-proposal' BEGIN SELECT RAISE(ABORT,'fixture proposal interruption'); END;") is not equal to 0:
+        return 45
+    set interrupted_submission to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/proposal" and submission_body and "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    if not (archive_list_text(interrupted_submission and 2) equals "{\"status\":\"proposal-pending:proposal-write-failed\"}") or else sql_execute(database and "DROP TRIGGER fixture_proposal_failure;") is not equal to 0:
+        return 46
+    set submission_response to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/proposal" and submission_body and "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    if not (archive_list_text(submission_response and 2) equals "{\"status\":\"accepted\"}"):
+        display archive_list_text(submission_response and 2)
+        return 42
+    set submission_response to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/proposal" and submission_body and "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    if not (archive_list_text(submission_response and 2) equals "{\"status\":\"accepted\"}"):
+        return 43
+    set submitted_proposal to protected_proposal_read(database and "controller-review:http-submitted-proposal" and "http-submitted-proposal")
+    if not (archive_list_text(submitted_proposal and 0) equals "found") or else not (archive_list_text(submitted_proposal and 1) equals manifest):
+        return 44
+    set changed_manifest to ptr_to_str(string_replace(manifest and "agency" and "identity"))
+    set invalid_submission to concat("{\"proposal\":\"invalid-http-proposal\",\"manifest\":" and provider_quote(changed_manifest))
+    set invalid_submission to concat(invalid_submission and "}")
+    set invalid_response to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/proposal" and invalid_submission and "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    if not (archive_list_text(invalid_response and 2) equals "{\"status\":\"invalid-proposal\"}"):
+        return 47
+    set invalid_count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_runs WHERE run='controller-review:invalid-http-proposal';"))
+    if not (archive_list_text(invalid_count and 1) equals "0"):
+        return 48
+    if not (protected_proposal_store(database and charter and "admin-run" and "proposal" and manifest) equals "recorded"):
+        return 11
+    if not (controller_prepare_record(database and charter and inventory and ep_sha256(inventory) and "" and "proposal" and "fixture-operation" and root and "runtime.bin" and "candidate.bin" and recovery and "") equals "proposal-or-review-invalid"):
+        return 12
+    if protected_fixture_call(database and "admin-run" and "inspect-generation" and "inspect" and "protected_change_inspect" and "{\"proposal\":\"proposal\"}") is not equal to 0:
+        return 13
+    set arguments to concat("{\"proposal\":\"proposal\",\"inspection_call\":\"inspect\",\"manifest_digest\":" and provider_quote(ep_sha256(manifest)))
+    set arguments to concat(arguments and ",\"previous_revision\":0,\"decision\":\"consent\",\"risk\":\"low\",\"reason\":\"Synthetic fixture review of exact inert bytes.\"}")
+    if protected_fixture_call(database and "admin-run" and "review-generation" and "review" and "protected_change_review" and arguments) is not equal to 0:
+        return 14
+    if not (controller_prepare_record(database and charter and inventory and ep_sha256(inventory) and "" and "proposal" and "fixture-operation" and root and "runtime.bin" and "candidate.bin" and recovery and "") equals "steward-decision-missing"):
+        return 15
+    set steward_secret to "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    set inspect_body to "{\"action\":\"inspect\",\"proposal\":\"proposal\"}"
+    set disclosure to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/review" and inspect_body and steward_secret)
+    if get_list(disclosure and 1) is not equal to 200 or else string_contains(archive_list_text(disclosure and 2) and manifest) equals 0:
+        return 32
+    set disclosed_tokens to provider_json_tokens(archive_list_text(disclosure and 2))
+    if not (provider_value(disclosed_tokens and provider_member(disclosed_tokens and 0 and "review_revision")) equals "1") or else not (provider_value(disclosed_tokens and provider_member(disclosed_tokens and 0 and "steward_revision")) equals "0"):
+        return 33
+    set decision_body to concat("{\"action\":\"decide\",\"identity\":\"approval\",\"proposal\":\"proposal\",\"manifest_digest\":" and provider_quote(ep_sha256(manifest)))
+    set decision_body to concat(decision_body and ",\"review_revision\":1,\"previous_revision\":0,\"decision\":\"authorize\",\"reason\":\"Synthetic steward: inert file only\"}")
+    set false_review to ptr_to_str(string_replace(decision_body and "\"review_revision\":1" and "\"review_revision\":2"))
+    set rejected_review to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/review" and false_review and steward_secret)
+    if not (archive_list_text(rejected_review and 2) equals "{\"status\":\"review-mismatch\"}"):
+        return 39
+    set decision_response to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/review" and decision_body and steward_secret)
+    if get_list(decision_response and 1) is not equal to 200 or else not (archive_list_text(decision_response and 2) equals "{\"status\":\"recorded\"}"):
+        display archive_list_text(decision_response and 2)
+        return 16
+    set retry_response to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/review" and decision_body and steward_secret)
+    if not (archive_list_text(retry_response and 2) equals "{\"status\":\"already-recorded\"}"):
+        return 34
+    set stale_body to ptr_to_str(string_replace(decision_body and "approval" and "stale-approval"))
+    set stale_response to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/review" and stale_body and steward_secret)
+    if not (archive_list_text(stale_response and 2) equals "{\"status\":\"revision-conflict\"}"):
+        return 35
+    set denied_response to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/review" and inspect_body and "admin-secret")
+    if get_list(denied_response and 1) is not equal to 403:
+        return 36
+    set withdrawal to ptr_to_str(string_replace(decision_body and "approval" and "withdrawal"))
+    set withdrawal to ptr_to_str(string_replace(withdrawal and "authorize" and "withdraw"))
+    set withdrawal to ptr_to_str(string_replace(withdrawal and "\"previous_revision\":0" and "\"previous_revision\":1"))
+    set response to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/review" and withdrawal and steward_secret)
+    if not (archive_list_text(response and 2) equals "{\"status\":\"recorded\"}") or else not (protected_steward_gate(database and "proposal") equals "steward-withdraw"):
+        return 37
+    set renewed to ptr_to_str(string_replace(decision_body and "approval" and "renewed-approval"))
+    set renewed to ptr_to_str(string_replace(renewed and "\"previous_revision\":0" and "\"previous_revision\":2"))
+    set response to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/review" and renewed and steward_secret)
+    if not (archive_list_text(response and 2) equals "{\"status\":\"recorded\"}"):
+        return 38
+    if not (controller_prepare_record(database and charter and inventory and ep_sha256(inventory) and "" and "proposal" and "fixture-operation" and root and "runtime.bin" and "candidate.bin" and recovery and "") equals "prepared") or else not (controller_prepare_record(database and charter and inventory and ep_sha256(inventory) and "" and "proposal" and "fixture-operation" and root and "runtime.bin" and "candidate.bin" and recovery and "") equals "already-prepared") or else sql_close(database) is not equal to 0:
+        return 17
+    set database to archive_open(concat(root and "/ledger.sqlite"))
+    for each credential in ["","wrong","admin-secret"]:
+        for each action in ["inspect","apply","reconcile","rollback","rollback-reconcile"]:
+            if not (controller_authenticated_operation(database and charter and inventory and ep_sha256(inventory) and "" and ptr_to_str(action) and "fixture-operation" and ptr_to_str(credential)) equals "controller-caller-not-authorized"):
+                return 23
+    if web_pairing_invite(database and "outsider") is not equal to 0 or else web_device_pair(database and "outsider" and "outsider" and "Other steward" and "outsider-secret") is not equal to 0 or else not (principal_host_role(database and "outsider-grant" and "device:outsider" and "steward" and "Separate fixture steward") equals "recorded"):
+        return 24
+    if not (controller_authenticated_operation(database and charter and inventory and ep_sha256(inventory) and "" and "apply" and "fixture-operation" and "outsider-secret") equals "controller-caller-not-authorized"):
+        return 25
+    set body to "{\"action\":\"apply\",\"operation\":\"fixture-operation\"}"
+    set rejected_callers to ["","wrong","admin-secret","outsider-secret"]
+    for each credential in rejected_callers:
+        set response to controller_fixture_request(database and charter and inventory and ep_sha256(inventory) and body and ptr_to_str(credential))
+        if get_list(response and 1) is not equal to 403:
+            display archive_list_text(response and 2)
+            return 29
+    set malformed_bodies to ["{}","{\"action\":\"apply\",\"operation\":\"fixture-operation\",\"policy\":\"override\"}","{\"action\":\"apply\",\"action\":\"rollback\",\"operation\":\"fixture-operation\"}","{\"action\":\"initialize\",\"operation\":\"fixture-operation\"}","{\"action\":1,\"operation\":\"fixture-operation\"}"]
+    for each malformed in malformed_bodies:
+        set response to controller_fixture_request(database and charter and inventory and ep_sha256(inventory) and ptr_to_str(malformed) and "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        if get_list(response and 1) is not equal to 400:
+            display "Malformed request diagnostic"
+            display archive_list_text(response and 0)
+            display get_list(response and 1)
+            display archive_list_text(response and 2)
+            return 30
+    set closed to sql_close(database)
+    if root_operation_expect(configuration and "inspect" and "prepared") is not equal to 0:
+        return 18
+    if write_file(inventory_path and "changed") is not equal to 1 or else root_operation_expect(configuration and "apply" and "controller-input-changed") is not equal to 0 or else not (file_read(target) equals original) or else write_file(inventory_path and inventory) is not equal to 1:
+        return 19
+    if root_operation_expect(configuration and "apply" and "applied") is not equal to 0 or else not (file_read(target) equals replacement) or else root_operation_expect(configuration and "reconcile" and "applied") is not equal to 0:
+        return 20
+    if root_operation_expect(configuration and "rollback" and "rolled-back") is not equal to 0 or else not (file_read(target) equals original) or else root_operation_expect(configuration and "rollback-reconcile" and "rolled-back") is not equal to 0:
+        return 21
+    if root_operation_expect(configuration and "apply" and "operation-state:rolled-back") is not equal to 0:
+        return 22
+    set database to archive_open(concat(root and "/ledger.sqlite"))
+    set operation_report to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/operation" and "{\"action\":\"inspect\",\"operation\":\"fixture-operation\"}" and steward_secret)
+    set report_tokens to provider_json_tokens(archive_list_text(operation_report and 2))
+    set records to provider_items(report_tokens and provider_member(report_tokens and 0 and "records"))
+    if get_list(operation_report and 1) is not equal to 200 or else length_list(records) < 3 or else not (provider_value(report_tokens and provider_member(report_tokens and 0 and "status")) equals "rolled-back"):
+        return 57
+    for each record in records:
+        set payload_index to provider_member(report_tokens and record and "payload")
+        set original_payload to agent_json_source(archive_list_text(operation_report and 2) and report_tokens and payload_index)
+        if not (ep_sha256(original_payload) equals provider_value(report_tokens and provider_member(report_tokens and record and "payload_sha256"))):
+            return 58
+    set selected_job to controller_review_candidate(database and 0)
+    if not (archive_list_text(selected_job and 0) equals "found") or else not (archive_list_text(selected_job and 1) equals "controller-review:http-submitted-proposal"):
+        return 49
+    set after_job to http_decimal(archive_list_text(selected_job and 2))
+    if not (archive_list_text(controller_review_candidate(database and after_job) and 0) equals "end"):
+        return 50
+    set lock_library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set held to compaction_lock_acquire(database and "controller-review:controller-review:http-submitted-proposal" and lock_library)
+    if held < 0:
+        return 51
+    set blocked_job to controller_review_run(database and "controller-review:http-submitted-proposal" and provider_llama_profile("fixture-model" and 8080) and "Fixture prompt" and 1 and -1 and 65536)
+    set released to net_close(held)
+    set unloaded to ep_dlclose(lock_library)
+    if not (blocked_job equals "review-owner-busy"):
+        return 52
+    set prior_stamp to protected_operation_actor_stamp(database and "fixture-operation" and "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    if string_length(prior_stamp) equals 0 or else not (principal_host_role(database and "remove-steward" and "device:steward" and "user" and "Fixture revocation") equals "recorded"):
+        return 26
+    if not (controller_authenticated_operation(database and charter and inventory and ep_sha256(inventory) and "" and "inspect" and "fixture-operation" and "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") equals "controller-caller-not-authorized"):
+        return 27
+    if not (principal_host_role(database and "restore-steward" and "device:steward" and "steward" and "New fixture authority") equals "recorded") or else protected_operation_actor_stamp(database and "fixture-operation" and "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") equals prior_stamp:
+        return 28
+    if not (protected_emergency_begin_at(database and charter and steward_secret and "console-incident" and "fixture-node" and "stop" and "Synthetic dashboard evidence" and ep_time_now_sec() - 86401) equals "recorded"):
+        return 53
+    set report to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/emergencies" and "{}" and steward_secret)
+    if get_list(report and 1) is not equal to 200 or else string_contains(archive_list_text(report and 2) and "overdue") equals 0 or else string_contains(archive_list_text(report and 2) and "console-incident") equals 0:
+        return 54
+    set other_report to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/emergencies" and "{}" and "outsider-secret")
+    if get_list(other_report and 1) is not equal to 200 or else string_contains(archive_list_text(other_report and 2) and "console-incident") is not equal to 0:
+        return 55
+    set invalid_report to controller_fixture_path(database and charter and inventory and ep_sha256(inventory) and "/emergencies" and "{\"principal\":\"other\"}" and steward_secret)
+    if get_list(invalid_report and 1) is not equal to 400:
+        return 56
+    set closed to sql_close(database)
+    display "PASS: loopback HTTP operation dispatch denies empty/wrong/admin/other-steward callers; owning steward applies, reconciles and rolls back inert bytes through real gates; replay denied."
+    return 0

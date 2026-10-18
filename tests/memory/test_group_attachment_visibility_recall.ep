@@ -1,0 +1,106 @@
+import "../../app/web/attachments"
+import "fs"
+import "../../app/web/attachment_visibility"
+import "../../app/jobs/delegation_schema"
+import "../../app/agent/run_messages"
+import "../../app/archive/history"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0 or else not (delegation_schema(database) equals "applied"):
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture" and "secret") is not equal to 0:
+        return 1
+    if not (group_create(database and "owner" and "g" and "browser" and "local" and "g" and "g") equals "created") or else not (group_session_create(database and "owner" and "shared" and "g" and "browser" and "local" and "g" and 1) equals "created"):
+        return 50
+    set session to "shared"
+    set run to "request"
+    if not (group_run_submit(database and "owner" and run and session and "browser" and "local" and "g" and "Read the attached note and cite its source.") equals "accepted"):
+        return 51
+    if write_file(get_argument(2) and "The attached word is café ☕.") is not equal to 1 or else web_attachment_register(database and "owner" and session and "note" and get_argument(2) and "note.txt" and "text/plain") is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"read-original\",\"function\":{\"name\":\"attachment_read_text\",\"arguments\":\"{\\\"attachment\\\":\\\"note\\\",\\\"offset\\\":0,\\\"characters\\\":100}\"}}]},\"finish_reason\":\"tool_calls\"}]}"
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set messages to agent_run_messages(database and run)
+    set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(messages and concat(",\"tools\":" and concat(session_tool_schemas() and "}"))))
+    set generated to agent_generate_local(database and run and "first-request" and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 1
+    if agent_tool_step(database and run) is not equal to 0:
+        return 1
+    if sql_execute(database and "CREATE TRIGGER reject_ready BEFORE UPDATE OF state ON echo_runs WHEN NEW.state='ready' BEGIN SELECT RAISE(ABORT,'fixture transition failure'); END;") is not equal to 0 or else agent_tool_step(database and run) equals 0:
+        return 1
+    set count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='agent_observation';"))
+    if not (ptr_to_str(get_list(count and 1)) equals "0") or else sql_execute(database and "DROP TRIGGER reject_ready;") is not equal to 0:
+        display "FAIL: failed transition left an orphan observation."
+        return 1
+    repeat while 1 equals 1:
+        set row to agent_run_read(database and run)
+        if row equals 0:
+            return 1
+        if ptr_to_str(get_list(row and 2)) equals "ready":
+            break
+        if agent_tool_step(database and run) is not equal to 0:
+            return 1
+    # Restart the database connection before constructing the next request.
+    if sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(path)
+    set messages to agent_run_messages(database and run)
+    set tokens to provider_json_tokens(messages)
+    if tokens equals 0:
+        return 1
+    set items to provider_items(tokens and 0)
+    set observation to ""
+    for each item in items:
+        if provider_value(tokens and provider_member(tokens and item and "role")) equals "tool":
+            set observation to provider_value(tokens and provider_member(tokens and item and "content"))
+    set observation_tokens to provider_json_tokens(observation)
+    if observation_tokens equals 0:
+        return 1
+    if not (provider_value(observation_tokens and provider_member(observation_tokens and 0 and "text")) equals "The attached word is café ☕."):
+        return 1
+    if not (provider_value(observation_tokens and provider_member(observation_tokens and 0 and "event")) equals "note:attachment") or else not (provider_value(observation_tokens and provider_member(observation_tokens and 0 and "sha256")) equals ep_sha256("The attached word is café ☕.")):
+        return 1
+    set source to archive_read_event(database and "first-request:call:0:result")
+    set recorded to knowledge_record(database and run and "semantic" and "attachment-note" and "contains" and "derived-lilac" and "tool-observation" and "first-request:call:0:result" and archive_list_text(source and 6) and "" and "" and "")
+    if string_index_of(recorded and "recorded:") is not equal to 0:
+        display recorded
+        return 40
+    if agent_cancel_run(database and run) is not equal to 0:
+        return 52
+    set future to group_run_submit(database and "owner" and "future" and "shared" and "browser" and "local" and "g" and "Recall my saved observations")
+    if not (future equals "accepted") or else string_contains(memory_context(database and "future") and "derived-lilac") equals 0:
+        return 41
+    set change to provider_json_tokens("{\"action\":\"exclude\",\"attachment\":\"note\",\"identity\":\"exclude-note\",\"previous\":\"\"}")
+    if not (web_attachment_visibility(database and "owner" and change) equals "recorded"):
+        return 30
+    set graph to knowledge_next(database and "future" and "attachment-note" and 0)
+    if not (archive_list_text(graph and 0) equals "end") or else string_contains(memory_context(database and "future") and "derived-lilac") is not equal to 0:
+        return 42
+    set hidden to agent_run_messages(database and run)
+    if provider_json_tokens(hidden) equals 0 or else string_contains(hidden and "café") is not equal to 0 or else string_contains(hidden and "excluded-from-context") equals 0 or else string_contains(hidden and "read-original") equals 0:
+        display hidden
+        return 31
+    set original to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE kind='tool_result' AND session=?;" and [session]))
+    if string_contains(archive_list_text(original and 1) and "café") equals 0:
+        return 32
+    set change to provider_json_tokens("{\"action\":\"restore\",\"attachment\":\"note\",\"identity\":\"restore-note\",\"previous\":\"attachment-visibility:owner:exclude-note\"}")
+    if not (web_attachment_visibility(database and "owner" and change) equals "recorded") or else not (agent_run_messages(database and run) equals messages):
+        return 33
+    set graph to knowledge_next(database and "future" and "attachment-note" and 0)
+    if not (archive_list_text(graph and 0) equals "found") or else string_contains(memory_context(database and "future") and "derived-lilac") equals 0:
+        return 43
+    if archive_verify(database and session) is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 34
+    display "PASS: shared-audience observed attachment claim disappears from the next shared turn’s automatic recall and graph traversal during exclusion, returns on restoration, and original tool/request history remains intact."
+    return 0

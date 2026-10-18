@@ -1,0 +1,55 @@
+import "../agent/provider_profile"
+import "fs"
+
+# Exact runtime identity contains hashes, not prompt text or credentials. Missing
+# build/provider identity is unqualified, never treated as matching evidence.
+define echo_runtime_binding with database as Int and run as Str returning Str:
+    set build to ptr_to_str(get_env("ECHO_RUNTIME_BUILD_SHA256"))
+    set profile to agent_provider_read(database and run)
+    set route_values to create_list()
+    set route_event to concat(run and ":vision-profile")
+    set added to append_list(route_values and route_event)
+    set routed to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=? AND kind='run_vision_profile';" and route_values))
+    if archive_list_text(routed and 0) equals "found":
+        set profile to archive_list_text(routed and 1)
+    set provider to ""
+    if string_length(profile) > 0:
+        set provider to ep_sha256(profile)
+    set files to ""
+    set keys to create_list()
+    set added to append_list(keys and "ECHO_SYSTEM_PROFILE")
+    set added to append_list(keys and "ECHO_IDENTITY_FILE")
+    for each key in keys:
+        set path to ptr_to_str(get_env(key))
+        set content to "unconfigured"
+        if string_length(path) > 0:
+            set content to "missing"
+            if file_exists(path):
+                set content to concat("loaded:" and ep_sha256(ptr_to_str(read_file(path))))
+        set quoted_key to provider_quote(key)
+        set quoted_content to provider_quote(content)
+        set files to concat(files and quoted_key)
+        set files to concat(files and quoted_content)
+    return concat("{\"build\":" and concat(provider_quote(build) and concat(",\"provider\":" and concat(provider_quote(provider) and concat(",\"identity\":" and concat(provider_quote(ep_sha256(files)) and "}"))))))
+
+# Expressions are internal SQL aliases/parameters, never model-supplied text.
+# Historical evidence remains visible with its status; stale is not deleted.
+define memory_runtime_status_sql with source as Str and binding as Str returning Str:
+    set payload to concat("CASE WHEN json_valid(" and concat(source and concat(".payload) THEN " and concat(source and ".payload ELSE '{}' END"))))
+    set query to concat("CASE WHEN " and concat(source and ".kind<>'tool_result' THEN 'unbound' WHEN json_type("))
+    set query to concat(query and concat(payload and ",'$.result.runtime_binding') IS NOT 'object' THEN 'unbound' WHEN "))
+    set query to concat(query and concat("COALESCE(json_extract(" and concat(binding and ",'$.build'),'')='' OR COALESCE(json_extract(")))
+    set query to concat(query and concat(binding and ",'$.provider'),'')='' OR COALESCE(json_extract("))
+    set query to concat(query and concat(payload and ",'$.result.runtime_binding.build'),'')='' OR COALESCE(json_extract("))
+    set query to concat(query and concat(payload and ",'$.result.runtime_binding.provider'),'')='' THEN 'unavailable' WHEN "))
+    set separator to ""
+    set keys to create_list()
+    set added to append_list(keys and "build")
+    set added to append_list(keys and "provider")
+    set added to append_list(keys and "identity")
+    for each key in keys:
+        set query to concat(query and separator)
+        set query to concat(query and concat("json_extract(" and concat(payload and concat(",'$.result.runtime_binding." and concat(key and "')=json_extract(")))))
+        set query to concat(query and concat(binding and concat(",'$." and concat(key and "')"))))
+        set separator to " AND "
+    return concat(query and " THEN 'current' ELSE 'stale-runtime' END")

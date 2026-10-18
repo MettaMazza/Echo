@@ -1,0 +1,128 @@
+import "../projects/context"
+import "../memory/sharing"
+
+# Human project actions use the authenticated device and selected conversation,
+# not an old model run's authority. No artificial model turn is created.
+define web_project_request with database as Int and device as Str and arguments as Str returning Str:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else project_object_keys(tokens and 0 and ["operation","session","identity","project","expected_revision","manifest"]) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    for each key in ["operation","session"]:
+        if not (provider_kind(tokens and provider_member(tokens and 0 and key)) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    set result to web_project_pending(database and device and arguments and tokens)
+    set fields to provider_json_tokens(result)
+    set status to provider_value(fields and provider_member(fields and 0 and "status"))
+    if status equals "found" or else status equals "recorded" or else status equals "already-recorded":
+        if sql_execute(database and "COMMIT;") equals 0:
+            return result
+        set result to "{\"status\":\"commit-failed\"}"
+    set closed to archive_rollback(database)
+    return result
+
+define web_project_pending with database as Int and device as Str and arguments as Str and tokens as List returning Str:
+    set operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    set session to provider_value(tokens and provider_member(tokens and 0 and "session"))
+    set writing to 1
+    if operation equals "list" or else operation equals "read":
+        set writing to 0
+    set owner to web_account_resource_device(database and device and "session" and session)
+    if principal_device_active(database and device) equals 0 or else web_attachment_session_allowed(database and owner and session and writing) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set scope to memory_share_session_scope(database and session)
+    if string_length(scope) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    if operation equals "list":
+        set selected to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE((SELECT json_extract(payload,'$.project') FROM echo_events WHERE session=? AND kind='project_selected' ORDER BY sequence DESC LIMIT 1),'');" and [session]))
+        if not (archive_list_text(selected and 0) equals "found"):
+            return "{\"status\":\"database-error\"}"
+        set output to concat("{\"status\":\"found\",\"selected\":" and concat(provider_quote(archive_list_text(selected and 1)) and ",\"projects\":["))
+        set after to "0"
+        set count to 0
+        repeat while 1 equals 1:
+            set row to history_collect_one(checkpoint_prepare(database and "SELECT e.sequence,json_extract(e.payload,'$.project') FROM echo_events e WHERE e.kind='project_revision' AND e.sequence>CAST(? AS INTEGER) AND NOT EXISTS(SELECT 1 FROM echo_events n WHERE n.kind='project_revision' AND json_extract(n.payload,'$.project')=json_extract(e.payload,'$.project') AND n.sequence>e.sequence) ORDER BY e.sequence LIMIT 1;" and [after]))
+            if archive_list_text(row and 0) equals "end":
+                break
+            if not (archive_list_text(row and 0) equals "found"):
+                return "{\"status\":\"database-error\"}"
+            set after to archive_list_text(row and 1)
+            set project to archive_list_text(row and 2)
+            set latest to project_latest_scope(database and scope and project)
+            if archive_list_text(latest and 0) equals "not-authorized":
+                continue
+            if not (archive_list_text(latest and 0) equals "found"):
+                return "{\"status\":\"project-read-failed\"}"
+            set fields to provider_json_tokens(archive_list_text(latest and 2))
+            set manifest to provider_value(fields and provider_member(fields and 0 and "manifest"))
+            if project_manifest_valid_scope(database and scope and manifest) equals 0:
+                continue
+            if count > 0:
+                set output to concat(output and ",")
+            set output to concat(output and concat("{\"project\":" and concat(provider_quote(project) and concat(",\"revision\":" and concat(provider_quote(archive_list_text(latest and 1)) and concat(",\"manifest\":" and concat(manifest and "}")))))))
+            set count to count + 1
+        return concat(output and "]}")
+    set project to provider_value(tokens and provider_member(tokens and 0 and "project"))
+    if operation equals "read":
+        set latest to project_latest_scope(database and scope and project)
+        if not (archive_list_text(latest and 0) equals "found"):
+            return concat("{\"status\":" and concat(provider_quote(archive_list_text(latest and 0)) and "}"))
+        set fields to provider_json_tokens(archive_list_text(latest and 2))
+        set manifest to provider_value(fields and provider_member(fields and 0 and "manifest"))
+        if project_manifest_valid_scope(database and scope and manifest) equals 0:
+            return "{\"status\":\"project-source-unavailable\"}"
+        return concat("{\"status\":\"found\",\"revision\":" and concat(provider_quote(archive_list_text(latest and 1)) and concat(",\"manifest\":" and concat(manifest and "}"))))
+    set identity to provider_value(tokens and provider_member(tokens and 0 and "identity"))
+    if not (provider_kind(tokens and provider_member(tokens and 0 and "identity")) equals "string") or else string_length(identity) equals 0:
+        return "{\"status\":\"invalid-identity\"}"
+    set event to concat("browser-project:" and concat(device and concat(":" and identity)))
+    set kind to "project_revision"
+    set payload to ""
+    set actor to principal_for_device(database and device)
+    if operation equals "select":
+        if not (provider_kind(tokens and provider_member(tokens and 0 and "project")) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+        if string_length(project) > 0 and not (archive_list_text(project_latest_scope(database and scope and project) and 0) equals "found"):
+            return "{\"status\":\"not-authorized\"}"
+        set kind to "project_selected"
+        set payload to concat("{\"project\":" and concat(provider_quote(project) and ",\"run\":\"\""))
+    else if operation equals "create" or else operation equals "update":
+        set field to provider_member(tokens and 0 and "manifest")
+        if not (provider_kind(tokens and field) equals "{"):
+            return "{\"status\":\"invalid-manifest\"}"
+        set manifest to agent_json_source(arguments and tokens and field)
+        if project_manifest_valid_scope(database and scope and manifest) equals 0:
+            return "{\"status\":\"invalid-manifest\"}"
+        set expected to provider_value(tokens and provider_member(tokens and 0 and "expected_revision"))
+        if operation equals "create":
+            set project to concat("project:" and event)
+            set expected to ""
+        else if string_length(project) equals 0 or else string_length(expected) equals 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        set latest to project_latest_scope(database and scope and project)
+        if archive_list_text(latest and 0) equals "found":
+            set fields to provider_json_tokens(archive_list_text(latest and 2))
+            set scope to provider_value(fields and provider_member(fields and 0 and "scope"))
+        else if not (archive_list_text(latest and 0) equals "end"):
+            return "{\"status\":\"not-authorized\"}"
+        set payload to concat("{\"project\":" and concat(provider_quote(project) and ",\"run\":\"\""))
+        for each pair in [["scope",scope],["previous",expected],["manifest",manifest],["manifest_sha256",ep_sha256(manifest)]]:
+            set payload to concat(payload and concat("," and concat(provider_quote(archive_list_text(pair and 0)) and concat(":" and provider_quote(archive_list_text(pair and 1))))))
+    else:
+        return "{\"status\":\"invalid-operation\"}"
+    set payload to concat(payload and concat(",\"actor\":" and concat(provider_quote(actor) and concat(",\"device\":" and concat(provider_quote(device) and "}")))))
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and [event]))
+    if archive_list_text(prior and 0) equals "found":
+        if archive_list_text(prior and 1) equals session and archive_list_text(prior and 2) equals kind and archive_list_text(prior and 3) equals payload:
+            return concat("{\"status\":\"already-recorded\",\"project\":" and concat(provider_quote(project) and concat(",\"revision\":" and concat(provider_quote(event) and "}"))))
+        return "{\"status\":\"identity-conflict\"}"
+    if not (archive_list_text(prior and 0) equals "end"):
+        return "{\"status\":\"database-error\"}"
+    if operation equals "create" or else operation equals "update":
+        set latest to project_latest_scope(database and scope and project)
+        if (archive_list_text(latest and 0) equals "found" and not (archive_list_text(latest and 1) equals expected)) or else (archive_list_text(latest and 0) equals "end" and string_length(expected) > 0):
+            return "{\"status\":\"revision-conflict\"}"
+    if archive_append_pending(database and session and event and kind and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return "{\"status\":\"write-failed\"}"
+    return concat("{\"status\":\"recorded\",\"project\":" and concat(provider_quote(project) and concat(",\"revision\":" and concat(provider_quote(event) and "}"))))

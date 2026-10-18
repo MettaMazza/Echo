@@ -1,0 +1,62 @@
+import "tool_registry"
+import "../web/shared_access"
+import "history_tools"
+
+# Candidate manifests may describe privileged code. They are scoped source
+# records, not public catalog entries or proof of qualification/activation.
+define candidate_discovery_snapshot with database as Int and run as Str and arguments as Str returning Str:
+    if run_authority_allows(database and run and "admin") equals 0 or else group_privileged_audience_allows(database and run) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "query" or else key equals "after"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set query_field to provider_member(tokens and 0 and "query")
+    set after to history_tool_integer(tokens and "after")
+    if not (provider_kind(tokens and query_field) equals "string") or else after < 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set query to ptr_to_str(string_to_lower(provider_value(tokens and query_field)))
+    set values to [run,int_to_string(after)]
+    repeat while 1 equals 1:
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT c.sequence,c.name,c.version,c.manifest,c.digest,c.run,caller.device FROM echo_tool_candidates c JOIN echo_run_authority source ON source.run=c.run JOIN echo_run_authority caller ON caller.run=?1 AND caller.principal=source.principal JOIN echo_runs original ON original.run=c.run JOIN echo_runs current ON current.run=caller.run WHERE c.sequence>CAST(?2 AS INTEGER) AND (original.session=current.session OR (NOT EXISTS(SELECT 1 FROM echo_group_run_origins g WHERE g.run=original.run) AND NOT EXISTS(SELECT 1 FROM echo_group_run_origins g WHERE g.run=current.run))) ORDER BY c.sequence LIMIT 1;" and values))
+        if archive_list_text(row and 0) equals "end":
+            return "{\"status\":\"end\",\"catalog\":\"saved-candidates-not-activated\"}"
+        if not (archive_list_text(row and 0) equals "found"):
+            return "{\"status\":\"database-error\"}"
+        set advanced to set_list(values and 1 and archive_list_text(row and 1))
+        if web_shared_run_read_allowed(database and archive_list_text(row and 7) and archive_list_text(row and 6)) equals 0:
+            continue
+        set manifest to archive_list_text(row and 4)
+        if not (ep_sha256(manifest) equals archive_list_text(row and 5)) or else tool_candidate_manifest_valid(manifest) equals 0:
+            return "{\"status\":\"candidate-integrity-error\"}"
+        set parsed to provider_json_tokens(manifest)
+        set name to provider_value(parsed and provider_member(parsed and 0 and "name"))
+        set version to provider_index(parsed and provider_member(parsed and 0 and "version"))
+        if not (name equals archive_list_text(row and 2)) or else not (version equals archive_list_text(row and 3)):
+            return "{\"status\":\"candidate-integrity-error\"}"
+        set purpose to provider_value(parsed and provider_member(parsed and 0 and "purpose"))
+        if string_length(query) > 0 and string_contains(ptr_to_str(string_to_lower(concat(name and concat(" " and purpose)))) and query) equals 0:
+            continue
+        set output to "{\"status\":\"found\",\"catalog\":\"saved-candidates-not-activated\",\"runnable\":false,\"qualification\":\"not-established-by-this-record\",\"next_after\":"
+        set output to concat(output and archive_list_text(row and 1))
+        set output to concat(output and concat(",\"digest\":" and provider_quote(archive_list_text(row and 5))))
+        set output to concat(output and concat(",\"source_run\":" and provider_quote(archive_list_text(row and 6))))
+        set output to concat(output and concat(",\"manifest_text\":" and provider_quote(manifest)))
+        return concat(output and concat(",\"manifest\":" and concat(manifest and "}")))
+    return "{\"status\":\"database-error\"}"
+
+define candidate_discovery_execute with database as Int and run as Str and arguments as Str returning Str:
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    set result to candidate_discovery_snapshot(database and run and arguments)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"database-error\"}"
+    return result

@@ -1,0 +1,123 @@
+import "controller_launch"
+import "controller_enrollment"
+import "controller_credential"
+
+# Both source packages are verified before installation. Configuration may
+# refer only to the pinned inputs package, never an arbitrary runtime file.
+define controller_bootstrap_plan with inputs as Str and inputs_pin as Str and service as Str and service_pin as Str and parent as Str returning Str:
+    if not (controller_bundle_preflight(inputs and inputs_pin) equals "bytes-verified") or else not (controller_bundle_preflight(service and service_pin) equals "bytes-verified"):
+        return "bootstrap-package-invalid"
+    if controller_bundle_entry(service and "serve_controller" and "executable") equals 0 or else controller_bundle_entry(service and "controller.json" and "data") equals 0:
+        return "bootstrap-service-entry-missing"
+    set tokens to provider_json_tokens(service)
+    set entries to provider_items(tokens and provider_member(tokens and 0 and "files"))
+    set configuration to ""
+    for each entry in entries:
+        if provider_value(tokens and provider_member(tokens and entry and "name")) equals "controller.json":
+            set configuration to file_read(provider_value(tokens and provider_member(tokens and entry and "source")))
+            if not (ep_sha256(configuration) equals provider_value(tokens and provider_member(tokens and entry and "sha256"))):
+                return "bootstrap-configuration-bytes-changed"
+    if controller_configuration_valid(configuration) equals 0:
+        return "bootstrap-configuration-invalid"
+    set config to provider_json_tokens(configuration)
+    set input_tokens to provider_json_tokens(inputs)
+    set input_entries to provider_items(input_tokens and provider_member(input_tokens and 0 and "files"))
+    set root to concat(parent and concat("/" and inputs_pin))
+    set fields to [["charter","charter.json",""],["inventory","inventory.json","inventory_sha256"],["policy","observer-policy.txt","policy_sha256"],["review_profile","review-profile.json","review_profile_sha256"],["review_prompt","review-prompt.txt","review_prompt_sha256"],["console_script","console.js","console_script_sha256"]]
+    for each field in fields:
+        set key to archive_list_text(field and 0)
+        set name to archive_list_text(field and 1)
+        set pin_key to archive_list_text(field and 2)
+        set expected_path to concat(root and concat("/" and name))
+        if not (provider_value(config and provider_member(config and 0 and key)) equals expected_path) or else controller_bundle_entry(inputs and name and "data") equals 0:
+            return "bootstrap-input-path-mismatch"
+        for each entry in input_entries:
+            if provider_value(input_tokens and provider_member(input_tokens and entry and "name")) equals name:
+                set pin to provider_value(input_tokens and provider_member(input_tokens and entry and "sha256"))
+                if string_length(pin_key) > 0 and not (provider_value(config and provider_member(config and 0 and pin_key)) equals pin):
+                    return "bootstrap-input-pin-mismatch"
+                if key equals "charter" and not (pin equals charter_pinned_digest()):
+                    return "bootstrap-charter-mismatch"
+    return "ready"
+
+# Create only the final private directory beneath verified existing ancestors.
+# Existing directories are verified, never repaired by chmod or recursive chown.
+define controller_bootstrap_directory with path as Str returning Str:
+    if string_length(path) < 2 or else get_character(path and 0) is not equal to 47:
+        return "bootstrap-ledger-directory-invalid"
+    set parts to workspace_path_parts(ptr_to_str(substring(path and 1 and string_length(path) - 1)))
+    if parts equals 0 or else length_list(parts) < 2:
+        return "bootstrap-ledger-directory-invalid"
+    set parent_path to ""
+    set index to 0
+    repeat while index < length_list(parts) - 1:
+        set parent_path to concat(parent_path and "/")
+        set parent_path to concat(parent_path and archive_list_text(parts and index))
+        set index to index + 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set parent to protected_path_open(library and parent_path and 1)
+    if parent < 0:
+        set closed to ep_dlclose(library)
+        return "bootstrap-ledger-parent-not-protected"
+    set name to archive_list_text(parts and length_list(parts) - 1)
+    set created to ep_dlcall3(ep_dlsym(library and "mkdirat") and parent and str_to_ptr(name) and 448)
+    if created is not equal to 0 and socket_errno(library) is not equal to 17:
+        set closed to net_close(parent)
+        set closed to ep_dlclose(library)
+        return "bootstrap-ledger-directory-create-failed"
+    set descriptor to protected_path_open(library and path and 1)
+    set valid to controller_private_inode(library and descriptor and 1)
+    if descriptor >= 0:
+        set closed to net_close(descriptor)
+    set flushed to ep_dlcall1(ep_dlsym(library and "fsync") and parent)
+    set closed to net_close(parent)
+    set unloaded to ep_dlclose(library)
+    if valid equals 0 or else flushed is not equal to 0 or else closed is not equal to 0 or else unloaded is not equal to 0:
+        return "bootstrap-ledger-directory-not-private-or-durable"
+    return "ready"
+
+# Resumable installation, not activation or a protected-change approval.
+# Existing enrollment retries cannot restore a revoked steward.
+define controller_bootstrap_host with inputs as Str and inputs_pin as Str and service as Str and service_pin as Str and parent as Str and device as Str and label as Str and reason as Str returning Str:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set user_function to ep_dlsym(library and "geteuid")
+    if user_function equals 0 or else ep_dlcall0(user_function) is not equal to 0:
+        set closed to ep_dlclose(library)
+        return "root-controller-required"
+    set closed to ep_dlclose(library)
+    if string_length(device) equals 0 or else string_length(label) equals 0 or else string_length(reason) equals 0:
+        return "bootstrap-steward-input-required"
+    set checked to controller_bootstrap_plan(inputs and inputs_pin and service and service_pin and parent)
+    if not (checked equals "ready"):
+        return checked
+    set staged to controller_bundle_stage(inputs and inputs_pin and parent)
+    if not (staged equals "staged-not-activated"):
+        return concat("bootstrap-inputs:" and staged)
+    set staged to controller_bundle_stage(service and service_pin and parent)
+    if not (staged equals "staged-not-activated"):
+        return concat("bootstrap-service:" and staged)
+    if not (controller_bundle_verify(inputs and inputs_pin and parent) equals "verified-not-authorized-for-activation") or else not (controller_bundle_verify(service and service_pin and parent) equals "verified-not-authorized-for-activation"):
+        return "bootstrap-installed-verification-failed"
+    set root to concat(parent and concat("/" and service_pin))
+    set configuration to concat(root and "/controller.json")
+    set loaded to controller_configuration_load(configuration)
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return archive_list_text(loaded and 0)
+    set ledger_directory to archive_list_text(loaded and 6)
+    set prepared to controller_bootstrap_directory(ledger_directory)
+    if not (prepared equals "ready"):
+        return prepared
+    set initialized to controller_operation_host(configuration and "initialize" and ep_sha256(archive_list_text(loaded and 1)))
+    if not (initialized equals "initialized" or else initialized equals "already-initialized"):
+        return concat("bootstrap-ledger:" and initialized)
+    set credential_name to concat("steward-" and ep_sha256(device))
+    set credential_name to concat(credential_name and ".secret")
+    set credential to controller_credential_host(ledger_directory and credential_name)
+    if not (credential equals "credential-created" or else credential equals "credential-exists-or-unavailable"):
+        return concat("bootstrap-credential:" and credential)
+    set credential_path to concat(ledger_directory and concat("/" and credential_name))
+    set identity to concat("bootstrap-enrollment:" and ep_sha256(device))
+    set enrolled to controller_enrollment_host(configuration and "enroll" and identity and device and label and credential_path and reason)
+    if not (enrolled equals "recorded" or else enrolled equals "already-recorded"):
+        return concat("bootstrap-enrollment:" and enrolled)
+    return "installed-enrollment-recorded-not-activated"

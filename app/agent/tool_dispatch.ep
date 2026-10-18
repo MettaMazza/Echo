@@ -1,3 +1,13 @@
+import "../feedback"
+import "../memory/corrections"
+import "../jobs/task_checklist"
+import "../tools/procedure_tool"
+import "../tools/project_tool"
+import "../tools/web_fetch"
+import "../tools/candidate_discovery"
+import "../tools/schedule_tool"
+import "../tools/delegation_tool"
+import "../tools/job_control"
 import "../tools/tool_discovery"
 import "../tools/continuity_tools"
 import "../tools/scratchpad"
@@ -16,6 +26,19 @@ import "../context/recap_rebuild"
 
 # One invocation executes at most the next cursor item. The enclosing run loops
 # until the ledger is observed; this is scheduling granularity, not a turn cap.
+# Direct conversation can inspect its own memory without opening a task.
+# Existing task and delegated-agent checklists remain enforced.
+define agent_direct_lookup with database as Int and run as Str and name as Str and arguments as Str returning Int:
+    if task_checklist_child(database and run) or else not (task_checklist_state(database and run) equals "available"):
+        return 0
+    if string_contains("|memory_search|memory_read|memory_sessions|memory_messages|memory_graph|memory_timeline|memory_status|reasoning_read|history_read|" and concat("|" and concat(name and "|"))):
+        return 1
+    if name equals "scratchpad":
+        set fields to provider_json_tokens(arguments)
+        set operation to provider_value(fields and provider_member(fields and 0 and "operation"))
+        return operation equals "read" or else operation equals "list"
+    return 0
+
 define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:
     set row to agent_run_read(database and run)
     if row equals 0:
@@ -82,14 +105,43 @@ define agent_tool_step_cancellable with database as Int and run as Str and cance
     if session_allowed equals 0:
         set session_allowed to group_run_session_allows(database and run and session)
     set authority_denied to session_allowed equals 0 or else run_authority_allows(database and run and "user") equals 0 or else tool_authority_allows(database and run and call_id and "user") equals 0
-    if authority_denied:
+    set guidance to guidance_pending(database and run)
+    if archive_list_text(guidance and 0) equals "found":
+        set observation to "{\"status\":\"not-executed\",\"effects\":\"none\",\"cause\":\"mid-turn-guidance\",\"recovery\":\"Reconsider this action with the incoming user guidance before requesting it again.\"}"
+    else if archive_list_text(guidance and 0) equals "error":
+        set observation to "{\"status\":\"not-executed\",\"effects\":\"none\",\"cause\":\"guidance-read-error\"}"
+    else if authority_denied:
         set observation to "{\"status\":\"not-authorized\",\"stage\":\"tool-dispatch\",\"cause\":\"initiating-authority-denied\",\"effects\":\"none\",\"recovery\":\"host-review-required\"}"
     else if tool_policy_allows(database and run and call_id and provider_value(tokens and name_field)) equals 0:
         set observation to "{\"status\":\"tool-unavailable\",\"stage\":\"tool-dispatch\",\"cause\":\"unclassified-or-disallowed-tool\",\"effects\":\"none\",\"recovery\":\"choose-an-authorized-registered-tool\"}"
+    else if (task_checklist_state(database and run) equals "missing" or else task_checklist_state(database and run) equals "revise" or else task_checklist_state(database and run) equals "available") and not (provider_value(tokens and name_field) equals "task_checklist") and not agent_direct_lookup(database and run and provider_value(tokens and name_field) and provider_value(tokens and arguments_field)):
+        set observation to "{\"status\":\"checklist-required\",\"effects\":\"none\",\"recovery\":\"Record the assigned requirements with task_checklist before executing other work. All normal tools remain available after the checklist is recorded.\"}"
+    else if task_checklist_state(database and run) equals "complete":
+        set observation to "{\"status\":\"task-complete-return-result\",\"effects\":\"none\",\"recovery\":\"All assigned checklist requirements are resolved. Return the final report to your requester now.\"}"
     else if provider_value(tokens and name_field) equals "protected_change_inspect" or else provider_value(tokens and name_field) equals "protected_change_review":
         set observation to protected_tool_execute(database and run and call_id and provider_value(tokens and name_field))
-    else if provider_value(tokens and name_field) equals "memory_record" or else provider_value(tokens and name_field) equals "memory_graph" or else provider_value(tokens and name_field) equals "memory_status" or else provider_value(tokens and name_field) equals "memory_set_visibility":
+    else if provider_value(tokens and name_field) equals "memory_timeline" or else provider_value(tokens and name_field) equals "memory_record" or else provider_value(tokens and name_field) equals "memory_graph" or else provider_value(tokens and name_field) equals "memory_status" or else provider_value(tokens and name_field) equals "memory_set_visibility":
         set observation to knowledge_tool_execute(database and run and call_id and provider_value(tokens and name_field))
+    else if (provider_value(tokens and name_field) equals "web_fetch" or else provider_value(tokens and name_field) equals "web_search" or else provider_value(tokens and name_field) equals "web_follow"):
+        set observation to web_fetch_execute(database and run and call_id and cancellation)
+    else if provider_value(tokens and name_field) equals "tool_candidates":
+        set observation to candidate_discovery_execute(database and run and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "delegate_task":
+        set observation to delegation_tool_execute(database and run and call_id)
+    else if provider_value(tokens and name_field) equals "delegation_message":
+        set observation to delegation_message_execute(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "task_checklist":
+        set observation to task_checklist_save(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "delegation_status":
+        set observation to delegation_status_execute(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "schedule":
+        set observation to schedule_tool_execute(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "procedure":
+        set observation to procedure_tool_execute(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "project":
+        set observation to project_tool_execute(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "job_control":
+        set observation to job_control_execute(database and run and call_id and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "scratchpad":
         set observation to scratchpad_execute(database and run and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "memory_sessions" or else provider_value(tokens and name_field) equals "memory_messages" or else provider_value(tokens and name_field) equals "reasoning_read":
@@ -108,16 +160,22 @@ define agent_tool_step_cancellable with database as Int and run as Str and cance
         set observation to image_tool_execute(database and run and call_id and cancellation)
     else if provider_value(tokens and name_field) equals "attachment_transcribe" or else provider_value(tokens and name_field) equals "speech_synthesize":
         set observation to speech_tool_execute(database and run and call_id and cancellation)
-    else if (provider_value(tokens and name_field) equals "workspace_read_text" or else provider_value(tokens and name_field) equals "workspace_create_text" or else provider_value(tokens and name_field) equals "workspace_make_directory") and group_run_session_allows(database and run and session) equals 1:
+    else if (provider_value(tokens and name_field) equals "workspace_plot" or else provider_value(tokens and name_field) equals "workspace_archive_create" or else provider_value(tokens and name_field) equals "workspace_archive_extract" or else provider_value(tokens and name_field) equals "workspace_archive_list" or else provider_value(tokens and name_field) equals "workspace_edit_workbook" or else provider_value(tokens and name_field) equals "workspace_create_workbook" or else provider_value(tokens and name_field) equals "workspace_read_workbook" or else provider_value(tokens and name_field) equals "workspace_read_json" or else provider_value(tokens and name_field) equals "workspace_read_table" or else provider_value(tokens and name_field) equals "workspace_diff" or else provider_value(tokens and name_field) equals "workspace_search" or else provider_value(tokens and name_field) equals "workspace_edit_text" or else provider_value(tokens and name_field) equals "workspace_list" or else provider_value(tokens and name_field) equals "workspace_read_text" or else provider_value(tokens and name_field) equals "workspace_create_text" or else provider_value(tokens and name_field) equals "workspace_make_directory") and group_run_session_allows(database and run and session) equals 1:
         set observation to workspace_tool_execute_owned(database and run and call_id)
-    else if provider_value(tokens and name_field) equals "workspace_execute":
+    else if (provider_value(tokens and name_field) equals "workspace_database" or else provider_value(tokens and name_field) equals "workspace_build" or else provider_value(tokens and name_field) equals "workspace_execute" or else provider_value(tokens and name_field) equals "host_execute" or else provider_value(tokens and name_field) equals "host_git"):
         set observation to execution_tool_execute(database and run and call_id and cancellation)
     else if provider_value(tokens and name_field) equals "attach_file" and group_run_session_allows(database and run and session) equals 1:
         set observation to attach_file_execute_owned(database and run and call_id)
     else:
         set observation to session_tool_execute(database and session and provider_value(tokens and name_field) and provider_value(tokens and arguments_field))
-    if string_length(observation) equals 0:
-        return 1
+        if provider_value(tokens and name_field) equals "history_read" or else provider_value(tokens and name_field) equals "history_search":
+            set observed_tokens to provider_json_tokens(observation)
+            if provider_value(observed_tokens and provider_member(observed_tokens and 0 and "status")) equals "found":
+                set observation to memory_correction_wrap(database and run and provider_value(observed_tokens and provider_member(observed_tokens and 0 and "event")) and observation)
+    if string_length(observation) equals 0 or else provider_json_tokens(observation) equals 0:
+        set raw to provider_quote(observation)
+        set observation to concat("{\"status\":\"invalid-tool-result\",\"raw_result\":" and concat(raw and "}"))
+    set observation to feedback_enrich(observation and provider_value(tokens and name_field) and request_event)
     set payload to agent_event_envelope(run and parent)
     set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
     set payload to concat(payload and concat(",\"request_event\":" and provider_quote(request_event)))
@@ -127,9 +185,14 @@ define agent_tool_step_cancellable with database as Int and run as Str and cance
         return 1
     if archive_append_pending(database and session and event and "tool_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else tool_ledger_observe(database and run and call_id and event) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
         return archive_rollback(database)
-    if authority_denied:
+    set guidance to guidance_pending(database and run)
+    if archive_list_text(guidance and 0) equals "found":
+        set observation to "{\"status\":\"not-executed\",\"effects\":\"none\",\"cause\":\"mid-turn-guidance\",\"recovery\":\"Reconsider this action with the incoming user guidance before requesting it again.\"}"
+    else if archive_list_text(guidance and 0) equals "error":
+        set observation to "{\"status\":\"not-executed\",\"effects\":\"none\",\"cause\":\"guidance-read-error\"}"
+    else if authority_denied:
         return agent_cancel_run(database and run)
-    if provider_value(tokens and name_field) equals "workspace_execute" or else provider_value(tokens and name_field) equals "image_generate" or else provider_value(tokens and name_field) equals "attachment_transcribe" or else provider_value(tokens and name_field) equals "speech_synthesize" or else provider_value(tokens and name_field) equals "session_rebuild_recap":
+    if (provider_value(tokens and name_field) equals "web_fetch" or else provider_value(tokens and name_field) equals "web_search" or else provider_value(tokens and name_field) equals "web_follow") or else (provider_value(tokens and name_field) equals "workspace_database" or else provider_value(tokens and name_field) equals "workspace_build" or else provider_value(tokens and name_field) equals "workspace_execute" or else provider_value(tokens and name_field) equals "host_execute" or else provider_value(tokens and name_field) equals "host_git") or else provider_value(tokens and name_field) equals "image_generate" or else provider_value(tokens and name_field) equals "attachment_transcribe" or else provider_value(tokens and name_field) equals "speech_synthesize" or else provider_value(tokens and name_field) equals "session_rebuild_recap":
         set result_tokens to provider_json_tokens(observation)
         set result_status to provider_value(result_tokens and provider_member(result_tokens and 0 and "status"))
         if result_status equals "cancelled" or else result_status equals "cancelled-before-launch" or else result_status equals "authorization-changed" or else result_status equals "not-authorized" or else result_status equals "review-required":

@@ -1,0 +1,103 @@
+import "../web/worker"
+import "../security/tool_policy"
+
+# Read current run scope, never a principal or device asserted by arguments.
+# Group calls cannot enumerate the initiating user's private conversations.
+define job_scope_query returning Str:
+    return "SELECT r.run,r.session,r.state,r.objective_event,r.last_event,r.rowid,EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=r.run) FROM echo_runs r JOIN echo_run_authority target ON target.run=r.run JOIN echo_run_authority caller ON caller.run=?1 JOIN echo_runs current ON current.run=caller.run WHERE target.principal=caller.principal AND (r.session=current.session OR (NOT EXISTS(SELECT 1 FROM echo_group_run_origins g WHERE g.run=r.run) AND NOT EXISTS(SELECT 1 FROM echo_group_run_origins g WHERE g.run=current.run)))"
+
+define job_control_snapshot with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if tool_policy_allows(database and run and call_id and "job_control") equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set field to provider_member(tokens and 0 and "operation")
+    set operation to provider_value(tokens and field)
+    if not (provider_kind(tokens and field) equals "string") or else not (operation equals "list" or else operation equals "inspect" or else operation equals "cancel"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "operation" or else (operation equals "list" and key equals "after") or else (not (operation equals "list") and key equals "run")):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set caller_values to [run]
+    set caller to history_collect_one(checkpoint_prepare(database and "SELECT device FROM echo_run_authority WHERE run=?1;" and caller_values))
+    if not (archive_list_text(caller and 0) equals "found"):
+        return "{\"status\":\"not-authorized\"}"
+    set device to archive_list_text(caller and 1)
+    set values to [run]
+    set query to job_scope_query()
+    set delegated to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_delegations';"))
+    if archive_list_text(delegated and 0) equals "found":
+        set query to concat(substring(query and 0 and string_length(query) - 1) and " OR EXISTS(SELECT 1 FROM echo_delegations d WHERE d.child=r.run AND d.parent=current.run))")
+    else if not (archive_list_text(delegated and 0) equals "end"):
+        return "{\"status\":\"database-error\"}"
+
+    if operation equals "list":
+        set after to history_tool_integer(tokens and "after")
+        if after < 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        set added to append_list(values and int_to_string(after))
+        set query to concat(query and " AND r.rowid>CAST(?2 AS INTEGER) ORDER BY r.rowid LIMIT 1;")
+    else:
+        set target_field to provider_member(tokens and 0 and "run")
+        if not (provider_kind(tokens and target_field) equals "string") or else string_length(provider_value(tokens and target_field)) equals 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        set added to append_list(values and provider_value(tokens and target_field))
+        set query to concat(query and " AND r.run=?2;")
+    set row to history_collect_one(checkpoint_prepare(database and query and values))
+    repeat while archive_list_text(row and 0) equals "found" and web_shared_run_read_allowed(database and device and archive_list_text(row and 1)) equals 0:
+        if not (operation equals "list"):
+            return "{\"status\":\"end\"}"
+        set advanced to set_list(values and 1 and archive_list_text(row and 6))
+        set row to history_collect_one(checkpoint_prepare(database and query and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        set keys to create_list()
+        return history_tool_row(row and keys)
+    set target to archive_list_text(row and 1)
+    if operation equals "cancel":
+        if not (archive_list_text(caller and 0) equals "found") or else web_shared_run_control_allowed(database and device and target) equals 0:
+            return "{\"status\":\"not-authorized\"}"
+        set state to archive_list_text(row and 3)
+        if state equals "completed" or else state equals "cancelled":
+            return concat("{\"status\":\"already-terminal\",\"state\":" and concat(provider_quote(state) and "}"))
+        set event to concat(run and concat(":job-cancel:" and call_id))
+        set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"target_run\":" and concat(provider_quote(target) and ",\"status\":\"cancellation-requested\"}"))))
+        set old to archive_read_event(database and event)
+        if old is not equal to 0:
+            if not (archive_list_text(old and 3) equals payload):
+                return "{\"status\":\"request-conflict\"}"
+        else:
+            set identity to [target,device]
+            if tool_ledger_change(database and "INSERT INTO echo_cancel_requests(run,device) VALUES(?1,?2) ON CONFLICT(run) DO UPDATE SET device=excluded.device RETURNING run;" and identity) is not equal to 0:
+                return "{\"status\":\"database-error\"}"
+            set current to agent_run_read(database and run)
+            if archive_append_pending(database and archive_list_text(current and 0) and event and "job_cancellation_requested" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+                return "{\"status\":\"database-error\"}"
+        return concat("{\"status\":\"cancellation-requested\",\"event\":" and concat(provider_quote(event) and ",\"completed\":false,\"recovery\":\"Inspect the job until its worker records a terminal state; do not assume side effects were undone.\"}"))
+    set keys to ["run","session","state","objective_event","last_event","next_after","cancellation_requested"]
+    return history_tool_row(row and keys)
+
+define job_control_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    set result to job_control_snapshot(database and run and call_id and arguments)
+    if result equals "{\"status\":\"database-error\"}":
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return result
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"database-error\"}"
+    set result_tokens to provider_json_tokens(result)
+    if provider_value(result_tokens and provider_member(result_tokens and 0 and "status")) equals "cancellation-requested":
+        set request_tokens to provider_json_tokens(arguments)
+        set target to provider_value(request_tokens and provider_member(request_tokens and 0 and "run"))
+        # Existing worker gate cancels idle runs only; live workers own stopping.
+        set reconciled to web_worker_cancel_idle(database and target)
+        if reconciled is not equal to 0:
+            return concat(substring(result and 0 and string_length(result) - 1) and ",\"worker_reconciliation\":\"pending\"}")
+    return result

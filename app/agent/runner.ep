@@ -1,3 +1,4 @@
+import "../jobs/delegation_return"
 import "../retained_text"
 import "control"
 import "provider_profile"
@@ -32,6 +33,18 @@ define agent_loop_inner_provider with database as Int and run as Str and profile
             if agent_tool_step_cancellable(database and run and cancellation_reader) is not equal to 0:
                 return "tool-recovery-required"
         else if state equals "ready":
+            set pending to guidance_pending(database and run)
+            if archive_list_text(pending and 0) equals "found":
+                if agent_guidance_apply(database and run) is not equal to 0:
+                    return "guidance-application-error"
+                continue
+            if archive_list_text(pending and 0) equals "error":
+                return "guidance-read-error"
+            set delegated to delegation_collect(database and run)
+            if delegated equals "collected":
+                continue
+            if not (delegated equals "none" or else delegated equals "pending"):
+                return delegated
             set rebuild to recap_rebuild_pending(database and run)
             if rebuild equals "recorded":
                 continue
@@ -89,15 +102,30 @@ define agent_loop_provider with database as Int and run as Str and profile as St
     set routed to archive_read_event(database and concat(run and ":vision-profile"))
     if routed is not equal to 0:
         set effective to archive_list_text(routed and 3)
-    set remembered to memory_prepare(database and run and effective and output_reserve and cancellation_reader and read_size)
-    if not (remembered equals "ready"):
-        set payload to concat("{\"run_id\":" and provider_quote(run))
-        set payload to concat(payload and concat(",\"status\":" and concat(provider_quote(remembered) and ",\"recovery\":\"Retry this run; original conversations remain intact and completed memory writes are idempotent.\"}")))
-        set recorded to archive_append(database and archive_list_text(existing and 0) and concat("memory-failure:" and agent_identity()) and "memory_failure" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
-        # Extraction failure must not lock the user out of ordinary chat. The
-        # context records the gap; original-source recall remains available and
-        # unindexed sources will be retried on the next turn.
+    set memory_done to channel
+    set location to history_collect_one(archive_prepare(database and "PRAGMA database_list;"))
+    set memory_path to concat(archive_list_text(location and 3) and "")
+    set memory_run to concat(run and "")
+    set memory_profile to concat(effective and "")
+    set memory_parallel to string_length(memory_path) > 0
+    if memory_parallel:
+        spawn agent_memory_prepare_parallel(memory_path and memory_run and memory_profile and output_reserve and cancellation_reader and read_size and memory_done)
+    else:
+        set remembered to memory_prepare(database and run and effective and output_reserve and cancellation_reader and read_size)
     set result to agent_loop_inner_provider(database and run and effective and output_reserve and cancellation_reader and read_size and library)
+    if not (result equals "completed" or else result equals "cancelled"):
+        set recorded to agent_attempt_record(database and run and result)
+    # A final response is already persisted and visible before this join. Keep
+    # the worker alive until extraction has a durable success/failure receipt.
+    if memory_parallel:
+        set memory_result to receive from memory_done
+        # Retry only a transient pre-generation failure with an unchanged head.
+        # Re-entering the loop rechecks cancellation and authority normally.
+        set retryable to result equals "context-recovery-required" or else result equals "database-busy" or else result equals "archive-error" or else result equals "discovery-failed" or else result equals "invalid-metadata" or else result equals "profile-archive-failed" or else result equals "preflight-archive-failed"
+        set retry_state to agent_run_read(database and run)
+        if retryable and retry_state is not equal to 0 and archive_list_text(retry_state and 2) equals "ready" and archive_list_text(retry_state and 3) equals archive_list_text(existing and 3):
+            set result to agent_loop_inner_provider(database and run and effective and output_reserve and cancellation_reader and read_size and library)
+            set recorded to agent_attempt_record(database and run and result)
     if ep_dlclose(library) is not equal to 0:
         return "cleanup-error"
     return result
@@ -109,3 +137,30 @@ define agent_loop_inner with database as Int and run as Str and model as Str and
 define agent_loop with database as Int and run as Str and model as Str and port as Int and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:
     set profile to provider_llama_profile(model and port)
     return agent_loop_provider(database and run and profile and output_reserve and cancellation_reader and read_size)
+
+define agent_memory_prepare_parallel with path as Str and run as Str and profile as Str and reserve as Int and cancellation as Int and read_size as Int and completed as Int returning Int:
+    set database to archive_open(path)
+    set status to "archive-unavailable"
+    if database is not equal to 0:
+        set status to memory_prepare(database and run and profile and reserve and cancellation and read_size)
+        if not (status equals "ready"):
+            set owner to agent_run_read(database and run)
+            set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"status\":" and concat(provider_quote(status) and "}"))))
+            set recorded to archive_append(database and archive_list_text(owner and 0) and concat("memory-failure:" and agent_identity()) and "memory_failure" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+        set closed to sql_close(database)
+    send 0 to completed
+    return 0
+
+# Retain the actual outcome even when a later retry replaces worker status.
+define agent_attempt_record with database as Int and run as Str and status as Str returning Int:
+    set owner to agent_run_read(database and run)
+    if owner equals 0:
+        return 1
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"status\":" and provider_quote(status)))
+    set payload to concat(payload and concat(",\"head\":" and concat(provider_quote(archive_list_text(owner and 3)) and "}")))
+    set payload to feedback_enrich(payload and "Run" and run)
+    set result to archive_append(database and archive_list_text(owner and 0) and concat("attempt:" and agent_identity()) and "run_attempt_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+    if result is not equal to 0:
+        display concat("Run attempt receipt could not be saved: " and concat(run and concat(" " and status)))
+    return result

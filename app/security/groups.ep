@@ -40,6 +40,14 @@ define group_create with database as Int and device as Str and identity as Str a
     set principal to principal_for_device(database and device)
     if string_length(principal) equals 0:
         return migration_fail(database and "not-authorized")
+    if string_index_of(origin and "silo:echo-system:") equals 0:
+        set expected to ptr_to_str(get_env("ECHO_SYSTEM_PRINCIPAL"))
+        if string_length(expected) equals 0 or else not (principal equals expected) or else not (platform equals "echo-system"):
+            return migration_fail(database and "system-scope-not-authorized")
+    if string_index_of(origin and "silo:admin:") equals 0:
+        set role to principal_role(database and principal)
+        if not (role equals "admin" or else role equals "steward"):
+            return migration_fail(database and "admin-scope-not-authorized")
     set values to [identity]
     set old to history_collect_one(checkpoint_prepare(database and "SELECT creator,platform,server,channel,origin FROM echo_groups WHERE identity=?;" and values))
     if archive_list_text(old and 0) equals "found":
@@ -87,11 +95,20 @@ define group_change with database as Int and device as Str and operation as Str 
     if not (archive_list_text(old and 0) equals "end"):
         return migration_fail(database and "membership-read-failed")
     set values to [group_id]
-    set group to history_collect_one(checkpoint_prepare(database and "SELECT creator,(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=?1) FROM echo_groups WHERE identity=?1;" and values))
+    set group to history_collect_one(checkpoint_prepare(database and "SELECT creator,(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=?1),origin FROM echo_groups WHERE identity=?1;" and values))
     if not (archive_list_text(group and 0) equals "found"):
         return migration_fail(database and "group-unavailable")
+    if string_index_of(archive_list_text(group and 3) and "silo:user-in-channel:") equals 0:
+        return migration_fail(database and "fixed-channel-audience")
+    if string_index_of(archive_list_text(group and 3) and "silo:echo-system:") equals 0:
+        return migration_fail(database and "fixed-system-audience")
     if not (archive_list_text(group and 2) equals int_to_string(previous_revision)):
         return migration_fail(database and "membership-revision-conflict")
+    if string_index_of(archive_list_text(group and 3) and "silo:admin:") equals 0 and also (state equals "invited" or else state equals "joined"):
+        set actor_role to principal_role(database and actor)
+        set member_role to principal_role(database and member)
+        if not (actor_role equals "admin" or else actor_role equals "steward") or else not (member_role equals "admin" or else member_role equals "steward"):
+            return migration_fail(database and "admin-scope-not-authorized")
     set actor_state to group_member_state(database and group_id and actor)
     set member_state to group_member_state(database and group_id and member)
     set permitted to 0
@@ -122,5 +139,5 @@ define group_audience_allows with database as Int and device as Str and group_id
     if string_length(principal) equals 0:
         return 0
     set values to [group_id,principal,platform,server,room,int_to_string(revision),int_to_string(current_only)]
-    set row to history_collect_one(checkpoint_prepare(database and "SELECT a.group_id FROM echo_group_audiences a JOIN echo_groups g ON g.identity=a.group_id JOIN echo_principals p ON p.identity=a.principal AND p.revoked=0 WHERE a.group_id=?1 AND a.principal=?2 AND g.platform=?3 AND g.server=?4 AND g.channel=?5 AND a.revision=CAST(?6 AS INTEGER) AND (SELECT m.state FROM echo_group_membership m WHERE m.group_id=a.group_id AND m.principal=a.principal ORDER BY m.revision DESC LIMIT 1)='joined' AND (?7='0' OR a.revision=(SELECT MAX(m.revision) FROM echo_group_membership m WHERE m.group_id=a.group_id));" and values))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT a.group_id FROM echo_group_audiences a JOIN echo_groups g ON g.identity=a.group_id JOIN echo_principals p ON p.identity=a.principal AND p.revoked=0 WHERE (g.origin NOT LIKE 'silo:admin:%' OR p.role IN ('admin','steward')) AND a.group_id=?1 AND a.principal=?2 AND g.platform=?3 AND g.server=?4 AND g.channel=?5 AND a.revision=CAST(?6 AS INTEGER) AND (SELECT m.state FROM echo_group_membership m WHERE m.group_id=a.group_id AND m.principal=a.principal ORDER BY m.revision DESC LIMIT 1)='joined' AND (?7='0' OR a.revision=(SELECT MAX(m.revision) FROM echo_group_membership m WHERE m.group_id=a.group_id));" and values))
     return archive_list_text(row and 0) equals "found"

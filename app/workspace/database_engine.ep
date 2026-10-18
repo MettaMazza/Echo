@@ -1,0 +1,110 @@
+import "../providers/local_json"
+import "files"
+import "os"
+
+# SQLite values retain their original storage class. Text is readable UTF-8;
+# binary text and blobs use exact hex rather than truncating at an embedded NUL.
+define workspace_database_hex with pointer as Int and count as Int returning Str:
+    set output to create_builder()
+    set index to 0
+    repeat while index < count:
+        set byte to peek_byte(pointer and index)
+        set added to builder_append(output and substring("0123456789abcdef" and byte / 16 and 1))
+        set added to builder_append(output and substring("0123456789abcdef" and byte modulo 16 and 1))
+        set index to index + 1
+    return builder_to_string(output)
+
+define workspace_database_cell with library as Int and statement as Int and column as Int returning Str:
+    set kind to ep_dlcall2(ep_dlsym(library and "sqlite3_column_type") and statement and column)
+    if kind equals 5:
+        return "{\"type\":\"null\",\"value\":null}"
+    set label to "text"
+    if kind equals 1:
+        set label to "integer"
+    else if kind equals 2:
+        set label to "real"
+    else if kind equals 4:
+        set label to "blob"
+    set pointer to 0
+    if kind equals 4:
+        set pointer to ep_dlcall2(ep_dlsym(library and "sqlite3_column_blob") and statement and column)
+    else:
+        set pointer to ep_dlcall2(ep_dlsym(library and "sqlite3_column_text") and statement and column)
+    set count to ep_dlcall2(ep_dlsym(library and "sqlite3_column_bytes") and statement and column)
+    set value to ""
+    if kind is not equal to 4:
+        set value to ptr_to_str(pointer)
+    set encoding to "utf8"
+    if kind equals 4 or else string_length(value) is not equal to count or else provider_valid_utf8(value) equals 0:
+        set encoding to "hex"
+        set value to workspace_database_hex(pointer and count)
+    return concat("{\"type\":" and concat(provider_quote(label) and concat(",\"encoding\":" and concat(provider_quote(encoding) and concat(",\"value\":" and concat(provider_quote(value) and "}"))))))
+
+define workspace_database_error with library as Int and database as Int and stage as Str and code as Int returning Int:
+    set message to "SQLite operation failed"
+    if database is not equal to 0:
+        set message to ptr_to_str(ep_dlcall1(ep_dlsym(library and "sqlite3_errmsg") and database))
+    display concat("{\"kind\":\"error\",\"stage\":" and concat(provider_quote(stage) and concat(",\"code\":" and concat(int_to_string(code) and concat(",\"message\":" and concat(provider_quote(message) and "}"))))))
+    return 1
+
+# Run a script statement-by-statement; never silently ignore its remaining SQL.
+# Output is JSON Lines captured by the durable execution guardian.
+define workspace_database_script with library as Int and database as Int and script as Str returning Int:
+    set offset to 0
+    set number to 0
+    set status to 0
+    repeat while offset < string_length(script):
+        set statement to [0]
+        set tail to [0]
+        set start to str_to_ptr(script) + offset
+        set prepared to ep_dlcall5(ep_dlsym(library and "sqlite3_prepare_v2") and database and start and -1 and get_list_data_ptr(statement) and get_list_data_ptr(tail))
+        if prepared is not equal to 0:
+            set status to workspace_database_error(library and database and "prepare" and prepared)
+            break
+        set next to get_list(tail and 0) - str_to_ptr(script)
+        if next <= offset:
+            set status to workspace_database_error(library and database and "no-progress" and 1)
+            break
+        set offset to next
+        set handle to get_list(statement and 0)
+        if handle is not equal to 0:
+            set number to number + 1
+            set columns to ep_dlcall1(ep_dlsym(library and "sqlite3_column_count") and handle)
+            set names to create_builder()
+            set index to 0
+            repeat while index < columns:
+                if index > 0:
+                    set added to builder_append(names and ",")
+                set name to ptr_to_str(ep_dlcall2(ep_dlsym(library and "sqlite3_column_name") and handle and index))
+                set added to builder_append(names and provider_quote(name))
+                set index to index + 1
+            set column_names to builder_to_string(names)
+            display concat("{\"kind\":\"statement\",\"index\":" and concat(int_to_string(number) and concat(",\"columns\":[" and concat(column_names and "]}"))))
+            set rows to 0
+            set stepped to ep_dlcall1(ep_dlsym(library and "sqlite3_step") and handle)
+            repeat while stepped equals 100:
+                set cells to create_builder()
+                set index to 0
+                repeat while index < columns:
+                    if index > 0:
+                        set added to builder_append(cells and ",")
+                    set added to builder_append(cells and workspace_database_cell(library and handle and index))
+                    set index to index + 1
+                display concat("{\"kind\":\"row\",\"statement\":" and concat(int_to_string(number) and concat(",\"values\":[" and concat(builder_to_string(cells) and "]}"))))
+                set rows to rows + 1
+                set stepped to ep_dlcall1(ep_dlsym(library and "sqlite3_step") and handle)
+            if stepped is not equal to 101:
+                set status to workspace_database_error(library and database and "step" and stepped)
+            set finalized to ep_dlcall1(ep_dlsym(library and "sqlite3_finalize") and handle)
+            if status equals 0 and finalized is not equal to 0:
+                set status to workspace_database_error(library and database and "finalize" and finalized)
+            if status is not equal to 0:
+                break
+            display concat("{\"kind\":\"statement-complete\",\"index\":" and concat(int_to_string(number) and concat(",\"rows\":" and concat(int_to_string(rows) and "}"))))
+    if ep_dlcall1(ep_dlsym(library and "sqlite3_get_autocommit") and database) equals 0:
+        set rolled_back to ep_dlcall5(ep_dlsym(library and "sqlite3_exec") and database and str_to_ptr("ROLLBACK;") and 0 and 0 and 0)
+        display "{\"kind\":\"transaction-rolled-back\",\"reason\":\"script-ended-with-open-transaction\"}"
+        set status to 1
+    if status equals 0:
+        display concat("{\"kind\":\"complete\",\"statements\":" and concat(int_to_string(number) and "}"))
+    return status

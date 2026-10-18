@@ -1,0 +1,118 @@
+import "media_type"
+import "html_document"
+import "curl_native"
+
+define network_fetch_save with library as Int and directory as Int and name as Str and text as Str returning Int:
+    set descriptor to workspace_file_open(library and directory and name and 1)
+    if descriptor < 0:
+        return 1
+    set result to file_stage_write(library and descriptor and str_to_ptr(text) and string_length(text))
+    set closed to file_stage_finish(library and descriptor)
+    if result is not equal to 0 or else closed is not equal to 0:
+        return 1
+    return ep_dlcall1(ep_dlsym(library and "fsync") and directory)
+
+# Private helper directory supplied by the trusted caller. Never a model path.
+# Every hop has separate complete originals and a flushed receipt before the
+# next destination is attempted. No automatic redirect or arbitrary hop cap.
+define network_fetch with original as Str and directory as Int returning Str:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "{\"status\":\"platform-unavailable\"}"
+    set current to original
+    set base to ""
+    set visited to create_list()
+    set hops to "["
+    set status to "complete"
+    set ordinal to 0
+    repeat while 1 equals 1:
+        set parsed to network_url_parse(current and base)
+        if not (archive_list_text(parsed and 0) equals "parsed"):
+            set status to archive_list_text(parsed and 0)
+            break
+        set url to archive_list_text(parsed and 1)
+        set repeated to 0
+        for each prior in visited:
+            if ptr_to_str(prior) equals url:
+                set repeated to 1
+        if repeated equals 1:
+            set status to "redirect-cycle"
+            break
+        set added to append_list(visited and url)
+        set resolved to network_resolve_public(archive_list_text(parsed and 2) and archive_list_text(parsed and 3))
+        if not (archive_list_text(resolved and 0) equals "public-addresses"):
+            set status to archive_list_text(resolved and 0)
+            break
+        set stem to concat("hop-" and int_to_string(ordinal))
+        set body_name to concat(stem and ".body")
+        set headers_name to concat(stem and ".headers")
+        set addresses to get_list(resolved and 1)
+        set pins to "["
+        set index to 0
+        repeat while index < length_list(addresses):
+            if index > 0:
+                set pins to concat(pins and ",")
+            set pins to concat(pins and provider_quote(archive_list_text(addresses and index)))
+            set index to index + 1
+        set pins to concat(pins and "]")
+        set request to concat("{\"url\":" and concat(provider_quote(url) and concat(",\"approved_addresses\":" and concat(pins and "}"))))
+        if network_fetch_save(library and directory and concat(stem and ".request.json") and request) is not equal to 0:
+            set status to "request-save-failed"
+            break
+        set body to workspace_file_open(library and directory and body_name and 1)
+        set headers to workspace_file_open(library and directory and headers_name and 1)
+        if body < 0 or else headers < 0:
+            if body >= 0:
+                set closed to net_close(body)
+            if headers >= 0:
+                set closed to net_close(headers)
+            set status to "storage-conflict"
+            break
+        set result to network_curl_transfer(parsed and addresses and body and headers)
+        set tokens to provider_json_tokens(result)
+        set status to provider_value(tokens and provider_member(tokens and 0 and "status"))
+        set document_name to ""
+        set content_type to provider_value(tokens and provider_member(tokens and 0 and "content_type"))
+        if network_media_type(content_type) equals "text/html":
+            set source to workspace_file_open(library and directory and body_name and 0)
+            if source >= 0:
+                set encoding to ""
+                set fields to string_split(content_type and ";")
+                for each field in fields:
+                    set value to ptr_to_str(string_trim(ptr_to_str(field)))
+                    if string_index_of(ptr_to_str(string_to_lower(value)) and "charset=") equals 0:
+                        set encoding to ptr_to_str(string_trim(substring(value and 8 and string_length(value) - 8)))
+                        if string_length(encoding) >= 2 and get_character(encoding and 0) equals 34 and get_character(encoding and string_length(encoding) - 1) equals 34:
+                            set encoding to ptr_to_str(substring(encoding and 1 and string_length(encoding) - 2))
+                set document to network_html_extract_encoded(source and url and encoding)
+                set closed to net_close(source)
+                set document_name to concat(stem and ".document.json")
+                if network_fetch_save(library and directory and document_name and document) is not equal to 0:
+                    set status to "derived-document-save-failed"
+                    break
+        set receipt to concat("{\"request\":" and concat(request and concat(",\"transfer\":" and result)))
+        set receipt to concat(receipt and concat(",\"body\":" and provider_quote(body_name)))
+        set receipt to concat(receipt and concat(",\"headers\":" and concat(provider_quote(headers_name) and "}")))
+        set receipt to concat(substring(receipt and 0 and string_length(receipt) - 1) and concat(",\"document\":" and concat(provider_quote(document_name) and "}")))
+        if network_fetch_save(library and directory and concat(stem and ".result.json") and receipt) is not equal to 0:
+            set status to "receipt-save-failed"
+            break
+        if ordinal > 0:
+            set hops to concat(hops and ",")
+        set hops to concat(hops and receipt)
+        set ordinal to ordinal + 1
+        if not (status equals "complete"):
+            break
+        set redirect to provider_value(tokens and provider_member(tokens and 0 and "redirect"))
+        set code to string_to_int(provider_value(tokens and provider_member(tokens and 0 and "http_status")))
+        if string_length(redirect) equals 0 or else not (code equals 301 or else code equals 302 or else code equals 303 or else code equals 307 or else code equals 308):
+            if code >= 400:
+                set status to "http-error"
+            break
+        set base to url
+        set current to redirect
+    set closed to ep_dlclose(library)
+    set result to concat("{\"status\":" and provider_quote(status))
+    set result to concat(result and concat(",\"requested_url\":" and provider_quote(original)))
+    set result to concat(result and concat(",\"last_target\":" and provider_quote(current)))
+    return concat(result and concat(",\"hops\":" and concat(hops and "]}")))

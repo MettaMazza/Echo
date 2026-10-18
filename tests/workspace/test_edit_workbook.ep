@@ -1,0 +1,68 @@
+import "../../app/tools/workspace_tools"
+import "../../app/web/run_store"
+import "../../app/archive/file_copy"
+import "../../app/workspace/list_archive"
+
+define main returning Int:
+    if get_argument_count() is not equal to 2:
+        return 1
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_root_open(system and get_argument(1))
+    if root < 0:
+        return 2
+    set package to workbook_parts(system and root and "source.xlsx")
+    set digest to archive_list_text(package and 1)
+    set parts to get_list(package and 2)
+    set original to workbook_part(parts and "xl/worksheets/sheet1.xml")
+    set changed to string_replace(original and "original marker" and "edited café marker")
+    set patch to concat("[{\"part\":\"xl/worksheets/sheet1.xml\",\"xml\":" and concat(provider_quote(changed) and "}]"))
+    set result to workspace_edit_workbook(system and root and "source.xlsx" and "edited.xlsx" and digest and patch)
+    display result
+    set tokens to provider_json_tokens(result)
+    if not (provider_value(tokens and provider_member(tokens and 0 and "status")) equals "created"):
+        return 3
+    set edited to workbook_parts(system and root and "edited.xlsx")
+    if not (workbook_part(get_list(edited and 2) and "xl/worksheets/sheet1.xml") equals changed) or else not (workbook_part(get_list(edited and 2) and "xl/styles.xml") equals workbook_part(parts and "xl/styles.xml")):
+        return 4
+    set unchanged to file_digest(concat(get_argument(1) and "/source.xlsx") and 65536)
+    if not (archive_list_text(unchanged and 1) equals digest):
+        return 5
+    set binary to workspace_archive_operation(system and root and "edited.xlsx" and 6 and 1 and "media.bin" and archive_list_text(edited and 1))
+    set parsed to provider_json_tokens(binary)
+    set expected to file_digest(concat(get_argument(1) and "/expected.bin") and 65536)
+    if not (provider_value(parsed and provider_member(parsed and 0 and "extracted_sha256")) equals archive_list_text(expected and 1)):
+        return 6
+    if string_contains(workspace_edit_workbook(system and root and "source.xlsx" and "edited.xlsx" and digest and patch) and "already-exists") equals 0 or else string_contains(workspace_edit_workbook(system and root and "source.xlsx" and "bad.xlsx" and "wrong" and patch) and "source-changed") equals 0:
+        return 7
+    if string_contains(workspace_edit_workbook(system and root and "source.xlsx" and "bad.xlsx" and digest and "[{\"part\":\"missing.xml\",\"xml\":\"<x/>\"}]") and "invalid-or-missing-xml-part") equals 0:
+        return 8
+    set database to archive_open(concat(get_argument(1) and "/archive.sqlite"))
+    if database equals 0 or else web_run_schema(database) is not equal to 0:
+        return 9
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Owner" and "secret") is not equal to 0:
+        return 10
+    set submitted to web_submit_owned(database and "owner" and "edit-book" and "" and "Edit workbook.")
+    set session to archive_list_text(submitted and 1)
+    set directory to workspace_session_open(database and system and "owner" and session and get_env("ECHO_WORKSPACE_ROOT"))
+    if directory < 0:
+        return 11
+    set location to history_collect_one(archive_prepare(database and "SELECT directory FROM echo_workspaces LIMIT 1;"))
+    set source_path to concat(get_argument(1) and "/source.xlsx")
+    set source_digest to file_digest(source_path and 65536)
+    set target to concat(get_env("ECHO_WORKSPACE_ROOT") and concat("/" and concat(archive_list_text(location and 1) and "/source.xlsx")))
+    if file_copy_verified(source_path and target and digest and get_list(source_digest and 2) and 65536) is not equal to 0:
+        return 12
+    set arguments to concat("{\"path\":\"source.xlsx\",\"destination\":\"scoped-edited.xlsx\",\"expected_sha256\":" and concat(provider_quote(digest) and concat(",\"replacements\":" and concat(patch and "}"))))
+    set response to provider_json_tokens(workspace_tool_execute_device(database and "owner" and session and arguments and "workbook-edit"))
+    if not (provider_value(response and provider_member(response and 0 and "status")) equals "created"):
+        return 13
+    if string_contains(workspace_tool_execute_device(database and "outsider" and session and arguments and "workbook-edit") and "source_sha256") > 0:
+        return 14
+    if web_device_revoke(database and "owner") is not equal to 0 or else string_contains(workspace_tool_execute_device(database and "owner" and session and arguments and "workbook-edit") and "source_sha256") > 0:
+        return 15
+    set closed to net_close(directory)
+    set closed to sql_close(database)
+    set closed to net_close(root)
+    set closed to ep_dlclose(system)
+    display "PASS: explicit XML workbook edit preserves original file, other XML and binary media; digest mismatch, existing destination and missing part rejected."
+    return 0

@@ -1,4 +1,8 @@
+import "corrections"
+import "../archive/attachment_visibility"
 import "archive_recall"
+import "group_knowledge"
+import "../context/runtime_binding"
 import "../tools/history_tools"
 
 # Facts and episodes are derived assertions. The immutable source remains the
@@ -22,6 +26,8 @@ define knowledge_record with database as Int and run as Str and kind as Str and 
         return "invalid-arguments"
     if not (evidence equals "source-account" or else evidence equals "inference" or else evidence equals "tool-observation"):
         return "invalid-arguments"
+    if string_length(memory_archive_principal(database and run)) equals 0:
+        return group_memory_record(database and run and kind and subject and predicate and object and evidence and source_event and source_digest and event_time and valid_until and supersedes)
     if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
         return "database-busy"
     set principal to memory_archive_principal(database and run)
@@ -31,14 +37,16 @@ define knowledge_record with database as Int and run as Str and kind as Str and 
     set added to append_list(values and principal)
     set added to append_list(values and source_event)
     set added to append_list(values and source_digest)
-    set source to history_collect_one(checkpoint_prepare(database and "SELECT e.kind FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal=?1 AND e.event=?2 AND e.digest=?3;" and values))
+    set source to history_collect_one(checkpoint_prepare(database and "SELECT e.kind,e.payload FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal=?1 AND e.event=?2 AND e.digest=?3;" and values))
     if not (archive_list_text(source and 0) equals "found"):
         return knowledge_abort(database and "source-not-found")
-    set source_kind to archive_list_text(source and 1)
+    if not (memory_corrections(database and run and source_event) equals "[]"):
+        return knowledge_abort(database and "corrected-source: read and cite the correction; this historical source cannot establish a new claim")
+    set source_kind to memory_source_evidence_kind(archive_list_text(source and 1) and archive_list_text(source and 2))
     if evidence equals "tool-observation":
         if not (source_kind equals "tool_result" or else source_kind equals "process_output"):
             return knowledge_abort(database and "evidence-kind-mismatch")
-    else if not (source_kind equals "user" or else source_kind equals "assistant_final" or else source_kind equals "tool_result" or else source_kind equals "process_output"):
+    else if not (source_kind equals "source_import" or else source_kind equals "user" or else source_kind equals "assistant_final" or else source_kind equals "tool_result" or else source_kind equals "process_output"):
         return knowledge_abort(database and "evidence-kind-mismatch")
     # A model-authored claim is always an inference unless it points to an
     # independently recorded user account or tool observation.
@@ -118,12 +126,13 @@ define knowledge_next with database as Int and run as Str and node as Str and af
         return history_status("invalid-range")
     set principal to memory_archive_principal(database and run)
     if string_length(principal) equals 0:
-        return history_status("not-authorized")
+        return group_memory_next(database and run and node and after_sequence)
     set values to create_list()
     set added to append_list(values and principal)
     set added to append_list(values and node)
     set added to append_list(values and int_to_string(after_sequence))
-    set row to history_collect_one(checkpoint_prepare(database and concat("SELECT c.identity,c.sequence,c.kind,a.name,c.predicate,b.name,c.evidence,c.source_event,c.source_digest,c.event_time,c.valid_until,c.recorded_at,COALESCE(c.supersedes,''),COALESCE((SELECT n.identity FROM echo_memory_claims n WHERE n.supersedes=c.identity),'') FROM echo_memory_claims c JOIN echo_memory_nodes a ON a.identity=c.subject AND a.principal=c.principal JOIN echo_memory_nodes b ON b.identity=c.object AND b.principal=c.principal JOIN echo_events e ON e.event=c.source_event AND e.digest=c.source_digest JOIN echo_session_principals s ON s.session=e.session AND s.principal=c.principal WHERE " and concat(knowledge_visible_sql(database) and " AND c.principal=?1 AND (?2='' OR a.name=?2 OR b.name=?2) AND c.sequence>CAST(?3 AS INTEGER) ORDER BY c.sequence LIMIT 1;")) and values))
+    set added to append_list(values and echo_runtime_binding(database and run))
+    set row to history_collect_one(checkpoint_prepare(database and memory_scope_query(database and ptr_to_str(string_replace(concat("SELECT c.identity,c.sequence,c.kind,a.name,c.predicate,b.name,c.evidence,c.source_event,c.source_digest,c.event_time,c.valid_until,c.recorded_at,COALESCE(c.supersedes,''),COALESCE((SELECT n.identity FROM echo_memory_claims n WHERE n.supersedes=c.identity),''),__RUNTIME_STATUS__ FROM echo_memory_claims c JOIN echo_memory_nodes a ON a.identity=c.subject AND a.principal=c.principal JOIN echo_memory_nodes b ON b.identity=c.object AND b.principal=c.principal JOIN echo_events e ON e.event=c.source_event AND e.digest=c.source_digest JOIN echo_session_principals s ON s.session=e.session AND s.principal=c.principal WHERE " and concat(knowledge_visible_sql(database) and " AND c.principal IN (__MEMORY_SCOPE__) AND (?2='' OR a.name=?2 OR b.name=?2) AND c.sequence>CAST(?3 AS INTEGER) ORDER BY c.sequence LIMIT 1;")) and "__RUNTIME_STATUS__" and memory_runtime_status_sql("e" and "?4")))) and values))
     if not (memory_archive_principal(database and run) equals principal):
         return history_status("authorization-changed")
     return row
@@ -132,8 +141,9 @@ define knowledge_next with database as Int and run as Str and node as Str and af
 # lifecycle schema means the earlier graph version; a read failure denies recall.
 define knowledge_visible_sql with database as Int returning Str:
     set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_memory_visibility';"))
+    set source_visible to attachment_observation_visible_sql(database and "c.source_event")
     if archive_list_text(schema and 0) equals "end":
-        return "1"
+        return source_visible
     if not (archive_list_text(schema and 0) equals "found"):
         return "0"
-    return "COALESCE((SELECT v.state FROM echo_memory_visibility v WHERE v.claim=c.identity ORDER BY v.sequence DESC LIMIT 1),'visible')='visible'"
+    return concat("COALESCE((SELECT v.state FROM echo_memory_visibility v WHERE v.claim=c.identity ORDER BY v.sequence DESC LIMIT 1),'visible')='visible' AND " and source_visible)

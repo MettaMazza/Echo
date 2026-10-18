@@ -1,0 +1,90 @@
+import "delegation_run"
+import "../security/group_history"
+
+# Complete child results enter the parent's own immutable run lineage exactly once.
+# Pending children do not block parent conversation; the scheduler returns completed results.
+define delegation_collect with database as Int and run as Str returning Str:
+    set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE name='echo_delegations';"))
+    if archive_list_text(schema and 0) equals "end":
+        return "none"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set parent to agent_run_read(database and run)
+    if parent equals 0 or else not (archive_list_text(parent and 2) equals "ready" or else archive_list_text(parent and 2) equals "completed") or else run_authority_allows(database and run and "user") equals 0:
+        return migration_fail(database and "authority-changed")
+    # A completion starts a new parent reply, but cannot construct context
+    # while another run in this conversation is still producing its reply.
+    # Keep the parent completed and the result undelivered for the scheduler
+    # to collect automatically as soon as that conversation turn finishes.
+    set active to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_runs WHERE session=?1 AND run<>?2 AND state NOT IN ('completed','cancelled','failed');" and [archive_list_text(parent and 0),run]))
+    if not (archive_list_text(active and 0) equals "found"):
+        return migration_fail(database and "database-error")
+    if not (archive_list_text(active and 1) equals "0"):
+        return migration_fail(database and "conversation-active")
+    set rows to checkpoint_prepare(database and "SELECT d.child,r.session,r.state,r.last_event FROM echo_delegations d JOIN echo_runs r ON r.run=d.child WHERE d.parent=? ORDER BY d.rowid;" and [run])
+    if rows equals 0:
+        return migration_fail(database and "database-error")
+    set contents to "["
+    set identities to ""
+    set count to 0
+    set pending to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(rows)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(rows)
+            return migration_fail(database and "database-error")
+        set child to concat(ptr_to_str(ep_sqlite3_column_text(rows and 0)) and "")
+        set session to concat(ptr_to_str(ep_sqlite3_column_text(rows and 1)) and "")
+        set state to concat(ptr_to_str(ep_sqlite3_column_text(rows and 2)) and "")
+        set head to concat(ptr_to_str(ep_sqlite3_column_text(rows and 3)) and "")
+        set allowed to run_authority_allows(database and child and "user") and also group_history_allows(database and session)
+        if allowed and not (state equals "completed" or else state equals "failed" or else state equals "cancelled" or else state equals "waiting"):
+            set pending to 1
+            continue
+        # Each child head is delivered once, independently of siblings.
+        set delivered to history_collect_one(checkpoint_prepare(database and "SELECT e.event FROM echo_events e,json_each(e.payload,'$.results') j WHERE e.kind='delegation_results' AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(j.value,'$.run')=?2 AND (json_extract(j.value,'$.event')=?3 OR (json_extract(j.value,'$.state')='authority-changed' AND ?4='0')) LIMIT 1;" and [run,child,head,int_to_string(allowed)]))
+        if archive_list_text(delivered and 0) equals "found":
+            continue
+        if not (archive_list_text(delivered and 0) equals "end"):
+            set closed to ep_sqlite3_finalize(rows)
+            return migration_fail(database and "database-error")
+        if count > 0:
+            set contents to concat(contents and ",")
+        set contents to concat(contents and concat("{\"run\":" and provider_quote(child)))
+        if allowed:
+            set result to archive_read_event(database and head)
+            if result equals 0:
+                set closed to ep_sqlite3_finalize(rows)
+                return migration_fail(database and "database-error")
+            set contents to concat(contents and concat(",\"state\":" and provider_quote(state)))
+            set contents to concat(contents and concat(",\"event\":" and provider_quote(head)))
+            set contents to concat(contents and concat(",\"digest\":" and provider_quote(archive_list_text(result and 6))))
+            set contents to concat(contents and concat(",\"result_payload\":" and provider_quote(archive_list_text(result and 3))))
+        else:
+            set contents to concat(contents and ",\"state\":\"authority-changed\",\"result_withheld\":true")
+        set contents to concat(contents and "}")
+        set identities to concat(identities and concat(archive_hash_field(child) and concat(archive_hash_field(head) and int_to_string(allowed))))
+        set count to count + 1
+    set closed to ep_sqlite3_finalize(rows)
+    if count equals 0:
+        # Retry admission of an already collected batch even while a sibling runs.
+        set head_event to archive_read_event(database and archive_list_text(parent and 3))
+        if archive_list_text(parent and 2) equals "ready" and head_event is not equal to 0 and archive_list_text(head_event and 2) equals "delegation_results":
+            return migration_fail(database and "none")
+        if pending:
+            return migration_fail(database and "pending")
+        return migration_fail(database and "none")
+    set identity to concat(run and concat(":delegation-results:" and ep_sha256(identities)))
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE event=?;" and [identity]))
+    if archive_list_text(existing and 0) equals "found":
+        return migration_fail(database and "none")
+    if not (archive_list_text(existing and 0) equals "end"):
+        return migration_fail(database and "database-error")
+    set payload to concat(agent_event_envelope(run and archive_list_text(parent and 3)) and concat(",\"results\":" and concat(contents and "]}")))
+    if archive_append_pending(database and archive_list_text(parent and 0) and identity and "delegation_results" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and archive_list_text(parent and 2) and archive_list_text(parent and 3) and "ready" and identity) is not equal to 0:
+        return migration_fail(database and "write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "collected"

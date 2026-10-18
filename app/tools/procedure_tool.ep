@@ -1,0 +1,48 @@
+import "../memory/procedures"
+import "../context/session_messages"
+
+define procedure_tool_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if tool_policy_allows(database and run and call_id and "procedure") equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else project_object_keys(tokens and 0 and ["operation","manifest","event","query","after","previous_revision","state","reason"]) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    set schemas to session_tool_schemas_owned(database and run)
+    if operation equals "save":
+        set field to provider_member(tokens and 0 and "manifest")
+        if not (provider_kind(tokens and field) equals "{"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set manifest to agent_json_source(arguments and tokens and field)
+        set event to concat("procedure:" and concat(run and concat(":" and call_id)))
+        set saved to procedure_save(database and run and event and manifest and schemas)
+        if saved equals "duplicate-version":
+            set duplicate to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE kind='procedure_version' AND json_extract(payload,'$.scope')=?1 AND json_extract(payload,'$.manifest_sha256')=?2 ORDER BY sequence LIMIT 1;" and [project_scope(database and run),ep_sha256(manifest)]))
+            if archive_list_text(duplicate and 0) equals "found":
+                set event to archive_list_text(duplicate and 1)
+                set saved to "already-recorded"
+
+        return concat("{\"status\":" and concat(provider_quote(saved) and concat(",\"event\":" and concat(provider_quote(event) and "}"))))
+    if operation equals "set_visibility":
+        for each key in ["event","state","reason"]:
+            if not (provider_kind(tokens and provider_member(tokens and 0 and key)) equals "string"):
+                return "{\"status\":\"invalid-arguments\"}"
+        set previous to history_tool_integer(tokens and "previous_revision")
+        if previous < 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        set event to provider_value(tokens and provider_member(tokens and 0 and "event"))
+        set change to concat("procedure-visibility:" and concat(run and concat(":" and call_id)))
+        set status to procedure_visibility_set(database and run and change and event and previous and provider_value(tokens and provider_member(tokens and 0 and "state")) and provider_value(tokens and provider_member(tokens and 0 and "reason")))
+        return concat("{\"status\":" and concat(provider_quote(status) and ",\"original_sources_preserved\":true}"))
+    if operation equals "read":
+        set field to provider_member(tokens and 0 and "event")
+        if not (provider_kind(tokens and field) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+        return procedure_read(database and run and provider_value(tokens and field) and schemas)
+    if operation equals "search":
+        set field to provider_member(tokens and 0 and "query")
+        set after to history_tool_integer(tokens and "after")
+        if not (provider_kind(tokens and field) equals "string") or else after < 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        return procedure_search(database and run and provider_value(tokens and field) and after and schemas)
+    return "{\"status\":\"invalid-arguments\"}"

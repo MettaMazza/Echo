@@ -1,0 +1,103 @@
+import "controller_operations"
+import "../agent/provider_profile"
+import "../agent/run_messages"
+import "../context/session_messages"
+
+# Model/prompt inputs come from the installed host configuration, never from
+# proposal text, HTTP parameters or inherited environment variables.
+define controller_review_inputs_load with configuration as Str returning List:
+    set loaded to controller_configuration_load(configuration)
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return loaded
+    set content to archive_list_text(loaded and 1)
+    set tokens to provider_json_tokens(content)
+    if provider_member(tokens and 0 and "review_profile") < 0:
+        return history_status("controller-review-not-configured")
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set result to history_status("ready")
+    set names to ["review_profile","review_prompt"]
+    for each item in names:
+        set key to ptr_to_str(item)
+        set path to provider_value(tokens and provider_member(tokens and 0 and key))
+        set descriptor to protected_path_open(library and path and 0)
+        if descriptor < 0:
+            set closed to ep_dlclose(library)
+            return history_status("controller-review-input-not-protected")
+        set value to file_read(path)
+        set closed to net_close(descriptor)
+        set digest_key to concat(key and "_sha256")
+        set expected to provider_value(tokens and provider_member(tokens and 0 and digest_key))
+        if string_length(value) equals 0 or else not (ep_sha256(value) equals expected):
+            set closed to ep_dlclose(library)
+            return history_status("controller-review-input-changed")
+        set added to append_list(result and value)
+    set closed to ep_dlclose(library)
+    if not (provider_profile_status(archive_list_text(result and 1)) equals "ready"):
+        return history_status("controller-review-profile-invalid")
+    set profile_tokens to provider_json_tokens(archive_list_text(result and 1))
+    if provider_value(profile_tokens and provider_member(profile_tokens and 0 and "adapter")) equals "mlx-lm":
+        set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        set helper_fields to ["tokenizer_helper","interpreter_library","environment_executable","spool"]
+        for each key in helper_fields:
+            set path to provider_value(profile_tokens and provider_member(profile_tokens and 0 and ptr_to_str(key)))
+            set directory to 0
+            if ptr_to_str(key) equals "spool":
+                set directory to 1
+            set descriptor to protected_path_open(library and path and directory)
+            if descriptor < 0:
+                set closed to ep_dlclose(library)
+                return history_status("controller-review-helper-not-protected")
+            set closed to net_close(descriptor)
+        set closed to ep_dlclose(library)
+    return result
+
+# A run retains the exact system text before its first model request. A host
+# update cannot silently replace the identity/context of a resumed review.
+define controller_review_inputs_bind with database as Int and run as Str and profile as Str and prompt as Str returning Str:
+    if string_length(prompt) equals 0 or else not (provider_profile_status(profile) equals "ready"):
+        return "controller-review-input-invalid"
+    if agent_provider_bind(database and run and profile) is not equal to 0:
+        return "controller-review-profile-conflict"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return migration_fail(database and "review-run-missing")
+    set identity to concat(run and ":controller-review-prompt")
+    set values to create_list()
+    set added to append_list(values and identity)
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and values))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals archive_list_text(row and 0)) or else not (archive_list_text(old and 2) equals "controller_review_prompt") or else not (archive_list_text(old and 3) equals prompt):
+            return migration_fail(database and "controller-review-prompt-conflict")
+    else:
+        if not (archive_list_text(old and 0) equals "end") or else not (archive_list_text(row and 2) equals "ready") or else not (archive_list_text(row and 1) equals archive_list_text(row and 3)):
+            return migration_fail(database and "controller-review-already-started")
+        set occurred to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+        if archive_append_pending(database and archive_list_text(row and 0) and identity and "controller_review_prompt" and prompt and occurred) is not equal to 0:
+            return migration_fail(database and "controller-review-prompt-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "controller-review-prompt-commit-failed")
+    return "bound"
+
+define controller_review_bound_messages with database as Int and run as Str returning Str:
+    set row to agent_run_read(database and run)
+    set prompt to archive_read_event(database and concat(run and ":controller-review-prompt"))
+    if row equals 0 or else prompt equals 0 or else not (archive_list_text(prompt and 0) equals archive_list_text(row and 0)) or else not (archive_list_text(prompt and 2) equals "controller_review_prompt"):
+        return ""
+    set messages to session_messages(database and archive_list_text(row and 0) and run)
+    set tokens to provider_json_tokens(messages)
+    if tokens equals 0 or else not (provider_kind(tokens and 0) equals "["):
+        return ""
+    if provider_kind(tokens and 1) equals "]":
+        return ""
+    set quoted to provider_quote(archive_list_text(prompt and 3))
+    set result to concat("[{\"role\":\"system\",\"content\":" and quoted)
+    set result to concat(result and "}")
+    set items to provider_items(tokens and 0)
+    for each item in items:
+        if not (provider_value(tokens and provider_member(tokens and item and "role")) equals "system"):
+            set source to agent_json_source(messages and tokens and item)
+            set result to concat(result and ",")
+            set result to concat(result and source)
+    return concat(result and "]")

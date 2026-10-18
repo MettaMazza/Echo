@@ -1,0 +1,67 @@
+import "../projects/context"
+import "history_tools"
+import "../security/tool_policy"
+
+define project_tool_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if tool_policy_allows(database and run and call_id and "project") equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else project_object_keys(tokens and 0 and ["operation","project","expected_revision","manifest","after"]) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    set project to provider_value(tokens and provider_member(tokens and 0 and "project"))
+    if operation equals "list":
+        set after to history_tool_integer(tokens and "after")
+        if after < 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        repeat while 1 equals 1:
+            set row to history_collect_one(checkpoint_prepare(database and "SELECT e.sequence,json_extract(e.payload,'$.project') FROM echo_events e WHERE e.kind='project_revision' AND e.sequence>CAST(? AS INTEGER) AND NOT EXISTS(SELECT 1 FROM echo_events n WHERE n.kind='project_revision' AND json_extract(n.payload,'$.project')=json_extract(e.payload,'$.project') AND n.sequence>e.sequence) ORDER BY e.sequence LIMIT 1;" and [int_to_string(after)]))
+            if not (archive_list_text(row and 0) equals "found"):
+                return concat("{\"status\":" and concat(provider_quote(archive_list_text(row and 0)) and "}"))
+            set after to string_to_int(archive_list_text(row and 1))
+            set project to archive_list_text(row and 2)
+            set latest to project_latest(database and run and project)
+            if archive_list_text(latest and 0) equals "not-authorized":
+                continue
+            if not (archive_list_text(latest and 0) equals "found"):
+                return "{\"status\":\"project-read-failed\"}"
+            set fields to provider_json_tokens(archive_list_text(latest and 2))
+            set manifest to provider_value(fields and provider_member(fields and 0 and "manifest"))
+            if project_manifest_valid(database and run and manifest) equals 0:
+                continue
+            set result to concat("{\"status\":\"found\",\"project\":" and provider_quote(project))
+            set result to concat(result and concat(",\"next_after\":" and int_to_string(after)))
+            set result to concat(result and concat(",\"revision\":" and provider_quote(archive_list_text(latest and 1))))
+            return concat(result and concat(",\"manifest\":" and concat(manifest and "}")))
+    if operation equals "create" or else operation equals "update":
+        set field to provider_member(tokens and 0 and "manifest")
+        if not (provider_kind(tokens and field) equals "{"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set manifest to agent_json_source(arguments and tokens and field)
+        set expected to provider_value(tokens and provider_member(tokens and 0 and "expected_revision"))
+        if operation equals "create":
+            set project to concat("project:" and concat(run and concat(":" and call_id)))
+            set expected to ""
+        else if string_length(project) equals 0 or else string_length(expected) equals 0:
+            return "{\"status\":\"invalid-arguments\"}"
+        set event to concat("project-revision:" and concat(run and concat(":" and call_id)))
+        set status to project_revision_save(database and run and project and event and expected and manifest)
+        set result to concat("{\"status\":" and provider_quote(status))
+        set result to concat(result and concat(",\"project\":" and provider_quote(project)))
+        return concat(result and concat(",\"revision\":" and concat(provider_quote(event) and "}")))
+    if operation equals "select":
+        if not (provider_kind(tokens and provider_member(tokens and 0 and "project")) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set status to project_select(database and run and project and concat("project-selected:" and concat(run and concat(":" and call_id))))
+        return concat("{\"status\":" and concat(provider_quote(status) and "}"))
+    if operation equals "read" and string_length(project) > 0:
+        set row to project_latest(database and run and project)
+        if not (archive_list_text(row and 0) equals "found"):
+            return concat("{\"status\":" and concat(provider_quote(archive_list_text(row and 0)) and "}"))
+        set fields to provider_json_tokens(archive_list_text(row and 2))
+        set manifest to provider_value(fields and provider_member(fields and 0 and "manifest"))
+        if project_manifest_valid(database and run and manifest) equals 0:
+            return "{\"status\":\"project-source-unavailable\"}"
+        set result to concat("{\"status\":\"found\",\"revision\":" and provider_quote(archive_list_text(row and 1)))
+        return concat(result and concat(",\"manifest\":" and concat(manifest and "}")))
+    return "{\"status\":\"invalid-arguments\"}"

@@ -1,0 +1,161 @@
+import "controller_operations"
+import "controller_review_runner"
+import "controller_http"
+import "controller_process"
+import "../transport/cooperative_accept"
+
+# Startup never repairs or initializes an incomplete bootstrap. The explicit
+# OS-authenticated initializer must have completed under this exact config.
+define controller_service_ready with database as Int and configuration_digest as Str returning Int:
+    if protected_digest_valid(configuration_digest) equals 0 or else archive_verify(database and "controller-bootstrap") is not equal to 0:
+        return 0
+    set receipt to archive_read_event(database and "controller-bootstrap:complete")
+    if receipt equals 0:
+        return 0
+    if not (archive_list_text(receipt and 0) equals "controller-bootstrap") or else not (archive_list_text(receipt and 2) equals "controller_bootstrap_complete") or else not (archive_list_text(receipt and 3) equals configuration_digest):
+        return 0
+    return 1
+
+define controller_service_run with configuration as Str and connection_pin as Str returning Int:
+    set loaded to controller_configuration_load(configuration)
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        display archive_list_text(loaded and 0)
+        return 1
+    set content to archive_list_text(loaded and 1)
+    set digest to ep_sha256(content)
+    if string_length(connection_pin) > 0 and not (connection_pin equals digest):
+        display "controller-configuration-changed-since-listen"
+        return 1
+    set tokens to provider_json_tokens(content)
+    set port to http_decimal(provider_value(tokens and provider_member(tokens and 0 and "listen_port")))
+    if port < 1 or else port > 65535:
+        display "controller-listen-port-required"
+        return 1
+    set directory to archive_list_text(loaded and 6)
+    set name to archive_list_text(loaded and 7)
+    set separator to concat("/" and name)
+    set path to concat(directory and separator)
+    if not file_exists(path):
+        display "controller-ledger-not-initialized"
+        return 1
+    set database to controller_ledger_open(directory and name)
+    if database equals 0:
+        display "controller-ledger-unavailable"
+        return 1
+    if controller_service_ready(database and digest) equals 0:
+        set closed to sql_close(database)
+        display "controller-bootstrap-incomplete-or-changed"
+        return 1
+    if string_length(connection_pin) > 0:
+        set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        set charter to archive_list_text(loaded and 2)
+        set inventory to archive_list_text(loaded and 3)
+        set inventory_digest to archive_list_text(loaded and 4)
+        set policy to archive_list_text(loaded and 5)
+        set result to controller_http_connection(library and 3 and port and database and charter and inventory and inventory_digest and policy and configuration and digest)
+        set closed to net_close(3)
+        set unloaded to ep_dlclose(library)
+        if sql_close(database) is not equal to 0:
+            display "controller-request-ledger-close-failed"
+            return 1
+        display "controller-request-finished"
+        display result
+        return result
+    set listener to local_socket_listen(port)
+    if listener equals 0:
+        set closed to sql_close(database)
+        display "controller-listen-failed"
+        return 1
+    set configured to socket_make_nonblocking(get_list(listener and 0) and get_list(listener and 1))
+    if configured is not equal to 0:
+        set closed to sql_close(database)
+        set closed to local_socket_close(listener)
+        return 1
+    if provider_member(tokens and 0 and "review_profile") >= 0:
+        set cursor to 0
+        repeat while 1 equals 1:
+            set job to controller_review_candidate(database and cursor)
+            if archive_list_text(job and 0) equals "end":
+                break
+            if not (archive_list_text(job and 0) equals "found"):
+                display "controller-review-scan-failed"
+                break
+            set cursor to http_decimal(archive_list_text(job and 2))
+            set process to controller_review_start(configuration and archive_list_text(job and 1) and digest)
+            if process < 0:
+                display "controller-review-startup-launch-failed"
+    if sql_close(database) is not equal to 0:
+        set closed to local_socket_close(listener)
+        return 1
+    display "Protected controller listening on loopback port"
+    display port
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    repeat while 1 equals 1:
+        set reaped to controller_process_reap()
+        set descriptor to local_socket_accept(listener)
+        if descriptor < 0 and (socket_errno(get_list(listener and 0)) equals 35 or else socket_errno(get_list(listener and 0)) equals 4):
+            set yielded to select(waits and 10)
+            continue
+        if descriptor < 0:
+            set closed to local_socket_close(listener)
+            display "controller-accept-failed"
+            return 1
+        set arguments to create_list()
+        set added to append_list(arguments and configuration)
+        set added to append_list(arguments and "--connection")
+        set added to append_list(arguments and digest)
+        set process to controller_process_start(arguments and descriptor)
+        if process < 0:
+            set replied to controller_http_reply(get_list(listener and 0) and descriptor and "503 Service Unavailable" and "controller-request-process-unavailable")
+        set closed to net_close(descriptor)
+    return 0
+
+# OS-owned service child entry. Configuration and input bytes are revalidated;
+# a runtime caller cannot inject a profile, prompt or ledger into this job.
+define controller_review_host with configuration as Str and run as Str and expected_pin as Str returning Int:
+    set loaded to controller_configuration_load(configuration)
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        display archive_list_text(loaded and 0)
+        return 1
+    set content to archive_list_text(loaded and 1)
+    if not (ep_sha256(content) equals expected_pin):
+        display "controller-review-configuration-changed"
+        return 1
+    set inputs to controller_review_inputs_load(configuration)
+    if not (archive_list_text(inputs and 0) equals "ready"):
+        display archive_list_text(inputs and 0)
+        return 1
+    set directory to archive_list_text(loaded and 6)
+    set ledger_name to archive_list_text(loaded and 7)
+    set ledger_suffix to concat("/" and ledger_name)
+    set ledger_path to concat(directory and ledger_suffix)
+    if not file_exists(ledger_path):
+        display "controller-ledger-not-initialized"
+        return 1
+    set database to controller_ledger_open(archive_list_text(loaded and 6) and archive_list_text(loaded and 7))
+    if database equals 0:
+        return 1
+    if controller_service_ready(database and expected_pin) equals 0:
+        set closed to sql_close(database)
+        return 1
+    set profile to archive_list_text(inputs and 1)
+    set prompt to archive_list_text(inputs and 2)
+    # One token is the minimum nonempty response admission, not an output cap.
+    # The provider supplies available context and the full remaining output room.
+    set result to controller_review_run(database and run and profile and prompt and 1 and -1 and 65536)
+    set row to agent_run_read(database and run)
+    if row is not equal to 0:
+        set identity to agent_identity()
+        set occurred to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+        if archive_append(database and archive_list_text(row and 0) and identity and "controller_review_worker_result" and result and occurred) is not equal to 0:
+            display "controller-review-result-archive-failed"
+            set closed to sql_close(database)
+            return 1
+    display result
+    if sql_close(database) is not equal to 0:
+        return 1
+    if result equals "completed" or else result equals "cancelled" or else result equals "review-owner-busy":
+        return 0
+    return 1

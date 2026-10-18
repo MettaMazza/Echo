@@ -1,0 +1,50 @@
+import "group_knowledge"
+
+# Shared turns already remain in the active conversation. Extract originals
+# displaced by an activated recap, rather than adding another model request to
+# every ordinary shared turn. Receipts bind the exact audience and source digest.
+define group_memory_pending with database as Int and run as Str returning List:
+    set scope to group_memory_scope(database and run)
+    if string_length(scope) equals 0:
+        return create_list()
+    set current to agent_run_read(database and run)
+    set query to "SELECT e.event,e.digest FROM echo_events e WHERE e.session=?2 AND e.sequence<(SELECT o.sequence FROM echo_runs r JOIN echo_events o ON o.event=r.objective_event WHERE r.run=?3) AND e.sequence<=COALESCE((SELECT z.sequence FROM echo_active_context a JOIN echo_checkpoints c ON c.identity=a.checkpoint JOIN echo_events z ON z.event=c.source_end WHERE a.session=?2),0) AND (EXISTS(SELECT 1 FROM echo_runs r WHERE r.objective_event=e.event AND e.kind='user') OR EXISTS(SELECT 1 FROM echo_runs r WHERE r.last_event=e.event AND r.state='completed' AND e.kind='assistant_final')) AND NOT EXISTS(SELECT 1 FROM echo_events m WHERE m.kind='memory_indexed' AND json_extract(m.payload,'$.scope')=?1 AND json_extract(m.payload,'$.source_event')=e.event AND json_extract(m.payload,'$.source_digest')=e.digest) ORDER BY e.sequence;"
+    set statement to checkpoint_prepare(database and query and [scope,archive_list_text(current and 0),run])
+    if statement equals 0:
+        return 0
+    set result to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return 0
+        set event to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        set digest to concat(ptr_to_str(ep_sqlite3_column_text(statement and 1)) and "")
+        if group_memory_source_allowed(database and run and event and digest) equals 0:
+            set closed to ep_sqlite3_finalize(statement)
+            return 0
+        set added to append_list(result and event)
+    if ep_sqlite3_finalize(statement) is not equal to 0 or else not (group_memory_scope(database and run) equals scope):
+        return 0
+    return result
+
+# The existing private read path remains unchanged; group ingestion cannot read
+# a private source even when the initiating participant owns it.
+define memory_extraction_read with database as Int and run as Str and event as Str returning List:
+    if string_length(memory_archive_principal(database and run)) > 0:
+        return memory_archive_read(database and run and event and 0 and 1)
+    set source to archive_read_event(database and event)
+    if source equals 0 or else group_memory_source_allowed(database and run and event and archive_list_text(source and 6)) equals 0:
+        return history_status("not-authorized")
+    if not (archive_list_text(source and 2) equals "user" or else archive_list_text(source and 2) equals "assistant_final"):
+        return history_status("not-authorized")
+    return history_read_piece(database and archive_list_text(source and 0) and event and 0 and 1)
+
+# A group's users must not collapse into a single generic 'user' entity.
+define group_memory_speaker with database as Int and event as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT a.principal FROM echo_runs r JOIN echo_run_authority a ON a.run=r.run JOIN echo_group_run_origins g ON g.run=r.run WHERE r.objective_event=?;" and [event]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)

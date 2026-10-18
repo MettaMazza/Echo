@@ -1,0 +1,219 @@
+# Controller credentials stay in this page only, never browser storage or URLs.
+define controller_note with text:
+    set element to document.getElementById("status")
+    set element.textContent to text
+    return 0
+
+define controller_call with path and payload:
+    set token to document.getElementById("credential").value.trim()
+    if not token:
+        return Promise.reject("Enter your controller credential first.")
+    set options to Object()
+    set options.method to "POST"
+    set options.cache to "no-store"
+    set options.credentials to "omit"
+    set headers to Object()
+    set setter to get_list(Reflect and "set")
+    setter.call(Reflect and headers and "Content-Type" and "application/json")
+    setter.call(Reflect and headers and "X-Echo-Token" and token)
+    set options.headers to headers
+    set options.body to JSON.stringify(payload)
+    return window.fetch(path and options).then(given response:
+        return response.json().then(given body:
+            if not response.ok:
+                return Promise.reject(body.status || "Controller request failed.")
+            return body
+        )
+    )
+
+define controller_decision_enabled with enabled:
+    set element to document.getElementById("authorize")
+    set element.disabled to not enabled
+    set element to document.getElementById("withdraw")
+    set element.disabled to not enabled
+    set element to document.getElementById("reject")
+    set element.disabled to not enabled
+    return 0
+
+define controller_failure with error:
+    set window.controllerBusy to false
+    set element to document.getElementById("inspect")
+    set element.disabled to false
+    controller_decision_enabled(false)
+    controller_note("Request failed: " + error + ". Inspect again before deciding; an interrupted decision may already be recorded.")
+    return 0
+
+define controller_inspect:
+    if window.controllerBusy:
+        return 0
+    set window.controllerBusy to true
+    set window.controllerDisclosure to null
+    controller_decision_enabled(false)
+    set element to document.getElementById("inspect")
+    set element.disabled to true
+    controller_note("Reading the exact proposal and Echo's review...")
+    set payload to Object()
+    set payload.action to "inspect"
+    set payload.proposal to document.getElementById("proposal").value.trim()
+    set credential to document.getElementById("credential").value
+    set pending to controller_call("/review" and payload).then(given body:
+        set window.controllerBusy to false
+        set element to document.getElementById("inspect")
+        set element.disabled to false
+        if credential != document.getElementById("credential").value:
+            return 0
+        if body.status != "disclosed":
+            return Promise.reject(body.status)
+        set window.controllerDisclosure to body
+        set element to document.getElementById("disclosure")
+        set element.textContent to JSON.stringify(body and null and 2)
+        controller_decision_enabled(true)
+        controller_note("Review the exact manifest and Echo's decision below. Your decision is recorded separately and does not apply a change.")
+    )
+    get_list(pending and "catch").call(pending and controller_failure)
+    return 0
+
+define controller_decide with decision:
+    if window.controllerBusy || not window.controllerDisclosure:
+        return 0
+    set reason to document.getElementById("reason").value.trim()
+    if not reason:
+        controller_note("Add your reason before recording a decision.")
+        return 0
+    set original to window.controllerDisclosure
+    if original.proposal != document.getElementById("proposal").value.trim():
+        controller_failure("The proposal changed. Inspect it first.")
+        return 0
+    set payload to Object()
+    set payload.action to "decide"
+    set payload.proposal to original.proposal
+    set payload.identity to window.crypto.randomUUID()
+    set payload.manifest_digest to original.manifest_digest
+    set payload.review_revision to original.review_revision
+    set payload.previous_revision to original.steward_revision
+    set payload.decision to decision
+    set payload.reason to reason
+    set window.controllerBusy to true
+    controller_decision_enabled(false)
+    set element to document.getElementById("inspect")
+    set element.disabled to true
+    controller_note("Recording your decision...")
+    set pending to controller_call("/review" and payload).then(given body:
+        set window.controllerBusy to false
+        set window.controllerDisclosure to null
+        set element to document.getElementById("inspect")
+        set element.disabled to false
+        if body.status != "recorded" && body.status != "already-recorded":
+            return Promise.reject(body.status)
+        controller_note("Decision recorded: " + decision + ". No change has been applied. Inspect again to see the current revision.")
+    )
+    get_list(pending and "catch").call(pending and controller_failure)
+    return 0
+
+# Read-only status refresh does not interrupt an in-flight human decision.
+define controller_emergency_refresh:
+    if window.controllerEmergencyBusy || not document.getElementById("credential").value.trim():
+        return 0
+    set window.controllerEmergencyBusy to true
+    set element to document.getElementById("emergency-status")
+    set element.textContent to "Checking disclosure deadlines..."
+    set credential to document.getElementById("credential").value
+    set pending to controller_call("/emergencies" and Object()).then(given report:
+        set window.controllerEmergencyBusy to false
+        if credential != document.getElementById("credential").value:
+            return 0
+        if report.status != "verified":
+            return Promise.reject(report.status)
+        set display to document.getElementById("emergency-report")
+        set display.textContent to JSON.stringify(report.incidents and null and 2)
+        set urgent to report.incidents.filter(given incident:
+            return incident.disclosure_status == "overdue" || incident.disclosure_status == "pending" || incident.disclosure_status == "clock-before-start"
+        )
+        set status to document.getElementById("emergency-status")
+        if urgent.length:
+            set status.textContent to urgent.length + " emergency disclosure(s) need attention. Deadlines and status are listed below."
+        else:
+            set status.textContent to "No outstanding emergency disclosures for this steward."
+        return 0
+    )
+    get_list(pending and "catch").call(pending and given error:
+        set window.controllerEmergencyBusy to false
+        if credential != document.getElementById("credential").value:
+            return 0
+        set status to document.getElementById("emergency-status")
+        set status.textContent to "Could not verify emergency status: " + error + ". Refresh to retry."
+    )
+    return 0
+
+define controller_operation_inspect:
+    if window.controllerOperationBusy:
+        return 0
+    set payload to Object()
+    set payload.action to "inspect"
+    set payload.operation to document.getElementById("operation").value.trim()
+    if not payload.operation:
+        set message to document.getElementById("operation-status")
+        set message.textContent to "Enter the operation ID first."
+        return 0
+    set credential to document.getElementById("credential").value
+    set window.controllerOperationBusy to true
+    set pending to controller_call("/operation" and payload).then(given report:
+        set window.controllerOperationBusy to false
+        if credential != document.getElementById("credential").value:
+            return 0
+        if not report.records:
+            return Promise.reject(report.status)
+        set panel to document.getElementById("operation-report")
+        set panel.textContent to JSON.stringify(report and null and 2)
+        set message to document.getElementById("operation-status")
+        set message.textContent to "Verified operation state: " + report.status + ". Original preparation and transition records are shown below."
+        return 0
+    )
+    get_list(pending and "catch").call(pending and given error:
+        set window.controllerOperationBusy to false
+        if credential != document.getElementById("credential").value:
+            return 0
+        set panel to document.getElementById("operation-report")
+        set panel.textContent to ""
+        set message to document.getElementById("operation-status")
+        set message.textContent to "Could not verify operation: " + error
+    )
+    return 0
+
+define controller_setup:
+    set window.controllerBusy to false
+    set window.controllerEmergencyBusy to false
+    set window.controllerOperationBusy to false
+    document.getElementById("operation-inspect").addEventListener("click" and controller_operation_inspect)
+    set window.controllerDisclosure to null
+    document.getElementById("emergency-refresh").addEventListener("click" and controller_emergency_refresh)
+    window.setInterval(controller_emergency_refresh and 60000)
+    document.getElementById("inspect").addEventListener("click" and controller_inspect)
+    document.getElementById("authorize").addEventListener("click" and given event:
+        controller_decide("authorize")
+    )
+    document.getElementById("withdraw").addEventListener("click" and given event:
+        controller_decide("withdraw")
+    )
+    document.getElementById("reject").addEventListener("click" and given event:
+        controller_decide("reject")
+    )
+    document.getElementById("proposal").addEventListener("input" and given event:
+        set window.controllerDisclosure to null
+        controller_decision_enabled(false)
+    )
+    document.getElementById("credential").addEventListener("input" and given event:
+        set window.controllerDisclosure to null
+        controller_decision_enabled(false)
+        set panel to document.getElementById("emergency-report")
+        set panel.textContent to ""
+        set operation_panel to document.getElementById("operation-report")
+        set operation_panel.textContent to ""
+        set status to document.getElementById("emergency-status")
+        set status.textContent to "Credential changed. Refresh to verify this steward’s deadlines."
+    )
+    return 0
+
+define main:
+    controller_setup()
+    return 0

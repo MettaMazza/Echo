@@ -1,0 +1,218 @@
+import "workbook_parts"
+
+# Resolve package-relative relationships only, never network or host paths.
+define workbook_target with source as Str and target as Str returning Str:
+    if string_length(target) equals 0 or else string_contains(target and ":") > 0 or else string_contains(target and "\\") > 0 or else string_contains(target and "%") > 0 or else string_contains(target and "#") > 0:
+        return ""
+    set joined to target
+    if not (substring(target and 0 and 1) equals "/"):
+        set source_parts to string_split(source and "/")
+        set prefix to ""
+        set index to 0
+        repeat while index < length_list(source_parts) - 1:
+            set prefix to concat(prefix and concat(archive_list_text(source_parts and index) and "/"))
+            set index to index + 1
+        set joined to concat(prefix and target)
+    set stack to create_list()
+    set count to 0
+    for each item in string_split(joined and "/"):
+        set segment to ptr_to_str(item)
+        if segment equals "..":
+            if count equals 0:
+                return ""
+            set count to count - 1
+        else if not (segment equals "" or else segment equals "."):
+            if count < length_list(stack):
+                set changed to set_list(stack and count and segment)
+            else:
+                set added to append_list(stack and segment)
+            set count to count + 1
+    set result to ""
+    set index to 0
+    repeat while index < count:
+        if index > 0:
+            set result to concat(result and "/")
+        set result to concat(result and archive_list_text(stack and index))
+        set index to index + 1
+    return result
+
+define workbook_relationships_path with path as Str returning Str:
+    set parts to string_split(path and "/")
+    set prefix to ""
+    set index to 0
+    repeat while index < length_list(parts) - 1:
+        set prefix to concat(prefix and concat(archive_list_text(parts and index) and "/"))
+        set index to index + 1
+    return concat(prefix and concat("_rels/" and concat(archive_list_text(parts and index) and ".rels")))
+
+define workbook_relationship with nodes as List and source as Str and identity as Str and kind as Str returning Str:
+    if nodes equals 0:
+        return ""
+    set found to ""
+    for each item in nodes:
+        set node to item
+        if get_list(node and 0) equals 1 and archive_list_text(node and 2) equals "Relationship":
+            set relation to workbook_xml_attribute(node and "Type")
+            set suffix to concat("/" and kind)
+            set matches to 0
+            if string_length(identity) > 0 and workbook_xml_attribute(node and "Id") equals identity:
+                set matches to 1
+            if string_length(identity) equals 0 and string_length(relation) >= string_length(suffix) and substring(relation and string_length(relation) - string_length(suffix) and string_length(suffix)) equals suffix:
+                set matches to 1
+            if matches equals 1:
+                if string_length(found) > 0 or else workbook_xml_attribute(node and "TargetMode") equals "External":
+                    return ""
+                set found to workbook_target(source and workbook_xml_attribute(node and "Target"))
+    return found
+
+
+define workbook_xml_root with nodes as List and name as Str returning Int:
+    if nodes equals 0:
+        return 0
+    for each item in nodes:
+        set node to item
+        if get_list(node and 0) equals 1:
+            set namespace to archive_list_text(node and 3)
+            if archive_list_text(node and 2) equals name and (namespace equals "http://schemas.openxmlformats.org/spreadsheetml/2006/main" or else namespace equals "http://purl.oclc.org/ooxml/spreadsheetml/main"):
+                return 1
+            return 0
+    return 0
+
+define workbook_shared_strings with text as Str returning List:
+    set result to create_list()
+    if string_length(text) equals 0:
+        return result
+    set nodes to workbook_xml_nodes(text)
+    if workbook_xml_root(nodes and "sst") equals 0:
+        return 0
+    set index to 0
+    repeat while index < length_list(nodes):
+        set node to get_list(nodes and index)
+        if get_list(node and 0) equals 1 and archive_list_text(node and 2) equals "si":
+            set value to create_builder()
+            set depth to get_list(node and 1)
+            set cursor to index + 1
+            repeat while cursor < length_list(nodes):
+                set child to get_list(nodes and cursor)
+                if get_list(child and 1) <= depth:
+                    break
+                if get_list(child and 0) equals 1 and archive_list_text(child and 2) equals "t":
+                    set added to builder_append(value and workbook_xml_text(nodes and cursor))
+                set cursor to cursor + 1
+            set added to append_list(result and ptr_to_str(builder_to_string(value)))
+        set index to index + 1
+    return result
+
+define workbook_cells with nodes as List and strings as List and offset as Int and cells as Int returning Str:
+    set output to create_builder()
+    set total to 0
+    set returned to 0
+    set index to 0
+    repeat while index < length_list(nodes):
+        set node to get_list(nodes and index)
+        if get_list(node and 0) equals 1 and archive_list_text(node and 2) equals "c":
+            if total >= offset and returned < cells:
+                set value to ""
+                set formula to ""
+                set formula_attributes to "{}"
+                set kind to workbook_xml_attribute(node and "t")
+                set cursor to index + 1
+                repeat while get_list(node and 6) is not equal to 1 and cursor < length_list(nodes):
+                    set child to get_list(nodes and cursor)
+                    if get_list(child and 1) <= get_list(node and 1):
+                        break
+                    if get_list(child and 0) equals 1:
+                        set name to archive_list_text(child and 2)
+                        if name equals "v":
+                            set value to workbook_xml_text(nodes and cursor)
+                        else if name equals "t" and kind equals "inlineStr":
+                            set value to concat(value and workbook_xml_text(nodes and cursor))
+                        else if name equals "f":
+                            set formula to workbook_xml_text(nodes and cursor)
+                            set formula_attributes to concat("{\"type\":" and concat(provider_quote(workbook_xml_attribute(child and "t")) and concat(",\"shared_index\":" and concat(provider_quote(workbook_xml_attribute(child and "si")) and concat(",\"range\":" and concat(provider_quote(workbook_xml_attribute(child and "ref")) and "}"))))))
+                    set cursor to cursor + 1
+                set raw to value
+                if kind equals "s":
+                    set selected to string_to_int(value)
+                    if selected < 0 or else selected >= length_list(strings) or else not (int_to_string(selected) equals value):
+                        set discarded to builder_to_string(output)
+                        return "{\"status\":\"invalid-shared-string\"}"
+                    set value to archive_list_text(strings and selected)
+                if returned > 0:
+                    set added to builder_append(output and ",")
+                set added to builder_append(output and concat("{\"reference\":" and provider_quote(workbook_xml_attribute(node and "r"))))
+                set added to builder_append(output and concat(",\"type\":" and provider_quote(kind)))
+                set added to builder_append(output and concat(",\"style_index\":" and provider_quote(workbook_xml_attribute(node and "s"))))
+                set added to builder_append(output and concat(",\"stored_value\":" and provider_quote(raw)))
+                set added to builder_append(output and concat(",\"value\":" and provider_quote(value)))
+                set added to builder_append(output and concat(",\"formula\":" and provider_quote(formula)))
+                set added to builder_append(output and concat(",\"formula_attributes\":" and concat(formula_attributes and "}")))
+                set returned to returned + 1
+            set total to total + 1
+        set index to index + 1
+    set ended to "false"
+    if offset + returned >= total:
+        set ended to "true"
+    return concat("{\"status\":\"found\",\"cells\":[" and concat(ptr_to_str(builder_to_string(output)) and concat("],\"total_cells\":" and concat(int_to_string(total) and concat(",\"next_offset\":" and concat(int_to_string(offset + returned) and concat(",\"end\":" and concat(ended and "}"))))))))
+
+# Empty sheet selects the sheet catalogue. Cell offsets count stored cells,
+# including explicitly empty cells, not a fabricated rectangular grid.
+define workspace_read_workbook with system as Int and root as Int and path as Str and sheet as Str and offset as Int and cells as Int returning Str:
+    if offset < 0 or else cells < 1:
+        return "{\"status\":\"invalid-arguments\"}"
+    set package to workbook_parts(system and root and path)
+    if not (archive_list_text(package and 0) equals "read"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(package and 0)) and "}"))
+    set parts to get_list(package and 2)
+    set links to workbook_xml_nodes(workbook_part(parts and "_rels/.rels"))
+    set book_path to workbook_relationship(links and "" and "" and "officeDocument")
+    set book to workbook_xml_nodes(workbook_part(parts and book_path))
+    set relations to workbook_xml_nodes(workbook_part(parts and workbook_relationships_path(book_path)))
+    if string_length(book_path) equals 0 or else workbook_xml_root(book and "workbook") equals 0 or else relations equals 0:
+        return "{\"status\":\"invalid-workbook\"}"
+    set catalogue to create_builder()
+    set selected to ""
+    set sheets to 0
+    set date_system to "1900"
+    for each item in book:
+        set node to item
+        if get_list(node and 0) equals 1:
+            if archive_list_text(node and 2) equals "workbookPr" and (workbook_xml_attribute(node and "date1904") equals "1" or else workbook_xml_attribute(node and "date1904") equals "true"):
+                set date_system to "1904"
+            if archive_list_text(node and 2) equals "sheet":
+                set name to workbook_xml_attribute(node and "name")
+                set identity to workbook_xml_attribute(node and "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+                if string_length(identity) equals 0:
+                    set identity to workbook_xml_attribute(node and "{http://purl.oclc.org/ooxml/officeDocument/relationships}id")
+                if string_length(identity) equals 0:
+                    set discarded to builder_to_string(catalogue)
+                    return "{\"status\":\"missing-sheet-relationship\"}"
+                set target to workbook_relationship(relations and book_path and identity and "worksheet")
+                if string_length(target) equals 0:
+                    set discarded to builder_to_string(catalogue)
+                    return "{\"status\":\"invalid-sheet-relationship\"}"
+                if name equals sheet:
+                    if string_length(selected) > 0:
+                        set discarded to builder_to_string(catalogue)
+                        return "{\"status\":\"ambiguous-sheet\"}"
+                    set selected to target
+                if sheets > 0:
+                    set added to builder_append(catalogue and ",")
+                set added to builder_append(catalogue and concat("{\"name\":" and provider_quote(name)))
+                set added to builder_append(catalogue and concat(",\"state\":" and provider_quote(workbook_xml_attribute(node and "state"))))
+                set added to builder_append(catalogue and concat(",\"part\":" and concat(provider_quote(target) and "}")))
+                set sheets to sheets + 1
+    set result to concat("{\"status\":\"found\",\"sheets\":[" and concat(ptr_to_str(builder_to_string(catalogue)) and "]}"))
+    if string_length(sheet) > 0:
+        if string_length(selected) equals 0:
+            return "{\"status\":\"sheet-not-found\"}"
+        set nodes to workbook_xml_nodes(workbook_part(parts and selected))
+        set shared_path to workbook_relationship(relations and book_path and "" and "sharedStrings")
+        set strings to workbook_shared_strings(workbook_part(parts and shared_path))
+        if workbook_xml_root(nodes and "worksheet") equals 0 or else strings equals 0:
+            return "{\"status\":\"invalid-sheet-or-strings\"}"
+        set result to workbook_cells(nodes and strings and offset and cells)
+    set result to substring(result and 0 and string_length(result) - 1)
+    set result to concat(result and concat(",\"source_sha256\":" and provider_quote(archive_list_text(package and 1))))
+    set result to concat(result and concat(",\"date_system\":" and provider_quote(date_system)))
+    return concat(result and ",\"calculation\":\"Stored values only; formulas are not executed or recalculated. Numeric/date formatting is not rendered.\"}")

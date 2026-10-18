@@ -1,3 +1,4 @@
+import "../feedback"
 import "../retained_text"
 import "run_state"
 import "../providers/local_chat"
@@ -17,6 +18,7 @@ define agent_request_envelope with run as Str and parent as Str and body as Str 
 define agent_generation_fail with database as Int and run as Str and session as Str and request as Str and reason as Str returning Int:
     set event to concat(request and ":failure")
     set payload to concat(agent_event_envelope(run and request) and concat(",\"reason\":" and concat(provider_quote(reason) and "}")))
+    set payload to feedback_enrich(payload and "Model response" and request)
     if archive_append(database and session and event and "agent_failure" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
         return 1
     return agent_run_transition(database and run and "generating" and request and "failed" and event)
@@ -40,18 +42,39 @@ define agent_generation_publish with database as Int and run as Str and session 
     if length_list(calls) is greater than 0:
         set kind to "assistant_tool_calls"
         set next_state to "tools"
+    set empty_reply to 0
+    if length_list(calls) equals 0 and string_length(string_trim(archive_list_text(choice and 1))) equals 0:
+        set empty_reply to 1
+        set values to create_list()
+        set added to append_list(values and run)
+        set prior to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE kind='agent_recovered' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.reason')='empty-model-response' LIMIT 1;" and values))
+        if archive_list_text(prior and 0) equals "error":
+            return 1
+        set kind to "agent_recovered"
+        set next_state to "ready"
+        if archive_list_text(prior and 0) equals "found":
+            set kind to "agent_failure"
+            set next_state to "failed"
     set event to concat(request and ":response")
     set payload to agent_event_envelope(run and request)
     set payload to concat(payload and concat(",\"choice_index\":" and provider_quote(choice_index)))
     set payload to concat(payload and concat(",\"content\":" and provider_quote(archive_list_text(choice and 1))))
     set payload to concat(payload and concat(",\"reasoning_content\":" and provider_quote(archive_list_text(choice and 2))))
     set payload to concat(payload and concat(",\"finish_reason\":" and provider_quote(archive_list_text(choice and 4))))
+    if empty_reply equals 1:
+        set payload to concat(payload and ",\"reason\":\"empty-model-response\",\"recovery\":\"The provider ended without visible text or tool calls. Original traces and completed tool results are retained.\"")
     set payload to concat(payload and ",\"tool_calls\":[")
     set events to create_list()
     # Publication is one commit: originals, the complete tool ledger batch and
     # the accepted run head cannot be separated by a process interruption.
     if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
         return 1
+    set guidance to guidance_pending(database and run)
+    if archive_list_text(guidance and 0) equals "found":
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return 2
+    if archive_list_text(guidance and 0) equals "error":
+        return archive_rollback(database)
     set index to 0
     repeat while index is less than length_list(calls):
         set call to get_list(calls and index)
@@ -105,10 +128,15 @@ define agent_generate_local_at with database as Int and run as Str and expected_
         return 1
     set response to local_chat_generate(database and session and request and port and path and body and cancellation_reader and read_size)
     set status to archive_list_text(response and 0)
+    if status equals "guidance-interrupted":
+        return agent_guidance_recover(database and run and session and request)
     if not (status equals "complete"):
         set failed to agent_generation_fail(database and run and session and request and status)
         return 1
-    if agent_generation_publish(database and run and session and request and get_list(response and 1) and choice_index) is not equal to 0:
+    set published to agent_generation_publish(database and run and session and request and get_list(response and 1) and choice_index)
+    if published equals 2:
+        return agent_guidance_recover(database and run and session and request)
+    if published is not equal to 0:
         set failed to agent_generation_fail(database and run and session and request and "response-publication-failed")
         return 1
     return 0
@@ -118,3 +146,31 @@ define agent_generate_local with database as Int and run as Str and request as S
     if row equals 0:
         return 1
     return agent_generate_local_at(database and run and archive_list_text(row and 3) and request and body and port and path and cancellation_reader and read_size and choice_index)
+
+# Retire only the incomplete generation; the objective and run remain active.
+define agent_guidance_recover with database as Int and run as Str and session as Str and request as Str returning Int:
+    set event to concat(request and ":guided")
+    set payload to concat(agent_event_envelope(run and request) and ",\"reason\":\"mid-turn-guidance\"}")
+    if archive_append(database and session and event and "agent_recovered" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return 1
+    return agent_run_transition(database and run and "generating" and request and "ready" and event)
+
+define agent_guidance_apply with database as Int and run as Str returning Int:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set row to agent_run_read(database and run)
+    set pending to guidance_pending(database and run)
+    if row equals 0 or else archive_list_text(pending and 0) equals "error":
+        return archive_rollback(database)
+    if archive_list_text(pending and 0) equals "found":
+        set event to concat(archive_list_text(pending and 1) and ":applied")
+        set payload to agent_event_envelope(run and archive_list_text(row and 3))
+        set payload to concat(payload and concat(",\"source_event\":" and provider_quote(archive_list_text(pending and 1))))
+        set payload to concat(payload and concat(",\"content\":" and concat(provider_quote(archive_list_text(pending and 2)) and "}")))
+        if archive_append_pending(database and archive_list_text(row and 0) and event and "user_guidance" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return archive_rollback(database)
+        if agent_run_transition(database and run and "ready" and archive_list_text(row and 3) and "ready" and event) is not equal to 0:
+            return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0

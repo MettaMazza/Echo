@@ -1,9 +1,10 @@
 import "memory_tools"
+import "../memory/scratchpad_scope"
 
-# Notes belong to the authenticated private principal and survive session changes.
+# Private notes survive session changes; shared notes belong to an exact audience.
 # Append-only revisions retain audit history; compare-and-swap prevents lost edits.
 define scratchpad_execute with database as Int and run as Str and arguments as Str returning Str:
-    set principal to memory_archive_principal(database and run)
+    set principal to scratchpad_scope(database and run)
     if string_length(principal) equals 0:
         return "{\"status\":\"not-authorized\"}"
     set tokens to provider_json_tokens(arguments)
@@ -31,22 +32,28 @@ define scratchpad_execute with database as Int and run as Str and arguments as S
         set added to append_list(keys and "name")
         set added to append_list(keys and "revision")
         set added to append_list(keys and "next_after")
+        if not (scratchpad_scope(database and run) equals principal):
+            return "{\"status\":\"authorization-changed\"}"
         return history_tool_row(row and keys)
     if string_length(name) equals 0 or else not (operation equals "read" or else operation equals "write" or else operation equals "delete"):
         return "{\"status\":\"invalid-arguments\"}"
     set mutating to operation equals "write" or else operation equals "delete"
     if mutating and sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
         return "{\"status\":\"database-error\"}"
-    if not (memory_archive_principal(database and run) equals principal):
+    if not (scratchpad_scope(database and run) equals principal):
         if mutating:
             set rolled_back to archive_rollback(database)
         return "{\"status\":\"authorization-changed\"}"
     set added to append_list(values and name)
     set row to history_collect_one(checkpoint_prepare(database and "SELECT event,json_extract(payload,'$.text'),json_extract(payload,'$.deleted') FROM echo_events WHERE kind='scratchpad_revision' AND json_extract(payload,'$.principal')=?1 AND json_extract(payload,'$.name')=?2 ORDER BY sequence DESC LIMIT 1;" and values))
     if operation equals "read":
+        if archive_list_text(row and 0) equals "end":
+            return "{\"status\":\"not-found\",\"effects\":\"none\",\"explanation\":\"No note with this exact name exists in your accessible notes. This does not mean notes from other sessions are unavailable.\",\"recovery\":\"Use scratchpad operation list with after=0, follow each next_after until end, then read the exact returned name. Do not guess a new name or create a replacement before checking the existing notes.\"}"
         set added to append_list(keys and "revision")
         set added to append_list(keys and "text")
         set added to append_list(keys and "deleted")
+        if not (scratchpad_scope(database and run) equals principal):
+            return "{\"status\":\"authorization-changed\"}"
         return history_tool_row(row and keys)
     set previous_field to provider_member(tokens and 0 and "previous_revision")
     set previous to provider_value(tokens and previous_field)

@@ -1,0 +1,99 @@
+import "../archive/history"
+import "special_ranges"
+import "../research/native_ffi"
+import "../archive/file_text"
+
+# Binary prefixes avoid textual IPv4/IPv6 aliases bypassing address policy.
+define network_prefix_matches with address as Int and prefix as Int and bits as Int returning Int:
+    set full to bits / 8
+    set index to 0
+    repeat while index < full:
+        if peek_byte(address and index) is not equal to peek_byte(prefix and index):
+            return 0
+        set index to index + 1
+    set partial to bits modulo 8
+    if partial > 0:
+        set divisor to 1
+        set remaining to 8 - partial
+        repeat while remaining > 0:
+            set divisor to divisor * 2
+            set remaining to remaining - 1
+        if peek_byte(address and full) / divisor is not equal to peek_byte(prefix and full) / divisor:
+            return 0
+    return 1
+
+define network_address_public with library as Int and family as Int and address as Int returning Int:
+    if not (family equals 2 or else family equals 30):
+        return 0
+    set first to peek_byte(address and 0)
+    set allowed to 1
+    set ranges to network_ipv4_special()
+    if family equals 2:
+        if first equals 0 or else first >= 224:
+            return 0
+    else:
+        # Ordinary global unicast allocation; mapped, NAT64, local and multicast
+        # addresses are not direct public HTTP destinations in this worker.
+        if first < 32 or else first > 63:
+            return 0
+        set ranges to network_ipv6_special()
+    set matched to -1
+    set prefix to research_native_words(2)
+    for each range in ranges:
+        set bits to string_to_int(archive_list_text(range and 1))
+        if bits > matched:
+            set parsed to ep_dlcall3(ep_dlsym(library and "inet_pton") and family and str_to_ptr(archive_list_text(range and 0)) and get_list_data_ptr(prefix))
+            if parsed is not equal to 1:
+                return 0
+            if network_prefix_matches(address and get_list_data_ptr(prefix) and bits) equals 1:
+                set allowed to string_to_int(archive_list_text(range and 2))
+                set matched to bits
+    return allowed
+
+# Darwin SDK addrinfo layout (48 bytes on this host). Return approved numeric
+# addresses, not a hostname to resolve again during connection establishment.
+define network_resolve_public with host as Str and port as Str returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return ["resolver-unavailable"]
+    set hints to research_native_words(6)
+    set changed to set_list(hints and 1 and 25769803777)
+    set result to [0]
+    set resolved to ep_dlcall4(ep_dlsym(library and "getaddrinfo") and str_to_ptr(host) and str_to_ptr(port) and get_list_data_ptr(hints) and get_list_data_ptr(result))
+    if resolved is not equal to 0:
+        set closed to ep_dlclose(library)
+        return ["resolution-failed",int_to_string(resolved)]
+    set node to get_list(result and 0)
+    set addresses to create_list()
+    set status to "public-addresses"
+    repeat while node is not equal to 0:
+        set family to peek_byte(node and 4)
+        set socket_address to research_native_word(node + 32)
+        set address to socket_address + 4
+        if family equals 30:
+            set address to socket_address + 8
+        if socket_address equals 0 or else network_address_public(library and family and address) equals 0:
+            set status to "non-public-destination"
+            break
+        set text to research_native_words(8)
+        if ep_dlcall4(ep_dlsym(library and "inet_ntop") and family and address and get_list_data_ptr(text) and 64) equals 0:
+            set status to "address-format-error"
+            break
+        set value to concat(ptr_to_str(get_list_data_ptr(text)) and "")
+        set present to 0
+        for each prior in addresses:
+            if ptr_to_str(prior) equals value:
+                set present to 1
+        if present equals 0:
+            set added to append_list(addresses and value)
+        set node to research_native_word(node + 40)
+    set freed to ep_dlcall1(ep_dlsym(library and "freeaddrinfo") and get_list(result and 0))
+    set closed to ep_dlclose(library)
+    if not (status equals "public-addresses"):
+        return [status]
+    if length_list(addresses) equals 0:
+        return ["no-addresses"]
+    set output to create_list()
+    set added to append_list(output and status)
+    set added to append_list(output and addresses)
+    return output

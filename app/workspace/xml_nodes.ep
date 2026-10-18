@@ -1,0 +1,93 @@
+import "../providers/local_json"
+import "../archive/file_text"
+
+# Native XML events for workbook parts. No DTD, entity substitution, external
+# loading or validation. Borrowed reader strings are copied before advancing.
+# Each node: type, depth, local name, namespace, value, attributes, empty flag.
+define workbook_xml_nodes with text as Str returning List:
+    if provider_valid_utf8(text) equals 0 or else string_length(text) > 2147483647:
+        return 0
+    set library to ep_dlopen("/usr/lib/libxml2.2.dylib")
+    if library equals 0:
+        return 0
+    set required to string_split("xmlReaderForMemory xmlTextReaderRead xmlTextReaderNodeType xmlTextReaderDepth xmlTextReaderConstLocalName xmlTextReaderConstNamespaceUri xmlTextReaderConstValue xmlTextReaderConstName xmlTextReaderMoveToFirstAttribute xmlTextReaderMoveToNextAttribute xmlTextReaderMoveToElement xmlTextReaderIsEmptyElement xmlFreeTextReader" and " ")
+    for each item in required:
+        if ep_dlsym(library and ptr_to_str(item)) equals 0:
+            set closed to ep_dlclose(library)
+            return 0
+    # XML_PARSE_NONET plus quiet diagnostics; errors return no partial document.
+    set reader to ep_dlcall5(ep_dlsym(library and "xmlReaderForMemory") and str_to_ptr(text) and string_length(text) and 0 and 0 and 2144)
+    set nodes to create_list()
+    set valid to 0
+    if reader is not equal to 0:
+        repeat while 1 equals 1:
+            set status to socket_signed_result(ep_dlcall1(ep_dlsym(library and "xmlTextReaderRead") and reader))
+            if status equals 0:
+                set valid to 1
+                break
+            if status is not equal to 1:
+                break
+            set kind to ep_dlcall1(ep_dlsym(library and "xmlTextReaderNodeType") and reader)
+            if kind equals 10 or else kind equals 5 or else kind equals 6:
+                break
+            set node to create_list()
+            set added to append_list(node and kind)
+            set added to append_list(node and ep_dlcall1(ep_dlsym(library and "xmlTextReaderDepth") and reader))
+            for each name in ["xmlTextReaderConstLocalName", "xmlTextReaderConstNamespaceUri", "xmlTextReaderConstValue"]:
+                set pointer to ep_dlcall1(ep_dlsym(library and ptr_to_str(name)) and reader)
+                set value to ""
+                if pointer is not equal to 0:
+                    set value to concat("" and ptr_to_str(pointer))
+                set added to append_list(node and value)
+            set attributes to create_list()
+            set empty to ep_dlcall1(ep_dlsym(library and "xmlTextReaderIsEmptyElement") and reader)
+            if kind equals 1:
+                set moved to ep_dlcall1(ep_dlsym(library and "xmlTextReaderMoveToFirstAttribute") and reader)
+                repeat while moved equals 1:
+                    set name to concat("" and ptr_to_str(ep_dlcall1(ep_dlsym(library and "xmlTextReaderConstName") and reader)))
+                    set value to concat("" and ptr_to_str(ep_dlcall1(ep_dlsym(library and "xmlTextReaderConstValue") and reader)))
+                    set added to append_list(attributes and name)
+                    set added to append_list(attributes and value)
+                    set namespace_pointer to ep_dlcall1(ep_dlsym(library and "xmlTextReaderConstNamespaceUri") and reader)
+                    if namespace_pointer is not equal to 0:
+                        set namespace_name to concat("{" and concat(ptr_to_str(namespace_pointer) and "}"))
+                        set local_name to ptr_to_str(ep_dlcall1(ep_dlsym(library and "xmlTextReaderConstLocalName") and reader))
+                        set added to append_list(attributes and concat(namespace_name and local_name))
+                        set added to append_list(attributes and value)
+                    set moved to ep_dlcall1(ep_dlsym(library and "xmlTextReaderMoveToNextAttribute") and reader)
+                set moved to ep_dlcall1(ep_dlsym(library and "xmlTextReaderMoveToElement") and reader)
+            set added to append_list(node and attributes)
+            set added to append_list(node and empty)
+            set added to append_list(nodes and node)
+        set freed to ep_dlcall1(ep_dlsym(library and "xmlFreeTextReader") and reader)
+    set closed to ep_dlclose(library)
+    if valid equals 0:
+        return 0
+    return nodes
+
+define workbook_xml_attribute with node as List and name as Str returning Str:
+    set attributes to get_list(node and 5)
+    set index to 0
+    repeat while index < length_list(attributes):
+        if archive_list_text(attributes and index) equals name:
+            return archive_list_text(attributes and index + 1)
+        set index to index + 2
+    return ""
+
+# Text descendants include rich-text runs without discarding Unicode or spaces.
+define workbook_xml_text with nodes as List and index as Int returning Str:
+    set node to get_list(nodes and index)
+    if get_list(node and 6) equals 1:
+        return ""
+    set depth to get_list(node and 1)
+    set builder to create_builder()
+    set index to index + 1
+    repeat while index < length_list(nodes):
+        set node to get_list(nodes and index)
+        if get_list(node and 1) <= depth:
+            break
+        set kind to get_list(node and 0)
+        if kind equals 3 or else kind equals 4 or else kind equals 13 or else kind equals 14:
+            set added to builder_append(builder and archive_list_text(node and 4))
+        set index to index + 1
+    return ptr_to_str(builder_to_string(builder))

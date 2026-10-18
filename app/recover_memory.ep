@@ -1,0 +1,77 @@
+import "memory/automatic"
+
+# Operator recovery from an already archived, fully completed model response.
+# Reuses original request sources and exact streamed bytes; no new inference.
+define memory_recovery_event with database as Int and identity as Str returning List:
+    set row to archive_read_event(database and identity)
+    if row equals 0:
+        return 0
+    if not (archive_digest(archive_list_text(row and 0) and archive_list_text(row and 1) and archive_list_text(row and 2) and archive_list_text(row and 3) and archive_list_text(row and 4) and archive_list_text(row and 5)) equals archive_list_text(row and 6)):
+        return 0
+    return row
+
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set database to archive_open(get_argument(1))
+    set request to get_argument(2)
+    set row to memory_recovery_event(database and request)
+    if row equals 0 or else not (archive_list_text(row and 2) equals "model_request"):
+        return 2
+    set tokens to provider_json_tokens(archive_list_text(row and 3))
+    if not (provider_value(tokens and provider_member(tokens and 0 and "purpose")) equals "automatic-memory"):
+        return 3
+    set run to provider_value(tokens and provider_member(tokens and 0 and "run_id"))
+    set body to provider_json_tokens(provider_value(tokens and provider_member(tokens and 0 and "request_body")))
+    set messages to provider_items(body and provider_member(body and 0 and "messages"))
+    if messages equals 0 or else length_list(messages) is not equal to 2:
+        return 4
+    set records to provider_json_tokens(provider_value(body and provider_member(body and get_list(messages and 1) and "content")))
+    set items to provider_items(records and 0)
+    if items equals 0:
+        return 5
+    set sources to create_list()
+    for each item in items:
+        set added to append_list(sources and provider_value(records and provider_member(records and item and "source_event")))
+    set values to create_list()
+    set added to append_list(values and request)
+    set statement to checkpoint_prepare(database and "SELECT event FROM echo_events WHERE kind IN ('provider_event','provider_stream_end') AND json_extract(payload,'$.request_event')=? ORDER BY sequence;" and values)
+    if statement equals 0:
+        return 6
+    set stream to chat_stream_create()
+    set ended to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            return 14
+        set event to memory_recovery_event(database and ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        if event equals 0 or else not (archive_list_text(event and 0) equals archive_list_text(row and 0)):
+            return 7
+        set payload to provider_json_tokens(archive_list_text(event and 3))
+        if archive_list_text(event and 2) equals "provider_event":
+            if ended is not equal to 0 or else chat_stream_accept(stream and provider_value(payload and provider_member(payload and 0 and "data"))) is not equal to 0:
+                return 8
+        else:
+            if ended is not equal to 0 or else chat_stream_finish(stream and provider_value(payload and provider_member(payload and 0 and "transport"))) is not equal to 0:
+                return 9
+            set ended to 1
+    if ep_sqlite3_finalize(statement) is not equal to 0 or else ended is not equal to 1:
+        return 10
+    set choice to chat_find(get_list(stream and 0) and "0")
+    if choice equals 0:
+        return 11
+    set grounded to memory_ground_extraction(database and run and sources and 0 and length_list(sources) and archive_list_text(choice and 1))
+    set status to memory_extract_save(database and run and sources and 0 and length_list(sources) and grounded)
+    display status
+    if not (status equals "ready"):
+        return 12
+    set receipt to concat("{\"request_event\":" and provider_quote(request))
+    set receipt to concat(receipt and concat(",\"run_id\":" and provider_quote(run)))
+    set receipt to concat(receipt and concat(",\"source_count\":" and int_to_string(length_list(sources))))
+    set receipt to concat(receipt and concat(",\"grounded_sha256\":" and concat(provider_quote(ep_sha256(grounded)) and "}")))
+    if archive_append(database and archive_list_text(row and 0) and concat(request and concat(":recovered-memory:" and ptr_to_str(ep_uuid_v4()))) and "memory_recovered" and receipt and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return 13
+    display "PASS: completed archived extraction verified and recovered without model replay."
+    return sql_close(database)

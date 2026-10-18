@@ -1,0 +1,235 @@
+import "../archive/attachment_visibility"
+import "../projects/manifest"
+import "../tools/tool_contract"
+
+# Dependencies use the same exact schema and effect/recovery contract as tool
+# discovery. A retained procedure never makes a missing tool available.
+define procedure_tool_digest with schemas as Str and name as Str returning Str:
+    set tokens to provider_json_tokens(schemas)
+    set items to provider_items(tokens and 0)
+    if items equals 0:
+        return ""
+    for each item in items:
+        set function to provider_member(tokens and item and "function")
+        if provider_value(tokens and provider_member(tokens and function and "name")) equals name:
+            set schema to agent_json_source(schemas and tokens and item)
+            return ep_sha256(tool_contract(name and schema))
+    return ""
+
+# Evidence is an observed ledger result, not an arbitrary archive quotation.
+# Every asserted output is checked against the original result with its digest.
+# All demonstrated steps must occur in order in one execution run.
+define procedure_assess with database as Int and run as Str and manifest as Str and schemas as Str returning Str:
+    if string_length(project_scope(database and run)) equals 0:
+        return "not-authorized"
+    set tokens to provider_json_tokens(manifest)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else project_object_keys(tokens and 0 and ["name","purpose","prerequisites","steps","failure_lessons"]) equals 0:
+        return "invalid-manifest"
+    for each key in ["name","purpose","prerequisites","failure_lessons"]:
+        set field to provider_member(tokens and 0 and key)
+        if not (provider_kind(tokens and field) equals "string"):
+            return "invalid-manifest"
+    if string_length(provider_value(tokens and provider_member(tokens and 0 and "name"))) equals 0 or else string_length(provider_value(tokens and provider_member(tokens and 0 and "purpose"))) equals 0:
+        return "invalid-manifest"
+    set steps to provider_items(tokens and provider_member(tokens and 0 and "steps"))
+    if steps equals 0 or else length_list(steps) equals 0:
+        return "invalid-manifest"
+    set state to "demonstrated"
+    set stale to 0
+    if string_length(ptr_to_str(get_env("ECHO_RUNTIME_BUILD_SHA256"))) is not equal to 64:
+        return "runtime-version-unavailable"
+    set source_run to ""
+    set previous_sequence to 0
+    for each step in steps:
+        if project_object_keys(tokens and step and ["action","tool","contract_sha256","result_event","result_digest","discovery_event","discovery_digest","checks"]) equals 0:
+            return "invalid-step"
+        for each key in ["action","tool","contract_sha256","result_event","result_digest","discovery_event","discovery_digest"]:
+            if not (provider_kind(tokens and provider_member(tokens and step and key)) equals "string"):
+                return "invalid-step"
+        set tool to provider_value(tokens and provider_member(tokens and step and "tool"))
+        set dependency to provider_value(tokens and provider_member(tokens and step and "contract_sha256"))
+        if string_length(tool) equals 0 or else string_length(provider_value(tokens and provider_member(tokens and step and "action"))) equals 0:
+            return "invalid-step"
+        if string_length(dependency) equals 0 or else not (procedure_tool_digest(schemas and tool) equals dependency):
+            set stale to 1
+        set checks to provider_items(tokens and provider_member(tokens and step and "checks"))
+        if checks equals 0 or else length_list(checks) equals 0:
+            return "expected-outcomes-required"
+        for each check in checks:
+            if project_object_keys(tokens and check and ["path","equals"]) equals 0 or else not (provider_kind(tokens and provider_member(tokens and check and "path")) equals "string") or else provider_member(tokens and check and "equals") < 0:
+                return "invalid-outcome-check"
+        set event to provider_value(tokens and provider_member(tokens and step and "result_event"))
+        set digest to provider_value(tokens and provider_member(tokens and step and "result_digest"))
+        if string_length(event) equals 0 and string_length(digest) equals 0:
+            set state to "proposed"
+            continue
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT t.run,e.sequence,e.payload FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event AND q.session=t.session JOIN echo_events e ON e.event=t.result_event AND e.session=t.session WHERE t.result_event=?1 AND e.digest=?2 AND t.state='observed' AND q.kind='tool_call' AND e.kind='tool_result' AND q.sequence<e.sequence AND json_extract(q.payload,'$.name')=?3 AND json_extract(q.payload,'$.run_id')=t.run AND json_extract(q.payload,'$.call_id')=t.call_id AND json_extract(e.payload,'$.run_id')=t.run AND json_extract(e.payload,'$.call_id')=t.call_id;" and [event,digest,tool]))
+        if not (archive_list_text(row and 0) equals "found"):
+            return "evidence-not-observed"
+        set observed_run to archive_list_text(row and 1)
+        set scope to project_scope(database and observed_run)
+        if string_length(scope) equals 0 or else project_scope_allows(database and run and scope) equals 0:
+            return "evidence-not-authorized"
+        if attachment_observation_context_included(database and event) equals 0:
+            return "source-excluded-from-context"
+        if string_length(source_run) > 0 and not (source_run equals observed_run):
+            return "not-one-demonstrated-workflow"
+        set discovery to provider_value(tokens and provider_member(tokens and step and "discovery_event"))
+        set discovery_digest to provider_value(tokens and provider_member(tokens and step and "discovery_digest"))
+        set version to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(e.payload,'$.result.contract') FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event AND q.session=t.session JOIN echo_events e ON e.event=t.result_event AND e.session=t.session JOIN echo_tool_calls action ON action.result_event=?1 JOIN echo_events request ON request.event=action.request_event WHERE t.run=?2 AND t.result_event=?3 AND e.digest=?4 AND t.state='observed' AND q.kind='tool_call' AND e.kind='tool_result' AND json_extract(q.payload,'$.name')='tool_search' AND json_extract(e.payload,'$.result.status')='found' AND json_extract(e.payload,'$.result.contract.name')=?5 AND e.sequence<request.sequence;" and [event,observed_run,discovery,discovery_digest,tool]))
+        if not (archive_list_text(version and 0) equals "found") or else not (ep_sha256(archive_list_text(version and 1)) equals dependency):
+            return "tool-version-evidence-required"
+        set source_run to observed_run
+        set sequence to string_to_int(archive_list_text(row and 2))
+        if sequence <= previous_sequence:
+            return "evidence-order-mismatch"
+        set previous_sequence to sequence
+        for each check in checks:
+            set path to provider_value(tokens and provider_member(tokens and check and "path"))
+            if not (path equals "$.result" or else string_index_of(path and "$.result.") equals 0):
+                return "outcome-must-inspect-result"
+            set expected to agent_json_source(manifest and tokens and provider_member(tokens and check and "equals"))
+            set matched to history_collect_one(checkpoint_prepare(database and "SELECT 'matched' WHERE json_type(?1,?2) IS NOT NULL AND json_type(?1,?2)=json_type(?3,'$') AND json_extract(?1,?2) IS json_extract(?3,'$');" and [archive_list_text(row and 3),path,expected]))
+            if not (archive_list_text(matched and 0) equals "found"):
+                return "expected-outcome-not-demonstrated"
+    if stale equals 1:
+        return "stale-tool"
+    return state
+
+# Immutable versions reuse the source archive and its backup/restore lineage.
+# The caller identifies a new version; retrying that identity is byte-exact.
+define procedure_save with database as Int and run as Str and event as Str and manifest as Str and schemas as Str returning Str:
+    if string_length(event) equals 0:
+        return "invalid-identity"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set assessment to procedure_assess(database and run and manifest and schemas)
+    if not (assessment equals "demonstrated" or else assessment equals "proposed"):
+        return migration_fail(database and assessment)
+    set scope to project_scope(database and run)
+    set current to agent_run_read(database and run)
+    set session to archive_list_text(current and 0)
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and [event]))
+    if archive_list_text(existing and 0) equals "found":
+        set saved to provider_json_tokens(archive_list_text(existing and 3))
+        if archive_list_text(existing and 1) equals session and archive_list_text(existing and 2) equals "procedure_version" and provider_value(saved and provider_member(saved and 0 and "manifest")) equals manifest and provider_value(saved and provider_member(saved and 0 and "run")) equals run:
+            if sql_execute(database and "COMMIT;") is not equal to 0:
+                return migration_fail(database and "commit-failed")
+            return "already-recorded"
+        return migration_fail(database and "event-conflict")
+    if not (archive_list_text(existing and 0) equals "end"):
+        return migration_fail(database and "database-error")
+    set duplicate to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE kind='procedure_version' AND json_extract(payload,'$.scope')=?1 AND json_extract(payload,'$.manifest_sha256')=?2 ORDER BY sequence LIMIT 1;" and [scope,ep_sha256(manifest)]))
+    if archive_list_text(duplicate and 0) equals "found":
+        return migration_fail(database and "duplicate-version")
+    if not (archive_list_text(duplicate and 0) equals "end"):
+        return migration_fail(database and "database-error")
+    set tokens to provider_json_tokens(manifest)
+    set payload to "{"
+    set comma to ""
+    for each pair in [["run",run],["scope",scope],["name",provider_value(tokens and provider_member(tokens and 0 and "name"))],["manifest",manifest],["manifest_sha256",ep_sha256(manifest)],["assessment_at_save",assessment]]:
+        set payload to concat(payload and comma)
+        set payload to concat(payload and provider_quote(archive_list_text(pair and 0)))
+        set payload to concat(payload and ":")
+        set payload to concat(payload and provider_quote(archive_list_text(pair and 1)))
+        set comma to ","
+    set payload to concat(payload and "}")
+    if archive_append_pending(database and session and event and "procedure_version" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return migration_fail(database and "write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+# Read-time assessment rechecks source scopes and current dependency contracts.
+# Neither a saved status nor a successful past run grants execution authority.
+define procedure_read with database as Int and run as Str and event as Str and schemas as Str returning Str:
+    if string_length(project_scope(database and run)) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT payload,digest FROM echo_events WHERE event=? AND kind='procedure_version';" and [event]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "{\"status\":\"not-found\"}"
+    set tokens to provider_json_tokens(archive_list_text(row and 1))
+    if project_scope_allows(database and run and provider_value(tokens and provider_member(tokens and 0 and "scope"))) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set visibility to procedure_visibility(database and event)
+    if not (archive_list_text(visibility and 0) equals "found"):
+        return "{\"status\":\"visibility-read-failed\"}"
+    if archive_list_text(visibility and 1) equals "forgotten":
+        return concat("{\"status\":\"forgotten\",\"visibility_revision\":" and concat(archive_list_text(visibility and 2) and "}"))
+    set manifest to provider_value(tokens and provider_member(tokens and 0 and "manifest"))
+    if not (ep_sha256(manifest) equals provider_value(tokens and provider_member(tokens and 0 and "manifest_sha256"))):
+        return "{\"status\":\"integrity-error\"}"
+    set assessment to procedure_assess(database and run and manifest and schemas)
+    if assessment equals "evidence-not-authorized" or else assessment equals "not-authorized":
+        return "{\"status\":\"not-authorized\"}"
+    if assessment equals "source-excluded-from-context":
+        return "{\"status\":\"source-excluded-from-context\"}"
+    set result to concat("{\"status\":\"found\",\"event\":" and provider_quote(event))
+    set result to concat(result and concat(",\"digest\":" and provider_quote(archive_list_text(row and 2))))
+    set result to concat(result and concat(",\"assessment\":" and provider_quote(assessment)))
+    set result to concat(result and concat(",\"visibility_revision\":" and archive_list_text(visibility and 2)))
+    return concat(result and concat(",\"manifest\":" and concat(manifest and "}")))
+
+# Search advances over immutable versions; caller can page without a fixed cap.
+# Unauthorized versions and their names never appear in results.
+define procedure_search with database as Int and run as Str and query as Str and after as Int and schemas as Str returning Str:
+    if after < 0 or else string_length(project_scope(database and run)) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set cursor to after
+    repeat while 1 equals 1:
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT event,sequence,payload FROM echo_events WHERE kind='procedure_version' AND sequence>CAST(?1 AS INTEGER) AND (?2='' OR instr(lower(json_extract(payload,'$.name')),lower(?2))>0 OR instr(lower(json_extract(json_extract(payload,'$.manifest'),'$.purpose')),lower(?2))>0) ORDER BY sequence LIMIT 1;" and [int_to_string(cursor),query]))
+        if archive_list_text(row and 0) equals "end":
+            return "{\"status\":\"end\"}"
+        if not (archive_list_text(row and 0) equals "found"):
+            return "{\"status\":\"database-error\"}"
+        set cursor to string_to_int(archive_list_text(row and 2))
+        set result to procedure_read(database and run and archive_list_text(row and 1) and schemas)
+        set fields to provider_json_tokens(result)
+        if provider_value(fields and provider_member(fields and 0 and "status")) equals "found":
+            return concat(substring(result and 0 and string_length(result) - 1) and concat(",\"next_after\":" and concat(int_to_string(cursor) and "}")))
+
+# Derived workflow visibility is a separate immutable audit. Original execution
+# and discovery evidence is preserved; ordinary recall hides forgotten versions.
+define procedure_visibility with database as Int and event as Str returning List:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.state'),sequence FROM echo_events WHERE kind='procedure_visibility' AND json_extract(payload,'$.procedure')=? ORDER BY sequence DESC LIMIT 1;" and [event]))
+    if archive_list_text(row and 0) equals "end":
+        return ["found","visible","0"]
+    return row
+
+define procedure_visibility_set with database as Int and run as Str and change as Str and event as Str and previous as Int and state as Str and reason as Str returning Str:
+    if previous < 0 or else string_length(change) equals 0 or else string_length(reason) equals 0 or else not (state equals "visible" or else state equals "forgotten"):
+        return "invalid-arguments"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set original to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.scope') FROM echo_events WHERE event=? AND kind='procedure_version';" and [event]))
+    if not (archive_list_text(original and 0) equals "found") or else project_scope_allows(database and run and archive_list_text(original and 1)) equals 0:
+        return migration_fail(database and "not-authorized")
+    set current to agent_run_read(database and run)
+    set session to archive_list_text(current and 0)
+    set payload to concat("{\"procedure\":" and provider_quote(event))
+    set payload to concat(payload and concat(",\"previous_revision\":" and int_to_string(previous)))
+    for each pair in [["run",run],["state",state],["reason",reason]]:
+        set payload to concat(payload and ",")
+        set payload to concat(payload and provider_quote(archive_list_text(pair and 0)))
+        set payload to concat(payload and ":")
+        set payload to concat(payload and provider_quote(archive_list_text(pair and 1)))
+    set payload to concat(payload and "}")
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and [change]))
+    if archive_list_text(existing and 0) equals "found":
+        if archive_list_text(existing and 1) equals session and archive_list_text(existing and 2) equals "procedure_visibility" and archive_list_text(existing and 3) equals payload:
+            if sql_execute(database and "COMMIT;") is not equal to 0:
+                return migration_fail(database and "commit-failed")
+            return "already-recorded"
+        return migration_fail(database and "event-conflict")
+    if not (archive_list_text(existing and 0) equals "end"):
+        return migration_fail(database and "database-error")
+    set visible to procedure_visibility(database and event)
+    if not (archive_list_text(visible and 0) equals "found"):
+        return migration_fail(database and "visibility-read-failed")
+    if string_to_int(archive_list_text(visible and 2)) is not equal to previous:
+        return migration_fail(database and "revision-conflict")
+    if archive_append_pending(database and session and change and "procedure_visibility" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return migration_fail(database and "write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"

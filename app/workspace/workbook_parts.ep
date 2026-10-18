@@ -1,0 +1,109 @@
+import "xml_nodes"
+import "archive_patch"
+import "files"
+import "../archive/file_digest"
+
+# Read workbook XML parts without extracting archive paths onto the filesystem.
+# Result: status, source digest, alternating part names and complete XML strings.
+define workbook_parts with system as Int and root as Int and path as Str returning List:
+    set result to create_list()
+    set added to append_list(result and "open-failed")
+    set added to append_list(result and "")
+    set added to append_list(result and 0)
+    set descriptor to workspace_file_open(system and root and path and 0)
+    if descriptor < 0:
+        return result
+    set duplicate to socket_signed_result(ep_dlcall1(ep_dlsym(system and "dup") and descriptor))
+    set digest to file_digest_owned_descriptor(ep_dlopen("/usr/lib/libSystem.B.dylib") and duplicate and 65536 and 0)
+    if not (archive_list_text(digest and 0) equals "verified") or else ep_dlcall3(ep_dlsym(system and "lseek") and descriptor and 0 and 0) is not equal to 0:
+        set closed to net_close(descriptor)
+        set changed to set_list(result and 0 and "source-hash-failed")
+        return result
+    set changed to set_list(result and 1 and archive_list_text(digest and 1))
+    set library to ep_dlopen("/usr/lib/libarchive.2.dylib")
+    set reader to 0
+    set buffer to 0
+    set status to "archive-open-failed"
+    set parts to create_list()
+    if library is not equal to 0:
+        set reader to ep_dlcall0(ep_dlsym(library and "archive_read_new"))
+    if reader is not equal to 0:
+        if ep_dlcall1(ep_dlsym(library and "archive_read_support_format_zip") and reader) equals 0 and ep_dlcall2(ep_dlsym(library and "archive_read_set_options") and reader and str_to_ptr("!mac-ext")) equals 0 and ep_dlcall3(ep_dlsym(library and "archive_read_open_fd") and reader and descriptor and 65536) equals 0:
+            set buffer to ep_dlcall1(ep_dlsym(system and "malloc") and 65537)
+            if buffer is not equal to 0:
+                set status to "read"
+            else:
+                set status to "allocation-failed"
+        set pointer to [0]
+        repeat while status equals "read":
+            set next to socket_signed_result(ep_dlcall2(ep_dlsym(library and "archive_read_next_header") and reader and get_list_data_ptr(pointer)))
+            if next equals 1:
+                break
+            if next is not equal to 0:
+                set status to "archive-read-failed"
+                break
+            set entry to get_list(pointer and 0)
+            set name to workspace_zip_original_name(system and library and reader and descriptor)
+            if string_length(name) equals 0:
+                set status to "unsupported-or-ambiguous-zip-name"
+                break
+            set size to string_length(name)
+            set wanted to 0
+            if size >= 4 and substring(name and size - 4 and 4) equals ".xml":
+                set wanted to 1
+            if size >= 5 and substring(name and size - 5 and 5) equals ".rels":
+                set wanted to 1
+            if wanted equals 1:
+                if ep_dlcall1(ep_dlsym(library and "archive_entry_filetype") and entry) is not equal to 32768 or else ep_dlcall1(ep_dlsym(library and "archive_entry_hardlink") and entry) is not equal to 0 or else ep_dlcall1(ep_dlsym(library and "archive_entry_symlink") and entry) is not equal to 0 or else workspace_path_parts(name) equals 0:
+                    set status to "invalid-workbook-part"
+                    break
+                set index to 0
+                repeat while index < length_list(parts):
+                    if archive_list_text(parts and index) equals name:
+                        set status to "duplicate-workbook-part"
+                        break
+                    set index to index + 2
+                if not (status equals "read"):
+                    break
+                set builder to create_builder()
+                repeat while status equals "read":
+                    set count to ep_dlcall3(ep_dlsym(library and "archive_read_data") and reader and buffer and 65536)
+                    if count equals 0:
+                        break
+                    if count < 0 or else count > 65536:
+                        set status to "archive-data-failed"
+                        break
+                    if ep_dlcall3(ep_dlsym(system and "memchr") and buffer and 0 and count) is not equal to 0:
+                        set status to "unsupported-xml-encoding"
+                        break
+                    set cleared to ep_dlcall3(ep_dlsym(system and "memset") and buffer + count and 0 and 1)
+                    set added to builder_append(builder and ptr_to_str(buffer))
+                set text to ptr_to_str(builder_to_string(builder))
+                if status equals "read" and provider_valid_utf8(text) equals 0:
+                    set status to "unsupported-xml-encoding"
+                if status equals "read":
+                    set added to append_list(parts and name)
+                    set added to append_list(parts and text)
+            else:
+                if socket_signed_result(ep_dlcall1(ep_dlsym(library and "archive_read_data_skip") and reader)) is not equal to 0:
+                    set status to "archive-read-failed"
+        set freed to ep_dlcall1(ep_dlsym(library and "archive_read_free") and reader)
+        if freed is not equal to 0:
+            set status to "archive-close-failed"
+    if buffer is not equal to 0:
+        set freed to ep_dlcall1(ep_dlsym(system and "free") and buffer)
+    if library is not equal to 0:
+        set closed to ep_dlclose(library)
+    set closed to net_close(descriptor)
+    set changed to set_list(result and 0 and status)
+    if status equals "read":
+        set changed to set_list(result and 2 and parts)
+    return result
+
+define workbook_part with parts as List and name as Str returning Str:
+    set index to 0
+    repeat while index < length_list(parts):
+        if archive_list_text(parts and index) equals name:
+            return archive_list_text(parts and index + 1)
+        set index to index + 2
+    return ""

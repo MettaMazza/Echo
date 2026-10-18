@@ -1,0 +1,64 @@
+import "create_text"
+import "read_text"
+
+# Preserve the displaced inode at a unique sibling path using atomic swap.
+# The digest check is optimistic: uncooperative processes can edit concurrently.
+# Never silently delete displaced data or claim an atomic compare-and-swap.
+define workspace_edit_text with library as Int and root as Int and path as Str and expected as Str and text as Str returning Str:
+    set original to workspace_read_text(library and root and path and 65536 and 0 and -1)
+    if not (archive_list_text(original and 0) equals "read"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(original and 0)) and "}"))
+    set digest to ep_sha256(text)
+    if archive_list_text(original and 3) equals digest:
+        return concat("{\"status\":\"content-already-present\",\"sha256\":" and concat(provider_quote(digest) and "}"))
+    if string_length(expected) is not equal to 64 or else not (archive_list_text(original and 3) equals expected):
+        return "{\"status\":\"conflict\",\"effect\":\"unchanged\"}"
+    set parts to workspace_path_parts(path)
+    set parent_path to ""
+    set index to 0
+    repeat while index < length_list(parts) - 1:
+        set parent_path to concat(parent_path and concat(archive_list_text(parts and index) and "/"))
+        set index to index + 1
+    set temporary to concat(".echo-edit-" and ptr_to_str(ep_uuid_v4()))
+    set backup to concat(parent_path and temporary)
+    set staged to workspace_create_text(library and root and backup and text)
+    if not (staged equals "created"):
+        return concat("{\"status\":" and concat(provider_quote(staged) and concat(",\"stage\":" and concat(provider_quote(backup) and "}"))))
+    set duplicate to ep_dlsym(library and "dup")
+    set publish to ep_dlsym(library and "renameatx_np")
+    set flush to ep_dlsym(library and "fsync")
+    set remove_file to ep_dlsym(library and "unlinkat")
+    if duplicate equals 0 or else publish equals 0 or else flush equals 0 or else remove_file equals 0:
+        return concat("{\"status\":\"unavailable\",\"retained_sibling\":" and concat(provider_quote(backup) and "}"))
+    set parent to -1
+    if length_list(parts) equals 1:
+        set parent to socket_signed_result(ep_dlcall1(duplicate and root))
+    else:
+        set parent to workspace_directory_open(library and root and ptr_to_str(substring(parent_path and 0 and string_length(parent_path) - 1)) and 0)
+    set status to "publish-failed"
+    if parent >= 0 and publish is not equal to 0 and flush is not equal to 0 and remove_file is not equal to 0:
+        set name to archive_list_text(parts and length_list(parts) - 1)
+        set current to workspace_read_text(library and parent and name and 65536 and 0 and -1)
+        if not (archive_list_text(current and 0) equals "read") or else not (archive_list_text(current and 3) equals expected):
+            set removed to ep_dlcall3(remove_file and parent and str_to_ptr(temporary) and 0)
+            set closed to net_close(parent)
+            return "{\"status\":\"conflict\",\"effect\":\"original-not-replaced\"}"
+        if socket_signed_result(ep_dlcall5(publish and parent and str_to_ptr(temporary) and parent and str_to_ptr(name) and 2)) equals 0:
+            set status to "edited"
+            if socket_signed_result(ep_dlcall1(flush and parent)) is not equal to 0:
+                set status to "publication-uncertain"
+            set displaced to workspace_read_text(library and parent and temporary and 65536 and 0 and -1)
+            if not (archive_list_text(displaced and 0) equals "read") or else not (archive_list_text(displaced and 3) equals expected):
+                set status to "concurrent-change-preserved"
+            set published to workspace_read_text(library and parent and name and 65536 and 0 and -1)
+            if not (archive_list_text(published and 0) equals "read") or else not (archive_list_text(published and 3) equals digest):
+                set status to "concurrent-change-preserved"
+        else if socket_errno(library) equals 45:
+            set status to "publication-unsupported-filesystem"
+    if parent >= 0:
+        set closed to net_close(parent)
+    set result to concat("{\"status\":" and provider_quote(status))
+    set result to concat(result and concat(",\"path\":" and provider_quote(path)))
+    set result to concat(result and concat(",\"retained_sibling\":" and provider_quote(backup)))
+    set result to concat(result and concat(",\"sha256\":" and provider_quote(digest)))
+    return concat(result and ",\"concurrency\":\"optimistic; inspect current and retained sibling on uncertain outcomes\"}")

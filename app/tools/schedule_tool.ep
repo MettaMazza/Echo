@@ -1,0 +1,98 @@
+import "../jobs/schedule_store"
+import "../web/shared_access"
+import "../security/tool_policy"
+import "history_tools"
+
+define schedule_tool_status with status as Str returning Str:
+    return concat("{\"status\":" and concat(provider_quote(status) and "}"))
+
+define schedule_tool_read with database as Int and run as Str and call_id as Str and operation as Str and tokens as List returning Str:
+    if tool_policy_allows(database and run and call_id and "schedule") equals 0:
+        return schedule_tool_status("not-authorized")
+    set caller_values to [run]
+    set caller to history_collect_one(checkpoint_prepare(database and "SELECT device FROM echo_run_authority WHERE run=?1;" and caller_values))
+    if not (archive_list_text(caller and 0) equals "found"):
+        return schedule_tool_status("not-authorized")
+    set device to archive_list_text(caller and 1)
+    set after to 0
+    if operation equals "list" or else operation equals "occurrences":
+        set after to history_tool_integer(tokens and "after")
+        if after < 0:
+            return schedule_tool_status("invalid-arguments")
+    set values to [run]
+    set query to "SELECT s.identity,s.instruction,s.first_due,s.interval_ms,s.missed_policy,c.next_due,c.status,s.definition_event,s.rowid,s.origin_run FROM echo_schedules s JOIN echo_schedule_state c ON c.identity=s.identity JOIN echo_run_authority owner ON owner.run=s.origin_run JOIN echo_run_authority caller ON caller.run=?1 AND caller.principal=owner.principal JOIN echo_runs source ON source.run=s.origin_run JOIN echo_runs current ON current.run=caller.run WHERE (source.session=current.session OR (NOT EXISTS(SELECT 1 FROM echo_group_run_origins g WHERE g.run=source.run) AND NOT EXISTS(SELECT 1 FROM echo_group_run_origins g WHERE g.run=current.run)))"
+    if operation equals "list":
+        set added to append_list(values and int_to_string(after))
+        set query to concat(query and " AND s.rowid>CAST(?2 AS INTEGER) ORDER BY s.rowid LIMIT 1;")
+    else:
+        set field to provider_member(tokens and 0 and "identity")
+        if not (provider_kind(tokens and field) equals "string"):
+            return schedule_tool_status("invalid-arguments")
+        set added to append_list(values and provider_value(tokens and field))
+        set query to concat(query and " AND s.identity=?2;")
+    set row to history_collect_one(checkpoint_prepare(database and query and values))
+    repeat while archive_list_text(row and 0) equals "found" and web_shared_run_read_allowed(database and device and archive_list_text(row and 10)) equals 0:
+        if not (operation equals "list"):
+            return schedule_tool_status("end")
+        set advanced to set_list(values and 1 and archive_list_text(row and 9))
+        set row to history_collect_one(checkpoint_prepare(database and query and values))
+    set keys to ["identity","instruction","first_due","interval_ms","missed_policy","next_due","schedule_state","definition_event","next_after","origin_run"]
+    if not (operation equals "occurrences") or else not (archive_list_text(row and 0) equals "found"):
+        return history_tool_row(row and keys)
+    set occurrence_values to [archive_list_text(row and 1),int_to_string(after)]
+    set occurrence to history_collect_one(checkpoint_prepare(database and "SELECT o.identity,o.scheduled_for,o.missed_intervals,o.origin_event,COALESCE(r.state,'reserved'),COALESCE(r.last_event,''),o.rowid FROM echo_schedule_occurrences o LEFT JOIN echo_runs r ON r.run=o.identity WHERE o.schedule=?1 AND o.rowid>CAST(?2 AS INTEGER) ORDER BY o.rowid LIMIT 1;" and occurrence_values))
+    set occurrence_keys to ["run","scheduled_for","missed_intervals","origin_event","state","last_event","next_after"]
+    return history_tool_row(occurrence and occurrence_keys)
+
+define schedule_tool_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if tool_policy_allows(database and run and call_id and "schedule") equals 0:
+        return schedule_tool_status("not-authorized")
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return schedule_tool_status("invalid-arguments")
+    set field to provider_member(tokens and 0 and "operation")
+    set operation to provider_value(tokens and field)
+    if not (provider_kind(tokens and field) equals "string") or else not (operation equals "create" or else operation equals "list" or else operation equals "inspect" or else operation equals "occurrences" or else operation equals "cancel"):
+        return schedule_tool_status("invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        set allowed to key equals "operation"
+        if operation equals "create":
+            if key equals "instruction" or else key equals "first_due" or else key equals "interval_ms" or else key equals "missed_policy":
+                set allowed to 1
+        else:
+            if not (operation equals "list") and key equals "identity":
+                set allowed to 1
+            if (operation equals "list" or else operation equals "occurrences") and key equals "after":
+                set allowed to 1
+        if allowed equals 0:
+            return schedule_tool_status("invalid-arguments")
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    if operation equals "create":
+        set instruction to provider_member(tokens and 0 and "instruction")
+        set policy to provider_member(tokens and 0 and "missed_policy")
+        set first to history_tool_integer(tokens and "first_due")
+        set interval to history_tool_integer(tokens and "interval_ms")
+        if not (provider_kind(tokens and instruction) equals "string") or else not (provider_kind(tokens and policy) equals "string") or else first < 0 or else interval < 0:
+            return schedule_tool_status("invalid-arguments")
+        set result to schedule_create(database and run and call_id and provider_value(tokens and instruction) and first and interval and provider_value(tokens and policy))
+        set output to schedule_tool_status(result)
+        if result equals "created" or else result equals "already-created":
+            set identity to concat(run and concat(":schedule:" and call_id))
+            return concat(substring(output and 0 and string_length(output) - 1) and concat(",\"identity\":" and concat(provider_quote(identity) and ",\"execution\":\"awaiting-due-worker\"}")))
+        return output
+    if operation equals "cancel":
+        set identity to provider_member(tokens and 0 and "identity")
+        if not (provider_kind(tokens and identity) equals "string"):
+            return schedule_tool_status("invalid-arguments")
+        return schedule_tool_status(schedule_cancel(database and run and call_id and provider_value(tokens and identity)))
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return schedule_tool_status("database-busy")
+    set result to schedule_tool_read(database and run and call_id and operation and tokens)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return schedule_tool_status("database-error")
+    return result

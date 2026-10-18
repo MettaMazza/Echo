@@ -1,0 +1,49 @@
+import "attachment_lifecycle"
+
+# Recorded references only: this does not infer semantic derivation from text.
+# No originals, claims, checkpoints or visibility settings are changed here.
+define web_attachment_usage with database as Int and device as Str and attachment as Str returning Str:
+    if sql_execute(database and "SAVEPOINT attachment_usage;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    set result to web_attachment_usage_snapshot(database and device and attachment)
+    if sql_execute(database and "RELEASE attachment_usage;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK TO attachment_usage;")
+        set ignored to sql_execute(database and "RELEASE attachment_usage;")
+        return "{\"status\":\"database-error\"}"
+    return result
+
+define web_attachment_usage_snapshot with database as Int and device as Str and attachment as Str returning Str:
+    set source to history_collect_one(checkpoint_prepare(database and "SELECT session,event,digest,name FROM echo_attachments WHERE attachment=?;" and [attachment]))
+    set session to archive_list_text(source and 1)
+    set owner to web_account_resource_device(database and device and "session" and session)
+    if not (archive_list_text(source and 0) equals "found") or else principal_device_active(database and device) equals 0 or else web_attachment_session_allowed(database and owner and session and 0) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set output to concat("{\"status\":\"found\",\"attachment\":" and provider_quote(attachment))
+    set output to concat(output and concat(",\"source_event\":" and provider_quote(archive_list_text(source and 2))))
+    set output to concat(output and concat(",\"source_sha256\":" and provider_quote(archive_list_text(source and 3))))
+    set output to concat(output and ",\"references\":[")
+    set statement to checkpoint_prepare(database and "SELECT e.event,e.session,e.kind,e.digest,e.sequence FROM echo_events e WHERE (e.kind='turn_attachments' AND EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.attachments') a WHERE json_extract(a.value,'$.attachment')=?1)) OR (e.kind='tool_result' AND json_valid(e.payload) AND json_extract(e.payload,'$.result.attachment')=?1 AND json_extract(e.payload,'$.result.event')=?2 AND json_extract(e.payload,'$.result.sha256')=?3) ORDER BY e.sequence;" and [attachment,archive_list_text(source and 2),archive_list_text(source and 3)])
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set count to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"database-error\"}"
+        set target to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set target_owner to web_account_resource_device(database and device and "session" and target)
+        if web_attachment_session_allowed(database and target_owner and target and 0) equals 0:
+            continue
+        if count > 0:
+            set output to concat(output and ",")
+        set output to concat(output and concat("{\"event\":" and provider_quote(ptr_to_str(ep_sqlite3_column_text(statement and 0)))))
+        set output to concat(output and concat(",\"session\":" and provider_quote(target)))
+        set output to concat(output and concat(",\"kind\":" and provider_quote(ptr_to_str(ep_sqlite3_column_text(statement and 2)))))
+        set output to concat(output and concat(",\"digest\":" and concat(provider_quote(ptr_to_str(ep_sqlite3_column_text(statement and 3))) and "}")))
+        set count to count + 1
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    return concat(output and "],\"coverage\":\"Exact recorded turn attachment bindings and digest-bound tool reads visible to this device. Not a complete inventory of derived claims, summaries, conversation quotations, provider caches, external copies or backups.\",\"mutated\":false}")

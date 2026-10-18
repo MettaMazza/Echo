@@ -1,0 +1,54 @@
+import "archive_recall"
+
+# Correction links preserve originals. Supersession invalidates every derivative
+# of the corrected source, not just the one assertion named in the graph.
+define memory_correction_links_sql returning Str:
+    return "SELECT o.source_event AS source,n.source_event AS correction FROM echo_memory_claims o JOIN echo_memory_claims n ON n.supersedes=o.identity AND n.principal=o.principal JOIN echo_events oe ON oe.event=o.source_event AND oe.digest=o.source_digest JOIN echo_events ne ON ne.event=n.source_event AND ne.digest=n.source_digest WHERE ne.sequence>oe.sequence UNION SELECT json_extract(CASE WHEN x.kind='memory_source_correction' AND json_valid(x.payload) THEN x.payload ELSE '{}' END,'$.source_event'),json_extract(CASE WHEN x.kind='memory_source_correction' AND json_valid(x.payload) THEN x.payload ELSE '{}' END,'$.correction_event') FROM echo_events x JOIN echo_events oe ON oe.event=json_extract(CASE WHEN x.kind='memory_source_correction' AND json_valid(x.payload) THEN x.payload ELSE '{}' END,'$.source_event') AND oe.digest=json_extract(CASE WHEN x.kind='memory_source_correction' AND json_valid(x.payload) THEN x.payload ELSE '{}' END,'$.source_digest') JOIN echo_events ne ON ne.event=json_extract(CASE WHEN x.kind='memory_source_correction' AND json_valid(x.payload) THEN x.payload ELSE '{}' END,'$.correction_event') AND ne.digest=json_extract(CASE WHEN x.kind='memory_source_correction' AND json_valid(x.payload) THEN x.payload ELSE '{}' END,'$.correction_digest') WHERE x.kind='memory_source_correction' AND json_valid(x.payload) AND x.session=ne.session AND ne.kind='user' AND ne.sequence>oe.sequence"
+
+define memory_correction_sources_sql returning Str:
+    return concat("SELECT source FROM (" and concat(memory_correction_links_sql() and ") l JOIN echo_events ce ON ce.event=l.correction JOIN echo_session_principals cp ON cp.session=ce.session WHERE cp.principal IN (__MEMORY_SCOPE__)"))
+
+# Both endpoints must be readable by this principal. A link grants no access.
+define memory_corrections with database as Int and run as Str and source as Str returning Str:
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        return "[]"
+    set values to create_list()
+    set added to append_list(values and principal)
+    set added to append_list(values and source)
+    set query to concat("WITH RECURSIVE links AS (" and concat(memory_correction_links_sql() and "), lineage(source,correction) AS (SELECT source,correction FROM links UNION SELECT a.source,b.correction FROM lineage a JOIN links b ON b.source=a.correction) SELECT COALESCE(json_group_array(json(item)),'[]') FROM (SELECT DISTINCT json_object('corrected_source',o.event,'correction_event',e.event,'correction_digest',e.digest,'correction_text',e.payload,'sequence',e.sequence) AS item,e.sequence AS ordering FROM lineage l JOIN echo_events o ON o.event=l.source JOIN echo_session_principals op ON op.session=o.session JOIN echo_events e ON e.event=l.correction JOIN echo_session_principals cp ON cp.session=e.session WHERE op.principal IN (__MEMORY_SCOPE__) AND cp.principal IN (__MEMORY_SCOPE__) AND (?2='' OR o.event=?2) ORDER BY ordering);"))
+    set row to history_collect_one(checkpoint_prepare(database and memory_scope_query(database and query) and values))
+    if not (memory_archive_principal(database and run) equals principal):
+        return "[]"
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+define memory_correction_wrap with database as Int and run as Str and source as Str and output as Str returning Str:
+    set corrections to memory_corrections(database and run and source)
+    if string_length(corrections) equals 0:
+        return "{\"status\":\"correction-lookup-failed\",\"explanation\":\"Historical content withheld because its correction status could not be verified. Retry the read.\"}"
+    if corrections equals "[]":
+        return output
+    set warning to ",\"source_status\":\"corrected-history\",\"interpretation\":\"Preserved historical text, not a current fact. Apply the attached corrections; later corrections take precedence. Do not reassert or relearn the corrected claim from this source.\",\"corrections\":"
+    return concat(substring(output and 0 and string_length(output) - 1) and concat(warning and concat(corrections and "}")))
+
+# Operator repair uses the same scoped archive access as model recall; only an
+# original later user correction may be linked, and every link is immutable.
+define memory_correction_record with database as Int and run as Str and source as Str and correction as Str returning Int:
+    set old to memory_archive_read(database and run and source and 0 and 1)
+    set newer to memory_archive_read(database and run and correction and 0 and 1)
+    if not (archive_list_text(old and 0) equals "found" and archive_list_text(newer and 0) equals "found"):
+        return 1
+    set original to archive_read_event(database and source)
+    set revised to archive_read_event(database and correction)
+    if not (archive_list_text(revised and 2) equals "user"):
+        return 2
+    if string_to_int(archive_list_text(revised and 7)) <= string_to_int(archive_list_text(original and 7)):
+        return 3
+    set payload to concat("{\"source_event\":" and provider_quote(source))
+    set payload to concat(payload and concat(",\"source_digest\":" and provider_quote(archive_list_text(original and 6))))
+    set payload to concat(payload and concat(",\"correction_event\":" and provider_quote(correction)))
+    set payload to concat(payload and concat(",\"correction_digest\":" and concat(provider_quote(archive_list_text(revised and 6)) and "}")))
+    set identity to concat("source-correction:" and ep_sha256(payload))
+    return archive_append(database and archive_list_text(revised and 0) and identity and "memory_source_correction" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))

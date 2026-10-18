@@ -1,0 +1,203 @@
+import "../../app/web/attachments"
+import "fs"
+import "../../app/context/recap_sources"
+import "../../app/context/attachment_revision"
+import "../../app/context/recap_repair"
+import "../../app/context/recap_merge"
+import "../../app/web/attachment_visibility"
+import "../../app/jobs/delegation_schema"
+import "../../app/agent/run_messages"
+import "../../app/archive/history"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0 or else not (delegation_schema(database) equals "applied"):
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture" and "secret") is not equal to 0:
+        return 1
+    set submitted to web_submit_owned(database and "owner" and "request" and "" and "Read the attached note and cite its source.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    if write_file(get_argument(2) and "The attached word is café ☕.") is not equal to 1 or else web_attachment_register(database and "owner" and session and "note" and get_argument(2) and "note.txt" and "text/plain") is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"read-original\",\"function\":{\"name\":\"attachment_read_text\",\"arguments\":\"{\\\"attachment\\\":\\\"note\\\",\\\"offset\\\":0,\\\"characters\\\":100}\"}}]},\"finish_reason\":\"tool_calls\"}]}"
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set messages to agent_run_messages(database and run)
+    set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(messages and concat(",\"tools\":" and concat(session_tool_schemas() and "}"))))
+    set generated to agent_generate_local(database and run and "first-request" and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 1
+    if agent_tool_step(database and run) is not equal to 0:
+        return 1
+    if sql_execute(database and "CREATE TRIGGER reject_ready BEFORE UPDATE OF state ON echo_runs WHEN NEW.state='ready' BEGIN SELECT RAISE(ABORT,'fixture transition failure'); END;") is not equal to 0 or else agent_tool_step(database and run) equals 0:
+        return 1
+    set count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='agent_observation';"))
+    if not (ptr_to_str(get_list(count and 1)) equals "0") or else sql_execute(database and "DROP TRIGGER reject_ready;") is not equal to 0:
+        display "FAIL: failed transition left an orphan observation."
+        return 1
+    repeat while 1 equals 1:
+        set row to agent_run_read(database and run)
+        if row equals 0:
+            return 1
+        if ptr_to_str(get_list(row and 2)) equals "ready":
+            break
+        if agent_tool_step(database and run) is not equal to 0:
+            return 1
+    # Restart the database connection before constructing the next request.
+    if sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(path)
+    set messages to agent_run_messages(database and run)
+    set tokens to provider_json_tokens(messages)
+    if tokens equals 0:
+        return 1
+    set items to provider_items(tokens and 0)
+    set observation to ""
+    for each item in items:
+        if provider_value(tokens and provider_member(tokens and item and "role")) equals "tool":
+            set observation to provider_value(tokens and provider_member(tokens and item and "content"))
+    set observation_tokens to provider_json_tokens(observation)
+    if observation_tokens equals 0:
+        return 1
+    if not (provider_value(observation_tokens and provider_member(observation_tokens and 0 and "text")) equals "The attached word is café ☕."):
+        return 1
+    if not (provider_value(observation_tokens and provider_member(observation_tokens and 0 and "event")) equals "note:attachment") or else not (provider_value(observation_tokens and provider_member(observation_tokens and 0 and "sha256")) equals ep_sha256("The attached word is café ☕.")):
+        return 1
+    # Complete a synthetic note manifest before exclusion, then prove it is refused.
+    set before_run to agent_run_read(database and run)
+    set before_end to archive_list_text(before_run and 3)
+    if recap_job_create(database and session and before_end and "pre-exclusion-job") is not equal to 0:
+        return 50
+    set manifest to archive_read_event(database and "pre-exclusion-job")
+    set manifest_tokens to provider_json_tokens(archive_list_text(manifest and 3))
+    set manifest_records to provider_items(manifest_tokens and provider_member(manifest_tokens and 0 and "records"))
+    for each record in manifest_records:
+        set identity to provider_value(manifest_tokens and provider_member(manifest_tokens and record and "event"))
+        set piece to history_read_piece(database and session and identity and 0 and 1)
+        set payload to concat("{\"job\":\"pre-exclusion-job\",\"source_end\":" and provider_quote(before_end))
+        set payload to concat(payload and concat(",\"source_event\":" and provider_quote(identity)))
+        set payload to concat(payload and concat(",\"source_digest\":" and provider_quote(archive_list_text(piece and 5))))
+        set payload to concat(payload and concat(",\"offset\":0,\"next_offset\":" and archive_list_text(piece and 4)))
+        set payload to concat(payload and ",\"notes\":\"Synthetic preserved café source detail\"}")
+        if archive_append(database and session and concat("old-note:" and identity) and "recap_fragment_notes" and payload and "fixture") is not equal to 0:
+            return 51
+    if string_length(recap_merge_sources(database and session and "pre-exclusion-job")) equals 0:
+        return 52
+    if not (attachment_context_revision(database and session) equals "0"):
+        return 42
+    set legacy_checkpoint to ["", "", "", "", "", "", "{}"]
+    if attachment_checkpoint_current(database and session and legacy_checkpoint) is not equal to 1:
+        return 43
+    set unrelated to web_submit_owned(database and "owner" and "unrelated" and "" and "Separate conversation.")
+    set unrelated_session to archive_list_text(unrelated and 1)
+    set change to provider_json_tokens("{\"action\":\"exclude\",\"attachment\":\"note\",\"identity\":\"exclude-note\",\"previous\":\"\"}")
+    if not (web_attachment_visibility(database and "owner" and change) equals "recorded"):
+        return 30
+    if string_length(recap_merge_sources(database and session and "pre-exclusion-job")) is not equal to 0:
+        return 53
+    set withheld to recap_read_piece(database and session and "first-request:call:0:result" and 0 and 10000)
+    if not (archive_list_text(withheld and 0) equals "found") or else string_contains(archive_list_text(withheld and 7) and "café") > 0 or else not (archive_list_text(withheld and 8) equals "excluded"):
+        return 54
+    set fragment to recap_fragment_source(before_end and withheld and 0 and http_decimal(archive_list_text(withheld and 4)))
+    if string_contains(fragment and "withholding-notice") equals 0 or else string_contains(fragment and "retained-original") equals 0:
+        return 55
+    set second_piece to recap_read_piece(database and session and "first-request:call:0:result" and 11 and 17)
+    if not (archive_list_text(second_piece and 7) equals ptr_to_str(substring(archive_list_text(withheld and 7) and 11 and 17))):
+        return 56
+    set revision to attachment_context_revision(database and session)
+    if revision equals "0" or else string_length(revision) equals 0 or else attachment_checkpoint_current(database and session and legacy_checkpoint) is not equal to 0:
+        return 44
+    if not (attachment_context_revision(database and unrelated_session) equals "0"):
+        return 45
+    set checkpoint to ["", "", "", "", "", "", concat("{\"attachment_context_revision\":" and concat(provider_quote(revision) and "}"))]
+    if attachment_checkpoint_current(database and session and checkpoint) is not equal to 1:
+        return 46
+    set hidden to agent_run_messages(database and run)
+    if provider_json_tokens(hidden) equals 0 or else string_contains(hidden and "café") is not equal to 0 or else string_contains(hidden and "excluded-from-context") equals 0 or else string_contains(hidden and "read-original") equals 0:
+        display hidden
+        return 31
+    set current to agent_run_read(database and run)
+    set sources to recap_sources(database and session and archive_list_text(current and 3))
+    if provider_json_tokens(sources) equals 0 or else string_contains(sources and "café") is not equal to 0 or else string_contains(sources and "context_visibility") equals 0 or else string_contains(sources and "first-request:call:0:result") equals 0:
+        return 40
+    # A deterministic repaired draft must carry the same nonzero visibility revision.
+    set source_tokens to provider_json_tokens(sources)
+    set records to provider_items(source_tokens and provider_member(source_tokens and 0 and "records"))
+    set references to ""
+    set judgments to ""
+    set comma to ""
+    for each record in records:
+        set identity to provider_value(source_tokens and provider_member(source_tokens and record and "event"))
+        set references to concat(references and concat(comma and provider_quote(identity)))
+        set judgment to concat("{\"event\":" and provider_quote(identity))
+        set judgment to concat(judgment and ",\"verdict\":\"covered\",\"explanation\":\"Fixture record\"}")
+        set judgments to concat(judgments and concat(comma and judgment))
+        set comma to ","
+    set endpoint to archive_list_text(current and 3)
+    set candidate to concat("{\"source_end\":" and provider_quote(endpoint))
+    set candidate to concat(candidate and concat(",\"summary\":\"Fixture recap\",\"summary_sources\":[" and concat(references and "],\"state\":{")))
+    set comma to ""
+    for each category in recap_categories():
+        set candidate to concat(candidate and concat(comma and concat(provider_quote(category) and ":[]")))
+        set comma to ","
+    set candidate to concat(candidate and "}}")
+    set feedback to concat("{\"candidate_digest\":" and provider_quote(ep_sha256(candidate)))
+    set feedback to concat(feedback and concat(",\"source_end\":" and provider_quote(endpoint)))
+    set feedback to concat(feedback and concat(",\"records\":[" and concat(judgments and "],\"findings\":[\"Keep the original request pending.\"]}")))
+    set repaired to recap_repair_provider(database and session and endpoint and candidate and feedback and "revision-repair" and provider_llama_profile("fixture" and 0) and 1 and -1 and 65536)
+    if not (archive_list_text(repaired and 0) equals "structure-valid"):
+        display archive_list_text(repaired and 0)
+        return 48
+    set receipt to archive_read_event(database and "revision-repair:candidate")
+    set receipt_tokens to provider_json_tokens(archive_list_text(receipt and 3))
+    if not (provider_value(receipt_tokens and provider_member(receipt_tokens and 0 and "attachment_context_revision")) equals revision):
+        return 49
+    set original to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE kind='tool_result' AND session=?;" and [session]))
+    if string_contains(archive_list_text(original and 1) and "café") equals 0:
+        return 32
+    set change to provider_json_tokens("{\"action\":\"restore\",\"attachment\":\"note\",\"identity\":\"restore-note\",\"previous\":\"attachment-visibility:owner:exclude-note\"}")
+    if not (web_attachment_visibility(database and "owner" and change) equals "recorded") or else not (agent_run_messages(database and run) equals messages):
+        return 33
+    set restored_piece to recap_read_piece(database and session and "first-request:call:0:result" and 0 and 10000)
+    if string_contains(archive_list_text(restored_piece and 7) and "café") equals 0:
+        return 57
+    if attachment_checkpoint_current(database and session and checkpoint) is not equal to 0:
+        return 47
+    set sources to recap_sources(database and session and archive_list_text(current and 3))
+    if string_contains(sources and "café") equals 0:
+        return 41
+    # Exclusion blocks automatic replay, but a fresh explicit read stays usable.
+    set change to provider_json_tokens("{\"action\":\"exclude\",\"attachment\":\"note\",\"identity\":\"exclude-again\",\"previous\":\"attachment-visibility:owner:restore-note\"}")
+    if not (web_attachment_visibility(database and "owner" and change) equals "recorded"):
+        return 58
+    set reread_delta to "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"read-again\",\"function\":{\"name\":\"attachment_read_text\",\"arguments\":\"{\\\"attachment\\\":\\\"note\\\",\\\"offset\\\":0,\\\"characters\\\":100}\"}}]},\"finish_reason\":\"tool_calls\"}]}"
+    spawn generation_fixture(listener and reread_delta and completed)
+    set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(agent_run_messages(database and run) and concat(",\"tools\":" and concat(session_tool_schemas() and "}"))))
+    if agent_generate_local(database and run and "reread-request" and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0") is not equal to 0:
+        return 59
+    set fixture_result to receive from completed
+    if fixture_result is not equal to 0:
+        return 60
+    repeat while not (archive_list_text(agent_run_read(database and run) and 2) equals "ready"):
+        if agent_tool_step(database and run) is not equal to 0:
+            return 61
+    if string_contains(agent_run_messages(database and run) and "café") equals 0 or else attachment_context_included(database and "note") is not equal to 0:
+        return 62
+    if string_contains(agent_run_messages_scoped(database and run and 0 and 0) and "café") is not equal to 0:
+        return 64
+    set endpoint to archive_list_text(agent_run_read(database and run) and 3)
+    if string_contains(recap_sources(database and session and endpoint) and "café") is not equal to 0:
+        return 63
+    if archive_verify(database and session) is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 34
+    display "PASS: visibility revisions invalidate legacy and restored-policy checkpoints without affecting an unrelated session; recap source package withholds excluded tool content while preserving original event/digest references; restoration recovers original source text and archive remains intact."
+    return 0

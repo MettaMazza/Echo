@@ -1,0 +1,78 @@
+import "create_text"
+import "../providers/local_json"
+import "../archive/file_digest"
+
+# Stage binary bytes and publish with exclusive rename. Archive entry paths and
+# permissions are never used as host destinations or executable permissions.
+define workspace_archive_publish with system as Int and library as Int and reader as Int and root as Int and destination as Str returning Str:
+    set parts to workspace_path_parts(destination)
+    if parts equals 0:
+        return "{\"status\":\"invalid-destination\"}"
+    set parent to -1
+    if length_list(parts) equals 1:
+        set parent to socket_signed_result(ep_dlcall1(ep_dlsym(system and "dup") and root))
+    else:
+        set path to ""
+        set index to 0
+        repeat while index < length_list(parts) - 1:
+            if index > 0:
+                set path to concat(path and "/")
+            set path to concat(path and archive_list_text(parts and index))
+            set index to index + 1
+        set parent to workspace_directory_open(system and root and path and 0)
+    if parent < 0:
+        return "{\"status\":\"parent-unavailable\"}"
+    set temporary to concat(".echo-pending-" and ptr_to_str(ep_uuid_v4()))
+    set output to workspace_file_open(system and parent and temporary and 1)
+    if output < 0:
+        set closed to net_close(parent)
+        return "{\"status\":\"stage-failed\"}"
+    set copied to socket_signed_result(ep_dlcall2(ep_dlsym(library and "archive_read_data_into_fd") and reader and output))
+    set digest to file_digest_result("failed" and "" and 0)
+    if copied equals 0 and ep_dlcall3(ep_dlsym(system and "lseek") and output and 0 and 0) equals 0:
+        set duplicate to socket_signed_result(ep_dlcall1(ep_dlsym(system and "dup") and output))
+        set hash_library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        set digest to file_digest_owned_descriptor(hash_library and duplicate and 65536 and 1)
+    set finished to file_stage_finish(system and output)
+    set status to "extract-failed"
+    if copied equals 0 and finished equals 0 and archive_list_text(digest and 0) equals "verified":
+        set name to archive_list_text(parts and length_list(parts) - 1)
+        set renamed to socket_signed_result(ep_dlcall5(ep_dlsym(system and "renameatx_np") and parent and str_to_ptr(temporary) and parent and str_to_ptr(name) and 4))
+        if renamed equals 0:
+            set status to "created"
+            if ep_dlcall1(ep_dlsym(system and "fsync") and parent) is not equal to 0:
+                set status to "publication-uncertain"
+        else if socket_errno(system) equals 17:
+            set status to "already-exists"
+        else:
+            set status to "publish-failed"
+    if not (status equals "created" or else status equals "publication-uncertain"):
+        set removed to ep_dlcall3(ep_dlsym(system and "unlinkat") and parent and str_to_ptr(temporary) and 0)
+    set closed to net_close(parent)
+    set result to concat("{\"status\":" and provider_quote(status))
+    set result to concat(result and concat(",\"destination\":" and provider_quote(destination)))
+    if status equals "created" or else status equals "publication-uncertain":
+        set result to concat(result and concat(",\"extracted_sha256\":" and provider_quote(archive_list_text(digest and 1))))
+        set result to concat(result and concat(",\"extracted_bytes\":" and int_to_string(get_list(digest and 2))))
+    return concat(result and "}")
+
+
+define workspace_archive_extract_entry with system as Int and library as Int and reader as Int and root as Int and selected as Int and destination as Str returning Str:
+    set pointer to create_list()
+    set added to append_list(pointer and 0)
+    set index to 0
+    repeat while 1 equals 1:
+        set status to socket_signed_result(ep_dlcall2(ep_dlsym(library and "archive_read_next_header") and reader and get_list_data_ptr(pointer)))
+        if status equals 1:
+            return "{\"status\":\"entry-not-found\"}"
+        if status is not equal to 0:
+            return "{\"status\":\"archive-read-failed\"}"
+        set entry to get_list(pointer and 0)
+        if index equals selected:
+            if ep_dlcall1(ep_dlsym(library and "archive_entry_filetype") and entry) is not equal to 32768 or else ep_dlcall1(ep_dlsym(library and "archive_entry_hardlink") and entry) is not equal to 0 or else ep_dlcall1(ep_dlsym(library and "archive_entry_symlink") and entry) is not equal to 0:
+                return "{\"status\":\"not-regular-entry\"}"
+            return workspace_archive_publish(system and library and reader and root and destination)
+        if socket_signed_result(ep_dlcall1(ep_dlsym(library and "archive_read_data_skip") and reader)) is not equal to 0:
+            return "{\"status\":\"archive-read-failed\"}"
+        set index to index + 1
+    return "{\"status\":\"archive-read-failed\"}"

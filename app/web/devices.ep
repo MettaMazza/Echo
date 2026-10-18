@@ -55,7 +55,12 @@ define web_device_authenticate with database as Int and credential as Str return
     set added to append_list(values and ep_sha256(credential))
     set row to history_collect_one(checkpoint_prepare(database and "SELECT device FROM echo_devices WHERE credential_hash=? AND revoked=0;" and values))
     if not (archive_list_text(row and 0) equals "found"):
-        return ""
+        set available to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_linked_browsers';"))
+        if not (archive_list_text(available and 0) equals "found"):
+            return ""
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT b.account FROM echo_linked_browsers b JOIN echo_devices d ON d.device=b.account WHERE b.credential_hash=?1 AND b.revoked=0 AND d.revoked=0;" and values))
+        if not (archive_list_text(row and 0) equals "found"):
+            return ""
     set device to archive_list_text(row and 1)
     if principal_device_active(database and device) equals 0:
         return ""
@@ -115,3 +120,41 @@ define web_device_identity with database as Int and device as Str returning Str:
     set payload to concat(payload and concat(",\"role\":" and provider_quote(role)))
     set payload to concat(payload and concat(",\"authority\":" and provider_quote(authority)))
     return concat(payload and "}")
+
+# SQL uses fixed source identifiers and already-bound placeholders only.
+define web_account_devices_sql with database as Int returning Str:
+    set table to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE name='echo_conversation_accounts' AND type='table';"))
+    if not (archive_list_text(table and 0) equals "found"):
+        return "SELECT ?1"
+    return "SELECT member.device FROM echo_conversation_accounts member JOIN echo_conversation_accounts viewer ON viewer.account=member.account WHERE viewer.device=?1"
+
+# Resolve a request to the original session owner only after proving that both
+# devices are active members of the same explicitly merged conversation account.
+define web_account_session_device with database as Int and device as Str and session as Str returning Str:
+    if principal_device_active(database and device) equals 0:
+        return device
+    set query to concat("SELECT o.device FROM echo_session_owners o WHERE o.session=?2 AND o.device IN (" and concat(web_account_devices_sql(database) and ");"))
+    set row to history_collect_one(checkpoint_prepare(database and query and [device, session]))
+    set owner to archive_list_text(row and 1)
+    if archive_list_text(row and 0) equals "found" and principal_device_active(database and owner) equals 1:
+        return owner
+    return device
+
+define web_account_resource_device with database as Int and device as Str and kind as Str and identity as Str returning Str:
+    set query to ""
+    if kind equals "run":
+        set query to "SELECT session FROM echo_runs WHERE run=?1;"
+    else if kind equals "event":
+        set query to "SELECT session FROM echo_events WHERE event=?1;"
+    else if kind equals "attachment":
+        set query to "SELECT session FROM echo_attachments WHERE attachment=?1;"
+    else if kind equals "upload":
+        set query to "SELECT session FROM echo_uploads WHERE upload=?1;"
+    else if kind equals "session" or else kind equals "source":
+        return web_account_session_device(database and device and identity)
+    else:
+        return device
+    set row to history_collect_one(checkpoint_prepare(database and query and [identity]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return device
+    return web_account_session_device(database and device and archive_list_text(row and 1))

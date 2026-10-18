@@ -1,0 +1,78 @@
+import "manifest"
+import "../context/checkpoint"
+import "../agent/run_state"
+
+# Project revisions live in the existing immutable event archive, so backups,
+# hashes and source ownership remain the same as the originating conversation.
+# No caller-supplied scope is accepted and no separate mutable history exists.
+define project_latest with database as Int and run as Str and project as Str returning List:
+    return project_latest_scope(database and project_scope(database and run) and project)
+
+define project_latest_scope with database as Int and current_scope as Str and project as Str returning List:
+    if string_length(current_scope) equals 0:
+        return history_status("not-authorized")
+    set values to [project]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT event,payload,digest FROM echo_events WHERE kind='project_revision' AND json_extract(payload,'$.project')=? ORDER BY sequence DESC LIMIT 1;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return row
+    set tokens to provider_json_tokens(archive_list_text(row and 2))
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return history_status("project-integrity-error")
+    set manifest to provider_value(tokens and provider_member(tokens and 0 and "manifest"))
+    if not (ep_sha256(manifest) equals provider_value(tokens and provider_member(tokens and 0 and "manifest_sha256"))):
+        return history_status("project-integrity-error")
+    set scope to provider_value(tokens and provider_member(tokens and 0 and "scope"))
+    if project_scope_pair_allows(database and current_scope and scope) equals 0:
+        return history_status("not-authorized")
+    return row
+
+# Native caller supplies an already validated manifest. Opaque original bytes
+# are retained exactly, not serialized into a replacement representation.
+# expected is the last revision event, or empty for a new project.
+define project_revision_save with database as Int and run as Str and project as Str and event as Str and expected as Str and manifest as Str returning Str:
+    if string_length(project) equals 0 or else string_length(event) equals 0:
+        return "invalid-identity"
+    set tokens to provider_json_tokens(manifest)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "invalid-manifest"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set scope to project_scope(database and run)
+    if string_length(scope) equals 0:
+        return migration_fail(database and "not-authorized")
+    if project_manifest_valid(database and run and manifest) equals 0:
+        return migration_fail(database and "invalid-manifest")
+    set current to agent_run_read(database and run)
+    set session to archive_list_text(current and 0)
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT kind,payload,session FROM echo_events WHERE event=?;" and [event]))
+    if archive_list_text(existing and 0) equals "found":
+        set prior to provider_json_tokens(archive_list_text(existing and 2))
+        if archive_list_text(existing and 1) equals "project_revision" and archive_list_text(existing and 3) equals session and provider_value(prior and provider_member(prior and 0 and "run")) equals run and provider_value(prior and provider_member(prior and 0 and "project")) equals project and provider_value(prior and provider_member(prior and 0 and "previous")) equals expected and provider_value(prior and provider_member(prior and 0 and "manifest")) equals manifest:
+            if sql_execute(database and "COMMIT;") is not equal to 0:
+                return migration_fail(database and "commit-failed")
+            return "already-recorded"
+        return migration_fail(database and "event-conflict")
+    if not (archive_list_text(existing and 0) equals "end"):
+        return migration_fail(database and "database-error")
+    set previous to project_latest(database and run and project)
+    if archive_list_text(previous and 0) equals "found":
+        if not (archive_list_text(previous and 1) equals expected):
+            return migration_fail(database and "revision-conflict")
+        set fields to provider_json_tokens(archive_list_text(previous and 2))
+        set scope to provider_value(fields and provider_member(fields and 0 and "scope"))
+    else if not (archive_list_text(previous and 0) equals "end"):
+        return migration_fail(database and archive_list_text(previous and 0))
+    else if string_length(expected) > 0:
+        return migration_fail(database and "revision-conflict")
+    set payload to concat("{\"project\":" and provider_quote(project))
+    for each pair in [["run",run],["scope",scope],["previous",expected],["manifest",manifest],["manifest_sha256",ep_sha256(manifest)]]:
+        set payload to concat(payload and ",")
+        set payload to concat(payload and provider_quote(archive_list_text(pair and 0)))
+        set payload to concat(payload and ":")
+        set payload to concat(payload and provider_quote(archive_list_text(pair and 1)))
+    set payload to concat(payload and "}")
+    if archive_append_pending(database and session and event and "project_revision" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return migration_fail(database and "write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"

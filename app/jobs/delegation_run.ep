@@ -1,0 +1,77 @@
+import "delegation"
+import "delegation_schema"
+
+# Admission commits a separate session and exactly one child run. No parent
+# conversation messages/checkpoints are copied. The complete delegated task is
+# the child objective; explicit tools retrieve any additional scoped evidence.
+define delegation_materialize with database as Int and parent as Str and call_id as Str returning Str:
+    set recorded to delegation_record(database and parent and call_id)
+    if not (recorded equals "recorded" or else recorded equals "already-recorded"):
+        return recorded
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    if run_authority_allows(database and parent and "user") equals 0 or else tool_authority_allows(database and parent and call_id and "user") equals 0:
+        return migration_fail(database and "authority-changed")
+    set child to concat(parent and concat(":delegate:" and call_id))
+    set session to concat("task:" and child)
+    set receipt to concat(child and ":requested")
+    set request to archive_read_event(database and receipt)
+    if request equals 0:
+        return migration_fail(database and "request-invalid")
+    set tokens to provider_json_tokens(archive_list_text(request and 3))
+    set instruction to provider_value(tokens and provider_member(tokens and 0 and "instruction"))
+    set values to [child,parent,call_id,session,receipt]
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT child FROM echo_delegations WHERE child=?1 AND parent=?2 AND origin_call=?3 AND session=?4 AND request_event=?5;" and values))
+    if archive_list_text(old and 0) equals "found":
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "database-error")
+        return "already-materialized"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "database-error")
+    set origin_values to [parent]
+    set origin to history_collect_one(checkpoint_prepare(database and "SELECT a.device,r.session FROM echo_run_authority a JOIN echo_runs r ON r.run=a.run WHERE a.run=?1;" and origin_values))
+    if not (archive_list_text(origin and 0) equals "found"):
+        return migration_fail(database and "authority-changed")
+    set device to archive_list_text(origin and 1)
+    set now to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_delegations VALUES(?1,?2,?3,?4,?5);" and values) and 101) is not equal to 0:
+        return migration_fail(database and "lineage-write-failed")
+    set session_values to [session,now]
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_sessions VALUES(?1,'Delegated task',?2);" and session_values) and 101) is not equal to 0:
+        return migration_fail(database and "session-write-failed")
+    set shared to history_collect_one(checkpoint_prepare(database and "SELECT s.group_id,s.revision FROM echo_group_run_origins g JOIN echo_group_sessions s ON s.session=g.session WHERE g.run=?1;" and origin_values))
+    if archive_list_text(shared and 0) equals "found":
+        set group_values to [session,archive_list_text(shared and 1),archive_list_text(shared and 2)]
+        if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_sessions VALUES(?1,?2,CAST(?3 AS INTEGER));" and group_values) and 101) is not equal to 0:
+            return migration_fail(database and "group-context-write-failed")
+        set group_origin to [child,session,device]
+        if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_run_origins VALUES(?1,?2,?3);" and group_origin) and 101) is not equal to 0:
+            return migration_fail(database and "group-origin-write-failed")
+    else if archive_list_text(shared and 0) equals "end":
+        if web_device_own_pending(database and device and session) is not equal to 0:
+            return migration_fail(database and "ownership-write-failed")
+    else:
+        return migration_fail(database and "database-error")
+    set objective to concat(child and ":user")
+    if archive_append_pending(database and session and concat(child and ":origin") and "delegated_run_origin" and archive_list_text(request and 3) and now) is not equal to 0 or else archive_append_pending(database and session and objective and "user" and instruction and now) is not equal to 0 or else agent_run_create(database and child and session and objective) is not equal to 0:
+        return migration_fail(database and "run-write-failed")
+    set authority_values to [parent,child]
+    set same to history_collect_one(checkpoint_prepare(database and "SELECT c.run FROM echo_run_authority c JOIN echo_run_authority p ON p.run=?1 WHERE c.run=?2 AND c.device=p.device AND c.principal=p.principal AND c.role=p.role AND c.role_revision=p.role_revision AND c.revocation_revision=p.revocation_revision AND c.link_revision=p.link_revision;" and authority_values))
+    if not (archive_list_text(same and 0) equals "found") or else run_authority_allows(database and child and "user") equals 0:
+        return migration_fail(database and "authority-changed")
+    set recipients to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM (SELECT principal,role,role_revision,revocation_revision FROM echo_group_run_recipients WHERE run=?1 EXCEPT SELECT principal,role,role_revision,revocation_revision FROM echo_group_run_recipients WHERE run=?2);" and authority_values))
+    if not (archive_list_text(recipients and 0) equals "found") or else not (archive_list_text(recipients and 1) equals "0"):
+        return migration_fail(database and "audience-authority-changed")
+    for each suffix in [":provider-selection",":provider-profile"]:
+        set source to concat(parent and ptr_to_str(suffix))
+        set source_values to [source]
+        set saved to history_collect_one(checkpoint_prepare(database and "SELECT kind FROM echo_events WHERE event=?1;" and source_values))
+        if archive_list_text(saved and 0) equals "found":
+            set verified to archive_read_event(database and source)
+            if verified equals 0 or else archive_append_pending(database and session and concat(child and ptr_to_str(suffix)) and archive_list_text(saved and 1) and archive_list_text(verified and 3) and now) is not equal to 0:
+                return migration_fail(database and "provider-evidence-invalid")
+        else if not (archive_list_text(saved and 0) equals "end"):
+            return migration_fail(database and "database-error")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "database-error")
+    return "materialized"

@@ -1,0 +1,72 @@
+import "../../app/tools/tool_candidate_files"
+import "../../app/agent/tool_dispatch"
+import "../fixtures/generation_fixture"
+
+# Scripted requests exercise the real parser, authority checks, guardian,
+# compiler, sandbox and archive. No actual-model authoring is claimed here.
+define candidate_build_step with database as Int and step as Int and name as Str and arguments as Str returning Int:
+    set identity to concat("step-" and int_to_string(step))
+    set listener to local_socket_listen(0)
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":" and concat(provider_quote(identity) and concat(",\"function\":{\"name\":" and concat(provider_quote(name) and concat(",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))))))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set generated to agent_generate_local(database and "candidate-run" and identity and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    set closed to local_socket_close(listener)
+    if generated is not equal to 0 or else served is not equal to 0:
+        return 1
+    repeat while archive_list_text(agent_run_read(database and "candidate-run") and 2) equals "tools":
+        if agent_tool_step(database and "candidate-run") is not equal to 0:
+            return 2
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 4 or else file_exists(get_argument(1)):
+        return 1
+    set configured to set_env("ECHO_WORKSPACE_ROOT" and get_argument(2))
+    set configured to set_env("ECHO_EXECUTION_RUNTIME" and get_argument(3))
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else not (ptr_to_str(tool_registry_schema(database)) equals "applied"):
+        return 2
+    if web_pairing_invite(database and "fixture") is not equal to 0 or else web_device_pair(database and "fixture" and "author" and "Fixture author" and "fixture-secret") is not equal to 0:
+        return 3
+    if not (principal_host_role(database and "grant" and "device:author" and "admin" and "fixture") equals "recorded"):
+        return 4
+    set submitted to web_submit_owned(database and "author" and "candidate-run" and "" and "Compile and evaluate an isolated Ernos candidate.")
+    set source to "import \"string\"\n\ndefine main returning Int:\n    if get_argument_count() is not equal to 2:\n        return 7\n    display get_argument(1)\n    return 0\n"
+    set arguments to concat("{\"path\":\"probe.ep\",\"text\":" and concat(provider_quote(source) and "}"))
+    if candidate_build_step(database and 0 and "workspace_create_text" and arguments) is not equal to 0:
+        return 5
+    # The compiler resolves its standard library relative to its working
+    # directory. Copy the host runtime dependency into this isolated build root.
+    set library_arguments to concat("{\"program\":\"/bin/cp\",\"arguments\":[\"-R\"," and concat(provider_quote(concat(get_argument(3) and "/stdlib")) and ",\"stdlib\"]}"))
+    if candidate_build_step(database and 1 and "workspace_execute" and library_arguments) is not equal to 0:
+        return 14
+    set location to history_collect_one(archive_prepare(database and "SELECT root,directory FROM echo_workspaces WHERE session=(SELECT session FROM echo_runs WHERE run='candidate-run');"))
+    if not (archive_list_text(location and 0) equals "found"):
+        return 12
+    set source_path to concat(archive_list_text(location and 1) and concat("/" and concat(archive_list_text(location and 2) and "/probe.ep")))
+    set arguments to concat("{\"program\":" and concat(provider_quote(concat(get_argument(3) and "/epc")) and concat(",\"arguments\":[" and concat(provider_quote(source_path) and "]}"))))
+    if candidate_build_step(database and 2 and "workspace_execute" and arguments) is not equal to 0:
+        return 6
+    set compiled to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.wait_status') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run='candidate-run' AND t.call_id='step-2';"))
+    if not (archive_list_text(compiled and 1) equals "0"):
+        display "Compilation failed; inspect saved process receipts. Evaluation was not started."
+        return 13
+    if candidate_build_step(database and 3 and "workspace_execute" and "{\"program\":\"probe\",\"arguments\":[\"Candidate café verified\"]}") is not equal to 0:
+        return 7
+    set checked to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run='candidate-run' AND t.call_id IN ('step-2','step-3') AND t.state='observed' AND json_extract(e.payload,'$.result.status')='complete' AND json_extract(e.payload,'$.result.wait_status')='0';"))
+    if not (archive_list_text(checked and 1) equals "2"):
+        display "Build or evaluation did not complete successfully; inspect saved tool/process receipts."
+        return 8
+    set output to history_collect_one(archive_prepare(database and "SELECT group_concat(data,'') FROM (SELECT json_extract(payload,'$.data') AS data FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.run_id')='candidate-run' AND json_extract(payload,'$.call_id')='step-3' AND json_extract(payload,'$.stream')='stdout' ORDER BY sequence);"))
+    if not (archive_list_text(output and 1) equals "43616e64696461746520636166c3a92076657269666965640a"):
+        return 9
+    if archive_verify(database and archive_list_text(submitted and 1)) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 10
+    set database to archive_open(get_argument(1))
+    set finished to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_process_launches WHERE run='candidate-run' AND finished IS NOT NULL;"))
+    if not (archive_list_text(finished and 1) equals "3"):
+        return 11
+    display "PASS: authenticated tool loop created Ernos source, compiled it through the sandboxed guardian, ran the binary with Unicode input, retained successful process/output receipts and reopened the archive. Requests were scripted; registration is not claimed."
+    return sql_close(database)

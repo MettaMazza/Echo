@@ -1,3 +1,4 @@
+import "../feedback"
 import "shared_access"
 import "../transport/isolated_process"
 import "../retained_text"
@@ -174,6 +175,10 @@ define web_worker_status with database as Int and run as Str returning Str:
         set retry_allowed to archive_list_text(row and 3)
     set payload to ptr_to_str(substring(payload and 0 and string_length(payload) - 1))
     set payload to concat(payload and concat(",\"worker_status\":" and provider_quote(worker_status)))
+    set failure to concat("{\"status\":" and concat(provider_quote(worker_status) and "}"))
+    if not (worker_status equals "running" or else worker_status equals "not-started" or else worker_status equals "completed"):
+        set failure to feedback_enrich(failure and "Run worker" and run)
+        set payload to concat(payload and concat(",\"worker_feedback\":" and failure))
     set payload to concat(payload and concat(",\"worker\":" and provider_quote(worker)))
     set payload to concat(payload and concat(",\"compaction\":" and web_run_compaction(database and run)))
     set activity to web_run_activity(database and run)
@@ -188,14 +193,14 @@ define web_worker_cancel_idle with database as Int and run as Str returning Int:
         return 1
     set values to create_list()
     set added to append_list(values and run)
-    set idle to history_collect_one(checkpoint_prepare(database and "SELECT r.session,r.last_event FROM echo_runs r LEFT JOIN echo_web_workers w ON w.run=r.run WHERE r.run=?1 AND r.state='ready' AND (w.run IS NULL OR w.status<>'running') AND EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=r.run) AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state<>'observed');" and values))
+    set idle to history_collect_one(checkpoint_prepare(database and "SELECT r.session,r.last_event,r.state FROM echo_runs r LEFT JOIN echo_web_workers w ON w.run=r.run WHERE r.run=?1 AND r.state IN ('ready','waiting','failed') AND (w.run IS NULL OR w.status<>'running') AND EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=r.run) AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state<>'observed');" and values))
     if archive_list_text(idle and 0) equals "error":
         return archive_rollback(database)
     if archive_list_text(idle and 0) equals "found":
         set parent to archive_list_text(idle and 2)
         set event to agent_identity()
         set payload to concat(agent_event_envelope(run and parent) and "}")
-        if archive_append_pending(database and archive_list_text(idle and 1) and event and "agent_cancelled" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and "ready" and parent and "cancelled" and event) is not equal to 0:
+        if archive_append_pending(database and archive_list_text(idle and 1) and event and "agent_cancelled" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and archive_list_text(idle and 3) and parent and "cancelled" and event) is not equal to 0:
             return archive_rollback(database)
     if sql_execute(database and "COMMIT;") is not equal to 0:
         return archive_rollback(database)

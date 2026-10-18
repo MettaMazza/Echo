@@ -1,0 +1,79 @@
+import "../web/attachments"
+
+# This is an authenticated human-selection surface, not a model tool. A share
+# is a reviewed independent copy, not access to the rest of the source silo.
+define memory_share_session_scope with database as Int and session as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT 'private:'||principal FROM echo_session_principals WHERE session=? UNION ALL SELECT 'audience:'||json_array(group_id,revision) FROM echo_group_sessions WHERE session=?;" and [session,session]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+# Canonical preview binds exact selected bytes, source digest, actor and target
+# audience. A changed recipient revision requires a fresh human review.
+define memory_share_material with database as Int and device as Str and source_event as Str and destination as Str returning List:
+    if principal_device_active(database and device) equals 0:
+        return history_status("not-authorized")
+    set source to archive_read_event(database and source_event)
+    if source equals 0:
+        return history_status("not-authorized")
+    set source_session to archive_list_text(source and 0)
+    set source_device to web_account_resource_device(database and device and "session" and source_session)
+    set destination_device to web_account_resource_device(database and device and "session" and destination)
+    if source_session equals destination or else web_attachment_session_allowed(database and source_device and source_session and 0) equals 0 or else web_attachment_session_allowed(database and destination_device and destination and 1) equals 0:
+        return history_status("not-authorized")
+    set kind to archive_list_text(source and 2)
+    if not (kind equals "user" or else kind equals "assistant_final" or else kind equals "source_import"):
+        return history_status("unsupported-source-kind")
+    set authorship to kind
+    set content to archive_list_text(source and 3)
+    if not (kind equals "user"):
+        set tokens to provider_json_tokens(content)
+        set field to provider_member(tokens and 0 and "content")
+        if tokens equals 0 or else not (provider_kind(tokens and field) equals "string"):
+            return history_status("invalid-source")
+        set content to provider_value(tokens and field)
+        if kind equals "source_import":
+            set author_field to provider_member(tokens and 0 and "original_authorship")
+            if provider_kind(tokens and author_field) equals "string":
+                set authorship to provider_value(tokens and author_field)
+    set source_scope to memory_share_session_scope(database and source_session)
+    set destination_scope to memory_share_session_scope(database and destination)
+    if string_length(source_scope) equals 0 or else string_length(destination_scope) equals 0:
+        return history_status("not-authorized")
+    set actor to principal_for_device(database and device)
+    set values to [content,ep_sha256(content),source_event,archive_list_text(source and 6),source_session,kind,source_scope,destination,destination_scope,actor,authorship]
+    return history_collect_one(checkpoint_prepare(database and "SELECT json_object('content',?1,'sha256',?2,'origin','explicit-reviewed-share','revision',?4,'path',?3,'attribution',?10,'source_event',?3,'source_digest',?4,'source_session',?5,'source_kind',?6,'original_authorship',?11,'source_scope',?7,'destination_session',?8,'destination_scope',?9,'destination_title',(SELECT title FROM echo_sessions WHERE session=?8),'destination_audience',json(COALESCE((SELECT json_group_array(principal) FROM (SELECT principal FROM echo_session_principals WHERE session=?8 UNION SELECT a.principal FROM echo_group_sessions g JOIN echo_group_audiences a ON a.group_id=g.group_id AND a.revision=g.revision WHERE g.session=?8 ORDER BY principal)),'[]')),'destination_channel',(SELECT d.channel FROM echo_group_sessions g JOIN echo_groups d ON d.identity=g.group_id WHERE g.session=?8),'shared_by',?10,'copy_semantics','Independent selected copy; original remains unchanged; no access to other source records or future changes.');" and values))
+
+define memory_share_preview with database as Int and device as Str and source_event as Str and destination as Str returning Str:
+    set material to memory_share_material(database and device and source_event and destination)
+    if not (archive_list_text(material and 0) equals "found"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(material and 0)) and "}"))
+    set payload to archive_list_text(material and 1)
+    return concat("{\"status\":\"review-required\",\"selection\":" and concat(payload and concat(",\"review_digest\":" and concat(provider_quote(ep_sha256(payload)) and "}"))))
+
+# Caller supplies an explicit confirmation and the digest from its preview.
+# Retry IDs bind to the same payload and destination, never to a new selection.
+define memory_share_commit with database as Int and device as Str and identity as Str and source_event as Str and destination as Str and review_digest as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(review_digest) is not equal to 64:
+        return "invalid-arguments"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set material to memory_share_material(database and device and source_event and destination)
+    if not (archive_list_text(material and 0) equals "found"):
+        set closed to archive_rollback(database)
+        return archive_list_text(material and 0)
+    set payload to archive_list_text(material and 1)
+    if not (ep_sha256(payload) equals review_digest):
+        set closed to archive_rollback(database)
+        return "review-changed"
+    set event to concat("shared-source:" and identity)
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT kind,payload,session FROM echo_events WHERE event=?;" and [event]))
+    if archive_list_text(prior and 0) equals "found":
+        set closed to archive_rollback(database)
+        if archive_list_text(prior and 1) equals "source_import" and archive_list_text(prior and 2) equals payload and archive_list_text(prior and 3) equals destination:
+            return "already-recorded"
+        return "identity-conflict"
+    if not (archive_list_text(prior and 0) equals "end") or else archive_append_pending(database and destination and event and "source_import" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set closed to archive_rollback(database)
+        return "write-failed"
+    return "recorded"

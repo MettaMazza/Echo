@@ -1,0 +1,28 @@
+import "../archive/attachment_visibility"
+import "../archive/session_scope"
+
+# A session's branch ancestry and recorded attachment calls determine which
+# visibility decisions invalidate its cached recap work. Unrelated silos do not.
+# Empty means a read error; zero means no relevant visibility transitions.
+define attachment_context_revision with database as Int and session as Str returning Str:
+    set any_policy to history_collect_one(archive_prepare(database and "SELECT sequence FROM echo_events WHERE kind='attachment_visibility' LIMIT 1;"))
+    if archive_list_text(any_policy and 0) equals "end":
+        return "0"
+    if not (archive_list_text(any_policy and 0) equals "found"):
+        return ""
+    set query to concat(session_scope_sql() and "SELECT COALESCE(MAX(v.sequence),0) FROM echo_events v WHERE v.kind='attachment_visibility' AND (v.session IN (SELECT session FROM scopes) OR json_extract(v.payload,'$.attachment') IN (SELECT json_extract(json_extract(q.payload,'$.arguments'),'$.attachment') FROM scopes s JOIN echo_tool_calls t ON t.session=s.session JOIN echo_events q ON q.event=t.request_event AND q.sequence<=s.boundary WHERE json_extract(q.payload,'$.name') IN ('attachment_read_text','attachment_view_image','attachment_transcribe')));")
+    set row to history_collect_one(checkpoint_prepare(database and query and [session]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+# Legacy checkpoints are usable only before the first relevant decision.
+define attachment_checkpoint_current with database as Int and session as Str and checkpoint as List returning Int:
+    set revision to attachment_context_revision(database and session)
+    if string_length(revision) equals 0:
+        return 0
+    set validation to provider_json_tokens(archive_list_text(checkpoint and 6))
+    set saved to "0"
+    if validation is not equal to 0 and provider_member(validation and 0 and "attachment_context_revision") >= 0:
+        set saved to provider_value(validation and provider_member(validation and 0 and "attachment_context_revision"))
+    return saved equals revision

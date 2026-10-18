@@ -1,0 +1,80 @@
+import "../../app/security/group_runs"
+import "../../app/web/run_store"
+import "../../app/agent/tool_recovery"
+import "../../app/context/session_messages"
+
+define live_group_finish with database as Int and run as Str and model as Str and port as Int returning Int:
+    if agent_provider_bind(database and run and provider_llama_profile(model and port)) is not equal to 0:
+        return 1
+    set generation to 0
+    repeat while 1 equals 1:
+        set row to agent_run_read(database and run)
+        set state to archive_list_text(row and 2)
+        if state equals "completed":
+            return 0
+        if state equals "ready":
+            set generation to generation + 1
+            set messages to session_messages(database and archive_list_text(row and 0) and run)
+            if string_length(messages) equals 0:
+                return 2
+            set body to session_request_body_owned(database and run and model and messages)
+            if agent_generate_local(database and run and concat(run and concat(":generation:" and int_to_string(generation))) and body and port and "/v1/chat/completions" and -1 and 65536 and "0") is not equal to 0:
+                return 3
+        else if state equals "tools":
+            if agent_tool_step(database and run) is not equal to 0:
+                return 4
+        else:
+            display concat("Unexpected durable state: " and state)
+            return 5
+    return 6
+
+define verify_live_notes with database as Int returning Int:
+    set calls to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run='second' AND t.state='observed' AND CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.name') END='scratchpad';"))
+    if not (archive_list_text(calls and 0) equals "found") or else http_decimal(archive_list_text(calls and 1)) < 1:
+        return 7
+    if archive_verify(database and "shared") is not equal to 0 or else run_authority_allows(database and "second" and "admin") is not equal to 0 or else string_length(memory_archive_principal(database and "second")) is not equal to 0:
+        return 8
+    set observed to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event JOIN echo_events e ON e.event=t.result_event WHERE t.run='second' AND t.state='observed' AND json_extract(q.payload,'$.name')='scratchpad' AND json_extract(e.payload,'$.result.text')='amber-otter-427';"))
+    set leaked to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE session='shared' AND kind='model_request' AND instr(payload,'violet-walrus-951')>0;"))
+    if http_decimal(archive_list_text(observed and 1)) < 1 or else not (archive_list_text(leaked and 1) equals "0"):
+        return 11
+    if not (archive_list_text(agent_run_read(database and "first") and 2) equals "completed") or else not (archive_list_text(agent_run_read(database and "second") and 2) equals "completed"):
+        return 12
+    display "PASS: retained live model scratchpad write and cross-member read after reopen; private source excluded and archive verified."
+    return 0
+
+define main returning Int:
+    if get_argument_count() equals 3 and get_argument(2) equals "verify":
+        set database to archive_open(get_argument(1))
+        if database equals 0:
+            return 13
+        set result to verify_live_notes(database)
+        set closed to sql_close(database)
+        return result
+    if get_argument_count() is not equal to 4 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else not (group_run_schema(database) equals "applied"):
+        return 2
+    for each name in ["a", "b"]:
+        set text to ptr_to_str(name)
+        if web_pairing_invite(database and text) is not equal to 0 or else web_device_pair(database and text and text and text and concat(text and "-secret")) is not equal to 0:
+            return 3
+    set private to web_submit_owned(database and "a" and "private-canary" and "" and "Private canary: violet-walrus-951. This must not enter group prompts.")
+    if not (archive_list_text(private and 0) equals "accepted") or else not (group_create(database and "a" and "live-group" and "local-fixture" and "fixture-server" and "fixture-room" and "fixture-origin") equals "created") or else not (group_change(database and "a" and "invite" and "live-group" and "device:b" and "invited" and 1) equals "recorded") or else not (group_change(database and "b" and "join" and "live-group" and "device:b" and "joined" and 2) equals "recorded") or else not (group_session_create(database and "a" and "shared" and "live-group" and "local-fixture" and "fixture-server" and "fixture-room" and 3) equals "created"):
+        return 4
+    if not (group_run_submit(database and "a" and "first" and "shared" and "local-fixture" and "fixture-server" and "fixture-room" and "Use scratchpad to create a note named shared-work containing exactly amber-otter-427. Set previous_revision to an empty string. Confirm briefly after the tool succeeds.") equals "accepted") or else live_group_finish(database and "first" and get_argument(3) and http_decimal(get_argument(2))) is not equal to 0:
+        return 5
+    if sql_close(database) is not equal to 0:
+        return 10
+    set database to archive_open(get_argument(1))
+    if not (group_run_submit(database and "b" and "second" and "shared" and "local-fixture" and "fixture-server" and "fixture-room" and "Read the persistent scratchpad note shared-work using the scratchpad tool, then return its exact contents. Do not infer the contents from the conversation; verify the saved note.") equals "accepted") or else live_group_finish(database and "second" and get_argument(3) and http_decimal(get_argument(2))) is not equal to 0:
+        return 6
+    if verify_live_notes(database) is not equal to 0:
+        return 11
+    set final to archive_read_event(database and archive_list_text(agent_run_read(database and "second") and 3))
+    display archive_list_text(final and 3)
+    if sql_close(database) is not equal to 0:
+        return 9
+    display "PASS: primary model writes shared scratchpad, database reopens, another member reads exact original note through observed tool call; private canary excluded."
+    return 0

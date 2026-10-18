@@ -1,3 +1,4 @@
+import "../feedback"
 import "../security/node_gate"
 import "../retained_text"
 import "devices"
@@ -185,6 +186,10 @@ define web_run_status with database as Int and run as Str returning Str:
         if state equals "failed":
             set field to "reason"
         set text to provider_value(tokens and provider_member(tokens and 0 and field))
+    if state equals "failed":
+        set failure to concat("{\"status\":" and concat(provider_quote(text) and "}"))
+        set failure to feedback_enrich(failure and "Run" and event)
+        set payload to concat(payload and concat(",\"failure\":" and failure))
     return concat(payload and concat(",\"text\":" and concat(provider_quote(text) and "}")))
 
 define web_session_transcript with database as Int and session as Str returning Str:
@@ -199,7 +204,7 @@ define web_session_transcript_window with database as Int and session as Str and
     set added to append_list(values and session)
     set added to append_list(values and int_to_string(before))
     set added to append_list(values and int_to_string(amount))
-    set query to concat(session_scope_sql() and "SELECT * FROM (SELECT e.event,e.kind,e.payload,r.run,e.session,r.objective_event,e.sequence FROM scopes s JOIN echo_runs r ON r.session=s.session JOIN echo_events e ON r.objective_event=e.event OR (r.last_event=e.event AND r.state='completed') WHERE e.sequence<=s.boundary AND e.event<>s.omit_user AND (CAST(?2 AS INTEGER)=0 OR e.sequence<CAST(?2 AS INTEGER)) ORDER BY e.sequence DESC LIMIT CAST(?3 AS INTEGER)) ORDER BY sequence;")
+    set query to concat(session_scope_sql() and ", accepted(run,event,sequence,payload) AS (SELECT r.run,e.event,e.sequence,e.payload FROM scopes s JOIN echo_runs r ON r.session=s.session JOIN echo_events e ON e.event=r.last_event UNION ALL SELECT a.run,e.event,e.sequence,e.payload FROM accepted a JOIN echo_events e ON e.event=json_extract(CASE WHEN json_valid(a.payload) THEN a.payload ELSE '{}' END,'$.parent_event') WHERE e.sequence<a.sequence) SELECT * FROM (SELECT e.event,e.kind,e.payload,r.run,e.session,r.objective_event,e.sequence,(SELECT COALESCE(MAX(v.sequence),0) FROM echo_events v WHERE v.session=?1 AND v.kind IN ('user','assistant_final','source_import')) AS revision FROM scopes s JOIN echo_runs r ON r.session=s.session JOIN echo_events e ON r.objective_event=e.event OR (e.kind='assistant_final' AND EXISTS(SELECT 1 FROM accepted a WHERE a.run=r.run AND a.event=e.event)) WHERE e.sequence<=s.boundary AND e.event<>s.omit_user AND (CAST(?2 AS INTEGER)=0 OR e.sequence<CAST(?2 AS INTEGER)) UNION ALL SELECT e.event,e.kind,e.payload,'',e.session,'',e.sequence,(SELECT COALESCE(MAX(v.sequence),0) FROM echo_events v WHERE v.session=?1 AND v.kind IN ('user','assistant_final','source_import')) FROM scopes s JOIN echo_events e ON e.session=s.session WHERE e.kind='source_import' AND json_valid(e.payload) AND json_extract(e.payload,'$.origin')='explicit-reviewed-share' AND e.sequence<=s.boundary AND (CAST(?2 AS INTEGER)=0 OR e.sequence<CAST(?2 AS INTEGER)) ORDER BY sequence DESC LIMIT CAST(?3 AS INTEGER)) ORDER BY sequence;")
     set statement to checkpoint_prepare(database and query and values)
     if statement equals 0:
         return "{\"status\":\"database-error\"}"
@@ -207,6 +212,7 @@ define web_session_transcript_window with database as Int and session as Str and
     set added to builder_append(builder and "{\"status\":\"found\",\"messages\":[")
     set count to 0
     set next_before to "0"
+    set revision to "0"
     repeat while 1 equals 1:
         set step to ep_sqlite3_step(statement)
         if step equals 101:
@@ -214,6 +220,7 @@ define web_session_transcript_window with database as Int and session as Str and
         if step is not equal to 100:
             set closed to ep_sqlite3_finalize(statement)
             return "{\"status\":\"database-error\"}"
+        set revision to concat(ptr_to_str(ep_sqlite3_column_text(statement and 7)) and "")
         set event to ptr_to_str(ep_sqlite3_column_text(statement and 0))
         set source_run to ptr_to_str(ep_sqlite3_column_text(statement and 3))
         set source_session to ptr_to_str(ep_sqlite3_column_text(statement and 4))
@@ -223,13 +230,15 @@ define web_session_transcript_window with database as Int and session as Str and
         set kind to ptr_to_str(ep_sqlite3_column_text(statement and 1))
         set content to ptr_to_str(ep_sqlite3_column_text(statement and 2))
         set role to "user"
-        if kind equals "assistant_final":
+        if kind equals "assistant_final" or else kind equals "source_import":
             set tokens to provider_json_tokens(content)
             if tokens equals 0:
                 set closed to ep_sqlite3_finalize(statement)
                 return "{\"status\":\"database-error\"}"
             set content to provider_value(tokens and provider_member(tokens and 0 and "content"))
             set role to "assistant"
+            if kind equals "source_import":
+                set role to "source"
         if count is greater than 0:
             set added to builder_append(builder and ",")
         set added to builder_append(builder and concat("{\"event\":" and provider_quote(event)))
@@ -264,19 +273,23 @@ define web_session_transcript_window with database as Int and session as Str and
                 set sources to agent_json_source(manifest and tokens and field)
         set added to builder_append(builder and concat(",\"text\":" and provider_quote(content)))
         set reads to "[]"
+        set research to "[]"
         if role equals "assistant":
             set reads to web_run_source_reads(database and source_session and source_run)
-            if string_length(reads) equals 0:
+            set research to web_run_research_sources(database and source_session and source_run)
+            if string_length(reads) equals 0 or else string_length(research) equals 0:
                 set closed to ep_sqlite3_finalize(statement)
                 return "{\"status\":\"database-error\"}"
         if role equals "assistant":
             set sources to web_message_audio(database and source_session and source_run and event)
         set added to builder_append(builder and concat(",\"attachments\":" and sources))
+        set added to builder_append(builder and concat(",\"research_sources\":" and research))
         set added to builder_append(builder and concat(",\"source_reads\":" and concat(reads and "}")))
         set count to count + 1
     if ep_sqlite3_finalize(statement) is not equal to 0:
         return "{\"status\":\"database-error\"}"
-    set added to builder_append(builder and concat("],\"next_before\":" and provider_quote(next_before)))
+    set added to builder_append(builder and concat("],\"revision\":" and provider_quote(revision)))
+    set added to builder_append(builder and concat(",\"next_before\":" and provider_quote(next_before)))
     set more to "false"
     if amount is greater than 0 and count equals amount:
         set more to "true"
@@ -294,12 +307,13 @@ define web_device_sessions_search with database as Int and device as Str and que
     set values to create_list()
     set added to append_list(values and device)
     set added to append_list(values and query)
-    set statement to checkpoint_prepare(database and concat("SELECT s.session,s.title,COALESCE((SELECT r.run FROM echo_runs r JOIN echo_events e ON e.event=r.objective_event WHERE r.session=s.session ORDER BY e.sequence DESC LIMIT 1),'') FROM echo_sessions s JOIN echo_session_owners o ON o.session=s.session JOIN echo_devices d ON d.device=o.device WHERE " and concat(principal_session_sql(database and "s.session" and "d.device") and " AND d.device=?1 AND d.revoked=0 AND (?2='' OR instr(s.title,?2)>0 OR EXISTS(SELECT 1 FROM echo_events e WHERE e.session=s.session AND ((e.kind='user' AND instr(e.payload,?2)>0) OR (e.kind='assistant_final' AND instr(CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.content') END,?2)>0)))) ORDER BY s.rowid DESC;")) and values)
+    set statement to checkpoint_prepare(database and concat("SELECT s.session,s.title,COALESCE((SELECT r.run FROM echo_runs r JOIN echo_events e ON e.event=r.objective_event WHERE r.session=s.session ORDER BY e.sequence DESC LIMIT 1),''),COALESCE((SELECT MAX(e.sequence) FROM echo_events e WHERE e.session=s.session AND e.kind IN ('user','assistant_final','source_import')),0) FROM echo_sessions s JOIN echo_session_owners o ON o.session=s.session JOIN echo_devices d ON d.device=o.device WHERE " and concat(principal_session_sql(database and "s.session" and "d.device") and concat(concat(" AND d.device IN (" and concat(web_account_devices_sql(database) and ")")) and " AND d.revoked=0 AND (?2='' OR instr(s.title,?2)>0 OR EXISTS(SELECT 1 FROM echo_events e WHERE e.session=s.session AND ((e.kind='user' AND instr(e.payload,?2)>0) OR (e.kind='assistant_final' AND instr(CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.content') END,?2)>0)))) ORDER BY s.rowid DESC;"))) and values)
     if statement equals 0:
         return "{\"status\":\"database-error\"}"
     set builder to create_builder()
     set added to builder_append(builder and "{\"status\":\"found\",\"sessions\":[")
     set count to 0
+    set delegation_table to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE name='echo_delegations';"))
     repeat while 1 equals 1:
         set step to ep_sqlite3_step(statement)
         if step equals 101:
@@ -308,13 +322,20 @@ define web_device_sessions_search with database as Int and device as Str and que
             set discarded to builder_to_string(builder)
             set closed to ep_sqlite3_finalize(statement)
             return "{\"status\":\"database-error\"}"
+        if archive_list_text(delegation_table and 0) equals "found":
+            set child_session to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+            set delegated to history_collect_one(checkpoint_prepare(database and "SELECT child FROM echo_delegations WHERE session=?;" and [child_session]))
+            if archive_list_text(delegated and 0) equals "found":
+                continue
         if count is greater than 0:
             set added to builder_append(builder and ",")
         set session to ptr_to_str(ep_sqlite3_column_text(statement and 0))
         set title to ptr_to_str(ep_sqlite3_column_text(statement and 1))
         set run to ptr_to_str(ep_sqlite3_column_text(statement and 2))
+        set revision to ptr_to_str(ep_sqlite3_column_text(statement and 3))
         set added to builder_append(builder and concat("{\"session\":" and provider_quote(session)))
         set added to builder_append(builder and concat(",\"title\":" and provider_quote(title)))
+        set added to builder_append(builder and concat(",\"revision\":" and provider_quote(revision)))
         set added to builder_append(builder and concat(",\"run\":" and concat(provider_quote(run) and "}")))
         set count to count + 1
     set closed to ep_sqlite3_finalize(statement)

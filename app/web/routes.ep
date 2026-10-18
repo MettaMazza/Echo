@@ -1,3 +1,10 @@
+import "../feedback"
+import "attachment_visibility"
+import "device_links"
+import "memory_sharing"
+import "attachment_lifecycle"
+import "projects"
+import "work_status"
 import "groups"
 import "../transport/isolated_process"
 import "../retained_text"
@@ -22,7 +29,10 @@ define web_config_provider with config as List returning Str:
 define web_reply with status as Str and body as Str returning List:
     set reply to create_list()
     set added to append_list(reply and status)
-    set added to append_list(reply and body)
+    set output to body
+    if string_length(status) > 0 and not (get_character(status and 0) equals 50):
+        set output to feedback_enrich(body and "Request" and status)
+    set added to append_list(reply and output)
     return reply
 
 define web_route with reader as List and request as List and port as Int and config as List returning List:
@@ -47,7 +57,7 @@ define web_route with reader as List and request as List and port as Int and con
         set payload to concat(payload and concat(",\"provider\":" and provider_status_read(web_config_provider(config))))
         set payload to concat(payload and ",\"local\":true,\"phase\":\"building\"}")
         return web_reply("200 OK" and payload)
-    if not (target equals "/api/group-state" or else target equals "/api/groups" or else target equals "/api/group-create" or else target equals "/api/group-change" or else target equals "/api/group-open" or else target equals "/api/group-submit" or else target equals "/api/identity" or else target equals "/api/speak" or else target equals "/api/providers" or else target equals "/api/session-revise" or else target equals "/api/session-branch" or else target equals "/api/session-rename" or else target equals "/api/session-create" or else target equals "/api/runs" or else target equals "/api/run" or else target equals "/api/compaction" or else target equals "/api/session" or else target equals "/api/sessions" or else target equals "/api/pair" or else target equals "/api/cancel" or else target equals "/api/progress" or else target equals "/api/trace" or else target equals "/api/retry" or else target equals "/api/export" or else target equals "/api/upload-prepare" or else target equals "/api/upload-status" or else target equals "/api/upload-body" or else target equals "/api/attachments" or else target equals "/api/attachment-download" or else target equals "/api/attachment-text"):
+    if not (target equals "/api/work" or else target equals "/api/attachment-visibility" or else target equals "/api/attachment-lifecycle" or else target equals "/api/projects" or else target equals "/api/memory-share" or else target equals "/api/device-link" or else target equals "/api/group-state" or else target equals "/api/groups" or else target equals "/api/group-create" or else target equals "/api/group-change" or else target equals "/api/group-open" or else target equals "/api/group-submit" or else target equals "/api/identity" or else target equals "/api/speak" or else target equals "/api/providers" or else target equals "/api/session-revise" or else target equals "/api/session-branch" or else target equals "/api/session-rename" or else target equals "/api/session-create" or else target equals "/api/runs" or else target equals "/api/run" or else target equals "/api/compaction" or else target equals "/api/session" or else target equals "/api/sessions" or else target equals "/api/pair" or else target equals "/api/steer" or else target equals "/api/cancel" or else target equals "/api/progress" or else target equals "/api/trace" or else target equals "/api/retry" or else target equals "/api/export" or else target equals "/api/upload-prepare" or else target equals "/api/upload-status" or else target equals "/api/upload-body" or else target equals "/api/attachments" or else target equals "/api/attachment-download" or else target equals "/api/attachment-text"):
         return web_reply("404 Not Found" and "{\"status\":\"not-found\"}")
     if not (method equals "POST"):
         return web_reply("405 Method Not Allowed" and "{\"status\":\"post-required\"}")
@@ -66,10 +76,12 @@ define web_route with reader as List and request as List and port as Int and con
     if not (target equals "/api/pair") and string_length(device) equals 0:
         set closed to sql_close(database)
         return web_reply("403 Forbidden" and "{\"status\":\"unauthorized\"}")
-    if read_only equals 1 and not (target equals "/api/group-state" or else target equals "/api/groups" or else target equals "/api/identity" or else target equals "/api/run" or else target equals "/api/compaction" or else target equals "/api/session" or else target equals "/api/sessions" or else target equals "/api/progress" or else target equals "/api/trace" or else target equals "/api/export" or else target equals "/api/upload-status" or else target equals "/api/attachments" or else target equals "/api/attachment-download" or else target equals "/api/attachment-text"):
+    if read_only equals 1 and not (target equals "/api/work" or else target equals "/api/group-state" or else target equals "/api/groups" or else target equals "/api/identity" or else target equals "/api/run" or else target equals "/api/compaction" or else target equals "/api/session" or else target equals "/api/sessions" or else target equals "/api/progress" or else target equals "/api/trace" or else target equals "/api/export" or else target equals "/api/upload-status" or else target equals "/api/attachments" or else target equals "/api/attachment-download" or else target equals "/api/attachment-text"):
         set closed to sql_close(database)
         return web_reply("409 Conflict" and "{\"status\":\"restored-archive-read-only\"}")
     if target equals "/api/upload-body":
+        set upload_header to web_header(get_list(request and 5) and "x-echo-upload")
+        set device to web_account_resource_device(database and device and "upload" and archive_list_text(upload_header and 1))
         set reply to web_receive_upload(database and device and reader and request and get_list(config and 4))
         set closed to sql_close(database)
         return reply
@@ -78,12 +90,85 @@ define web_route with reader as List and request as List and port as Int and con
         set closed to sql_close(database)
         return web_reply("400 Bad Request" and concat("{\"status\":" and concat(provider_quote(archive_list_text(parsed and 0)) and "}")))
     set tokens to get_list(parsed and 2)
+    # Account management and group routes retain the actual credential identity.
+    # Private conversation routes use the original owner only within its merged account.
+    if not (target equals "/api/work" or else target equals "/api/attachment-visibility" or else target equals "/api/attachment-lifecycle" or else target equals "/api/projects" or else target equals "/api/memory-share" or else target equals "/api/device-link" or else target equals "/api/pair" or else target equals "/api/identity" or else target equals "/api/sessions" or else target equals "/api/session-create" or else string_index_of(target and "/api/group") equals 0):
+        set authenticated_device to device
+        for each scope in ["session", "run", "event", "attachment", "upload", "source"]:
+            set field to provider_member(tokens and 0 and scope)
+            if provider_kind(tokens and field) equals "string":
+                set device to web_account_resource_device(database and authenticated_device and scope and provider_value(tokens and field))
+                break
     set read_snapshot to target equals "/api/session" or else target equals "/api/run" or else target equals "/api/trace" or else target equals "/api/progress" or else target equals "/api/group-state" or else target equals "/api/groups" or else target equals "/api/compaction"
     if read_snapshot and sql_execute(database and "BEGIN;") is not equal to 0:
         set closed to sql_close(database)
         return web_reply("503 Service Unavailable" and "{\"status\":\"archive-busy\"}")
     set reply to web_reply("400 Bad Request" and "{\"status\":\"invalid-request\"}")
-    if target equals "/api/identity":
+    if target equals "/api/work":
+        set result to web_work_page(database and device and tokens)
+        set fields to provider_json_tokens(result)
+        set status to provider_value(fields and provider_member(fields and 0 and "status"))
+        set code to "400 Bad Request"
+        if status equals "found":
+            set code to "200 OK"
+        else if status equals "not-authorized":
+            set code to "403 Forbidden"
+        else if status equals "database-error" or else status equals "error":
+            set code to "503 Service Unavailable"
+        set reply to web_reply(code and result)
+    else if target equals "/api/attachment-visibility":
+        set status to web_attachment_visibility(database and device and tokens)
+        set code to "409 Conflict"
+        if status equals "recorded" or else status equals "already-recorded":
+            set code to "200 OK"
+        else if status equals "not-authorized":
+            set code to "403 Forbidden"
+        set reply to web_reply(code and concat("{\"status\":" and concat(provider_quote(status) and "}")))
+    else if target equals "/api/attachment-lifecycle":
+        set status to web_attachment_lifecycle(database and device and tokens)
+        set code to "409 Conflict"
+        if status equals "recorded" or else status equals "already-recorded":
+            set code to "200 OK"
+        else if status equals "not-authorized":
+            set code to "403 Forbidden"
+        set reply to web_reply(code and concat("{\"status\":" and concat(provider_quote(status) and "}")))
+    else if target equals "/api/projects":
+        set result to web_project_request(database and device and archive_list_text(parsed and 1))
+        set fields to provider_json_tokens(result)
+        set status to provider_value(fields and provider_member(fields and 0 and "status"))
+        set code to "409 Conflict"
+        if status equals "found" or else status equals "recorded" or else status equals "already-recorded":
+            set code to "200 OK"
+        else if status equals "not-authorized":
+            set code to "403 Forbidden"
+        set reply to web_reply(code and result)
+    else if target equals "/api/memory-share":
+        set result to web_memory_share(database and device and tokens)
+        set fields to provider_json_tokens(result)
+        set status to provider_value(fields and provider_member(fields and 0 and "status"))
+        set code to "409 Conflict"
+        if status equals "review-required" or else status equals "recorded" or else status equals "already-recorded":
+            set code to "200 OK"
+        else if status equals "not-authorized":
+            set code to "403 Forbidden"
+        set reply to web_reply(code and result)
+    else if target equals "/api/device-link":
+        set action to provider_value(tokens and provider_member(tokens and 0 and "action"))
+        if action equals "create":
+            set secret to concat(agent_identity() and agent_identity())
+            if device_link_create(database and device and secret) equals 0:
+                set reply to web_reply("200 OK" and concat("{\"status\":\"created\",\"code\":" and concat(provider_quote(secret) and ",\"expires_seconds\":600}")))
+        else if action equals "merge":
+            set previous to web_device_authenticate(database and provider_value(tokens and provider_member(tokens and 0 and "previous_token")))
+            if string_length(previous) > 0 and device_link_merge(database and device and previous) equals 0:
+                set reply to web_reply("200 OK" and "{\"status\":\"merged\"}")
+        else if action equals "list":
+            set reply to web_reply("200 OK" and device_link_list(database and device))
+        else if action equals "revoke":
+            set identity to provider_value(tokens and provider_member(tokens and 0 and "identity"))
+            if device_link_revoke(database and device and identity) equals 0:
+                set reply to web_reply("200 OK" and "{\"status\":\"revoked\"}")
+    else if target equals "/api/identity":
         set reply to web_reply("200 OK" and web_device_identity(database and device))
     else if target equals "/api/speak":
         set field to provider_member(tokens and 0 and "event")
@@ -173,7 +258,13 @@ define web_route with reader as List and request as List and port as Int and con
                 set payload to concat("{\"status\":\"paired\",\"device\":" and provider_quote(identity))
                 set reply to web_reply("201 Created" and concat(payload and concat(",\"token\":" and concat(provider_quote(secret) and "}"))))
             else:
-                set reply to web_reply("403 Forbidden" and "{\"status\":\"unauthorized\"}")
+                set account to device_link_redeem_merge(database and credential and identity and provider_value(tokens and field) and secret and provider_value(tokens and provider_member(tokens and 0 and "previous_token")))
+                if string_length(account) > 0:
+                    set payload to concat("{\"status\":\"paired\",\"device\":" and provider_quote(account))
+                    set payload to concat(payload and concat(",\"browser\":" and provider_quote(identity)))
+                    set reply to web_reply("201 Created" and concat(payload and concat(",\"token\":" and concat(provider_quote(secret) and "}"))))
+                else:
+                    set reply to web_reply("403 Forbidden" and "{\"status\":\"unauthorized\"}")
     else if target equals "/api/trace":
         set field to provider_member(tokens and 0 and "run")
         set after to history_tool_integer(tokens and "after")
@@ -240,6 +331,14 @@ define web_route with reader as List and request as List and port as Int and con
             if archive_list_text(result and 0) equals "accepted":
                 set code to "200 OK"
             set reply to web_reply(code and web_submit_payload(result))
+    else if target equals "/api/steer":
+        set run_field to provider_member(tokens and 0 and "run")
+        set identity_field to provider_member(tokens and 0 and "identity")
+        set message_field to provider_member(tokens and 0 and "message")
+        if provider_kind(tokens and run_field) equals "string" and provider_kind(tokens and identity_field) equals "string" and provider_kind(tokens and message_field) equals "string":
+            set reply to web_reply("409 Conflict" and "{\"status\":\"guidance-not-accepted\"}")
+            if web_guidance_request(database and device and provider_value(tokens and run_field) and provider_value(tokens and identity_field) and provider_value(tokens and message_field)) equals 0:
+                set reply to web_reply("202 Accepted" and "{\"status\":\"guidance-received\"}")
     else if target equals "/api/cancel":
         set field to provider_member(tokens and 0 and "run")
         if provider_kind(tokens and field) equals "string":

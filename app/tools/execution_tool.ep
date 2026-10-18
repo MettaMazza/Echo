@@ -3,6 +3,33 @@ import "../retained_text"
 import "../workspace/execution_request"
 import "../workspace/execute_process"
 import "../workspace/directories"
+import "../workspace/ernos_runtime"
+
+# Resolve bare commands using the same trusted PATH passed to the child.
+# Explicit relative paths still mean workspace executables; sandbox authority
+# and filesystem isolation are unchanged.
+define execution_command_path returning Str:
+    return "/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin"
+
+define execution_program_resolve with workspace as Str and program as Str returning Str:
+    if string_length(program) equals 0:
+        return ""
+    if get_character(program and 0) equals 47:
+        return program
+    if workspace_path_parts(program) equals 0:
+        return ""
+    if string_contains(program and "/") equals 0:
+        set paths to string_split(execution_command_path() and ":")
+        set index to 0
+        repeat while index < length_list(paths):
+            set candidate to concat(archive_list_text(paths and index) and concat("/" and program))
+            if file_exists(candidate):
+                return candidate
+            set index to index + 1
+    set candidate to concat(workspace and concat("/" and program))
+    if file_exists(candidate):
+        return candidate
+    return ""
 
 # Separate connection observes revocation and cancellation while capture owns
 # the worker connection. Closing the private writer wakes blocked pipe reads.
@@ -10,6 +37,9 @@ define execution_authority_monitor with path as Str and run as Str and call_id a
     set database to archive_open(path)
     set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
     set status to 1
+    set authority_status to "monitor-initialisation-failed"
+    set authority_code to 0
+    set authority_diagnostic to ""
     if database is not equal to 0 and library is not equal to 0:
         set status to 0
         repeat while 1 equals 1:
@@ -19,10 +49,30 @@ define execution_authority_monitor with path as Str and run as Str and call_id a
                 break
             set authority to workspace_execution_request(database and run and call_id)
             if not (archive_list_text(authority and 0) equals "authorized"):
+                set authority_status to archive_list_text(authority and 0)
+                set authority_code to sqlite3_extended_errcode(database)
+                set sqlite_library to ep_dlopen("/usr/lib/libsqlite3.dylib")
+                if sqlite_library is not equal to 0:
+                    set error_function to ep_dlsym(sqlite_library and "sqlite3_errmsg")
+                    if error_function is not equal to 0:
+                        set authority_diagnostic to concat(ptr_to_str(ep_dlcall1(error_function and database)) and "")
+                    set closed to ep_dlclose(sqlite_library)
+                if authority_code modulo 256 equals 5 or else authority_code modulo 256 equals 6:
+                    set slept to sleep_ms(100)
+                    continue
                 set status to 1
                 break
             set slept to sleep_ms(100)
     if database is not equal to 0:
+        if status is not equal to 0:
+            set row to agent_run_read(database and run)
+            if row is not equal to 0:
+                set payload to concat("{\"run_id\":" and provider_quote(run))
+                set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+                set payload to concat(payload and concat(",\"authority_status\":" and provider_quote(authority_status)))
+                set payload to concat(payload and concat(",\"diagnostic\":" and provider_quote(authority_diagnostic)))
+                set payload to concat(payload and concat(",\"sqlite_code\":" and concat(int_to_string(authority_code) and "}")))
+                set recorded to archive_append(database and archive_list_text(row and 0) and concat("authority-monitor:" and agent_identity()) and "process_authority_end" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
         set closed to sql_close(database)
     if library is not equal to 0:
         set closed to ep_dlclose(library)
@@ -72,14 +122,32 @@ define execution_tool_execute_local with database as Int and run as Str and call
     set workspace to concat(root_path and concat("/" and archive_list_text(row and 1)))
     set program to archive_list_text(authority and 3)
     if program equals "ernos":
-        set program to concat(runtime and "/epc")
+        set compiler_runtime to ptr_to_str(get_env("ECHO_ERNOS_RUNTIME"))
+        if string_length(compiler_runtime) equals 0:
+            set compiler_runtime to runtime
+        set prepared to workspace_ernos_arguments(library and directory and get_list(authority and 4))
+        if prepared equals "ready":
+            set prepared to workspace_ernos_prepare(library and directory and compiler_runtime)
+        if not (prepared equals "ready"):
+            set closed to net_close(directory)
+            set closed to net_close(runtime_directory)
+            set closed to ep_dlclose(library)
+            return concat("{\"status\":" and concat(provider_quote(prepared) and concat(",\"stage\":\"compiler-preflight\",\"effects\":\"compiler-not-started\",\"recovery\":" and concat(provider_quote(workspace_ernos_recovery(prepared)) and "}"))))
+        set program to concat(compiler_runtime and "/epc")
+    else if program equals "__echo_database":
+        set program to concat(runtime and "/workspace_database")
     else if get_character(program and 0) is not equal to 47:
         if workspace_path_parts(program) equals 0:
             set closed to net_close(directory)
             set closed to net_close(runtime_directory)
             set closed to ep_dlclose(library)
             return "{\"status\":\"invalid-program\"}"
-        set program to concat(workspace and concat("/" and program))
+        set program to execution_program_resolve(workspace and program)
+        if string_length(program) equals 0:
+            set closed to net_close(directory)
+            set closed to net_close(runtime_directory)
+            set closed to ep_dlclose(library)
+            return "{\"status\":\"program-not-found\",\"effects\":\"none\",\"recovery\":\"Use an installed command on the execution PATH or an existing explicit workspace executable. No process was started.\"}"
     set temporary to workspace_directory_open(library and directory and ".echo-tmp" and 1)
     if temporary is less than 0:
         set closed to net_close(directory)
@@ -88,7 +156,7 @@ define execution_tool_execute_local with database as Int and run as Str and call
         return "{\"status\":\"temporary-directory-failed\"}"
     set closed to net_close(temporary)
     set environment to create_list()
-    set added to append_list(environment and "PATH=/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin")
+    set added to append_list(environment and concat("PATH=" and execution_command_path()))
     set added to append_list(environment and "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")
     set added to append_list(environment and concat("TMPDIR=" and concat(workspace and "/.echo-tmp")))
     set stop to socket_cancellation_create(library)
@@ -144,4 +212,4 @@ define execution_tool_execute_local with database as Int and run as Str and call
         set payload to concat(payload and concat(",\"stdout_event\":" and provider_quote(archive_list_text(sources and 1))))
         set payload to concat(payload and concat(",\"stderr_event\":" and provider_quote(archive_list_text(sources and 2))))
         set payload to concat(payload and concat(",\"exit_event\":" and provider_quote(archive_list_text(sources and 3))))
-    return concat(payload and ",\"output\":\"Use history_read on stdout_event or stderr_event. Each process_output event records bytes as hexadecimal data with offset, byte count and EOF. Do not search for plaintext output inside hex.\"}")
+    return concat(payload and ",\"output\":\"Read decoded stdout and stderr with workspace_output_next using this run_id and call_id. Capture status complete means the process ended; inspect wait_status and output before claiming success. Original process_output bytes remain archived.\"}")

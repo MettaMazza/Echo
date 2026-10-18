@@ -1,0 +1,72 @@
+import "directories"
+import "../providers/local_json"
+
+# Enumerate only an already scoped directory. Pages reflect observed directory
+# order, not an immutable snapshot; callers restart at zero after modifications.
+define workspace_list_directory with library as Int and root as Int and path as Str and offset as Int and entries as Int returning Str:
+    if root < 0 or else offset < 0 or else entries < 1:
+        return "{\"status\":\"invalid-arguments\"}"
+    set open_stream to ep_dlsym(library and "fdopendir")
+    set read_entry to ep_dlsym(library and "readdir")
+    set close_stream to ep_dlsym(library and "closedir")
+    set open_at to ep_dlsym(library and "openat")
+    set error_pointer to ep_dlsym(library and "__error")
+    set clear to ep_dlsym(library and "memset")
+    if open_stream equals 0 or else read_entry equals 0 or else close_stream equals 0 or else open_at equals 0 or else error_pointer equals 0 or else clear equals 0:
+        return "{\"status\":\"unavailable\"}"
+    set directory to -1
+    if path equals ".":
+        set directory to socket_signed_result(ep_dlcall3(open_at and root and str_to_ptr(".") and 17826048))
+    else:
+        set directory to workspace_directory_open(library and root and path and 0)
+    if directory < 0:
+        return "{\"status\":\"directory-unavailable\"}"
+    set stream to ep_dlcall1(open_stream and directory)
+    if stream equals 0:
+        set closed to net_close(directory)
+        return "{\"status\":\"directory-unavailable\"}"
+    set index to 0
+    set count to 0
+    set ended to "false"
+    set status to "found"
+    set items to "["
+    repeat while 1 equals 1:
+        set cleared to ep_dlcall3(clear and ep_dlcall0(error_pointer) and 0 and 4)
+        set entry to ep_dlcall1(read_entry and stream)
+        if entry equals 0:
+            if socket_errno(library) is not equal to 0:
+                set status to "read-failed"
+            else:
+                set ended to "true"
+            break
+        # Darwin arm64 (64-bit inode ABI) dirent: namlen at18, type at20, name at21.
+        set name to ptr_to_str(entry + 21)
+        if not (name equals "." or else name equals ".."):
+            if index >= offset:
+                if count equals entries:
+                    break
+                if provider_valid_utf8(name) equals 0:
+                    set status to "filename-not-utf8"
+                    break
+                if count > 0:
+                    set items to concat(items and ",")
+                set kind to "other"
+                set native_kind to peek_byte(entry and 20)
+                if native_kind equals 4:
+                    set kind to "directory"
+                else if native_kind equals 8:
+                    set kind to "file"
+                else if native_kind equals 10:
+                    set kind to "symlink"
+                set items to concat(items and concat("{\"name\":" and provider_quote(name)))
+                set items to concat(items and concat(",\"kind\":" and concat(provider_quote(kind) and "}")))
+                set count to count + 1
+            set index to index + 1
+    if ep_dlcall1(close_stream and stream) is not equal to 0:
+        set status to "close-failed"
+    if not (status equals "found"):
+        return concat("{\"status\":" and concat(provider_quote(status) and "}"))
+    set result to concat("{\"status\":\"found\",\"path\":" and provider_quote(path))
+    set result to concat(result and concat(",\"entries\":" and concat(items and "]")))
+    set result to concat(result and concat(",\"next_offset\":" and int_to_string(offset + count)))
+    return concat(result and concat(",\"end\":" and concat(ended and ",\"snapshot\":false}")))

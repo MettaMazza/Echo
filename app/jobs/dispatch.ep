@@ -1,0 +1,25 @@
+import "../web/worker"
+
+# Shared durable worker launch for admitted jobs. Admission owns session and
+# authority creation; this function never grants authority or replaces a live
+# worker. Only an explicitly recorded launch failure can be retried.
+define job_dispatch_admitted with database as Int and database_path as Str and run as Str and profile as Str and reserve as Int and batch as Int returning Str:
+    set values to [run]
+    set owner to history_collect_one(checkpoint_prepare(database and "SELECT a.device,r.state FROM echo_runs r JOIN echo_run_authority a ON a.run=r.run WHERE r.run=?1;" and values))
+    if not (archive_list_text(owner and 0) equals "found"):
+        return "database-error"
+    if not (archive_list_text(owner and 2) equals "ready"):
+        return archive_list_text(owner and 2)
+    set worker to agent_identity()
+    set claimed to web_worker_ensure_claim(database and archive_list_text(owner and 1) and run and worker)
+    if claimed equals 2:
+        set previous to history_collect_one(checkpoint_prepare(database and "SELECT worker,status FROM echo_web_workers WHERE run=?1;" and values))
+        if not (archive_list_text(previous and 0) equals "found" and (archive_list_text(previous and 2) equals "launch-failed" or else (archive_list_text(previous and 2) equals "completed" and archive_list_text(archive_read_event(database and archive_list_text(agent_run_read(database and run) and 3)) and 2) equals "delegation_results"))):
+            return "worker-already-recorded"
+        set claimed to web_worker_retry_claim(database and archive_list_text(owner and 1) and run and archive_list_text(previous and 1) and worker)
+    if claimed is not equal to 0:
+        return "worker-claim-deferred"
+    set launched to web_worker_dispatch(database and database_path and run and worker and profile and reserve and batch)
+    if launched < 0:
+        return "worker-launch-failed"
+    return "worker-started"

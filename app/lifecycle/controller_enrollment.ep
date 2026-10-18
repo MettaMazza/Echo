@@ -1,0 +1,120 @@
+import "controller_service"
+
+# Internal ledger operation; only the OS-authenticated host command exposes it.
+# Enrollment, role receipt and canonical archive receipt commit together. A
+# repeated request never restores a revoked credential or changes its role.
+define controller_enrollment_record with database as Int and action as Str and identity as Str and device as Str and name as Str and credential as Str and reason as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(device) equals 0 or else string_length(reason) equals 0 or else not (action equals "enroll" or else action equals "revoke"):
+        return "invalid-enrollment-request"
+    if action equals "enroll" and (string_length(name) equals 0 or else protected_digest_valid(credential) equals 0):
+        return "invalid-enrollment-credential"
+    set credential_hash to ""
+    if action equals "enroll":
+        set credential_hash to ep_sha256(credential)
+    set payload to "{"
+    set fields to [["action",action],["device",device],["name",name],["credential_hash",credential_hash],["reason",reason]]
+    set index to 0
+    for each field in fields:
+        if index > 0:
+            set payload to concat(payload and ",")
+        set key to provider_quote(archive_list_text(field and 0))
+        set value to provider_quote(archive_list_text(field and 1))
+        set payload to concat(payload and key)
+        set payload to concat(payload and ":")
+        set payload to concat(payload and value)
+        set index to index + 1
+    set payload to concat(payload and "}")
+    set event to concat("controller-enrollment:" and identity)
+    set principal to concat("device:" and device)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    if archive_verify(database and "controller-enrollment") is not equal to 0:
+        return migration_fail(database and "enrollment-history-invalid")
+    set values to create_list()
+    set added to append_list(values and event)
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and values))
+    if archive_list_text(prior and 0) equals "found":
+        if not (archive_list_text(prior and 1) equals "controller-enrollment") or else not (archive_list_text(prior and 2) equals "controller_enrollment") or else not (archive_list_text(prior and 3) equals payload):
+            return migration_fail(database and "enrollment-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "enrollment-commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(prior and 0) equals "end"):
+        return migration_fail(database and "enrollment-read-failed")
+    set values to create_list()
+    set added to append_list(values and device)
+    if action equals "enroll":
+        set added to append_list(values and name)
+        set added to append_list(values and credential_hash)
+        if web_device_write(database and "INSERT INTO echo_devices(device,name,credential_hash) VALUES(?,?,?);" and values) is not equal to 0:
+            return migration_fail(database and "enrollment-device-conflict")
+    else:
+        if not (principal_for_device(database and device) equals principal):
+            return migration_fail(database and "enrollment-device-unavailable")
+    set previous to principal_role(database and principal)
+    if string_length(previous) equals 0:
+        return migration_fail(database and "enrollment-principal-unavailable")
+    set role to "steward"
+    if action equals "revoke":
+        set role to "user"
+    set values to create_list()
+    for each value in [event,principal,previous,role,reason]:
+        set added to append_list(values and value)
+    if web_device_write(database and "INSERT INTO echo_authority_events(identity,principal,previous_role,role,actor,reason) VALUES(?,?,?,?,'host-local',?);" and values) is not equal to 0:
+        return migration_fail(database and "enrollment-authority-failed")
+    set values to create_list()
+    set added to append_list(values and role)
+    set added to append_list(values and principal)
+    if web_device_write(database and "UPDATE echo_principals SET role=? WHERE identity=? AND revoked=0;" and values) is not equal to 0:
+        return migration_fail(database and "enrollment-role-failed")
+    if action equals "revoke":
+        set values to create_list()
+        set added to append_list(values and device)
+        if web_device_write(database and "UPDATE echo_devices SET revoked=1 WHERE device=?;" and values) is not equal to 0:
+            return migration_fail(database and "enrollment-revocation-failed")
+    set occurred to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+    if archive_append_pending(database and "controller-enrollment" and event and "controller_enrollment" and payload and occurred) is not equal to 0:
+        return migration_fail(database and "enrollment-receipt-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "enrollment-commit-failed")
+    return "recorded"
+
+# The secret is supplied through an existing root-private file, never arguments
+# or output. No HTTP route, model tool or runtime database can grant enrollment.
+define controller_enrollment_host with configuration as Str and action as Str and identity as Str and device as Str and name as Str and credential_path as Str and reason as Str returning Str:
+    if not (action equals "enroll" or else action equals "revoke"):
+        return "invalid-enrollment-request"
+    set loaded to controller_configuration_load(configuration)
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return archive_list_text(loaded and 0)
+    set credential to ""
+    if action equals "enroll":
+        set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        set descriptor to protected_path_open(library and credential_path and 0)
+        if descriptor < 0:
+            set closed to ep_dlclose(library)
+            return "enrollment-credential-not-protected"
+        if controller_private_inode(library and descriptor and 0) equals 0:
+            set closed to net_close(descriptor)
+            set closed to ep_dlclose(library)
+            return "enrollment-credential-not-private"
+        set credential to file_read(credential_path)
+        set closed to net_close(descriptor)
+        set closed to ep_dlclose(library)
+    set directory to archive_list_text(loaded and 6)
+    set name_of_ledger to archive_list_text(loaded and 7)
+    set suffix to concat("/" and name_of_ledger)
+    set path to concat(directory and suffix)
+    if not file_exists(path):
+        return "controller-ledger-not-initialized"
+    set database to controller_ledger_open(directory and name_of_ledger)
+    if database equals 0:
+        return "controller-ledger-unavailable"
+    set content to archive_list_text(loaded and 1)
+    if controller_service_ready(database and ep_sha256(content)) equals 0:
+        set closed to sql_close(database)
+        return "controller-bootstrap-incomplete-or-changed"
+    set result to controller_enrollment_record(database and action and identity and device and name and credential and reason)
+    if sql_close(database) is not equal to 0:
+        return concat("controller-close-failed-after:" and result)
+    return result

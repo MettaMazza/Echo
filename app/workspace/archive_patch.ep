@@ -1,0 +1,158 @@
+import "files"
+import "../providers/local_json"
+import "../archive/file_digest"
+
+# Repack a ZIP while replacing explicitly named existing parts. Other entry
+# payloads stream as binary. The source remains untouched and is rehashed after
+# copying. Caller supplies source, expected SHA256, then name/text pairs.
+define workspace_archive_patch with system as Int and library as Int and writer as Int and root as Int and patch as List and buffer as Int returning Int:
+    if length_list(patch) < 4 or else length_list(patch) modulo 2 is not equal to 0:
+        return 1
+    set input to workspace_file_open(system and root and archive_list_text(patch and 0) and 0)
+    if input < 0:
+        return 1
+    set duplicate to socket_signed_result(ep_dlcall1(ep_dlsym(system and "dup") and input))
+    set digest to file_digest_owned_descriptor(ep_dlopen("/usr/lib/libSystem.B.dylib") and duplicate and 65536 and 0)
+    set status to 1
+    set reader to 0
+    if archive_list_text(digest and 0) equals "verified" and archive_list_text(digest and 1) equals archive_list_text(patch and 1) and ep_dlcall3(ep_dlsym(system and "lseek") and input and 0 and 0) equals 0:
+        set reader to ep_dlcall0(ep_dlsym(library and "archive_read_new"))
+    if reader is not equal to 0:
+        if ep_dlcall1(ep_dlsym(library and "archive_read_support_format_zip") and reader) equals 0 and ep_dlcall2(ep_dlsym(library and "archive_read_set_options") and reader and str_to_ptr("!mac-ext")) equals 0 and ep_dlcall3(ep_dlsym(library and "archive_read_open_fd") and reader and input and 65536) equals 0:
+            set status to 0
+        set pointer to [0]
+        set names to create_list()
+        set applied to 0
+        repeat while status equals 0:
+            set next to socket_signed_result(ep_dlcall2(ep_dlsym(library and "archive_read_next_header") and reader and get_list_data_ptr(pointer)))
+            if next equals 1:
+                break
+            if next is not equal to 0:
+                set status to 1
+                break
+            set entry to get_list(pointer and 0)
+            set name to workspace_zip_original_name(system and library and reader and input)
+            if string_length(name) equals 0:
+                set status to 1
+                break
+            for each prior in names:
+                if ptr_to_str(prior) equals name:
+                    set status to 1
+                    break
+            set added to append_list(names and name)
+            set kind to ep_dlcall1(ep_dlsym(library and "archive_entry_filetype") and entry)
+            if not (kind equals 32768 or else kind equals 16384) or else ep_dlcall1(ep_dlsym(library and "archive_entry_hardlink") and entry) is not equal to 0 or else ep_dlcall1(ep_dlsym(library and "archive_entry_symlink") and entry) is not equal to 0:
+                set status to 1
+            if status is not equal to 0:
+                break
+            set replacement to -1
+            set index to 2
+            repeat while index < length_list(patch):
+                if archive_list_text(patch and index) equals name:
+                    set replacement to index + 1
+                set index to index + 2
+            set clone to ep_dlcall1(ep_dlsym(library and "archive_entry_clone") and entry)
+            if clone equals 0:
+                set status to 1
+                break
+            set changed to ep_dlcall2(ep_dlsym(library and "archive_entry_set_pathname") and clone and str_to_ptr(name))
+            set bytes to ep_dlcall1(ep_dlsym(library and "archive_entry_size") and entry)
+            if replacement >= 0:
+                if kind is not equal to 32768:
+                    set status to 1
+                set bytes to string_length(archive_list_text(patch and replacement))
+                set changed to ep_dlcall2(ep_dlsym(library and "archive_entry_set_size") and clone and bytes)
+            if status equals 0:
+                set status to socket_signed_result(ep_dlcall2(ep_dlsym(library and "archive_write_header") and writer and clone))
+            set freed to ep_dlcall1(ep_dlsym(library and "archive_entry_free") and clone)
+            set total to 0
+            if status equals 0 and replacement >= 0:
+                set text to archive_list_text(patch and replacement)
+                repeat while total < bytes:
+                    set written to ep_dlcall3(ep_dlsym(library and "archive_write_data") and writer and str_to_ptr(text) + total and bytes - total)
+                    if written <= 0 or else written > bytes - total:
+                        set status to 1
+                        break
+                    set total to total + written
+                if socket_signed_result(ep_dlcall1(ep_dlsym(library and "archive_read_data_skip") and reader)) is not equal to 0:
+                    set status to 1
+                set applied to applied + 1
+            else:
+                repeat while status equals 0:
+                    set count to ep_dlcall3(ep_dlsym(library and "archive_read_data") and reader and buffer and 65536)
+                    if count equals 0:
+                        break
+                    if count < 0 or else count > 65536 or else total > bytes - count:
+                        set status to 1
+                        break
+                    set offset to 0
+                    repeat while offset < count:
+                        set written to ep_dlcall3(ep_dlsym(library and "archive_write_data") and writer and buffer + offset and count - offset)
+                        if written <= 0 or else written > count - offset:
+                            set status to 1
+                            break
+                        set offset to offset + written
+                    set total to total + count
+            if total is not equal to bytes:
+                set status to 1
+        if applied is not equal to (length_list(patch) - 2) / 2:
+            set status to 1
+        if ep_dlcall1(ep_dlsym(library and "archive_read_free") and reader) is not equal to 0:
+            set status to 1
+    if status equals 0:
+        if ep_dlcall3(ep_dlsym(system and "lseek") and input and 0 and 0) is not equal to 0:
+            set status to 1
+        else:
+            set duplicate to socket_signed_result(ep_dlcall1(ep_dlsym(system and "dup") and input))
+            set after to file_digest_owned_descriptor(ep_dlopen("/usr/lib/libSystem.B.dylib") and duplicate and 65536 and 0)
+            if not (archive_list_text(after and 0) equals "verified") or else not (archive_list_text(after and 1) equals archive_list_text(patch and 1)):
+                set status to 1
+    set closed to net_close(input)
+    return status
+
+# ZIP local-header names bypass macOS libarchive Unicode normalization. UTF-8
+# flag or ASCII names are lossless; legacy non-UTF-8 names fail explicitly.
+define workspace_zip_original_name with system as Int and library as Int and reader as Int and input as Int returning Str:
+    set end to ep_dlcall2(ep_dlsym(library and "archive_filter_bytes") and reader and 0)
+    if end < 30:
+        return ""
+    # Local header has 30 fixed bytes and two unsigned 16-bit lengths. Inspect
+    # only this format-defined preceding range; reject ambiguous candidates.
+    set size to end
+    if size > 131100:
+        set size to 131100
+    set buffer to ep_dlcall1(ep_dlsym(system and "malloc") and size + 1)
+    if buffer equals 0:
+        return ""
+    set name to ""
+    if ep_dlcall4(ep_dlsym(system and "pread") and input and buffer and size and end - size) equals size:
+        set selected to -1
+        set matches to 0
+        set index to 0
+        repeat while index <= size - 30:
+            if peek_byte(buffer and index) equals 80 and peek_byte(buffer and index + 1) equals 75 and peek_byte(buffer and index + 2) equals 3 and peek_byte(buffer and index + 3) equals 4:
+                set length to peek_byte(buffer and index + 26) + peek_byte(buffer and index + 27) * 256
+                set extra to peek_byte(buffer and index + 28) + peek_byte(buffer and index + 29) * 256
+                if length > 0 and index + 30 + length + extra equals size:
+                    set matches to matches + 1
+                    set selected to index
+            set index to index + 1
+        if matches equals 1:
+            set length to peek_byte(buffer and selected + 26) + peek_byte(buffer and selected + 27) * 256
+            set flags to peek_byte(buffer and selected + 6) + peek_byte(buffer and selected + 7) * 256
+            set start to buffer + selected + 30
+            set valid to 1
+            if ep_dlcall3(ep_dlsym(system and "memchr") and start and 0 and length) is not equal to 0:
+                set valid to 0
+            if (flags / 2048) modulo 2 equals 0:
+                set index to 0
+                repeat while index < length:
+                    if peek_byte(start and index) >= 128:
+                        set valid to 0
+                        break
+                    set index to index + 1
+            set cleared to ep_dlcall3(ep_dlsym(system and "memset") and start + length and 0 and 1)
+            if valid equals 1 and provider_valid_utf8(ptr_to_str(start)) equals 1:
+                set name to concat("" and ptr_to_str(start))
+    set freed to ep_dlcall1(ep_dlsym(system and "free") and buffer)
+    return name

@@ -1,0 +1,37 @@
+import "archive_recall"
+import "../web/run_store"
+
+# Host import primitive, not a model tool. The trusted run determines ownership.
+# Imported text remains an attributed account, never a live user message or prompt.
+define memory_source_import with database as Int and run as Str and event as Str and payload as Str returning Str:
+    set tokens to provider_json_tokens(payload)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{") or else string_length(event) equals 0:
+        return "invalid-source"
+    for each key in ["content","sha256","origin","revision","path","attribution"]:
+        set field to provider_member(tokens and 0 and key)
+        if not (provider_kind(tokens and field) equals "string"):
+            return "invalid-source"
+        if not (key equals "content") and string_length(provider_value(tokens and field)) equals 0:
+            return "invalid-source"
+    set content to provider_value(tokens and provider_member(tokens and 0 and "content"))
+    if not (ep_sha256(content) equals provider_value(tokens and provider_member(tokens and 0 and "sha256"))):
+        return "digest-mismatch"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        set cancelled_write to archive_rollback(database)
+        return "not-authorized"
+    set current to agent_run_read(database and run)
+    set session to archive_list_text(current and 0)
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT kind,payload,session FROM echo_events WHERE event=?;" and [event]))
+    if archive_list_text(existing and 0) equals "found":
+        if archive_list_text(existing and 1) equals "source_import" and archive_list_text(existing and 2) equals payload and archive_list_text(existing and 3) equals session:
+            set cancelled_write to archive_rollback(database)
+            return "already-recorded"
+        set cancelled_write to archive_rollback(database)
+        return "event-conflict"
+    if not (archive_list_text(existing and 0) equals "end") or else archive_append_pending(database and session and event and "source_import" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set cancelled_write to archive_rollback(database)
+        return "write-failed"
+    return "recorded"

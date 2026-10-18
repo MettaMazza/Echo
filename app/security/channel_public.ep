@@ -1,0 +1,124 @@
+import "group_route"
+
+# Public-channel observations are source data, never user instructions. Only the
+# authenticated host connector records platform permission decisions and events.
+define channel_public_scope with platform as Str and server as Str and room as Str returning Str:
+    if string_length(platform) equals 0 or else string_length(server) equals 0 or else string_length(room) equals 0:
+        return ""
+    set source to archive_hash_field(platform)
+    set source to concat(source and archive_hash_field(server))
+    set source to concat(source and archive_hash_field(room))
+    return concat("channel-public:" and ep_sha256(source))
+
+define channel_public_writer with database as Int and device as Str returning Int:
+    set expected to ptr_to_str(get_env("ECHO_SYSTEM_PRINCIPAL"))
+    return string_length(expected) > 0 and also principal_for_device(database and device) equals expected
+
+# Keep the original namespace alongside its deterministic storage identity.
+define channel_public_register with database as Int and connector as Str and platform as Str and server as Str and room as Str returning Str:
+    set scope to channel_public_scope(platform and server and room)
+    if string_length(scope) equals 0 or else channel_public_writer(database and connector) equals 0:
+        return ""
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return ""
+    if channel_public_writer(database and connector) equals 0:
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return ""
+    set payload to concat("{\"platform\":" and provider_quote(platform))
+    set payload to concat(payload and concat(",\"server\":" and provider_quote(server)))
+    set payload to concat(payload and concat(",\"channel\":" and concat(provider_quote(room) and "}")))
+    set event to concat(scope and ":namespace")
+    set existing to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=?1 AND session=?2 AND kind='channel_namespace';" and [event,scope]))
+    if archive_list_text(existing and 0) equals "found":
+        set rolled to sql_execute(database and "ROLLBACK;")
+        if archive_list_text(existing and 1) equals payload:
+            return scope
+        return ""
+    if not (archive_list_text(existing and 0) equals "end") or else archive_append_pending(database and scope and event and "channel_namespace" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return ""
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return ""
+    return scope
+
+define channel_public_registered with database as Int and scope as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE event=?1 AND session=?2 AND kind='channel_namespace';" and [concat(scope and ":namespace"),scope]))
+    return archive_list_text(row and 0) equals "found"
+
+# The connector supplies an original platform event identity, including edit
+# identity when applicable. Replaying identical data is safe; conflicts persist.
+define channel_public_observe with database as Int and connector as Str and scope as Str and source_event as Str and sender as Str and text as Str and occurred as Str returning Str:
+    if channel_public_writer(database and connector) equals 0:
+        return "connector-not-authorized"
+    if channel_public_registered(database and scope) equals 0 or else string_length(source_event) equals 0 or else string_length(sender) equals 0:
+        return "invalid-channel-source"
+    set identity to concat(scope and concat(":source:" and ep_sha256(source_event)))
+    set payload to concat("{\"source_event\":" and provider_quote(source_event))
+    set payload to concat(payload and concat(",\"sender\":" and provider_quote(sender)))
+    set payload to concat(payload and concat(",\"text\":" and concat(provider_quote(text) and "}")))
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    if channel_public_writer(database and connector) equals 0:
+        return migration_fail(database and "connector-not-authorized")
+    set old to archive_read_event(database and identity)
+    if old is not equal to 0:
+        if archive_list_text(old and 0) equals scope and archive_list_text(old and 2) equals "channel_observation" and archive_list_text(old and 3) equals payload and archive_list_text(old and 4) equals occurred:
+            set rolled to sql_execute(database and "ROLLBACK;")
+            return "already-recorded"
+        return migration_fail(database and "source-identity-conflict")
+    if archive_append_pending(database and scope and identity and "channel_observation" and payload and occurred) is not equal to 0:
+        return migration_fail(database and "archive-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+# Permission receipts are immutable. No-history viewers retain observations
+# received during continuous access; a revoked/rejoined viewer gets a new floor.
+define channel_public_access with database as Int and connector as Str and scope as Str and device as Str and operation as Str and view as Int and history as Int returning Str:
+    if channel_public_writer(database and connector) equals 0:
+        return "connector-not-authorized"
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0 or else string_length(operation) equals 0 or else channel_public_registered(database and scope) equals 0 or else not (view equals 0 or else view equals 1) or else not (history equals 0 or else history equals 1):
+        return "invalid-channel-access"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    if channel_public_writer(database and connector) equals 0 or else not (principal_for_device(database and device) equals principal):
+        return migration_fail(database and "connector-or-viewer-authority-changed")
+    set identity to concat(scope and concat(":access:" and ep_sha256(operation)))
+    set values to [scope,principal,identity,int_to_string(view),int_to_string(history)]
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN session=?1 AND kind='channel_access' AND json_extract(payload,'$.principal')=?2 AND json_extract(payload,'$.view')=CAST(?4 AS INTEGER) AND json_extract(payload,'$.history')=CAST(?5 AS INTEGER) THEN 'same' ELSE 'conflict' END FROM echo_events WHERE event=?3;" and values))
+    if archive_list_text(old and 0) equals "found":
+        set rolled to sql_execute(database and "ROLLBACK;")
+        if archive_list_text(old and 1) equals "same":
+            return "already-recorded"
+        return "access-identity-conflict"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "access-read-failed")
+    set previous to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.view'),json_extract(payload,'$.visible_after') FROM echo_events WHERE session=?1 AND kind='channel_access' AND json_extract(payload,'$.principal')=?2 ORDER BY sequence DESC LIMIT 1;" and [scope,principal]))
+    set boundary to history_boundary(database and scope)
+    if not (archive_list_text(boundary and 0) equals "found"):
+        return migration_fail(database and "boundary-read-failed")
+    set floor to archive_list_text(boundary and 1)
+    if archive_list_text(previous and 0) equals "error":
+        return migration_fail(database and "access-read-failed")
+    if archive_list_text(previous and 0) equals "found" and archive_list_text(previous and 1) equals "1" and view equals 1:
+        set floor to archive_list_text(previous and 2)
+    set payload to concat("{\"principal\":" and provider_quote(principal))
+    set payload to concat(payload and concat(",\"view\":" and int_to_string(view)))
+    set payload to concat(payload and concat(",\"history\":" and int_to_string(history)))
+    set payload to concat(payload and concat(",\"visible_after\":" and concat(floor and "}")))
+    if archive_append_pending(database and scope and identity and "channel_access" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return migration_fail(database and "access-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+# Current ACL and the next original observation are read in one statement.
+# A sequence cursor permits complete traversal without a last-N context limit.
+define channel_public_next with database as Int and device as Str and scope as Str and after as Int returning List:
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0 or else after < 0:
+        return history_status("not-authorized")
+    set values to [scope,principal,int_to_string(after),device]
+    return history_collect_one(checkpoint_prepare(database and "WITH access AS (SELECT payload FROM echo_events WHERE session=?1 AND kind='channel_access' AND json_extract(payload,'$.principal')=?2 ORDER BY sequence DESC LIMIT 1) SELECT e.sequence,e.event,json_extract(e.payload,'$.sender'),json_extract(e.payload,'$.text'),e.occurred,e.digest FROM echo_events e,access a WHERE e.session=?1 AND e.kind='channel_observation' AND e.sequence>CAST(?3 AS INTEGER) AND json_extract(a.payload,'$.view')=1 AND (json_extract(a.payload,'$.history')=1 OR e.sequence>json_extract(a.payload,'$.visible_after')) AND EXISTS(SELECT 1 FROM echo_principal_devices b JOIN echo_devices d ON d.device=b.device JOIN echo_principals p ON p.identity=b.principal WHERE b.device=?4 AND b.principal=?2 AND d.revoked=0 AND p.revoked=0) ORDER BY e.sequence LIMIT 1;" and values))

@@ -1,0 +1,119 @@
+import "public_url"
+import "../workspace/files"
+import "../providers/archived_stream"
+
+# libxml2's exported xmlFree is a function-pointer variable, not a function.
+define network_html_free with library as Int and pointer as Int returning Int:
+    if pointer equals 0:
+        return 0
+    return ep_dlcall1(research_native_word(ep_dlsym(library and "xmlFree")) and pointer)
+
+define network_html_string with library as Int and context as Int and expression as Str returning Str:
+    set object to ep_dlcall2(ep_dlsym(library and "xmlXPathEvalExpression") and str_to_ptr(expression) and context)
+    if object equals 0:
+        return ""
+    set pointer to ep_dlcall1(ep_dlsym(library and "xmlXPathCastToString") and object)
+    set text to ""
+    if pointer is not equal to 0:
+        set text to concat(ptr_to_str(pointer) and "")
+        set freed to network_html_free(library and pointer)
+    set freed to ep_dlcall1(ep_dlsym(library and "xmlXPathFreeObject") and object)
+    return text
+
+# Installed SDK xmlXPathObject.nodesetval offset8; xmlNodeSet has two int32s
+# then xmlNode** at8. These are native structure layouts, not content limits.
+define network_html_nodes with library as Int and context as Int and expression as Str returning List:
+    set object to ep_dlcall2(ep_dlsym(library and "xmlXPathEvalExpression") and str_to_ptr(expression) and context)
+    if object equals 0:
+        return 0
+    set set_pointer to research_native_word(object + 8)
+    set nodes to create_list()
+    if set_pointer is not equal to 0:
+        set count to 0
+        set multiplier to 1
+        set index to 0
+        repeat while index < 4:
+            set count to count + peek_byte(set_pointer and index) * multiplier
+            set multiplier to multiplier * 256
+            set index to index + 1
+        set pointers to research_native_word(set_pointer + 8)
+        set index to 0
+        repeat while index < count:
+            set added to append_list(nodes and research_native_word(pointers + index * 8))
+            set index to index + 1
+    set freed to ep_dlcall1(ep_dlsym(library and "xmlXPathFreeObject") and object)
+    return nodes
+
+# Parses an already retained regular source descriptor. No scripts, resources,
+# stylesheet fetching, DTD loading or entity-substitution option is enabled.
+# The complete original remains authoritative; this is a derived representation.
+define network_html_extract_encoded with descriptor as Int and base as Str and encoding as Str returning Str:
+    set library to ep_dlopen("/usr/lib/libxml2.2.dylib")
+    if library equals 0:
+        return "{\"status\":\"parser-unavailable\"}"
+    # RECOVER | NOERROR | NOWARNING | NONET. Library limits are left intact.
+    set encoding_pointer to 0
+    if string_length(encoding) > 0:
+        set encoding_pointer to str_to_ptr(encoding)
+    set document to ep_dlcall4(ep_dlsym(library and "htmlReadFd") and descriptor and str_to_ptr(base) and encoding_pointer and 2145)
+    if document equals 0:
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"parse-failed\"}"
+    set context to ep_dlcall1(ep_dlsym(library and "xmlXPathNewContext") and document)
+    if context equals 0:
+        set freed to ep_dlcall1(ep_dlsym(library and "xmlFreeDoc") and document)
+        set closed to ep_dlclose(library)
+        return "{\"status\":\"parser-unavailable\"}"
+    set title to network_html_string(library and context and "string((//title)[1])")
+    set declared_base to network_html_string(library and context and "string((//base[@href])[1]/@href)")
+    set link_base to base
+    if string_length(declared_base) > 0:
+        set parsed to network_url_parse(declared_base and base)
+        if archive_list_text(parsed and 0) equals "parsed":
+            set link_base to archive_list_text(parsed and 1)
+    set nodes to network_html_nodes(library and context and "//body//text()[not(ancestor::script) and not(ancestor::style) and not(ancestor::template)]")
+    set builder to create_builder()
+    for each node in nodes:
+        set pointer to ep_dlcall1(ep_dlsym(library and "xmlNodeGetContent") and node)
+        if pointer is not equal to 0:
+            set text to ptr_to_str(string_trim(ptr_to_str(pointer)))
+            if string_length(text) > 0:
+                set added to builder_append(builder and text)
+                set added to builder_append(builder and "\n")
+            set freed to network_html_free(library and pointer)
+    set content to ptr_to_str(builder_to_string(builder))
+    set nodes to network_html_nodes(library and context and "//a[@href]")
+    set links to "["
+    set ordinal to 0
+    for each node in nodes:
+        set changed to ep_dlcall2(ep_dlsym(library and "xmlXPathSetContextNode") and node and context)
+        set href to network_html_string(library and context and "string(@href)")
+        set label to network_html_string(library and context and "normalize-space(.)")
+        set classes to network_html_string(library and context and "string(@class)")
+        set parsed to network_url_parse(href and link_base)
+        set target to ""
+        if archive_list_text(parsed and 0) equals "parsed":
+            set target to archive_list_text(parsed and 1)
+        if ordinal > 0:
+            set links to concat(links and ",")
+        set links to concat(links and concat("{\"index\":" and int_to_string(ordinal)))
+        for each pair in [["text",label],["href",href],["url",target],["class",classes]]:
+            set links to concat(links and concat("," and concat(provider_quote(archive_list_text(pair and 0)) and concat(":" and provider_quote(archive_list_text(pair and 1))))))
+        set links to concat(links and "}")
+        set ordinal to ordinal + 1
+    set challenge to network_html_string(library and context and "boolean(//form[@id='challenge-form' or @id='img-form'] | //script[contains(@src,'anomaly')])")
+    set search_count to network_html_string(library and context and "count(//a[contains(concat(' ',normalize-space(@class),' '),' result__a ')])")
+    set no_results to network_html_string(library and context and "boolean(//*[contains(concat(' ',normalize-space(@class),' '),' no-results ')])")
+    set result to concat("{\"status\":\"extracted\",\"representation\":\"libxml2-static-html\",\"title\":" and provider_quote(title))
+    set result to concat(result and concat(",\"search_challenge\":" and provider_quote(challenge)))
+    set result to concat(result and concat(",\"search_result_count\":" and provider_quote(search_count)))
+    set result to concat(result and concat(",\"search_no_results\":" and provider_quote(no_results)))
+    set result to concat(result and concat(",\"text\":" and provider_quote(content)))
+    set result to concat(result and concat(",\"links\":" and concat(links and "]}")))
+    set freed to ep_dlcall1(ep_dlsym(library and "xmlXPathFreeContext") and context)
+    set freed to ep_dlcall1(ep_dlsym(library and "xmlFreeDoc") and document)
+    set closed to ep_dlclose(library)
+    return result
+
+define network_html_extract with descriptor as Int and base as Str returning Str:
+    return network_html_extract_encoded(descriptor and base and "")

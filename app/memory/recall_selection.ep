@@ -1,0 +1,152 @@
+import "recall_candidates"
+import "../providers/local_json"
+import "fs"
+
+# Derived local cache only: source ownership, visibility and correction filters
+# are applied afresh before either indexing or retrieving a passage.
+define memory_semantic_config returning List:
+    set path to ptr_to_str(get_env("ECHO_EMBEDDING_PROFILE"))
+    if string_length(path) equals 0 or else not file_exists(path):
+        return 0
+    return provider_json_tokens(ptr_to_str(read_file(path)))
+
+define memory_semantic_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_recall_indexed(model TEXT NOT NULL,quotation TEXT NOT NULL,PRIMARY KEY(model,quotation)); CREATE TABLE IF NOT EXISTS echo_recall_vectors(model TEXT NOT NULL,digest TEXT NOT NULL,text TEXT NOT NULL,vector TEXT NOT NULL CHECK(json_valid(vector)),PRIMARY KEY(model,digest)); CREATE TABLE IF NOT EXISTS echo_recall_passages(quotation TEXT NOT NULL,passage TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(quotation,passage));")
+
+define memory_semantic_vector with database as Int and config as List and text as Str returning Str:
+    set model to provider_value(config and provider_member(config and 0 and "model_sha256"))
+    set digest to ep_sha256(text)
+    set parameters to create_list()
+    set added to append_list(parameters and model)
+    set added to append_list(parameters and digest)
+    set cached to history_collect_one(checkpoint_prepare(database and "SELECT vector FROM echo_recall_vectors WHERE model=?1 AND digest=?2;" and parameters))
+    if archive_list_text(cached and 0) equals "found":
+        return archive_list_text(cached and 1)
+    set port to string_to_int(provider_index(config and provider_member(config and 0 and "port")))
+    set body to concat("{\"input\":" and concat(provider_quote(text) and ",\"encoding_format\":\"float\"}"))
+    set response to local_json_request(port and "POST" and "/v1/embeddings" and body and -1 and 65536)
+    if not (archive_list_text(response and 0) equals "ready") or else get_list(response and 1) is not equal to 200:
+        return ""
+    set parameters to create_list()
+    set added to append_list(parameters and archive_list_text(response and 2))
+    set vector to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(?1,'$.data[0].embedding') WHERE json_valid(?1) AND json_type(?1,'$.data[0].embedding')='array' AND json_array_length(?1,'$.data[0].embedding')>0 AND NOT EXISTS(SELECT 1 FROM json_each(json_extract(?1,'$.data[0].embedding')) WHERE type NOT IN ('real','integer'));" and parameters))
+    if not (archive_list_text(vector and 0) equals "found"):
+        return ""
+    set parameters to create_list()
+    set added to append_list(parameters and model)
+    set added to append_list(parameters and digest)
+    set added to append_list(parameters and text)
+    set added to append_list(parameters and archive_list_text(vector and 1))
+    set saved to history_collect_one(checkpoint_prepare(database and "INSERT INTO echo_recall_vectors(model,digest,text,vector) VALUES(?1,?2,?3,?4) ON CONFLICT(model,digest) DO NOTHING RETURNING digest;" and parameters))
+    if not (archive_list_text(saved and 0) equals "found" or else archive_list_text(saved and 0) equals "end"):
+        return ""
+    return archive_list_text(vector and 1)
+
+# Sentence/paragraph excerpts retain original wording. Segmentation is not a
+# length cap, and every nonempty passage is indexed; originals remain unchanged.
+define memory_semantic_passages with database as Int and quotation as Str returning Str:
+    set parameters to create_list()
+    set added to append_list(parameters and quotation)
+    set row to history_collect_one(checkpoint_prepare(database and "WITH RECURSIVE pieces(part,rest) AS (SELECT '',replace(replace(replace(?1,'. ','.'||char(10)),'? ','?'||char(10)),'! ','!'||char(10))||char(10) UNION ALL SELECT substr(rest,1,instr(rest,char(10))-1),substr(rest,instr(rest,char(10))+1) FROM pieces WHERE rest<>'') SELECT COALESCE(json_group_array(part),'[]') FROM (SELECT DISTINCT trim(part) AS part FROM pieces WHERE trim(part)<>'');" and parameters))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "[]"
+    return archive_list_text(row and 1)
+
+# All network/index work happens before the context snapshot's write transaction.
+define memory_semantic_prepare with database as Int and run as Str returning Int:
+    set config to memory_semantic_config()
+    if config equals 0:
+        return 1
+    if memory_semantic_schema(database) is not equal to 0:
+        return 1
+    set owner to agent_run_read(database and run)
+    set objective to archive_read_event(database and archive_list_text(owner and 1))
+    if objective equals 0:
+        return 1
+    set query to concat(provider_value(config and provider_member(config and 0 and "query_prefix")) and archive_list_text(objective and 3))
+    if string_length(memory_semantic_vector(database and config and query)) equals 0:
+        return 1
+    set claims to provider_json_tokens(memory_recall_claims(database and run))
+    set records to create_list()
+    set records to provider_items(claims and 0)
+    if records equals 0:
+        return 1
+    set failed to 0
+    set claim_index to 0
+    repeat while claim_index < length_list(records):
+        set claim to get_list(records and claim_index)
+        set claim_index to claim_index + 1
+        set quote to provider_value(claims and provider_member(claims and claim and "quotation"))
+        set model to provider_value(config and provider_member(config and 0 and "model_sha256"))
+        set indexed to history_collect_one(checkpoint_prepare(database and "SELECT quotation FROM echo_recall_indexed WHERE model=?1 AND quotation=?2;" and [model,quote]))
+        if archive_list_text(indexed and 0) equals "found":
+            continue
+        set quote_failed to 0
+        set pieces to provider_json_tokens(memory_semantic_passages(database and quote))
+        set passage_items to create_list()
+        set passage_items to provider_items(pieces and 0)
+        if passage_items equals 0:
+            return 1
+        set passage_index to 0
+        repeat while passage_index < length_list(passage_items):
+            set piece to get_list(passage_items and passage_index)
+            set passage_index to passage_index + 1
+            set passage to provider_value(pieces and piece)
+            set document to concat(provider_value(config and provider_member(config and 0 and "document_prefix")) and passage)
+            if string_length(memory_semantic_vector(database and config and document)) equals 0:
+                set failed to 1
+                set quote_failed to 1
+            else:
+                set parameters to create_list()
+                set added to append_list(parameters and quote)
+                set added to append_list(parameters and passage)
+                set added to append_list(parameters and ep_sha256(document))
+                set saved to history_collect_one(checkpoint_prepare(database and "INSERT INTO echo_recall_passages(quotation,passage,digest) VALUES(?1,?2,?3) ON CONFLICT(quotation,passage) DO NOTHING RETURNING digest;" and parameters))
+                if not (archive_list_text(saved and 0) equals "found" or else archive_list_text(saved and 0) equals "end"):
+                    set failed to 1
+                    set quote_failed to 1
+        if quote_failed equals 0:
+            set indexed to history_collect_one(checkpoint_prepare(database and "INSERT INTO echo_recall_indexed(model,quotation) VALUES(?1,?2) ON CONFLICT(model,quotation) DO NOTHING RETURNING quotation;" and [model,quote]))
+            if not (archive_list_text(indexed and 0) equals "found" or else archive_list_text(indexed and 0) equals "end"):
+                set failed to 1
+    return failed
+
+# Rank normalized vectors by cosine similarity. One strongest passage per
+# claim, then admit the high-relevance tail of this query's score distribution
+# (above the configured standard-deviation threshold). This is a relevance criterion, not
+# a fixed top-k/token cap. Equal scores do not bulk-admit the whole collection.
+define memory_semantic_select with database as Int and run as Str and claims as Str returning Str:
+    set config to memory_semantic_config()
+    set model to ""
+    set vector to "[]"
+    set relevance_sigma to "2"
+    if config is not equal to 0:
+        set configured_sigma to provider_index(config and provider_member(config and 0 and "relevance_standard_deviations"))
+        if string_length(configured_sigma) > 0:
+            set relevance_sigma to configured_sigma
+        set model to provider_value(config and provider_member(config and 0 and "model_sha256"))
+        set owner to agent_run_read(database and run)
+        set objective to archive_read_event(database and archive_list_text(owner and 1))
+        if objective is not equal to 0:
+            set query to concat(provider_value(config and provider_member(config and 0 and "query_prefix")) and archive_list_text(objective and 3))
+            set parameters to create_list()
+            set added to append_list(parameters and model)
+            set added to append_list(parameters and ep_sha256(query))
+            set cached to history_collect_one(checkpoint_prepare(database and "SELECT vector FROM echo_recall_vectors WHERE model=?1 AND digest=?2;" and parameters))
+            if archive_list_text(cached and 0) equals "found":
+                set vector to archive_list_text(cached and 1)
+    set parameters to create_list()
+    set added to append_list(parameters and claims)
+    set added to append_list(parameters and model)
+    set added to append_list(parameters and vector)
+    set added to append_list(parameters and relevance_sigma)
+    set row to history_collect_one(checkpoint_prepare(database and "WITH candidates AS MATERIALIZED (SELECT value AS item FROM json_each(?1)), q AS MATERIALIZED (SELECT key,CAST(value AS REAL) AS value FROM json_each(?3)), scored AS MATERIALIZED (SELECT c.item,p.passage,(SELECT SUM(CAST(d.value AS REAL)*q.value) FROM json_each(v.vector) d JOIN q ON q.key=d.key) AS score FROM candidates c JOIN echo_recall_passages p ON p.quotation=json_extract(c.item,'$.quotation') JOIN echo_recall_vectors v ON v.model=?2 AND v.digest=p.digest), ordered AS (SELECT *,row_number() OVER (PARTITION BY json_extract(item,'$.id') ORDER BY score DESC,passage) AS rank FROM scored), best AS MATERIALIZED (SELECT * FROM ordered WHERE rank=1), stats AS (SELECT COUNT(*) AS count,AVG(score) AS mean,AVG(score*score)-AVG(score)*AVG(score) AS variance FROM best), selected AS (SELECT item FROM candidates WHERE json_extract(item,'$.source_kind')='user' AND json_extract(item,'$.category') IN ('preference','correction','relationship') UNION SELECT json_set(item,'$.quotation',passage) FROM best,stats WHERE (count=1 OR (score>mean AND (score-mean)*(score-mean)>=MAX(variance,0)*MIN(CAST(?4 AS REAL)*CAST(?4 AS REAL),count-1))) AND NOT (json_extract(item,'$.source_kind')='user' AND json_extract(item,'$.category') IN ('preference','correction','relationship'))) SELECT COALESCE(json_group_array(json(item)),'[]') FROM (SELECT item FROM selected ORDER BY json_extract(item,'$.source_sequence'),json_extract(item,'$.id'));" and parameters))
+    if archive_list_text(row and 0) equals "found":
+        return archive_list_text(row and 1)
+    # Service/cache failure does not revert to injecting the full archive.
+    set parameters to create_list()
+    set added to append_list(parameters and claims)
+    set fallback to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_group_array(json(value)),'[]') FROM json_each(?1) WHERE json_extract(value,'$.source_kind')='user' AND json_extract(value,'$.category') IN ('preference','correction','relationship');" and parameters))
+    if archive_list_text(fallback and 0) equals "found":
+        return archive_list_text(fallback and 1)
+    return "[]"

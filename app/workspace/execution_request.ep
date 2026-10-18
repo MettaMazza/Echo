@@ -1,3 +1,6 @@
+import "git_arguments"
+import "database_arguments"
+import "build_arguments"
 import "../security/principals"
 import "../retained_text"
 import "sessions"
@@ -14,8 +17,6 @@ define workspace_execution_denied with status as Str returning List:
 # Result: status, session, device, program, argv list. This grants no launch on
 # its own: the dispatcher must pin the workspace and recheck owner at dispatch.
 define workspace_execution_request with database as Int and run as Str and call_id as Str returning List:
-    if tool_policy_allows(database and run and call_id and "workspace_execute") equals 0:
-        return workspace_execution_denied("authorization-changed")
     set restored to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_attachment_restore_receipt';"))
     if not (archive_list_text(restored and 0) equals "end"):
         return workspace_execution_denied("review-required")
@@ -32,36 +33,69 @@ define workspace_execution_request with database as Int and run as Str and call_
     set original_run to provider_member(tokens and 0 and "run_id")
     set original_call to provider_member(tokens and 0 and "call_id")
     set field to provider_member(tokens and 0 and "arguments")
-    if not (provider_kind(tokens and name) equals "string") or else not (provider_value(tokens and name) equals "workspace_execute") or else not (provider_kind(tokens and original_run) equals "string") or else not (provider_value(tokens and original_run) equals run) or else not (provider_kind(tokens and original_call) equals "string") or else not (provider_value(tokens and original_call) equals call_id) or else not (provider_kind(tokens and field) equals "string"):
+    if not (provider_kind(tokens and name) equals "string") or else not (provider_value(tokens and name) equals "workspace_database" or else provider_value(tokens and name) equals "workspace_build" or else provider_value(tokens and name) equals "workspace_execute" or else provider_value(tokens and name) equals "host_execute" or else provider_value(tokens and name) equals "host_git") or else not (provider_kind(tokens and original_run) equals "string") or else not (provider_value(tokens and original_run) equals run) or else not (provider_kind(tokens and original_call) equals "string") or else not (provider_value(tokens and original_call) equals call_id) or else not (provider_kind(tokens and field) equals "string"):
         return workspace_execution_denied("invalid-request")
+    if tool_policy_allows(database and run and call_id and provider_value(tokens and name)) equals 0:
+        # Capture SQLite's error before any later query can replace it. This
+        # distinguishes a failed authority lookup from a real revocation.
+        set code to sqlite3_extended_errcode(database)
+        if code is not equal to 0:
+            set library to ep_dlopen("/usr/lib/libsqlite3.dylib")
+            if library is not equal to 0:
+                set diagnostic to concat(ptr_to_str(ep_dlcall1(ep_dlsym(library and "sqlite3_errmsg") and database)) and "")
+                set payload to concat("{\"run_id\":" and provider_quote(run))
+                set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+                set payload to concat(payload and concat(",\"diagnostic\":" and provider_quote(diagnostic)))
+                set payload to concat(payload and concat(",\"sqlite_code\":" and concat(int_to_string(code) and "}")))
+                set recorded to archive_append(database and archive_list_text(row and 1) and concat("authority-query:" and agent_identity()) and "process_authority_query_failed" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+                set closed to ep_dlclose(library)
+        return workspace_execution_denied("authorization-changed")
     set arguments to provider_json_tokens(provider_value(tokens and field))
     if arguments equals 0 or else provider_unique_objects(arguments) equals 0 or else not (provider_kind(arguments and 0) equals "{"):
         return workspace_execution_denied("invalid-arguments")
-    set index to 1
-    repeat while not (provider_kind(arguments and index) equals "}"):
-        set key to provider_value(arguments and index)
-        if not (key equals "program" or else key equals "arguments"):
-            return workspace_execution_denied("invalid-arguments")
-        set index to provider_after(arguments and index + 2)
-        if provider_kind(arguments and index) equals ",":
-            set index to index + 1
-    set program_field to provider_member(arguments and 0 and "program")
-    set argv_field to provider_member(arguments and 0 and "arguments")
-    if not (provider_kind(arguments and program_field) equals "string") or else string_length(provider_value(arguments and program_field)) equals 0 or else not (provider_kind(arguments and argv_field) equals "["):
-        return workspace_execution_denied("invalid-arguments")
-    set items to provider_items(arguments and argv_field)
+    set program to "ernos"
     set argv to create_list()
-    set index to 0
-    repeat while index is less than length_list(items):
-        set item to get_list(items and index)
-        if not (provider_kind(arguments and item) equals "string"):
+    if provider_value(tokens and name) equals "host_git":
+        set program to "/usr/bin/git"
+        set argv to host_git_arguments(arguments)
+        if argv equals 0:
             return workspace_execution_denied("invalid-arguments")
-        set added to append_list(argv and provider_value(arguments and item))
-        set index to index + 1
+    else if provider_value(tokens and name) equals "workspace_database":
+        set program to "__echo_database"
+        set argv to workspace_database_arguments(arguments)
+        if argv equals 0:
+            return workspace_execution_denied("invalid-arguments")
+    else if provider_value(tokens and name) equals "workspace_build":
+        set argv to workspace_build_arguments(arguments)
+        if argv equals 0:
+            return workspace_execution_denied("invalid-arguments")
+    else:
+        set index to 1
+        repeat while not (provider_kind(arguments and index) equals "}"):
+            set key to provider_value(arguments and index)
+            if not (key equals "program" or else key equals "arguments"):
+                return workspace_execution_denied("invalid-arguments")
+            set index to provider_after(arguments and index + 2)
+            if provider_kind(arguments and index) equals ",":
+                set index to index + 1
+        set program_field to provider_member(arguments and 0 and "program")
+        set argv_field to provider_member(arguments and 0 and "arguments")
+        if not (provider_kind(arguments and program_field) equals "string") or else string_length(provider_value(arguments and program_field)) equals 0 or else not (provider_kind(arguments and argv_field) equals "["):
+            return workspace_execution_denied("invalid-arguments")
+        set items to provider_items(arguments and argv_field)
+        set index to 0
+        repeat while index is less than length_list(items):
+            set item to get_list(items and index)
+            if not (provider_kind(arguments and item) equals "string"):
+                return workspace_execution_denied("invalid-arguments")
+            set added to append_list(argv and provider_value(arguments and item))
+            set index to index + 1
+        set program to provider_value(arguments and program_field)
     set result to create_list()
     set added to append_list(result and "authorized")
     set added to append_list(result and get_list(row and 1))
     set added to append_list(result and get_list(row and 2))
-    set added to append_list(result and provider_value(arguments and program_field))
+    set added to append_list(result and program)
     set added to append_list(result and argv)
+    set added to append_list(result and provider_value(tokens and name))
     return result

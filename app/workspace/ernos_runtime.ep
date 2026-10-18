@@ -1,0 +1,93 @@
+import "files"
+
+# The compiler resolves bare standard-library imports from its working
+# directory. Install only a link to the host-selected runtime; never replace
+# a user's file/directory or accept a link to some other location.
+define workspace_ernos_prepare with library as Int and directory as Int and runtime as Str returning Str:
+    set target to concat(runtime and "/stdlib")
+    set compiler_directory to workspace_root_open(library and runtime)
+    if compiler_directory < 0:
+        return "ernos-runtime-unavailable"
+    set compiler to workspace_file_open(library and compiler_directory and "epc" and 0)
+    set modules to workspace_root_open(library and target)
+    set closed to net_close(compiler_directory)
+    if compiler < 0 or else modules < 0:
+        if compiler >= 0:
+            set closed to net_close(compiler)
+        if modules >= 0:
+            set closed to net_close(modules)
+        return "ernos-runtime-incomplete"
+    set expected to ptr_to_str(get_env("ECHO_ERNOS_COMPILER_SHA256"))
+    set observed to file_digest_owned_descriptor(ep_dlopen("/usr/lib/libSystem.B.dylib") and compiler and 65536 and 0)
+    set closed to net_close(modules)
+    if string_length(expected) is not equal to 64 or else not (archive_list_text(observed and 0) equals "verified") or else not (archive_list_text(observed and 1) equals expected):
+        return "ernos-compiler-digest-mismatch"
+    set link to ep_dlsym(library and "symlinkat")
+    set inspect to ep_dlsym(library and "readlinkat")
+    set allocate to ep_dlsym(library and "malloc")
+    set release to ep_dlsym(library and "free")
+    if link equals 0 or else inspect equals 0 or else allocate equals 0 or else release equals 0:
+        return "ernos-link-unavailable"
+    set made to socket_signed_result(ep_dlcall3(link and str_to_ptr(target) and directory and str_to_ptr("stdlib")))
+    if made is not equal to 0 and socket_errno(library) is not equal to 17:
+        return "ernos-link-failed"
+    set size to string_length(target)
+    set buffer to ep_dlcall1(allocate and size + 1)
+    if buffer equals 0:
+        return "allocation-failed"
+    set count to socket_signed_result(ep_dlcall4(inspect and directory and str_to_ptr("stdlib") and buffer and size + 1))
+    set matches to count equals size
+    set index to 0
+    repeat while matches and index < size:
+        if peek_byte(buffer and index) is not equal to get_character(target and index):
+            set matches to 0
+        set index to index + 1
+    set freed to ep_dlcall1(release and buffer)
+    if matches equals 0:
+        return "ernos-stdlib-conflict"
+    if ep_dlcall1(ep_dlsym(library and "fsync") and directory) is not equal to 0:
+        return "ernos-link-sync-failed"
+    return "ready"
+
+# The pinned compiler internally constructs its linker command from the input
+# basename. Restrict that name before using the compiler-only path-resolution
+# profile. Arbitrary workspace commands never receive that profile.
+define workspace_ernos_arguments with library as Int and directory as Int and arguments as List returning Str:
+    set count to length_list(arguments)
+    if count is not equal to 1 and count is not equal to 2:
+        return "ernos-invalid-arguments"
+    set source to archive_list_text(arguments and count - 1)
+    if count equals 2 and not (archive_list_text(arguments and 0) equals "check" or else archive_list_text(arguments and 0) equals "test"):
+        return "ernos-invalid-arguments"
+    set parts to workspace_path_parts(source)
+    if parts equals 0:
+        return "ernos-invalid-source"
+    set name to archive_list_text(parts and length_list(parts) - 1)
+    set size to string_length(name)
+    if size < 4 or else not (substring(name and size - 3 and 3) equals ".ep"):
+        return "ernos-source-must-be-ep"
+    set index to 0
+    repeat while index < size - 3:
+        set code to get_character(name and index)
+        if not ((code >= 65 and code <= 90) or else (code >= 97 and code <= 122) or else (code >= 48 and code <= 57) or else code equals 95):
+            return "ernos-source-name-requires-letters-digits-underscore"
+        set index to index + 1
+    set input to workspace_file_open(library and directory and source and 0)
+    if input < 0:
+        return "ernos-source-unavailable"
+    set closed to net_close(input)
+    return "ready"
+
+# Recovery is tied to the observed preflight failure, not a fabricated success.
+define workspace_ernos_recovery with status as Str returning Str:
+    if status equals "ernos-invalid-arguments" or else status equals "ernos-invalid-source" or else status equals "ernos-source-must-be-ep" or else status equals "ernos-source-name-requires-letters-digits-underscore":
+        return "Use workspace_build with an existing relative .ep path and mode compile, check or test-harness. Source basenames allow letters, digits and underscores. The ernos alias accepts source.ep or check/test followed by source.ep; --help is not supported. Correct the arguments before retrying."
+    if status equals "ernos-source-unavailable":
+        return "List or read the workspace to verify the exact source path. Create the requested Ernos .ep source if missing, then use workspace_build. No compiler process was started."
+    if status equals "ernos-stdlib-conflict":
+        return "An existing workspace stdlib entry conflicts with the configured library. Preserve that entry and inspect it; use a clean workspace or explicitly resolve the conflict before retrying. Do not overwrite user files."
+    if status equals "ernos-compiler-digest-mismatch":
+        return "The installed compiler does not match its configured digest. Host maintenance must verify or restore the pinned compiler and configuration. Do not bypass the integrity check or substitute another language."
+    if status equals "ernos-runtime-unavailable" or else status equals "ernos-runtime-incomplete":
+        return "Host maintenance must verify the configured Ernos runtime contains readable epc and stdlib paths. The compiler did not run; do not claim a source error or a language limitation."
+    return "Compiler preparation failed before execution. Inspect the reported status and runtime or filesystem diagnostics, resolve that cause, then retry the same supported build request. No successful compilation is established."

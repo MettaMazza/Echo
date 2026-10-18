@@ -1,0 +1,116 @@
+import "delegation_return"
+import "../archive/attachment_restore"
+import "schedule_run"
+import "dispatch"
+import "../transport/diagnostics"
+import "select"
+
+# Status changes are durable; identical polling observations do not flood history.
+define schedule_dispatch_status with database as Int and session as Str and identity as Str and status as Str returning Int:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set values to [session,identity]
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.status') FROM echo_events WHERE session=?1 AND kind='schedule_dispatch_status' AND json_extract(payload,'$.identity')=?2 ORDER BY sequence DESC LIMIT 1;" and values))
+    if archive_list_text(prior and 0) equals "error":
+        return archive_rollback(database)
+    if not (archive_list_text(prior and 0) equals "found" and archive_list_text(prior and 1) equals status):
+        set payload to concat("{\"identity\":" and concat(provider_quote(identity) and concat(",\"status\":" and concat(provider_quote(status) and "}"))))
+        if archive_append_pending(database and session and concat("schedule-status:" and agent_identity()) and "schedule_dispatch_status" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+define schedule_dispatch_occurrence with database as Int and database_path as Str and occurrence as Str and profile as Str and reserve as Int and batch as Int returning Str:
+    set admitted to schedule_materialize(database and occurrence)
+    if not (admitted equals "materialized" or else admitted equals "already-materialized"):
+        return admitted
+    return job_dispatch_admitted(database and database_path and occurrence and profile and reserve and batch)
+
+# One pass over a snapshot. New schedules wait for the next pass. Each schedule
+# retains at most one outstanding occurrence before reserving another interval;
+# catch-up preserves every due time without flooding the inference queue.
+define schedule_tick with database as Int and database_path as Str and profile as Str and reserve as Int and batch as Int and now as Int returning Int:
+    if attachment_restore_start_allowed(database) equals 0 or else node_admission_allows(database) equals 0:
+        return 1
+    set values to [int_to_string(now)]
+    set due to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_group_array(identity),'[]') FROM (SELECT s.identity FROM echo_schedules s JOIN echo_schedule_state c ON c.identity=s.identity WHERE c.status='enabled' AND c.next_due<=CAST(?1 AS INTEGER) AND NOT EXISTS(SELECT 1 FROM echo_schedule_occurrences o LEFT JOIN echo_runs r ON r.run=o.identity WHERE o.schedule=s.identity AND (r.run IS NULL OR r.state NOT IN ('completed','cancelled','failed') OR EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state<>'observed'))) ORDER BY c.next_due,s.rowid);" and values))
+    if not (archive_list_text(due and 0) equals "found"):
+        return 1
+    set tokens to provider_json_tokens(archive_list_text(due and 1))
+    set items to provider_items(tokens and 0)
+    for each item in items:
+        set identity to provider_value(tokens and item)
+        set result to schedule_take_due(database and identity and now)
+        set lookup to [identity]
+        set session to history_collect_one(checkpoint_prepare(database and "SELECT r.session FROM echo_schedules s JOIN echo_runs r ON r.run=s.origin_run WHERE s.identity=?1;" and lookup))
+        if not (archive_list_text(session and 0) equals "found") or else schedule_dispatch_status(database and archive_list_text(session and 1) and identity and result) is not equal to 0:
+            return 1
+    set pending to history_collect_one(archive_prepare(database and "SELECT COALESCE(json_group_array(identity),'[]') FROM (SELECT o.identity FROM echo_schedule_occurrences o LEFT JOIN echo_runs r ON r.run=o.identity WHERE r.run IS NULL OR (r.state='ready' AND (NOT EXISTS(SELECT 1 FROM echo_web_workers w WHERE w.run=r.run) OR EXISTS(SELECT 1 FROM echo_web_workers w WHERE w.run=r.run AND w.status='launch-failed'))) ORDER BY o.rowid);"))
+    if not (archive_list_text(pending and 0) equals "found"):
+        return 1
+    set tokens to provider_json_tokens(archive_list_text(pending and 1))
+    set items to provider_items(tokens and 0)
+    for each item in items:
+        set occurrence to provider_value(tokens and item)
+        set result to schedule_dispatch_occurrence(database and database_path and occurrence and profile and reserve and batch)
+        set lookup to [occurrence]
+        set session to history_collect_one(checkpoint_prepare(database and "SELECT r.session FROM echo_schedule_occurrences o JOIN echo_schedules s ON s.identity=o.schedule JOIN echo_runs r ON r.run=s.origin_run WHERE o.identity=?1;" and lookup))
+        if not (archive_list_text(session and 0) equals "found") or else schedule_dispatch_status(database and archive_list_text(session and 1) and occurrence and result) is not equal to 0:
+            return 1
+    set delegation to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_delegations';"))
+    if archive_list_text(delegation and 0) equals "found":
+        set parents to history_collect_one(archive_prepare(database and "SELECT COALESCE(json_group_array(run),'[]') FROM (SELECT DISTINCT p.run FROM echo_delegations d JOIN echo_runs p ON p.run=d.parent LEFT JOIN echo_web_workers w ON w.run=p.run WHERE p.state='completed' OR (p.state='ready' AND w.status='completed'));"))
+        set parent_tokens to provider_json_tokens(archive_list_text(parents and 1))
+        if parent_tokens is not equal to 0:
+            for each item in provider_items(parent_tokens and 0):
+                set parent_run to provider_value(parent_tokens and item)
+                set collected to delegation_collect(database and parent_run)
+                if collected equals "collected" or else collected equals "none":
+                    set dispatched to job_dispatch_admitted(database and database_path and parent_run and profile and reserve and batch)
+        set pending to history_collect_one(archive_prepare(database and "SELECT COALESCE(json_group_array(child),'[]') FROM (SELECT d.child FROM echo_delegations d JOIN echo_runs r ON r.run=d.child WHERE r.state='ready' AND (NOT EXISTS(SELECT 1 FROM echo_web_workers w WHERE w.run=r.run) OR EXISTS(SELECT 1 FROM echo_web_workers w WHERE w.run=r.run AND w.status='launch-failed')) ORDER BY d.rowid);"))
+        if not (archive_list_text(pending and 0) equals "found"):
+            return 1
+        set tokens to provider_json_tokens(archive_list_text(pending and 1))
+        set items to provider_items(tokens and 0)
+        for each item in items:
+            set child to provider_value(tokens and item)
+            set result to job_dispatch_admitted(database and database_path and child and profile and reserve and batch)
+            set lookup to [child]
+            set parent to history_collect_one(checkpoint_prepare(database and "SELECT r.session FROM echo_delegations d JOIN echo_runs r ON r.run=d.parent WHERE d.child=?1;" and lookup))
+            if not (archive_list_text(parent and 0) equals "found") or else schedule_dispatch_status(database and archive_list_text(parent and 1) and child and result) is not equal to 0:
+                return 1
+    else if not (archive_list_text(delegation and 0) equals "end"):
+        return 1
+    return 0
+
+# Dedicated process: no model runs or mutable UI state share this heap.
+# It exits when its launching server exits; the server reaps/restarts it.
+define schedule_service with database_path as Str and profile as Str and reserve as Int and batch as Int and parent as Int returning Int:
+    set database to archive_open(database_path)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if database equals 0 or else library equals 0:
+        return 1
+    set owner to compaction_lock_acquire(database and "schedule-service" and library)
+    if owner < 0:
+        set closed to sql_close(database)
+        set closed to ep_dlclose(library)
+        return 1
+    set parent_function to ep_dlsym(library and "getppid")
+    if parent <= 1:
+        set closed to net_close(owner)
+        set closed to sql_close(database)
+        set closed to ep_dlclose(library)
+        return 1
+    set idle to channel
+    set waits to [idle]
+    repeat while ep_dlcall0(parent_function) equals parent:
+        set result to schedule_tick(database and database_path and profile and reserve and batch and ep_time_now_ms())
+        if result is not equal to 0:
+            set recorded to echo_diagnostic("schedule-tick-deferred" and "archive-or-authority" and result)
+        set reaped to echo_reap_requests()
+        # Polling cadence, not a turn, token, context or number-of-jobs limit.
+        set waited to select(waits and 1000)
+    set closed to net_close(owner)
+    set closed to sql_close(database)
+    return ep_dlclose(library)

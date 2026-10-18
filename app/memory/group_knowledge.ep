@@ -1,0 +1,160 @@
+import "../archive/attachment_visibility"
+import "../projects/scope"
+import "../context/runtime_binding"
+import "../security/group_history"
+import "../tools/history_tools"
+
+# Group assertions belong to an immutable audience, not to the speaker's
+# private principal. Membership and source-history authority remain live checks.
+define group_memory_scope with database as Int and run as Str returning Str:
+    set scope to project_scope(database and run)
+    if string_length(scope) < 9 or else not (substring(scope and 0 and 9) equals "audience:"):
+        return ""
+    return scope
+
+define group_memory_abort with database as Int and status as Str returning Str:
+    set cancelled_write to archive_rollback(database)
+    return status
+
+define group_memory_source_allowed with database as Int and run as Str and event as Str and digest as Str returning Int:
+    if string_length(group_memory_scope(database and run)) equals 0:
+        return 0
+    set source to archive_read_event(database and event)
+    if source equals 0 or else not (archive_list_text(source and 6) equals digest):
+        return 0
+    set session to archive_list_text(source and 0)
+    if group_run_session_allows(database and run and session) equals 0 or else group_history_allows(database and session) equals 0:
+        return 0
+    return 1
+
+define group_memory_lookup with database as Int and run as Str and identity as Str returning List:
+    set scope to group_memory_scope(database and run)
+    if string_length(scope) equals 0:
+        return history_status("not-authorized")
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT event,payload,sequence,occurred FROM echo_events WHERE event=?1 AND kind='group_memory_claim' AND json_extract(payload,'$.scope')=?2;" and [identity,scope]))
+    if archive_list_text(row and 0) equals "found":
+        set fields to provider_json_tokens(archive_list_text(row and 2))
+        if group_memory_source_allowed(database and run and provider_value(fields and provider_member(fields and 0 and "source_event")) and provider_value(fields and provider_member(fields and 0 and "source_digest"))) equals 0:
+            return history_status("not-authorized")
+    if not (group_memory_scope(database and run) equals scope):
+        return history_status("authorization-changed")
+    return row
+
+# Exact source links and deterministic identities make retry/deduplication
+# independent of tool-call IDs. A correction appends; it cannot overwrite history.
+define group_memory_record with database as Int and run as Str and kind as Str and subject as Str and predicate as Str and object as Str and evidence as Str and source_event as Str and source_digest as Str and event_time as Str and valid_until as Str and supersedes as Str returning Str:
+    if not (kind equals "semantic" or else kind equals "episodic") or else string_length(subject) equals 0 or else string_length(predicate) equals 0 or else string_length(object) equals 0 or else not (evidence equals "source-account" or else evidence equals "inference" or else evidence equals "tool-observation"):
+        return "invalid-arguments"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set scope to group_memory_scope(database and run)
+    if string_length(scope) equals 0 or else group_memory_source_allowed(database and run and source_event and source_digest) equals 0:
+        return group_memory_abort(database and "not-authorized")
+    set source to archive_read_event(database and source_event)
+    set source_kind to memory_source_evidence_kind(archive_list_text(source and 2) and archive_list_text(source and 3))
+    if evidence equals "tool-observation":
+        if not (source_kind equals "tool_result" or else source_kind equals "process_output"):
+            return group_memory_abort(database and "evidence-kind-mismatch")
+    else if not (source_kind equals "source_import" or else source_kind equals "user" or else source_kind equals "assistant_final" or else source_kind equals "tool_result" or else source_kind equals "process_output"):
+        return group_memory_abort(database and "evidence-kind-mismatch")
+    if source_kind equals "assistant_final" and not (evidence equals "inference"):
+        return group_memory_abort(database and "evidence-kind-mismatch")
+    set dates to history_collect_one(checkpoint_prepare(database and "SELECT 'valid' WHERE (?1='' OR (substr(?1,5,1)='-' AND substr(?1,8,1)='-' AND date(substr(?1,1,10),'+0 days')=substr(?1,1,10) AND datetime(?1) IS NOT NULL)) AND (?2='' OR (substr(?2,5,1)='-' AND substr(?2,8,1)='-' AND date(substr(?2,1,10),'+0 days')=substr(?2,1,10) AND datetime(?2) IS NOT NULL)) AND (?1='' OR ?2='' OR julianday(?2)>=julianday(?1));" and [event_time,valid_until]))
+    if not (archive_list_text(dates and 0) equals "found"):
+        return group_memory_abort(database and "invalid-date-range")
+    set values to [scope,kind,subject,predicate,object,evidence,source_event,source_digest,event_time,valid_until,supersedes]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_object('scope',?1,'kind',?2,'subject',?3,'predicate',?4,'object',?5,'evidence',?6,'source_event',?7,'source_digest',?8,'event_time',?9,'valid_until',?10,'supersedes',?11);" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return group_memory_abort(database and "database-error")
+    set canonical to archive_list_text(row and 1)
+    set identity to concat("group-memory:" and ep_sha256(canonical))
+    set existing to group_memory_lookup(database and run and identity)
+    if archive_list_text(existing and 0) equals "found":
+        if not (archive_list_text(existing and 2) equals canonical):
+            return group_memory_abort(database and "identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return group_memory_abort(database and "commit-failed")
+        return concat("already-recorded:" and identity)
+    if not (archive_list_text(existing and 0) equals "end"):
+        return group_memory_abort(database and archive_list_text(existing and 0))
+    if string_length(supersedes) > 0:
+        set prior to group_memory_lookup(database and run and supersedes)
+        if not (archive_list_text(prior and 0) equals "found"):
+            return group_memory_abort(database and "correction-conflict")
+        set fields to provider_json_tokens(archive_list_text(prior and 2))
+        if not (provider_value(fields and provider_member(fields and 0 and "kind")) equals kind) or else not (provider_value(fields and provider_member(fields and 0 and "subject")) equals subject) or else not (provider_value(fields and provider_member(fields and 0 and "predicate")) equals predicate):
+            return group_memory_abort(database and "correction-conflict")
+        set successor to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE kind='group_memory_claim' AND json_extract(payload,'$.supersedes')=?;" and [supersedes]))
+        if not (archive_list_text(successor and 0) equals "end"):
+            return group_memory_abort(database and "correction-conflict")
+    set current to agent_run_read(database and run)
+    if archive_append_pending(database and archive_list_text(current and 0) and identity and "group_memory_claim" and canonical and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else not (group_memory_scope(database and run) equals scope):
+        return group_memory_abort(database and "write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return group_memory_abort(database and "commit-failed")
+    return concat("recorded:" and identity)
+
+define group_memory_visibility_read with database as Int and run as Str and claim as Str returning List:
+    set original to group_memory_lookup(database and run and claim)
+    if not (archive_list_text(original and 0) equals "found"):
+        return history_status(archive_list_text(original and 0))
+    return history_collect_one(checkpoint_prepare(database and "SELECT COALESCE((SELECT json_extract(payload,'$.state') FROM echo_events WHERE kind='group_memory_visibility' AND json_extract(payload,'$.claim')=?1 ORDER BY sequence DESC LIMIT 1),'visible'),COALESCE((SELECT MAX(sequence) FROM echo_events WHERE kind='group_memory_visibility' AND json_extract(payload,'$.claim')=?1),0);" and [claim]))
+
+define group_memory_visibility_set with database as Int and run as Str and change as Str and claim as Str and previous_revision as Int and state as Str and reason as Str returning Str:
+    if string_length(change) equals 0 or else string_length(reason) equals 0 or else previous_revision < 0 or else not (state equals "visible" or else state equals "forgotten"):
+        return "invalid-arguments"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set current to group_memory_visibility_read(database and run and claim)
+    if not (archive_list_text(current and 0) equals "found"):
+        return group_memory_abort(database and archive_list_text(current and 0))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_object('claim',?1,'previous_revision',CAST(?2 AS INTEGER),'state',?3,'reason',?4,'run',?5,'scope',?6);" and [claim,int_to_string(previous_revision),state,reason,run,group_memory_scope(database and run)]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return group_memory_abort(database and "database-error")
+    set payload to archive_list_text(row and 1)
+    set identity to concat("group-memory-visibility:" and change)
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT kind,payload FROM echo_events WHERE event=?;" and [identity]))
+    if archive_list_text(prior and 0) equals "found":
+        if not (archive_list_text(prior and 1) equals "group_memory_visibility") or else not (archive_list_text(prior and 2) equals payload):
+            return group_memory_abort(database and "identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return group_memory_abort(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(prior and 0) equals "end"):
+        return group_memory_abort(database and "database-error")
+    if string_to_int(archive_list_text(current and 2)) is not equal to previous_revision:
+        return group_memory_abort(database and "revision-conflict")
+    set current_run to agent_run_read(database and run)
+    if archive_append_pending(database and archive_list_text(current_run and 0) and identity and "group_memory_visibility" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return group_memory_abort(database and "write-failed")
+    return "recorded"
+
+# Graph traversal preserves superseded claims, while ordinary recalled context
+# selects only current ones. Forgotten claims never return their text here.
+define group_memory_next with database as Int and run as Str and node as Str and after_sequence as Int returning List:
+    set scope to group_memory_scope(database and run)
+    if string_length(scope) equals 0:
+        return history_status("not-authorized")
+    if after_sequence < 0:
+        return history_status("invalid-range")
+    set query to "SELECT e.event,e.sequence,json_extract(e.payload,'$.kind'),json_extract(e.payload,'$.subject'),json_extract(e.payload,'$.predicate'),json_extract(e.payload,'$.object'),json_extract(e.payload,'$.evidence'),json_extract(e.payload,'$.source_event'),json_extract(e.payload,'$.source_digest'),json_extract(e.payload,'$.event_time'),json_extract(e.payload,'$.valid_until'),e.occurred,json_extract(e.payload,'$.supersedes'),COALESCE((SELECT n.event FROM echo_events n WHERE n.kind='group_memory_claim' AND json_extract(n.payload,'$.supersedes')=e.event),''),__RUNTIME_STATUS__ FROM echo_events e JOIN echo_events original ON original.event=json_extract(e.payload,'$.source_event') AND original.digest=json_extract(e.payload,'$.source_digest') WHERE e.kind='group_memory_claim' AND json_extract(e.payload,'$.scope')=?1 AND (?2='' OR json_extract(e.payload,'$.subject')=?2 OR json_extract(e.payload,'$.object')=?2) AND e.sequence>CAST(?3 AS INTEGER) AND COALESCE((SELECT json_extract(v.payload,'$.state') FROM echo_events v WHERE v.kind='group_memory_visibility' AND json_extract(v.payload,'$.claim')=e.event ORDER BY v.sequence DESC LIMIT 1),'visible')='visible' ORDER BY e.sequence LIMIT 1;"
+    set query to ptr_to_str(string_replace(query and "__RUNTIME_STATUS__" and memory_runtime_status_sql("original" and "?4")))
+    set query to ptr_to_str(string_replace(query and " ORDER BY e.sequence LIMIT 1;" and concat(" AND " and concat(attachment_observation_visible_sql(database and "original.event") and " ORDER BY e.sequence LIMIT 1;"))))
+    set row to history_collect_one(checkpoint_prepare(database and query and [scope,node,int_to_string(after_sequence),echo_runtime_binding(database and run)]))
+    if archive_list_text(row and 0) equals "found":
+        if group_memory_source_allowed(database and run and archive_list_text(row and 8) and archive_list_text(row and 9)) equals 0:
+            return history_status("not-authorized")
+    if not (group_memory_scope(database and run) equals scope):
+        return history_status("authorization-changed")
+    return row
+
+# Sharing does not convert Echo-authored text into a user account. Preserve this
+# evidence class through repeated explicit copies, in private and shared graphs.
+define memory_source_evidence_kind with kind as Str and payload as Str returning Str:
+    if not (kind equals "source_import"):
+        return kind
+    set fields to provider_json_tokens(payload)
+    if fields is not equal to 0 and provider_value(fields and provider_member(fields and 0 and "origin")) equals "explicit-reviewed-share":
+        if provider_value(fields and provider_member(fields and 0 and "original_authorship")) equals "assistant_final" or else provider_value(fields and provider_member(fields and 0 and "source_kind")) equals "assistant_final":
+            return "assistant_final"
+    return kind

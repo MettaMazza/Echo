@@ -1,4 +1,5 @@
 import "../security/group_route"
+import "../security/admin_silo"
 import "shared_access"
 
 # Browser routes cannot forge a Discord/server namespace. Membership remains a
@@ -36,7 +37,7 @@ define web_group_list with database as Int and device as Str returning Str:
     if string_length(principal) equals 0:
         return "{\"status\":\"not-found\"}"
     set values to [principal]
-    set statement to checkpoint_prepare(database and "SELECT json_object('group',g.identity,'creator',g.creator,'state',m.state,'revision',(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity),'members',json(CASE WHEN m.state='joined' THEN (SELECT json_group_array(json_object('principal',v.principal,'state',v.state)) FROM echo_group_membership v WHERE v.group_id=g.identity AND v.revision=(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity AND principal=v.principal) AND v.state IN ('joined','invited')) ELSE '[]' END)) FROM echo_groups g JOIN echo_group_membership m ON m.group_id=g.identity AND m.principal=?1 WHERE g.platform='browser' AND g.server='local' AND g.channel=g.identity AND m.revision=(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity AND principal=?1) AND m.state IN ('joined','invited') ORDER BY g.identity;" and values)
+    set statement to checkpoint_prepare(database and "SELECT json_object('group',g.identity,'access',CASE WHEN g.origin LIKE 'silo:admin:%' THEN 'admin' ELSE 'members' END,'creator',g.creator,'state',m.state,'revision',(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity),'members',json(CASE WHEN m.state='joined' THEN (SELECT json_group_array(json_object('principal',v.principal,'state',v.state)) FROM echo_group_membership v WHERE v.group_id=g.identity AND v.revision=(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity AND principal=v.principal) AND v.state IN ('joined','invited')) ELSE '[]' END)) FROM echo_groups g JOIN echo_group_membership m ON m.group_id=g.identity AND m.principal=?1 WHERE (g.origin NOT LIKE 'silo:admin:%' OR EXISTS(SELECT 1 FROM echo_principals p WHERE p.identity=?1 AND p.revoked=0 AND p.role IN ('admin','steward'))) AND g.platform='browser' AND g.server='local' AND g.channel=g.identity AND m.revision=(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=g.identity AND principal=?1) AND m.state IN ('joined','invited') ORDER BY g.identity;" and values)
     if statement equals 0:
         return "{\"status\":\"database-error\"}"
     set builder to create_builder()
@@ -67,9 +68,16 @@ define web_group_manage with database as Int and device as Str and action as Str
     set identity to provider_value(tokens and field)
     set status to "invalid-request"
     if action equals "create":
-        if web_group_fields(tokens and ["group"]) equals 0:
+        if web_group_fields(tokens and ["group","access"]) equals 0:
             return "{\"status\":\"invalid-request\"}"
-        set status to group_create(database and device and identity and "browser" and "local" and identity and identity)
+        set access_field to provider_member(tokens and 0 and "access")
+        set access to provider_value(tokens and access_field)
+        if access equals "admin":
+            set status to admin_silo_create(database and device and identity and "browser" and "local" and identity)
+        else if access_field < 0 or else access equals "members":
+            set status to group_create(database and device and identity and "browser" and "local" and identity and identity)
+        else:
+            return "{\"status\":\"invalid-request\"}"
     else:
         if web_group_namespace(database and identity) equals 0:
             return "{\"status\":\"not-found\"}"
@@ -116,6 +124,8 @@ define web_group_state_read with database as Int and device as Str and identity 
     if not (archive_list_text(current and 0) equals "found"):
         return "{\"status\":\"database-error\"}"
     set revision to archive_list_text(current and 1)
+    if group_audience_allows(database and device and identity and "browser" and "local" and identity and string_to_int(revision) and 1) equals 0:
+        return "{\"status\":\"not-found\"}"
     set statement to checkpoint_prepare(database and "SELECT s.session,s.revision,COALESCE((SELECT r.run FROM echo_runs r JOIN echo_events e ON e.event=r.objective_event WHERE r.session=s.session ORDER BY e.sequence DESC LIMIT 1),'') FROM echo_group_sessions s WHERE s.group_id=? ORDER BY s.revision DESC;" and values)
     if statement equals 0:
         return "{\"status\":\"database-error\"}"

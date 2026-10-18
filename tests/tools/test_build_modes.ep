@@ -1,0 +1,74 @@
+import "../../app/tools/tool_candidate_files"
+import "../../app/agent/tool_dispatch"
+import "../fixtures/generation_fixture"
+
+# Scripted requests exercise the real parser, authority checks, guardian,
+# compiler, sandbox and archive. No actual-model authoring is claimed here.
+define build_mode_step with database as Int and step as Int and name as Str and arguments as Str returning Int:
+    set identity to concat("step-" and int_to_string(step))
+    set listener to local_socket_listen(0)
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":" and concat(provider_quote(identity) and concat(",\"function\":{\"name\":" and concat(provider_quote(name) and concat(",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))))))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set generated to agent_generate_local(database and "candidate-run" and identity and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    set closed to local_socket_close(listener)
+    if generated is not equal to 0 or else served is not equal to 0:
+        return 1
+    repeat while archive_list_text(agent_run_read(database and "candidate-run") and 2) equals "tools":
+        if agent_tool_step(database and "candidate-run") is not equal to 0:
+            return 2
+    if not (archive_list_text(agent_run_read(database and "candidate-run") and 2) equals "ready"):
+        return 3
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0:
+        return 2
+    if web_pairing_invite(database and "fixture") is not equal to 0 or else web_device_pair(database and "fixture" and "author" and "Build fixture" and "fixture-secret") is not equal to 0:
+        return 3
+    set submitted to web_submit_owned(database and "author" and "candidate-run" and "" and "Check and test Ernos source with preserved diagnostics.")
+    if build_mode_step(database and 0 and "workspace_create_text" and "{\"path\":\"valid.ep\",\"text\":\"define main returning Int:\\n    return 0\\n\"}") is not equal to 0:
+        return 10
+    if build_mode_step(database and 1 and "workspace_build" and "{\"path\":\"valid.ep\",\"mode\":\"check\"}") is not equal to 0:
+        return 11
+    if build_mode_step(database and 2 and "workspace_create_text" and "{\"path\":\"invalid.ep\",\"text\":\"define main returning Int:\\n    return 0\\ndefine main returning Int:\\n    return 1\\n\"}") is not equal to 0:
+        return 12
+    if build_mode_step(database and 3 and "workspace_build" and "{\"path\":\"invalid.ep\",\"mode\":\"check\"}") is not equal to 0:
+        return 13
+    if build_mode_step(database and 4 and "workspace_create_text" and "{\"path\":\"passing.ep\",\"text\":\"define test_arithmetic returning Int:\\n    if 2 + 2 equals 4:\\n        return 0\\n    return 1\\n\"}") is not equal to 0:
+        return 14
+    if build_mode_step(database and 5 and "workspace_build" and "{\"path\":\"passing.ep\",\"mode\":\"test-harness\"}") is not equal to 0:
+        return 15
+    if build_mode_step(database and 6 and "workspace_execute" and "{\"program\":\"passing\",\"arguments\":[]}") is not equal to 0:
+        return 16
+    if build_mode_step(database and 7 and "workspace_create_text" and "{\"path\":\"failing.ep\",\"text\":\"define test_deliberate_failure returning Int:\\n    return 1\\n\"}") is not equal to 0:
+        return 17
+    if build_mode_step(database and 8 and "workspace_build" and "{\"path\":\"failing.ep\",\"mode\":\"test-harness\"}") is not equal to 0:
+        return 18
+    if build_mode_step(database and 9 and "workspace_execute" and "{\"program\":\"failing\",\"arguments\":[]}") is not equal to 0:
+        return 19
+    if build_mode_step(database and 10 and "workspace_build" and "{\"path\":\"valid.ep\",\"mode\":\"compile\",\"program\":\"/bin/sh\"}") is not equal to 0:
+        return 20
+    set observed to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run='candidate-run' AND t.call_id IN ('step-1','step-5','step-6','step-8') AND json_extract(e.payload,'$.result.status')='complete' AND json_extract(e.payload,'$.result.wait_status')='0';"))
+    if not (archive_list_text(observed and 1) equals "4"):
+        return 30
+    set failed to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.wait_status') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run='candidate-run' AND t.call_id='step-9';"))
+    if archive_list_text(failed and 1) equals "0" or else string_length(archive_list_text(failed and 1)) equals 0:
+        return 31
+    set output to history_collect_one(archive_prepare(database and "SELECT group_concat(data,'') FROM (SELECT json_extract(payload,'$.data') AS data FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.call_id')='step-1' AND json_extract(payload,'$.stream')='stdout' ORDER BY sequence);"))
+    if string_contains(archive_list_text(output and 1) and "436865636b207061737365643a206e6f206572726f72732e") equals 0:
+        return 32
+    set output to history_collect_one(archive_prepare(database and "SELECT group_concat(data,'') FROM (SELECT json_extract(payload,'$.data') AS data FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.call_id')='step-3' ORDER BY sequence);"))
+    if string_contains(archive_list_text(output and 1) and "46756e6374696f6e20697320646566696e6564206d756c7469706c652074696d6573") equals 0:
+        return 33
+    set injected to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_process_launches WHERE run='candidate-run' AND call_id='step-10';"))
+    if not (archive_list_text(injected and 1) equals "0"):
+        return 35
+    if archive_verify(database and archive_list_text(submitted and 1)) is not equal to 0:
+        return 34
+    display "PASS: checked valid source, retained invalid-source diagnostic, built and ran passing and failing test harnesses with distinct exit evidence."
+    return sql_close(database)

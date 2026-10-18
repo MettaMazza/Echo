@@ -1,0 +1,116 @@
+import "../../app/agent/tool_dispatch"
+import "../../app/security/group_speech"
+import "../fixtures/generation_fixture"
+
+define job_fixture_call with database as Int and run as Str and arguments as Str returning Str:
+    if agent_run_read(database and run) equals 0:
+        set submitted to web_submit_owned(database and "user" and run and "" and "Inspect or stop my job.")
+        if not (archive_list_text(submitted and 0) equals "accepted"):
+            return "submit-failed"
+    set listener to local_socket_listen(0)
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"jobs\",\"function\":{\"name\":\"job_control\",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set generated to agent_generate_local(database and run and concat(run and ":request") and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    set closed to local_socket_close(listener)
+    if generated is not equal to 0 or else served is not equal to 0 or else agent_tool_step(database and run) is not equal to 0:
+        return "dispatch-failed"
+    set values to [run]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(e.payload,'$.result') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run=?1 AND t.call_id='jobs';" and values))
+    return archive_list_text(row and 1)
+
+define job_fixture_status with result as Str returning Str:
+    set tokens to provider_json_tokens(result)
+    return provider_value(tokens and provider_member(tokens and 0 and "status"))
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else not (group_speech_schema(database) equals "applied") or else web_worker_schema(database) is not equal to 0:
+        return 2
+    for each item in ["user","outsider"]:
+        set device to ptr_to_str(item)
+        if web_pairing_invite(database and device) is not equal to 0 or else web_device_pair(database and device and device and device and concat(device and "-secret")) is not equal to 0:
+            return 3
+    set outside to web_submit_owned(database and "outsider" and "outside-job" and "" and "Private outsider work")
+    set target to web_submit_owned(database and "user" and "target-job" and "" and "My work")
+    set listed to job_fixture_call(database and "list-job" and "{\"operation\":\"list\",\"after\":0}")
+    if not (job_fixture_status(listed) equals "found") or else string_contains(listed and "target-job") equals 0 or else string_contains(listed and "outside-job") is not equal to 0:
+        display listed
+        return 4
+    set hidden to job_fixture_call(database and "hidden-job" and "{\"operation\":\"inspect\",\"run\":\"outside-job\"}")
+    if not (job_fixture_status(hidden) equals "end"):
+        display hidden
+        return 5
+    set denied to job_fixture_call(database and "denied-job" and "{\"operation\":\"cancel\",\"run\":\"outside-job\"}")
+    if not (job_fixture_status(denied) equals "end"):
+        return 6
+    if web_worker_claim(database and "target-job" and "fixture-worker") is not equal to 0:
+        return 17
+    set cancelled to job_fixture_call(database and "cancel-job" and "{\"operation\":\"cancel\",\"run\":\"target-job\"}")
+    if not (job_fixture_status(cancelled) equals "cancellation-requested"):
+        display cancelled
+        return 7
+    set state to agent_run_read(database and "target-job")
+    if not (archive_list_text(state and 2) equals "ready"):
+        return 8
+    set retry to job_control_execute(database and "cancel-job" and "jobs" and "{\"operation\":\"cancel\",\"run\":\"target-job\"}")
+    if not (retry equals cancelled):
+        display retry
+        return 9
+    set inspected to job_fixture_call(database and "inspect-job" and "{\"operation\":\"inspect\",\"run\":\"target-job\"}")
+    if not (job_fixture_status(inspected) equals "found") or else string_contains(inspected and "\"cancellation_requested\":\"1\"") equals 0:
+        display inspected
+        return 10
+    set forged to job_fixture_call(database and "forged-job" and "{\"operation\":\"list\",\"after\":0,\"principal\":\"device:outsider\"}")
+    if not (job_fixture_status(forged) equals "invalid-arguments"):
+        return 11
+    # The active worker claim prevents an unrelated caller from forcing stop.
+    # After its controlled fixture exit, the normal idle reconciler finalizes it.
+    if sql_execute(database and "UPDATE echo_web_workers SET status='stopped' WHERE run='target-job';") is not equal to 0 or else web_worker_cancel_idle(database and "target-job") is not equal to 0:
+        return 18
+    set stopped to agent_run_read(database and "target-job")
+    if not (archive_list_text(stopped and 2) equals "cancelled"):
+        return 19
+    if not (group_create(database and "user" and "g" and "discord" and "server" and "room" and "origin") equals "created"):
+        return 20
+    if not (group_session_create(database and "user" and "group-session" and "g" and "discord" and "server" and "room" and 1) equals "created") or else not (group_run_submit(database and "user" and "group-job" and "group-session" and "discord" and "server" and "room" and "Group inspection") equals "accepted"):
+        return 21
+    set group_hidden to job_fixture_call(database and "group-job" and "{\"operation\":\"inspect\",\"run\":\"target-job\"}")
+    if not (job_fixture_status(group_hidden) equals "end"):
+        display group_hidden
+        return 22
+    set group_list to job_control_execute(database and "group-job" and "jobs" and "{\"operation\":\"list\",\"after\":0}")
+    if not (job_fixture_status(group_list) equals "found") or else string_contains(group_list and "group-job") equals 0 or else string_contains(group_list and "target-job") is not equal to 0:
+        return 23
+    for each stopped_state in ["failed","waiting"]:
+        set state_name to ptr_to_str(stopped_state)
+        set idle_run to concat("idle-" and state_name)
+        set idle_submission to web_submit_owned(database and "user" and idle_run and "" and "Idle fixture work")
+        set idle_row to agent_run_read(database and idle_run)
+        set evidence to concat(idle_run and ":state")
+        set payload to concat(agent_event_envelope(idle_run and archive_list_text(idle_row and 3)) and "}")
+        if archive_append(database and archive_list_text(idle_row and 0) and evidence and agent_transition_kind("ready" and state_name) and payload and "fixture") is not equal to 0 or else agent_run_transition(database and idle_run and "ready" and archive_list_text(idle_row and 3) and state_name and evidence) is not equal to 0:
+            return 24
+        set arguments to concat("{\"operation\":\"cancel\",\"run\":" and concat(provider_quote(idle_run) and "}"))
+        set requested to job_fixture_call(database and concat("cancel-" and idle_run) and arguments)
+        set terminal to agent_run_read(database and idle_run)
+        if not (job_fixture_status(requested) equals "cancellation-requested") or else not (archive_list_text(terminal and 2) equals "cancelled"):
+            return 25
+    set receipts to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='job_cancellation_requested';"))
+    if not (archive_list_text(receipts and 1) equals "3"):
+        return 12
+    if sql_close(database) is not equal to 0:
+        return 13
+    set database to archive_open(get_argument(1))
+    set saved to history_collect_one(archive_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run='target-job';"))
+    if not (archive_list_text(saved and 1) equals "target-job"):
+        return 14
+    if not (principal_host_revocation(database and "revoke-user" and "device:user" and 1 and "fixture") equals "recorded"):
+        return 15
+    if not (job_fixture_status(job_control_execute(database and "cancel-job" and "jobs" and "{\"operation\":\"inspect\",\"run\":\"target-job\"}")) equals "not-authorized"):
+        return 16
+    display "PASS: actual job tool dispatch, private queue isolation, inspect, durable cancellation request without false completion, idempotent receipt, forged scope rejection, reopen and revocation."
+    return sql_close(database)

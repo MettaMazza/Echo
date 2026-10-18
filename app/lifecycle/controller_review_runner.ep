@@ -1,0 +1,90 @@
+import "controller_review_agent"
+import "controller_review_inputs"
+import "../context/compact"
+import "../agent/generation_recovery"
+
+# Scheduler candidates must have a stored proposal; an interrupted submission
+# without its proposal is never sent to the model. The cursor is not a limit.
+define controller_review_candidate with database as Int and after_sequence as Int returning List:
+    set values to create_list()
+    set added to append_list(values and int_to_string(after_sequence))
+    return history_collect_one(checkpoint_prepare(database and "SELECT r.run,e.sequence FROM echo_protected_proposals p JOIN echo_runs r ON r.run=p.run JOIN echo_events e ON e.event=r.objective_event WHERE r.run LIKE 'controller-review:%' AND r.state IN ('ready','tools','generating') AND e.sequence>CAST(? AS INTEGER) ORDER BY e.sequence LIMIT 1;" and values))
+
+# Caller holds the native run-owner lock. Recovery never infers a dead worker
+# from elapsed time. Provider discovery supplies capacities and exact counting.
+define controller_review_loop_owned with database as Int and run as Str and profile as Str and prompt as Str and reserve as Int and cancellation as Int and batch as Int and library as Int returning Str:
+    set bound to controller_review_inputs_bind(database and run and profile and prompt)
+    if not (bound equals "bound"):
+        return bound
+    set config to provider_json_tokens(profile)
+    set model to provider_value(config and provider_member(config and 0 and "model"))
+    repeat while 1 equals 1:
+        set row to agent_run_read(database and run)
+        if row equals 0:
+            return "review-run-missing"
+        set state to archive_list_text(row and 2)
+        if state equals "completed" or else state equals "cancelled":
+            return state
+        if run_authority_allows(database and run and "admin") equals 0:
+            return "review-authority-changed"
+        if agent_cancellation_pending(library and cancellation) is not equal to 0:
+            return "review-cancelled-or-monitor-failed"
+        if state equals "generating":
+            set recovery to agent_identity()
+            set recovered to agent_recover_generation_owned(database and run and recovery and "0")
+            if not (recovered equals "ready" or else recovered equals "tools" or else recovered equals "completed" or else recovered equals "cancelled"):
+                return recovered
+        else if state equals "tools":
+            set values to create_list()
+            set added to append_list(values and run)
+            set pending to history_collect_one(checkpoint_prepare(database and "SELECT call_id FROM echo_tool_calls WHERE run=? AND state IN ('running','uncertain') ORDER BY request_event LIMIT 1;" and values))
+            if archive_list_text(pending and 0) equals "found":
+                if controller_review_recover_call(database and run and archive_list_text(pending and 1)) is not equal to 0:
+                    return "review-tool-recovery-required"
+            else if not (archive_list_text(pending and 0) equals "end") or else controller_review_tool_step(database and run) is not equal to 0:
+                return "review-tool-step-failed"
+        else if state equals "ready":
+            set messages to controller_review_bound_messages(database and run)
+            if string_length(messages) equals 0:
+                return "review-context-unavailable"
+            set body to controller_review_request_body(model and messages)
+            set request to agent_identity()
+            set decision to agent_generate_provider_at(database and run and archive_list_text(row and 3) and request and body and profile and reserve and cancellation and batch and "0")
+            set status to archive_list_text(decision and 0)
+            if status equals "compaction-required":
+                set status to context_compact_provider(database and run and profile and reserve and cancellation and batch and library)
+                if status equals "activated":
+                    continue
+            if not (status equals "advanced"):
+                return status
+        else:
+            return state
+    return "review-error"
+
+define controller_review_run with database as Int and run as Str and profile as Str and prompt as Str and reserve as Int and cancellation as Int and batch as Int returning Str:
+    set values to create_list()
+    set added to append_list(values and run)
+    set proposal to history_collect_one(checkpoint_prepare(database and "SELECT identity FROM echo_protected_proposals WHERE run=?;" and values))
+    if not (archive_list_text(proposal and 0) equals "found") or else run_authority_allows(database and run and "admin") equals 0:
+        return "review-proposal-or-authority-missing"
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set owner to concat("controller-review:" and run)
+    set descriptor to compaction_lock_acquire(database and owner and library)
+    if descriptor < 0:
+        set closed to ep_dlclose(library)
+        return "review-owner-busy"
+    set old_selector to concat(ptr_to_str(get_env("ECHO_CONTROLLER_REVIEW_RUN")) and "")
+    set set_environment to ep_dlsym(library and "setenv")
+    if set_environment equals 0 or else ep_dlcall3(set_environment and str_to_ptr("ECHO_CONTROLLER_REVIEW_RUN") and str_to_ptr(run) and 1) is not equal to 0:
+        set closed to net_close(descriptor)
+        set unloaded to ep_dlclose(library)
+        return "review-prompt-scope-unavailable"
+    set result to controller_review_loop_owned(database and run and profile and prompt and reserve and cancellation and batch and library)
+    set restored to ep_dlcall3(set_environment and str_to_ptr("ECHO_CONTROLLER_REVIEW_RUN") and str_to_ptr(old_selector) and 1)
+    if restored is not equal to 0:
+        set result to "review-prompt-scope-restore-failed"
+    set closed to net_close(descriptor)
+    set unloaded to ep_dlclose(library)
+    if closed is not equal to 0 or else unloaded is not equal to 0:
+        return concat("review-owner-close-failed-after:" and result)
+    return result

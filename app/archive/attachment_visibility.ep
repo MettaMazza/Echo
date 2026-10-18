@@ -1,0 +1,84 @@
+import "attachment_scope"
+import "../tools/history_tools"
+
+# Original bytes remain immutable. This record controls future context use.
+# Absence is included; read errors are not silently treated as inclusion.
+define attachment_visibility_state with database as Int and attachment as Str returning List:
+    return history_collect_one(checkpoint_prepare(database and "SELECT COALESCE((SELECT event FROM echo_events WHERE kind='attachment_visibility' AND json_extract(payload,'$.attachment')=?1 ORDER BY sequence DESC LIMIT 1),''),COALESCE((SELECT json_extract(payload,'$.state') FROM echo_events WHERE kind='attachment_visibility' AND json_extract(payload,'$.attachment')=?1 ORDER BY sequence DESC LIMIT 1),'included');" and [attachment]))
+
+define attachment_context_included with database as Int and attachment as Str returning Int:
+    set state to attachment_visibility_state(database and attachment)
+    return archive_list_text(state and 0) equals "found" and also archive_list_text(state and 2) equals "included"
+
+# Produce a request-only view of an immutable attachment manifest. Never write
+# this filtered view back to the canonical user event or original binding.
+define attachment_context_manifest with database as Int and manifest as Str returning Str:
+    set tokens to provider_json_tokens(manifest)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set items to provider_items(tokens and provider_member(tokens and 0 and "attachments"))
+    if items equals 0:
+        return ""
+    set builder to create_builder()
+    set added to builder_append(builder and concat("{\"user_event\":" and concat(provider_quote(provider_value(tokens and provider_member(tokens and 0 and "user_event"))) and ",\"attachments\":[")))
+    set kept to 0
+    set omitted to 0
+    for each item in items:
+        set identity to provider_value(tokens and provider_member(tokens and item and "attachment"))
+        if attachment_context_included(database and identity) equals 0:
+            set omitted to omitted + 1
+        else:
+            if kept > 0:
+                set added to builder_append(builder and ",")
+            set after to provider_after(tokens and item)
+            if after < 1:
+                return ""
+            set start to get_list(get_list(tokens and item) and 1)
+            set finish to get_list(get_list(tokens and after - 1) and 2)
+            set added to builder_append(builder and ptr_to_str(substring(manifest and start and finish - start)))
+            set kept to kept + 1
+    if omitted equals 0:
+        return manifest
+    set added to builder_append(builder and "],\"context_notice\":\"Excluded attachment references are omitted from this request. Originals remain in the archive.\"}")
+    return ptr_to_str(builder_to_string(builder))
+
+# Archived tool arguments identify the source that was actually requested.
+# Keep the call/result pair but replace excluded content with a status receipt.
+define attachment_call_context_included with database as Int and name as Str and arguments as Str returning Int:
+    if not (name equals "attachment_read_text" or else name equals "attachment_view_image" or else name equals "attachment_transcribe"):
+        return 1
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0:
+        return 0
+    set identity to provider_value(tokens and provider_member(tokens and 0 and "attachment"))
+    if string_length(identity) equals 0:
+        return 0
+    return attachment_context_included(database and identity)
+
+# Trusted SQL expression only. This follows exact observed tool provenance,
+# never substring matches in a claim or a guessed semantic relationship.
+define attachment_observation_visible_sql with database as Int and source as Str returning Str:
+    set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_tool_calls';"))
+    if archive_list_text(schema and 0) equals "end":
+        return "1"
+    if not (archive_list_text(schema and 0) equals "found"):
+        return "0"
+    set query to "NOT EXISTS(SELECT 1 FROM echo_tool_calls av_call JOIN echo_events av_request ON av_request.event=av_call.request_event AND av_request.session=av_call.session WHERE av_call.result_event="
+    set query to concat(query and source)
+    return concat(query and " AND av_call.state='observed' AND av_request.kind='tool_call' AND json_extract(av_request.payload,'$.name') IN ('attachment_read_text','attachment_view_image','attachment_transcribe') AND COALESCE((SELECT json_extract(av_policy.payload,'$.state') FROM echo_events av_policy WHERE av_policy.kind='attachment_visibility' AND json_extract(av_policy.payload,'$.attachment')=json_extract(json_extract(av_request.payload,'$.arguments'),'$.attachment') ORDER BY av_policy.sequence DESC LIMIT 1),'included')='excluded')")
+
+define attachment_observation_context_included with database as Int and event as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(database and concat("SELECT " and concat(attachment_observation_visible_sql(database and "?1") and ";")) and [event]))
+    return archive_list_text(row and 0) equals "found" and also archive_list_text(row and 1) equals "1"
+
+# A newly requested read may supply its result during this run. Old observations
+# remain excluded; this exception never restores automatic recall or recap use.
+define attachment_fresh_call_included with database as Int and name as Str and arguments as Str and request as Str returning Int:
+    if attachment_call_context_included(database and name and arguments):
+        return 1
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0:
+        return 0
+    set identity to provider_value(tokens and provider_member(tokens and 0 and "attachment"))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT EXISTS(SELECT 1 FROM echo_events call WHERE call.event=?1 AND call.kind='tool_call' AND call.sequence>(SELECT MAX(policy.sequence) FROM echo_events policy WHERE policy.kind='attachment_visibility' AND json_extract(policy.payload,'$.attachment')=?2));" and [request,identity]))
+    return archive_list_text(row and 0) equals "found" and also archive_list_text(row and 1) equals "1"

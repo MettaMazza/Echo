@@ -1,0 +1,54 @@
+import "../security/tool_authority"
+import "../web/run_store"
+
+# Internal admission record, not a model-facing tool. The run/call come from
+# the dispatcher and the instruction must match the immutable queued request.
+# No worker starts until isolated execution context is admitted separately.
+define delegation_record with database as Int and run as Str and call_id as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    if run_authority_allows(database and run and "user") equals 0 or else tool_authority_allows(database and run and call_id and "user") equals 0:
+        return migration_fail(database and "not-authorized")
+    set values to [run,call_id]
+    set source to history_collect_one(checkpoint_prepare(database and "SELECT t.session,t.request_event,t.state FROM echo_tool_calls t JOIN echo_runs r ON r.run=t.run AND r.session=t.session WHERE t.run=?1 AND t.call_id=?2;" and values))
+    if not (archive_list_text(source and 0) equals "found"):
+        return migration_fail(database and "request-not-found")
+    set request to archive_read_event(database and archive_list_text(source and 2))
+    if request equals 0 or else not (archive_list_text(request and 0) equals archive_list_text(source and 1)) or else not (archive_list_text(request and 2) equals "tool_call"):
+        return migration_fail(database and "request-invalid")
+    set envelope to provider_json_tokens(archive_list_text(request and 3))
+    if envelope equals 0 or else provider_unique_objects(envelope) equals 0 or else not (provider_value(envelope and provider_member(envelope and 0 and "run_id")) equals run) or else not (provider_value(envelope and provider_member(envelope and 0 and "call_id")) equals call_id) or else not (provider_value(envelope and provider_member(envelope and 0 and "name")) equals "delegate_task"):
+        return migration_fail(database and "request-invalid")
+    set arguments to provider_json_tokens(provider_value(envelope and provider_member(envelope and 0 and "arguments")))
+    if arguments equals 0 or else provider_unique_objects(arguments) equals 0 or else not (provider_kind(arguments and 0) equals "{"):
+        return migration_fail(database and "invalid-arguments")
+    set field to provider_member(arguments and 0 and "instruction")
+    if not (provider_kind(arguments and field) equals "string") or else string_length(string_trim(provider_value(arguments and field))) equals 0:
+        return migration_fail(database and "invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(arguments and index) equals "}"):
+        if not (provider_value(arguments and index) equals "instruction"):
+            return migration_fail(database and "invalid-arguments")
+        set index to provider_after(arguments and index + 2)
+        if provider_kind(arguments and index) equals ",":
+            set index to index + 1
+    set identity to concat(run and concat(":delegate:" and call_id))
+    set event to concat(identity and ":requested")
+    set payload to concat("{\"job\":" and provider_quote(identity))
+    set payload to concat(payload and concat(",\"parent_run\":" and provider_quote(run)))
+    set payload to concat(payload and concat(",\"origin_call\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"request_event\":" and provider_quote(archive_list_text(source and 2))))
+    set payload to concat(payload and concat(",\"request_digest\":" and provider_quote(archive_list_text(request and 6))))
+    set payload to concat(payload and concat(",\"instruction\":" and concat(provider_quote(provider_value(arguments and field)) and "}")))
+    set existing to archive_read_event(database and event)
+    if existing is not equal to 0:
+        if not (archive_list_text(existing and 0) equals archive_list_text(source and 1)) or else not (archive_list_text(existing and 2) equals "delegation_requested") or else not (archive_list_text(existing and 3) equals payload):
+            return migration_fail(database and "request-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "database-error")
+        return "already-recorded"
+    if archive_list_text(source and 3) equals "observed":
+        return migration_fail(database and "request-already-observed")
+    if archive_append_pending(database and archive_list_text(source and 1) and event and "delegation_requested" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "database-error")
+    return "recorded"

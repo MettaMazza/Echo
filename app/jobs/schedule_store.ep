@@ -1,0 +1,121 @@
+import "../web/device_links"
+import "../security/tool_authority"
+
+# Fixed application migration. No model-provided SQL or daemon is installed here.
+define schedule_schema with database as Int returning Str:
+    set prior to device_link_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 25 and "durable-scoped-schedules" and "CREATE TABLE echo_schedules(identity TEXT PRIMARY KEY,origin_run TEXT NOT NULL REFERENCES echo_runs(run),origin_call TEXT NOT NULL,definition_event TEXT NOT NULL REFERENCES echo_events(event),instruction TEXT NOT NULL,first_due INTEGER NOT NULL CHECK(first_due>=0),interval_ms INTEGER NOT NULL CHECK(interval_ms>=0),missed_policy TEXT NOT NULL CHECK(missed_policy IN ('catch-up','coalesce')),FOREIGN KEY(origin_run,origin_call) REFERENCES echo_tool_calls(run,call_id)); CREATE TRIGGER echo_schedules_no_update BEFORE UPDATE ON echo_schedules BEGIN SELECT RAISE(ABORT,'Schedule definitions are immutable'); END; CREATE TRIGGER echo_schedules_no_delete BEFORE DELETE ON echo_schedules BEGIN SELECT RAISE(ABORT,'Schedule definitions are immutable'); END; CREATE TABLE echo_schedule_state(identity TEXT PRIMARY KEY REFERENCES echo_schedules(identity),next_due INTEGER NOT NULL,status TEXT NOT NULL CHECK(status IN ('enabled','cancelled','exhausted')),last_event TEXT NOT NULL REFERENCES echo_events(event)); CREATE TABLE echo_schedule_occurrences(identity TEXT PRIMARY KEY,schedule TEXT NOT NULL REFERENCES echo_schedules(identity),scheduled_for INTEGER NOT NULL,missed_intervals INTEGER NOT NULL,origin_event TEXT NOT NULL REFERENCES echo_events(event),UNIQUE(schedule,scheduled_for)); CREATE TRIGGER echo_schedule_occurrences_no_update BEFORE UPDATE ON echo_schedule_occurrences BEGIN SELECT RAISE(ABORT,'Occurrences are immutable'); END; CREATE TRIGGER echo_schedule_occurrences_no_delete BEFORE DELETE ON echo_schedule_occurrences BEGIN SELECT RAISE(ABORT,'Occurrences are immutable'); END;")
+
+define schedule_origin_allows with database as Int and run as Str and call_id as Str returning Int:
+    return run_authority_allows(database and run and "user") equals 1 and also tool_authority_allows(database and run and call_id and "user") equals 1
+
+# Internal storage interface; the tool adapter must supply its parsed archived
+# arguments. Schedule identity is bound to that exact initiating tool call.
+define schedule_create with database as Int and run as Str and call_id as Str and instruction as Str and first_due as Int and interval_ms as Int and missed_policy as Str returning Str:
+    if string_length(string_trim(instruction)) equals 0 or else first_due < 0 or else interval_ms < 0 or else not (missed_policy equals "catch-up" or else missed_policy equals "coalesce"):
+        return "invalid-schedule"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    if schedule_origin_allows(database and run and call_id) equals 0:
+        return migration_fail(database and "not-authorized")
+    set identity to concat(run and concat(":schedule:" and call_id))
+    set event to concat(identity and ":definition")
+    set payload to concat("{\"schedule\":" and provider_quote(identity))
+    set payload to concat(payload and concat(",\"origin_run\":" and provider_quote(run)))
+    set payload to concat(payload and concat(",\"origin_call\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"instruction\":" and provider_quote(instruction)))
+    set payload to concat(payload and concat(",\"first_due\":" and int_to_string(first_due)))
+    set payload to concat(payload and concat(",\"interval_ms\":" and int_to_string(interval_ms)))
+    set payload to concat(payload and concat(",\"missed_policy\":" and concat(provider_quote(missed_policy) and "}")))
+    set values to [identity,run,call_id,event,instruction,int_to_string(first_due),int_to_string(interval_ms),missed_policy]
+    set lookup to [identity]
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT e.payload FROM echo_schedules s JOIN echo_events e ON e.event=s.definition_event WHERE s.identity=?1;" and lookup))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals payload):
+            return migration_fail(database and "schedule-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "database-error")
+        return "already-created"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "database-error")
+    set row to agent_run_read(database and run)
+    if archive_append_pending(database and archive_list_text(row and 0) and event and "schedule_created" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return migration_fail(database and "database-error")
+    if tool_ledger_change(database and "INSERT INTO echo_schedules VALUES(?1,?2,?3,?4,?5,CAST(?6 AS INTEGER),CAST(?7 AS INTEGER),?8) RETURNING identity;" and values) is not equal to 0:
+        return migration_fail(database and "database-error")
+    set state_values to [identity,int_to_string(first_due),event]
+    if tool_ledger_change(database and "INSERT INTO echo_schedule_state VALUES(?1,CAST(?2 AS INTEGER),'enabled',?3) RETURNING identity;" and state_values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "database-error")
+    return "created"
+
+# Reserves one due occurrence atomically and advances from its scheduled time,
+# not worker completion time. A crash cannot lose a due occurrence: consumers
+# recover immutable occurrence rows which have not yet been dispatched.
+define schedule_take_due with database as Int and identity as Str and now as Int returning Str:
+    if now < 0:
+        return "invalid-time"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set values to [identity]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT s.origin_run,s.origin_call,s.interval_ms,s.missed_policy,c.next_due,c.status,r.session FROM echo_schedules s JOIN echo_schedule_state c ON c.identity=s.identity JOIN echo_runs r ON r.run=s.origin_run WHERE s.identity=?1;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return migration_fail(database and "not-found")
+    if not (archive_list_text(row and 6) equals "enabled"):
+        return migration_fail(database and archive_list_text(row and 6))
+    if schedule_origin_allows(database and archive_list_text(row and 1) and archive_list_text(row and 2)) equals 0:
+        return migration_fail(database and "authority-changed")
+    set due to string_to_int(archive_list_text(row and 5))
+    if due > now:
+        return migration_fail(database and "not-due")
+    set interval to string_to_int(archive_list_text(row and 3))
+    set missed to 0
+    if interval > 0 and archive_list_text(row and 4) equals "coalesce":
+        set missed to (now - due) / interval
+        set due to due + missed * interval
+    set occurrence to concat(identity and concat(":due:" and int_to_string(due)))
+    set event to concat(occurrence and ":reserved")
+    set payload to concat("{\"schedule\":" and provider_quote(identity))
+    set payload to concat(payload and concat(",\"occurrence\":" and provider_quote(occurrence)))
+    set payload to concat(payload and concat(",\"scheduled_for\":" and int_to_string(due)))
+    set payload to concat(payload and concat(",\"missed_intervals\":" and concat(int_to_string(missed) and "}")))
+    if archive_append_pending(database and archive_list_text(row and 7) and event and "schedule_occurrence_reserved" and payload and concat("unix-ms:" and int_to_string(now))) is not equal to 0:
+        return migration_fail(database and "database-error")
+    set occurrence_values to [occurrence,identity,int_to_string(due),int_to_string(missed),event]
+    if tool_ledger_change(database and "INSERT INTO echo_schedule_occurrences VALUES(?1,?2,CAST(?3 AS INTEGER),CAST(?4 AS INTEGER),?5) RETURNING identity;" and occurrence_values) is not equal to 0:
+        return migration_fail(database and "database-error")
+    set status to "enabled"
+    set next_due to due
+    if interval equals 0 or else due > 9223372036854775807 - interval:
+        set status to "exhausted"
+    else:
+        set next_due to due + interval
+    set state_values to [identity,int_to_string(next_due),status,event]
+    if tool_ledger_change(database and "UPDATE echo_schedule_state SET next_due=CAST(?2 AS INTEGER),status=?3,last_event=?4 WHERE identity=?1 AND status='enabled' RETURNING identity;" and state_values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "database-error")
+    return occurrence
+
+# Cancels future reservations only. Previously reserved/running work has its own
+# identity and must use ordinary job cancellation; its effects are not erased.
+define schedule_cancel with database as Int and run as Str and call_id as Str and identity as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    if schedule_origin_allows(database and run and call_id) equals 0:
+        return migration_fail(database and "not-authorized")
+    set values to [identity,run]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT s.origin_run,c.status,caller.device,current.session FROM echo_schedules s JOIN echo_schedule_state c ON c.identity=s.identity JOIN echo_run_authority owner ON owner.run=s.origin_run JOIN echo_run_authority caller ON caller.run=?2 AND caller.principal=owner.principal JOIN echo_runs source ON source.run=s.origin_run JOIN echo_runs current ON current.run=caller.run WHERE s.identity=?1 AND (source.session=current.session OR (NOT EXISTS(SELECT 1 FROM echo_group_run_origins g WHERE g.run=source.run) AND NOT EXISTS(SELECT 1 FROM echo_group_run_origins g WHERE g.run=current.run)));" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return migration_fail(database and "not-found")
+    if web_device_run_allowed(database and archive_list_text(row and 3) and archive_list_text(row and 1)) equals 0 and group_run_session_allows(database and run and archive_list_text(row and 4)) equals 0:
+        return migration_fail(database and "not-authorized")
+    if archive_list_text(row and 2) equals "cancelled":
+        return migration_fail(database and "already-cancelled")
+    set event to concat(run and concat(":schedule-cancel:" and call_id))
+    set payload to concat("{\"schedule\":" and concat(provider_quote(identity) and ",\"effects\":\"future-reservations-cancelled-only\"}"))
+    if archive_append_pending(database and archive_list_text(row and 4) and event and "schedule_cancelled" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return migration_fail(database and "database-error")
+    set state_values to [identity,event]
+    if tool_ledger_change(database and "UPDATE echo_schedule_state SET status='cancelled',last_event=?2 WHERE identity=?1 RETURNING identity;" and state_values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "database-error")
+    return "cancelled"

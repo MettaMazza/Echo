@@ -1,0 +1,125 @@
+import "../jobs/task_checklist"
+import "../jobs/delegation_run"
+import "../security/tool_policy"
+import "../security/group_history"
+import "../web/cancellation"
+import "../web/activity"
+import "history_tools"
+
+# Workers are launched by the durable scheduler, outside this tool's process.
+define delegation_tool_execute with database as Int and run as Str and call_id as Str returning Str:
+    if tool_policy_allows(database and run and call_id and "delegate_task") equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set status to delegation_materialize(database and run and call_id)
+    set result to concat("{\"status\":" and provider_quote(status))
+    if status equals "materialized" or else status equals "already-materialized":
+        set result to concat(result and concat(",\"run\":" and provider_quote(concat(run and concat(":delegate:" and call_id)))))
+        set result to concat(result and ",\"execution\":\"Inspect delegation_status for current state and final result; admission is not completion.\"")
+    return concat(result and "}")
+
+define delegation_status_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if tool_policy_allows(database and run and call_id and "delegation_status") equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set target_field to provider_member(tokens and 0 and "run")
+    if not (provider_kind(tokens and target_field) equals "string"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "run" or else key equals "history"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set target to provider_value(tokens and target_field)
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    # Later turns in the same conversation may inspect the same owner's child.
+    set values to [run,target]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.session,r.state,r.last_event,COALESCE((SELECT w.status FROM echo_web_workers w WHERE w.run=r.run),'unclaimed'),(SELECT COUNT(*) FROM echo_events g WHERE g.kind='guidance_received' AND json_extract(g.payload,'$.run_id')=r.run AND NOT EXISTS(SELECT 1 FROM echo_events a WHERE a.kind='user_guidance' AND json_extract(a.payload,'$.source_event')=g.event)),COALESCE((SELECT a.event FROM echo_events a WHERE a.kind='user_guidance' AND json_extract(a.payload,'$.run_id')=r.run ORDER BY a.sequence DESC LIMIT 1),'') FROM echo_delegations d JOIN echo_runs r ON r.run=d.child WHERE d.child=?2 AND EXISTS(SELECT 1 FROM echo_runs origin JOIN echo_runs current ON current.session=origin.session JOIN echo_run_authority oa ON oa.run=origin.run JOIN echo_run_authority ca ON ca.run=current.run AND ca.principal=oa.principal WHERE origin.run=d.parent AND current.run=?1);" and values))
+    set result to "{\"status\":\"not-found\"}"
+    if archive_list_text(row and 0) equals "found":
+        if run_authority_allows(database and target and "user") equals 0 or else group_history_allows(database and archive_list_text(row and 1)) equals 0:
+            set result to "{\"status\":\"authority-changed\"}"
+        else:
+            set result to concat("{\"status\":\"found\",\"run\":" and provider_quote(target))
+            set checklist to task_checklist_read(database and target)
+            if string_length(checklist) > 0:
+                set result to concat(result and concat(",\"checklist\":" and checklist))
+            set result to concat(result and concat(",\"activity\":" and provider_quote(web_run_activity(database and target))))
+            set result to concat(result and concat(",\"compaction\":" and web_run_compaction(database and target)))
+            set latest_values to create_list()
+            set added to append_list(latest_values and archive_list_text(row and 1))
+            set latest to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE session=? AND kind='model_request' ORDER BY sequence DESC LIMIT 1;" and latest_values))
+            set result to concat(result and concat(",\"latest_context_event\":" and provider_quote(archive_list_text(latest and 1))))
+            set history_field to provider_member(tokens and 0 and "history")
+            if history_field >= 0:
+                set history_arguments to provider_value(tokens and history_field)
+                set history_tokens to provider_json_tokens(history_arguments)
+                set operation to "history_search"
+                if provider_member(history_tokens and 0 and "event") >= 0:
+                    set operation to "history_read"
+                set history_result to history_tool_execute_snapshot(database and archive_list_text(row and 1) and operation and history_arguments)
+                set result to concat(result and concat(",\"history\":" and history_result))
+            set result to concat(result and concat(",\"state\":" and provider_quote(archive_list_text(row and 2))))
+            set result to concat(result and concat(",\"last_event\":" and provider_quote(archive_list_text(row and 3))))
+            set result to concat(result and concat(",\"worker_status\":" and provider_quote(archive_list_text(row and 4))))
+            set result to concat(result and concat(",\"pending_messages\":" and archive_list_text(row and 5)))
+            set result to concat(result and concat(",\"last_applied_message\":" and provider_quote(archive_list_text(row and 6))))
+            if archive_list_text(row and 2) equals "completed" or else archive_list_text(row and 2) equals "failed" or else archive_list_text(row and 2) equals "cancelled":
+                set event to archive_read_event(database and archive_list_text(row and 3))
+                if event equals 0:
+                    set ignored to sql_execute(database and "ROLLBACK;")
+                    return "{\"status\":\"archive-error\"}"
+                set result to concat(result and concat(",\"result_kind\":" and provider_quote(archive_list_text(event and 2))))
+                set result to concat(result and concat(",\"result_payload\":" and provider_quote(archive_list_text(event and 3))))
+                set result to concat(result and concat(",\"result_digest\":" and provider_quote(archive_list_text(event and 6))))
+            set result to concat(result and "}")
+    else if not (archive_list_text(row and 0) equals "end"):
+        set result to "{\"status\":\"database-error\"}"
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"database-error\"}"
+    return result
+
+# Messages remain inside the existing child run. The tool call identity is the
+# delivery identity, so repeating an interrupted dispatch cannot enqueue twice.
+define delegation_message_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if tool_policy_allows(database and run and call_id and "delegation_message") equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set target_field to provider_member(tokens and 0 and "run")
+    set message_field to provider_member(tokens and 0 and "message")
+    if not (provider_kind(tokens and target_field) equals "string") or else not (provider_kind(tokens and message_field) equals "string") or else string_length(string_trim(provider_value(tokens and message_field))) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        if not (provider_value(tokens and index) equals "run" or else provider_value(tokens and index) equals "message"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set target to provider_value(tokens and target_field)
+    set values to [run,target]
+    set origin to history_collect_one(checkpoint_prepare(database and "SELECT a.device FROM echo_delegations d JOIN echo_run_authority a ON a.run=?1 WHERE d.child=?2 AND EXISTS(SELECT 1 FROM echo_runs origin JOIN echo_runs current ON current.session=origin.session JOIN echo_run_authority oa ON oa.run=origin.run JOIN echo_run_authority ca ON ca.run=current.run AND ca.principal=oa.principal WHERE origin.run=d.parent AND current.run=?1);" and values))
+    if not (archive_list_text(origin and 0) equals "found"):
+        return "{\"status\":\"not-found\"}"
+    set identity to concat(run and concat(":delegation-message:" and call_id))
+    if web_guidance_request(database and archive_list_text(origin and 1) and target and identity and provider_value(tokens and message_field)) is not equal to 0:
+        return "{\"status\":\"not-delivered\",\"recovery\":\"Inspect child state and authority. Terminal tasks cannot accept new guidance.\"}"
+    set event to concat(target and concat(":guidance:" and identity))
+    set applied_values to [concat(event and ":applied")]
+    set applied to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE event=?1 AND kind='user_guidance';" and applied_values))
+    set status to "queued"
+    if archive_list_text(applied and 0) equals "found":
+        set status to "applied"
+    else if not (archive_list_text(applied and 0) equals "end"):
+        set status to "accepted-status-unavailable"
+    set result to concat("{\"status\":" and provider_quote(status))
+    set result to concat(result and concat(",\"run\":" and provider_quote(target)))
+    return concat(result and concat(",\"guidance_event\":" and concat(provider_quote(event) and "}")))

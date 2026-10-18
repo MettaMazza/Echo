@@ -1,0 +1,98 @@
+import "read_text"
+import "../providers/local_json"
+
+# Parse delimited text without evaluating formulas or coercing cell values.
+# Validate the entire source even when only a page of rows is returned.
+define workspace_table_parse with text as Str and delimiter as Str and offset as Int and rows as Int returning Str:
+    if string_length(delimiter) is not equal to 1 or else offset < 0 or else rows < 1:
+        return "{\"status\":\"invalid-arguments\"}"
+    set separator to get_character(delimiter and 0)
+    if separator < 1 or else separator >= 128 or else separator equals 34 or else separator equals 10 or else separator equals 13:
+        return "{\"status\":\"invalid-arguments\"}"
+    set field to create_builder()
+    set record to create_builder()
+    set output to create_builder()
+    set fields to 0
+    set total to 0
+    set returned to 0
+    set active to 0
+    set quoted to 0
+    set position to 0
+    set size to string_length(text)
+    if size >= 3 and get_character(text and 0) equals 239 and get_character(text and 1) equals 187 and get_character(text and 2) equals 191:
+        set position to 3
+    repeat while position <= size:
+        set code to -1
+        if position < size:
+            set code to get_character(text and position)
+        if quoted equals 1:
+            if code equals -1:
+                set discarded to builder_to_string(field)
+                set discarded to builder_to_string(record)
+                set discarded to builder_to_string(output)
+                return concat("{\"status\":\"malformed-table\",\"reason\":\"unclosed-quote\",\"byte_offset\":" and concat(int_to_string(position) and "}"))
+            if code equals 34:
+                if position + 1 < size and get_character(text and position + 1) equals 34:
+                    set added to builder_append(field and "\"")
+                    set position to position + 1
+                else:
+                    set quoted to 2
+            else:
+                set added to builder_append(field and substring(text and position and 1))
+        else if code equals separator or else code equals 10 or else code equals 13 or else code equals -1:
+            if code equals -1 and active equals 0 and fields equals 0:
+                break
+            if fields > 0:
+                set added to builder_append(record and ",")
+            set added to builder_append(record and provider_quote(ptr_to_str(builder_to_string(field))))
+            set field to create_builder()
+            set fields to fields + 1
+            set quoted to 0
+            set active to 1
+            if code is not equal to separator:
+                set record_text to ptr_to_str(builder_to_string(record))
+                if total >= offset and returned < rows:
+                    if returned > 0:
+                        set added to builder_append(output and ",")
+                    set added to builder_append(output and concat("[" and concat(record_text and "]")))
+                    set returned to returned + 1
+                set total to total + 1
+                set record to create_builder()
+                set fields to 0
+                set active to 0
+                if code equals 13 and position + 1 < size and get_character(text and position + 1) equals 10:
+                    set position to position + 1
+        else if quoted equals 2:
+            set discarded to builder_to_string(field)
+            set discarded to builder_to_string(record)
+            set discarded to builder_to_string(output)
+            return concat("{\"status\":\"malformed-table\",\"reason\":\"characters-after-quote\",\"byte_offset\":" and concat(int_to_string(position) and "}"))
+        else if code equals 34:
+            if builder_length(field) > 0:
+                set discarded to builder_to_string(field)
+                set discarded to builder_to_string(record)
+                set discarded to builder_to_string(output)
+                return concat("{\"status\":\"malformed-table\",\"reason\":\"quote-in-unquoted-cell\",\"byte_offset\":" and concat(int_to_string(position) and "}"))
+            set quoted to 1
+            set active to 1
+        else:
+            set added to builder_append(field and substring(text and position and 1))
+            set active to 1
+        set position to position + 1
+    set discarded to builder_to_string(field)
+    set discarded to builder_to_string(record)
+    set next to offset + returned
+    set ended to "false"
+    if next >= total:
+        set ended to "true"
+    set result to concat("{\"status\":\"found\",\"representation\":\"delimited-text-cells\",\"sha256\":" and provider_quote(ep_sha256(text)))
+    set result to concat(result and concat(",\"rows\":[" and concat(ptr_to_str(builder_to_string(output)) and "]")))
+    set result to concat(result and concat(",\"total_rows\":" and int_to_string(total)))
+    set result to concat(result and concat(",\"next_offset\":" and int_to_string(next)))
+    return concat(result and concat(",\"end\":" and concat(ended and "}")))
+
+define workspace_read_table with library as Int and root as Int and path as Str and delimiter as Str and offset as Int and rows as Int returning Str:
+    set original to workspace_read_text(library and root and path and 65536 and 0 and -1)
+    if not (archive_list_text(original and 0) equals "read"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(original and 0)) and "}"))
+    return workspace_table_parse(archive_list_text(original and 1) and delimiter and offset and rows)

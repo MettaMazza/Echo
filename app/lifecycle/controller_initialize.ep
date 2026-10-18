@@ -1,0 +1,45 @@
+import "controller_ledger"
+import "../rights/review_upgrade"
+import "../web/run_store"
+
+# The host opener has already established a private root-owned database. This
+# initializer never copies a runtime archive or creates principals/approvals.
+define controller_schema_initialize with database as Int and configuration_digest as Str returning Str:
+    if protected_digest_valid(configuration_digest) equals 0:
+        return "configuration-pin-invalid"
+    set session to "controller-bootstrap"
+    set started to history_collect_one(archive_prepare(database and "SELECT payload FROM echo_events WHERE session='controller-bootstrap' AND event='controller-bootstrap:started' AND kind='controller_bootstrap_started';"))
+    if archive_list_text(started and 0) equals "end":
+        set existing to history_collect_one(archive_prepare(database and "SELECT (SELECT COUNT(*) FROM echo_events)+(SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT IN ('echo_events','sqlite_sequence'));"))
+        if not (archive_list_text(existing and 0) equals "found") or else not (archive_list_text(existing and 1) equals "0"):
+            return "existing-archive-not-controller-bootstrap"
+        if archive_append(database and session and "controller-bootstrap:started" and "controller_bootstrap_started" and configuration_digest and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return "bootstrap-intent-failed"
+    else if not (archive_list_text(started and 0) equals "found") or else not (archive_list_text(started and 1) equals configuration_digest):
+        return "bootstrap-configuration-conflict"
+    if archive_verify(database and session) is not equal to 0:
+        return "bootstrap-integrity-failed"
+    # Each existing migration is restartable and checks its stored definition.
+    if web_run_schema(database) is not equal to 0:
+        return "controller-base-schema-failed"
+    set schema to protected_refusal_schema(database)
+    if not (schema equals "applied" or else schema equals "already-applied"):
+        return concat("controller-rights-schema:" and schema)
+    set complete to history_collect_one(archive_prepare(database and "SELECT payload FROM echo_events WHERE event='controller-bootstrap:complete' AND session='controller-bootstrap' AND kind='controller_bootstrap_complete';"))
+    if archive_list_text(complete and 0) equals "found":
+        if archive_list_text(complete and 1) equals configuration_digest:
+            return "already-initialized"
+        return "bootstrap-completion-conflict"
+    if not (archive_list_text(complete and 0) equals "end") or else archive_append(database and session and "controller-bootstrap:complete" and "controller_bootstrap_complete" and configuration_digest and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return "bootstrap-completion-failed"
+    return "initialized"
+
+# Runtime callers cannot reach the initializer without OS authentication.
+define controller_initialize with directory as Str and name as Str and configuration_digest as Str returning Str:
+    set database to controller_ledger_open(directory and name)
+    if database equals 0:
+        return "controller-ledger-unavailable"
+    set result to controller_schema_initialize(database and configuration_digest)
+    if sql_close(database) is not equal to 0:
+        return concat("controller-close-failed-after:" and result)
+    return result

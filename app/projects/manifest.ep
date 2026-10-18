@@ -1,0 +1,88 @@
+import "scope"
+
+# Reject unknown fields instead of treating text as executable configuration.
+define project_object_keys with tokens as List and object as Int and names as List returning Int:
+    if not (provider_kind(tokens and object) equals "{"):
+        return 0
+    set index to object + 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        set known to 0
+        for each name in names:
+            if key equals name:
+                set known to 1
+        if known equals 0:
+            return 0
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    return 1
+
+# A reference retains the attachment's existing scope and digest. It does not
+# copy bytes or grant another audience access to the original attachment.
+define project_file_allowed with database as Int and run as Str and attachment as Str and digest as Str returning Int:
+    return project_file_allowed_scope(database and project_scope(database and run) and attachment and digest)
+
+# Scope is resolved by a trusted caller, never taken from browser/model JSON.
+define project_file_allowed_scope with database as Int and scope as Str and attachment as Str and digest as Str returning Int:
+    if string_length(scope) equals 0:
+        return 0
+    set query to ""
+    set values to create_list()
+    if string_length(scope) > 8 and substring(scope and 0 and 8) equals "private:":
+        set values to [substring(scope and 8 and string_length(scope) - 8),attachment,digest]
+        set query to memory_scope_query(database and "SELECT a.attachment FROM echo_attachments a JOIN echo_session_principals s ON s.session=a.session WHERE s.principal IN (__MEMORY_SCOPE__) AND a.attachment=?2 AND a.digest=?3;")
+    else if string_length(scope) > 9 and substring(scope and 0 and 9) equals "audience:":
+        set values to [substring(scope and 9 and string_length(scope) - 9),attachment,digest]
+        set query to "SELECT a.attachment FROM echo_group_sessions s JOIN echo_attachments a ON a.session=s.session WHERE json_array(s.group_id,s.revision)=?1 AND a.attachment=?2 AND a.digest=?3;"
+    else:
+        return 0
+    set row to history_collect_one(checkpoint_prepare(database and query and values))
+    return archive_list_text(row and 0) equals "found"
+
+define project_manifest_valid with database as Int and run as Str and manifest as Str returning Int:
+    return project_manifest_valid_scope(database and project_scope(database and run) and manifest)
+
+define project_manifest_valid_scope with database as Int and scope as Str and manifest as Str returning Int:
+    if string_length(scope) equals 0:
+        return 0
+    set tokens to provider_json_tokens(manifest)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else project_object_keys(tokens and 0 and ["name","instructions","tasks","files"]) equals 0:
+        return 0
+    for each key in ["name","instructions"]:
+        if not (provider_kind(tokens and provider_member(tokens and 0 and key)) equals "string"):
+            return 0
+    if string_length(string_trim(provider_value(tokens and provider_member(tokens and 0 and "name")))) equals 0:
+        return 0
+    set tasks to provider_items(tokens and provider_member(tokens and 0 and "tasks"))
+    set files to provider_items(tokens and provider_member(tokens and 0 and "files"))
+    if tasks equals 0 or else files equals 0:
+        return 0
+    set identifiers to create_list()
+    for each task in tasks:
+        if project_object_keys(tokens and task and ["id","title","status"]) equals 0:
+            return 0
+        for each key in ["id","title","status"]:
+            set field to provider_member(tokens and task and key)
+            if not (provider_kind(tokens and field) equals "string") or else string_length(string_trim(provider_value(tokens and field))) equals 0:
+                return 0
+        set identity to provider_value(tokens and provider_member(tokens and task and "id"))
+        for each prior in identifiers:
+            if prior equals identity:
+                return 0
+        set added to append_list(identifiers and identity)
+        set status to provider_value(tokens and provider_member(tokens and task and "status"))
+        if not (status equals "todo" or else status equals "doing" or else status equals "done" or else status equals "blocked"):
+            return 0
+    for each file in files:
+        if project_object_keys(tokens and file and ["attachment","sha256","label"]) equals 0:
+            return 0
+        for each key in ["attachment","sha256","label"]:
+            set field to provider_member(tokens and file and key)
+            if not (provider_kind(tokens and field) equals "string") or else string_length(provider_value(tokens and field)) equals 0:
+                return 0
+        set attachment to provider_value(tokens and provider_member(tokens and file and "attachment"))
+        set digest to provider_value(tokens and provider_member(tokens and file and "sha256"))
+        if project_file_allowed_scope(database and scope and attachment and digest) equals 0:
+            return 0
+    return 1

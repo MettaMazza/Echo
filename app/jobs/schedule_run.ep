@@ -1,0 +1,67 @@
+import "schedule_store"
+import "../web/worker"
+
+# Deterministic run identity joins a due receipt to the existing worker protocol.
+# All admission writes commit together; no separate scheduler agent state exists.
+define schedule_materialize with database as Int and occurrence as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set values to [occurrence]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT s.origin_run,s.origin_call,s.instruction,r.session,a.device,o.origin_event,s.definition_event FROM echo_schedule_occurrences o JOIN echo_schedules s ON s.identity=o.schedule JOIN echo_runs r ON r.run=s.origin_run JOIN echo_run_authority a ON a.run=r.run WHERE o.identity=?1;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return migration_fail(database and "occurrence-not-found")
+    set parent to archive_list_text(row and 1)
+    if schedule_origin_allows(database and parent and archive_list_text(row and 2)) equals 0:
+        return migration_fail(database and "authority-changed")
+    set session to archive_list_text(row and 4)
+    set origin_event to concat(occurrence and ":schedule-origin")
+    set payload to concat("{\"origin_run\":" and provider_quote(parent))
+    set payload to concat(payload and concat(",\"origin_call\":" and provider_quote(archive_list_text(row and 2))))
+    set payload to concat(payload and concat(",\"occurrence_event\":" and provider_quote(archive_list_text(row and 6))))
+    set payload to concat(payload and concat(",\"definition_event\":" and concat(provider_quote(archive_list_text(row and 7)) and "}")))
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT r.session,e.payload FROM echo_runs r JOIN echo_events e ON e.event=r.run||':schedule-origin' WHERE r.run=?1;" and values))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals session) or else not (archive_list_text(old and 2) equals payload):
+            return migration_fail(database and "occurrence-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "database-error")
+        return "already-materialized"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "database-error")
+    set session_values to [session]
+    set active to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_runs r WHERE r.session=?1 AND (r.state NOT IN ('completed','cancelled','failed') OR EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state<>'observed'));" and session_values))
+    if not (archive_list_text(active and 0) equals "found"):
+        return migration_fail(database and "database-error")
+    if not (archive_list_text(active and 1) equals "0"):
+        return migration_fail(database and "session-active")
+    set parent_values to [parent]
+    set shared to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_group_run_origins WHERE run=?1;" and parent_values))
+    if archive_list_text(shared and 0) equals "found":
+        set origin_values to [occurrence,session,archive_list_text(row and 5)]
+        if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_run_origins VALUES(?1,?2,?3);" and origin_values) and 101) is not equal to 0:
+            return migration_fail(database and "database-error")
+    else if not (archive_list_text(shared and 0) equals "end"):
+        return migration_fail(database and "database-error")
+    set objective to concat(occurrence and ":user")
+    set now to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+    if archive_append_pending(database and session and origin_event and "scheduled_run_origin" and payload and now) is not equal to 0 or else archive_append_pending(database and session and objective and "user" and archive_list_text(row and 3) and now) is not equal to 0 or else agent_run_create(database and occurrence and session and objective) is not equal to 0:
+        return migration_fail(database and "database-error")
+    # New authority must be exactly the frozen origin, not merely the same role.
+    set authority_values to [parent,occurrence]
+    set same to history_collect_one(checkpoint_prepare(database and "SELECT child.run FROM echo_run_authority child JOIN echo_run_authority parent ON parent.run=?1 WHERE child.run=?2 AND child.device=parent.device AND child.principal=parent.principal AND child.role=parent.role AND child.role_revision=parent.role_revision AND child.revocation_revision=parent.revocation_revision AND child.link_revision=parent.link_revision;" and authority_values))
+    if not (archive_list_text(same and 0) equals "found") or else run_authority_allows(database and occurrence and "user") equals 0:
+        return migration_fail(database and "authority-changed")
+    # Preserve original provider selection/profile; legacy origins have neither.
+    for each suffix in [":provider-selection",":provider-profile"]:
+        set source to concat(parent and ptr_to_str(suffix))
+        set source_values to [source]
+        set saved to history_collect_one(checkpoint_prepare(database and "SELECT kind,payload FROM echo_events WHERE event=?1;" and source_values))
+        if archive_list_text(saved and 0) equals "found":
+            set verified to archive_read_event(database and source)
+            if verified equals 0 or else archive_append_pending(database and session and concat(occurrence and ptr_to_str(suffix)) and archive_list_text(saved and 1) and archive_list_text(verified and 3) and now) is not equal to 0:
+                return migration_fail(database and "provider-evidence-invalid")
+        else if not (archive_list_text(saved and 0) equals "end"):
+            return migration_fail(database and "database-error")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "database-error")
+    return "materialized"

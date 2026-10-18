@@ -1,0 +1,72 @@
+import "workbook_create"
+
+# Explicit XML part replacement exposes the complete workbook format instead of
+# flattening sheets to cell values. Unknown binary and XML parts remain present.
+define workbook_xml_identity with text as Str returning Str:
+    set nodes to workbook_xml_nodes(text)
+    if nodes equals 0:
+        return ""
+    for each item in nodes:
+        set node to item
+        if get_list(node and 0) equals 1:
+            return concat(archive_list_text(node and 3) and concat("#" and archive_list_text(node and 2)))
+    return ""
+
+define workspace_edit_workbook with system as Int and root as Int and source as Str and destination as Str and expected as Str and replacements as Str returning Str:
+    if source equals destination or else workspace_path_parts(destination) equals 0:
+        return "{\"status\":\"new-destination-required\",\"effect\":\"unchanged\"}"
+    set package to workbook_parts(system and root and source)
+    if not (archive_list_text(package and 0) equals "read"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(package and 0)) and "}"))
+    if not (archive_list_text(package and 1) equals expected):
+        return "{\"status\":\"source-changed\",\"effect\":\"unchanged\"}"
+    set original to get_list(package and 2)
+    set links to workbook_xml_nodes(workbook_part(original and "_rels/.rels"))
+    set book_path to workbook_relationship(links and "" and "" and "officeDocument")
+    if workbook_xml_root(workbook_xml_nodes(workbook_part(original and book_path)) and "workbook") equals 0:
+        return "{\"status\":\"invalid-workbook\",\"effect\":\"unchanged\"}"
+    set index to 0
+    repeat while index < length_list(original):
+        set name to archive_list_text(original and index)
+        if string_contains(name and "_xmlsignatures/") > 0:
+            return "{\"status\":\"signed-workbook-requires-resigning\",\"effect\":\"unchanged\"}"
+        set index to index + 2
+    set tokens to provider_json_tokens(replacements)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "{\"status\":\"invalid-replacements\",\"effect\":\"unchanged\"}"
+    set items to provider_items(tokens and 0)
+    if items equals 0 or else length_list(items) equals 0:
+        return "{\"status\":\"invalid-replacements\",\"effect\":\"unchanged\"}"
+    set patch to create_list()
+    set added to append_list(patch and source)
+    set added to append_list(patch and expected)
+    set names to create_list()
+    for each item in items:
+        if not (provider_kind(tokens and item) equals "{"):
+            return "{\"status\":\"invalid-replacements\",\"effect\":\"unchanged\"}"
+        set cursor to item + 1
+        repeat while not (provider_kind(tokens and cursor) equals "}"):
+            set key to provider_value(tokens and cursor)
+            if not (key equals "part" or else key equals "xml"):
+                return "{\"status\":\"invalid-replacements\",\"effect\":\"unchanged\"}"
+            set cursor to provider_after(tokens and cursor + 2)
+            if provider_kind(tokens and cursor) equals ",":
+                set cursor to cursor + 1
+        set part_field to provider_member(tokens and item and "part")
+        set xml_field to provider_member(tokens and item and "xml")
+        if not (provider_kind(tokens and part_field) equals "string") or else not (provider_kind(tokens and xml_field) equals "string"):
+            return "{\"status\":\"invalid-replacements\",\"effect\":\"unchanged\"}"
+        set part to provider_value(tokens and part_field)
+        set xml to provider_value(tokens and xml_field)
+        for each prior in names:
+            if ptr_to_str(prior) equals part:
+                return "{\"status\":\"duplicate-replacement\",\"effect\":\"unchanged\"}"
+        set before to workbook_part(original and part)
+        set identity to workbook_xml_identity(before)
+        if string_length(identity) equals 0 or else not (workbook_xml_identity(xml) equals identity):
+            return concat("{\"status\":\"invalid-or-missing-xml-part\",\"part\":" and concat(provider_quote(part) and ",\"effect\":\"unchanged\"}"))
+        set added to append_list(names and part)
+        set added to append_list(patch and part)
+        set added to append_list(patch and xml)
+    set result to workspace_archive_commit(system and root and patch and destination and "xml-patch")
+    return concat(substring(result and 0 and string_length(result) - 1) and concat(",\"source_sha256\":" and concat(provider_quote(expected) and ",\"source_preserved\":true,\"calculation\":\"Not recalculated. Preserve or update formula dependencies and calculation settings in the supplied XML.\"}")))

@@ -1,0 +1,93 @@
+import "files"
+import "extract_archive"
+import "../providers/local_json"
+import "../archive/file_digest"
+
+# The reader only inspects entries. It never invokes a disk extractor, follows
+# entry links, or executes archive content. Duplicate names retain their index.
+define workspace_archive_entries with library as Int and reader as Int and offset as Int and entries as Int returning Str:
+    set output to create_builder()
+    set pointer to create_list()
+    set added to append_list(pointer and 0)
+    set total to 0
+    set returned to 0
+    repeat while 1 equals 1:
+        set status to socket_signed_result(ep_dlcall2(ep_dlsym(library and "archive_read_next_header") and reader and get_list_data_ptr(pointer)))
+        if status equals 1:
+            break
+        if status is not equal to 0:
+            set discarded to builder_to_string(output)
+            return "{\"status\":\"archive-read-failed\"}"
+        set item to get_list(pointer and 0)
+        if total >= offset and returned < entries:
+            set name to ptr_to_str(ep_dlcall1(ep_dlsym(library and "archive_entry_pathname_utf8") and item))
+            if provider_valid_utf8(name) equals 0:
+                set discarded to builder_to_string(output)
+                return "{\"status\":\"invalid-entry-name\"}"
+            if returned > 0:
+                set added to builder_append(output and ",")
+            set added to builder_append(output and concat("{\"index\":" and int_to_string(total)))
+            set added to builder_append(output and concat(",\"path\":" and provider_quote(name)))
+            set added to builder_append(output and concat(",\"filetype\":" and int_to_string(ep_dlcall1(ep_dlsym(library and "archive_entry_filetype") and item))))
+            set added to builder_append(output and concat(",\"declared_bytes\":" and int_to_string(ep_dlcall1(ep_dlsym(library and "archive_entry_size") and item))))
+            set added to builder_append(output and "}")
+            set returned to returned + 1
+        set total to total + 1
+        if socket_signed_result(ep_dlcall1(ep_dlsym(library and "archive_read_data_skip") and reader)) is not equal to 0:
+            set discarded to builder_to_string(output)
+            return "{\"status\":\"archive-read-failed\"}"
+    set ended to "false"
+    if offset + returned >= total:
+        set ended to "true"
+    set result to concat("{\"status\":\"found\",\"entries\":[" and ptr_to_str(builder_to_string(output)))
+    set result to concat(result and concat("],\"total_entries\":" and int_to_string(total)))
+    set result to concat(result and concat(",\"next_offset\":" and int_to_string(offset + returned)))
+    return concat(result and concat(",\"end\":" and concat(ended and "}")))
+
+define workspace_list_archive with system as Int and root as Int and path as Str and offset as Int and entries as Int returning Str:
+    return workspace_archive_operation(system and root and path and offset and entries and "" and "")
+
+define workspace_archive_operation with system as Int and root as Int and path as Str and offset as Int and entries as Int and destination as Str and expected as Str returning Str:
+    if offset < 0 or else entries < 1:
+        return "{\"status\":\"invalid-arguments\"}"
+    set descriptor to workspace_file_open(system and root and path and 0)
+    if descriptor < 0:
+        return "{\"status\":\"open-failed\"}"
+    set duplicate to socket_signed_result(ep_dlcall1(ep_dlsym(system and "dup") and descriptor))
+    set hash_library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set digest to file_digest_owned_descriptor(hash_library and duplicate and 65536 and 0)
+    if not (archive_list_text(digest and 0) equals "verified") or else ep_dlcall3(ep_dlsym(system and "lseek") and descriptor and 0 and 0) is not equal to 0:
+        set closed to net_close(descriptor)
+        return "{\"status\":\"source-hash-failed\"}"
+    if string_length(destination) > 0 and not (archive_list_text(digest and 1) equals expected):
+        set closed to net_close(descriptor)
+        return "{\"status\":\"source-changed\"}"
+    set library to ep_dlopen("/usr/lib/libarchive.2.dylib")
+    if library equals 0:
+        set closed to net_close(descriptor)
+        return "{\"status\":\"unavailable\"}"
+    set required to string_split("archive_read_new archive_read_support_format_tar archive_read_support_format_zip archive_read_support_filter_gzip archive_read_open_fd archive_read_next_header archive_entry_pathname_utf8 archive_entry_filetype archive_entry_size archive_read_data_skip archive_read_free archive_read_set_options archive_read_data_into_fd archive_entry_hardlink archive_entry_symlink" and " ")
+    for each symbol in required:
+        if ep_dlsym(library and ptr_to_str(symbol)) equals 0:
+            set closed to net_close(descriptor)
+            set closed to ep_dlclose(library)
+            return "{\"status\":\"unavailable\"}"
+    set reader to ep_dlcall0(ep_dlsym(library and "archive_read_new"))
+    set result to "{\"status\":\"archive-open-failed\"}"
+    if reader is not equal to 0:
+        if ep_dlcall1(ep_dlsym(library and "archive_read_support_format_tar") and reader) equals 0 and ep_dlcall1(ep_dlsym(library and "archive_read_support_format_zip") and reader) equals 0 and ep_dlcall1(ep_dlsym(library and "archive_read_support_filter_gzip") and reader) equals 0 and ep_dlcall2(ep_dlsym(library and "archive_read_set_options") and reader and str_to_ptr("!mac-ext")) equals 0:
+            if ep_dlcall3(ep_dlsym(library and "archive_read_open_fd") and reader and descriptor and 65536) equals 0:
+                if string_length(destination) equals 0:
+                    set result to workspace_archive_entries(library and reader and offset and entries)
+                else:
+                    set result to workspace_archive_extract_entry(system and library and reader and root and offset and destination)
+        set freed to ep_dlcall1(ep_dlsym(library and "archive_read_free") and reader)
+        if freed is not equal to 0:
+            set result to "{\"status\":\"archive-close-failed\"}"
+    set closed to net_close(descriptor)
+    set closed to ep_dlclose(library)
+    set tokens to provider_json_tokens(result)
+    if provider_value(tokens and provider_member(tokens and 0 and "status")) equals "found" or else provider_value(tokens and provider_member(tokens and 0 and "status")) equals "created":
+        set result to concat(substring(result and 0 and string_length(result) - 1) and concat(",\"source_sha256\":" and provider_quote(archive_list_text(digest and 1))))
+        set result to concat(result and ",\"names\":\"libarchive-decoded; macOS may normalize Unicode\"}")
+    return result

@@ -1,0 +1,22 @@
+import "schedule_store"
+
+# SQLite table reconstruction changes only the group-session uniqueness rule.
+# Existing names and foreign keys remain intact. The transaction verifies all
+# references before its migration receipt can commit; enforcement is restored
+# before this dedicated migration connection can be used for normal work.
+define delegation_schema with database as Int returning Str:
+    set prior to schedule_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    if sql_execute(database and "PRAGMA foreign_keys=OFF;") is not equal to 0:
+        return "foreign-key-mode-failed"
+    set mode to history_collect_one(archive_prepare(database and "PRAGMA foreign_keys;"))
+    if not (archive_list_text(mode and 1) equals "0"):
+        return "migration-requires-idle-connection"
+    set result to migration_apply(database and 26 and "isolated-delegated-contexts" and "CREATE TABLE echo_delegations(child TEXT PRIMARY KEY REFERENCES echo_runs(run) DEFERRABLE INITIALLY DEFERRED,parent TEXT NOT NULL REFERENCES echo_runs(run),origin_call TEXT NOT NULL,session TEXT NOT NULL UNIQUE REFERENCES echo_sessions(session) DEFERRABLE INITIALLY DEFERRED,request_event TEXT NOT NULL REFERENCES echo_events(event),UNIQUE(parent,origin_call),FOREIGN KEY(parent,origin_call) REFERENCES echo_tool_calls(run,call_id)); CREATE TRIGGER echo_delegation_no_update BEFORE UPDATE ON echo_delegations BEGIN SELECT RAISE(ABORT,'Delegation lineage is immutable'); END; CREATE TRIGGER echo_delegation_no_delete BEFORE DELETE ON echo_delegations BEGIN SELECT RAISE(ABORT,'Delegation lineage is immutable'); END; CREATE TRIGGER echo_delegation_before_child BEFORE INSERT ON echo_delegations WHEN EXISTS(SELECT 1 FROM echo_runs WHERE run=NEW.child) OR NEW.child=NEW.parent BEGIN SELECT RAISE(ABORT,'Delegation origin must precede child'); END; CREATE TEMP TABLE echo_group_session_copy AS SELECT * FROM echo_group_sessions; DROP TABLE echo_group_sessions; CREATE TABLE echo_group_sessions(session TEXT PRIMARY KEY REFERENCES echo_sessions(session),group_id TEXT NOT NULL REFERENCES echo_groups(identity),revision INTEGER NOT NULL CHECK(revision>0)); INSERT INTO echo_group_sessions SELECT * FROM echo_group_session_copy; DROP TABLE echo_group_session_copy; CREATE TRIGGER echo_group_session_no_update BEFORE UPDATE ON echo_group_sessions BEGIN SELECT RAISE(ABORT,'Group session audience is immutable'); END; CREATE TRIGGER echo_group_session_no_delete BEFORE DELETE ON echo_group_sessions BEGIN SELECT RAISE(ABORT,'Group session audience is immutable'); END; CREATE TRIGGER echo_group_session_not_private BEFORE INSERT ON echo_group_sessions BEGIN SELECT CASE WHEN EXISTS(SELECT 1 FROM echo_session_owners WHERE session=NEW.session) OR EXISTS(SELECT 1 FROM echo_session_principals WHERE session=NEW.session) THEN RAISE(ABORT,'Private conversation cannot become shared') END; SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM echo_group_audiences WHERE group_id=NEW.group_id AND revision=NEW.revision) THEN RAISE(ABORT,'Recorded audience required') END; END;  CREATE TRIGGER echo_group_canonical_unique BEFORE INSERT ON echo_group_sessions WHEN NOT EXISTS(SELECT 1 FROM echo_delegations WHERE session=NEW.session) AND EXISTS(SELECT 1 FROM echo_group_sessions s WHERE s.group_id=NEW.group_id AND s.revision=NEW.revision AND NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=s.session)) BEGIN SELECT RAISE(ABORT,'Canonical group session already exists'); END; CREATE TEMP TABLE echo_delegation_fk_guard(value INTEGER); CREATE TEMP TRIGGER echo_delegation_fk_validate BEFORE INSERT ON echo_delegation_fk_guard WHEN EXISTS(SELECT 1 FROM pragma_foreign_key_check) BEGIN SELECT RAISE(ABORT,'Foreign key check failed'); END; INSERT INTO echo_delegation_fk_guard VALUES(1); DROP TABLE echo_delegation_fk_guard;")
+    if sql_execute(database and "PRAGMA foreign_keys=ON;") is not equal to 0:
+        return "foreign-key-restore-failed-close-connection"
+    set mode to history_collect_one(archive_prepare(database and "PRAGMA foreign_keys;"))
+    if not (archive_list_text(mode and 1) equals "1"):
+        return "foreign-key-restore-failed-close-connection"
+    return result

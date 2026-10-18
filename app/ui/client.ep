@@ -26,6 +26,8 @@ define echo_compaction_progress with result:
     if window.echoCompactionActivity && observation && observation.state != "pending":
         echo_recap_notice(window.echoHistoryMarker)
     if not observation || observation.session != window.echoSession || observation.state != "pending":
+        # Identical stage text must not preserve another conversation's spinner.
+        set window.echoCompactionActivity to ""
         echo_note(result.activity || "Preparing the next step…")
         return 0
     if result.worker_status != "running":
@@ -66,8 +68,12 @@ define echo_busy with busy:
     set input to document.getElementById("message")
     set button to document.getElementById("send")
     set fresh to document.getElementById("new-chat")
-    set input.disabled to busy
-    set button.disabled to busy || (window.echoGroup && not window.echoGroupWritable)
+    set input.disabled to window.echoReadOnly || not window.echoToken
+    set button.disabled to window.echoUploading || window.echoReadOnly || not window.echoToken || (window.echoGroup && not window.echoGroupWritable)
+    set button.textContent to "Send ↑"
+    if window.echoBusy:
+        set button.textContent to "Queue ↑"
+    echo_queue_render()
     set fresh.disabled to busy
     set picker to document.getElementById("provider-picker")
     if picker:
@@ -88,8 +94,61 @@ define echo_busy with busy:
     echo_audio_controls_refresh()
     return 0
 
+# Keep machine codes for control flow while presenting actionable messages.
+define echo_error_code with error:
+    if error && error.code:
+        return error.code
+    if error && error.status:
+        return error.status
+    return String(error)
+
+define echo_failure with source:
+    if source && source.echoFeedback:
+        return source
+    set code to echo_error_code(source)
+    set feedback to null
+    if source && source.feedback:
+        set feedback to source.feedback
+    set message to "The operation reported: " + code + "."
+    set effects to "The outcome is not confirmed; check saved state before repeating a change."
+    set recovery to "Reopen the affected panel to check its current state. If the problem persists, keep this error and the run reference for investigation; do not repeat the same action unchanged."
+    if code.includes("fetch") || code.includes("network") || code.includes("Network") || code.includes("service") || code.includes("HTTP 50"):
+        set message to "Echo could not confirm a response from the local service."
+        set recovery to "Check the connection to the host Mac and reopen this panel when the service is reachable. For a pending message, retry its existing submission rather than creating a duplicate."
+    else if code.includes("unauthorized") || code.includes("not-authorized") || code.includes("revoked"):
+        set recovery to "Open Devices & access and check this browser's access and role. Restore access through an authorised device or administrator. Your existing link must not be erased just because this check failed."
+    else if code.includes("conflict") || code.includes("changed") || code.includes("cursor"):
+        set recovery to "Reload the current record, compare it with your intended change, then retry using the updated revision. Keep your draft and existing files."
+    else if code.includes("invalid") || code.includes("parse") || code.includes("SyntaxError"):
+        set recovery to "Check the requested fields and supported file format. Correct the input before retrying. If the server response was incomplete, check whether the operation already completed before resubmitting."
+    else if code.includes("integrity") || code.includes("digest") || code.includes("hash"):
+        set recovery to "Keep the original file and report this integrity error. Verify or restore the source before retrying; do not bypass verification."
+    else if code.includes("busy") || code.includes("pending") || code.includes("progress") || code.includes("session-active"):
+        set recovery to "Check the existing task's progress. Wait, steer it, or use Stop if needed; do not submit a duplicate operation."
+    else if code.includes("unavailable") || code.includes("not-found") || code.includes("missing") || code.includes("not-configured"):
+        set recovery to "Refresh the available items and check the selected file, device or service configuration. Restore the missing resource or access, then retry."
+    else if code.includes("storage") || code.includes("write") || code.includes("commit") || code.includes("database"):
+        set recovery to "Check the host's available storage and permissions. Inspect whether the change was saved before retrying, and preserve the original data."
+    if source && source.recovery:
+        set recovery to source.recovery
+    if source && source.effects:
+        set effects to source.effects
+    if feedback:
+        if feedback.message:
+            set message to feedback.message
+        if feedback.effects:
+            set effects to feedback.effects
+        if feedback.recovery:
+            set recovery to feedback.recovery
+    if feedback && feedback.reference:
+        set recovery to recovery + " Reference: " + feedback.reference
+    set result to Error(message + " " + effects + " " + recovery + " Code: " + code)
+    set result.code to code
+    set result.echoFeedback to true
+    return result
+
 define echo_error with error:
-    echo_note("Request failed: " + error + ". An interrupted submission keeps its retry identity.")
+    echo_note(String(echo_failure(error)))
     echo_busy(not window.echoToken)
     echo_outbox_render()
     return 0
@@ -109,22 +168,23 @@ define echo_api with path and payload:
     set options.headers to headers
     set options.body to JSON.stringify(payload)
     return window.fetch(path and options).then(given response:
-        if response.status == 502 || response.status == 503 || response.status == 504:
-            return Promise.reject("Echo's local service is unavailable (HTTP " + response.status + "). Your message is kept on this device; retry the same message when the service returns.")
         set parsed to response.json()
         set parse_failure to get_list(parsed and "catch")
         set decoded to parse_failure.call(parsed and given error:
-            return Promise.reject("Echo returned an incomplete response (HTTP " + response.status + "). Your saved submission identity is retained; retrying will not create another copy of an accepted message.")
+            set error to echo_failure(error)
+            return Promise.reject(echo_failure("Incomplete server response: HTTP " + response.status))
         )
         return decoded.then(given body:
             if not response.ok:
+                if body.status == "session-active" && (path == "/api/runs" || path == "/api/group-submit"):
+                    return body
                 if body.status == "unauthorized":
-                    window.localStorage.removeItem("echo.credential")
-                    set window.echoToken to ""
+                    # A failed request must never erase a durable device link.
+                    # Explicit unlink remains enforced by the server.
                     set pairing to document.getElementById("pairing")
                     set pairing.hidden to false
-                echo_note(body.status)
-                return Promise.reject(body.status)
+                echo_note(String(echo_failure(body)))
+                return Promise.reject(echo_failure(body))
             return body
         )
     )
@@ -152,12 +212,13 @@ define echo_attachment_thumbnail with file:
         )
         preview.addEventListener("error" and given ignored:
             URL.revokeObjectURL(address)
-            set holder.textContent to "Preview unavailable: " + file.name
+            set holder.textContent to "Preview unavailable: " + file.name + ". Open or download the original to inspect it; retry preview after checking its format."
         )
         set preview.src to address
     )
     set failed to get_list(loaded and "catch")
     failed.call(loaded and given error:
+        set error to echo_failure(error)
         set holder.textContent to "Preview unavailable: " + error
     )
     return holder
@@ -177,6 +238,8 @@ define echo_pending_attachments:
     set strip.textContent to ""
     set selected to echo_selected_files()
     for each file in window.echoAttachmentFiles || Array():
+        if file.lifecycle && file.lifecycle.state == "trashed":
+            continue
         if selected.includes(file.attachment):
             set card to document.createElement("div")
             set card.style.maxWidth to "160px"
@@ -191,26 +254,147 @@ define echo_pending_attachments:
     return 0
 
 define echo_remove_attachment with file and item:
+    return echo_attachment_lifecycle_button(file and "trash")
+
+define echo_attachment_lifecycle_button with file and action:
+    set query to null
+    set key to null
+    set saved to null
+    set request to null
+    set catcher to null
+    set selected to null
     set button to document.createElement("button")
     set button.type to "button"
-    set button.textContent to "Remove"
-    button.setAttribute("aria-label" and "Remove " + file.name + " from attachments")
+    set button.textContent to "Move to trash"
+    if action == "restore":
+        set button.textContent to "Restore attachment"
+    button.setAttribute("aria-label" and button.textContent + ": " + file.name)
+    set button.disabled to window.echoReadOnly || (window.echoGroup && not window.echoGroupWritable)
     button.addEventListener("click" and given ignored:
         if window.echoBusy || window.echoUploading || window.localStorage.getItem("echo.pending"):
-            echo_note("Wait for the current submission before removing its attachments.")
+            echo_note("Finish or stop the current submission before changing attachments.")
             return 0
-        set selected to echo_selected_files().filter(given identity:
+        set query to Object()
+        set query.action to action
+        set query.attachment to file.attachment
+        set query.previous to ""
+        if file.lifecycle:
+            set query.previous to file.lifecycle.revision
+        set key to "echo.attachment-lifecycle:" + file.attachment
+        set saved to window.localStorage.getItem(key)
+        if saved:
+            set saved to JSON.parse(saved)
+            if saved.action != action:
+                echo_note("Retry the previous attachment change before changing it again.")
+                return 0
+            set query to saved
+        else:
+            set query.identity to window.crypto.randomUUID()
+            window.localStorage.setItem(key and JSON.stringify(query))
+        set button.disabled to true
+        set request to echo_api("/api/attachment-lifecycle" and query).then(given result:
+            window.localStorage.removeItem(key)
+            if action == "trash":
+                set selected to echo_selected_files().filter(given identity:
+                    return identity != file.attachment
+                )
+                window.localStorage.setItem("echo.files:" + window.echoSession and JSON.stringify(selected))
+            echo_attachments()
+            echo_note("Attachment " + action + " saved. Original files, historical messages and recall remain intact; this is not memory erasure.")
+        )
+        set catcher to get_list(request and "catch")
+        catcher.call(request and given error:
+            set error to echo_failure(error)
+            set button.disabled to false
+            if echo_error_code(error) == "revision-conflict" || echo_error_code(error) == "not-authorized":
+                window.localStorage.removeItem(key)
+                echo_attachments()
+            echo_note("Attachment change failed: " + error + ". Retry the same action; duplicate changes are prevented.")
+        )
+    )
+    return button
+
+define echo_attachment_visibility_button with file and action:
+    set query to null
+    set key to null
+    set saved to null
+    set request to null
+    set catcher to null
+    set selected to null
+    set button to document.createElement("button")
+    set button.type to "button"
+    set button.textContent to "Forget automatic use"
+    if action == "restore":
+        set button.textContent to "Restore automatic use"
+    button.setAttribute("aria-label" and button.textContent + ": " + file.name)
+    set button.title to "Stop automatic use without deleting the original. Explicit rereading remains available; existing messages are preserved."
+    set button.disabled to window.echoReadOnly || (window.echoGroup && not window.echoGroupWritable)
+    button.addEventListener("click" and given ignored:
+        if window.echoBusy || window.echoUploading || window.localStorage.getItem("echo.pending"):
+            echo_note("Finish or stop the current submission before changing attachments.")
+            return 0
+        set query to Object()
+        set query.action to action
+        set query.attachment to file.attachment
+        set query.previous to ""
+        if file.visibility:
+            set query.previous to file.visibility.revision
+        set key to "echo.attachment-visibility:" + file.attachment
+        set saved to window.localStorage.getItem(key)
+        if saved:
+            set saved to JSON.parse(saved)
+            if saved.action != action:
+                echo_note("Retry the previous attachment change before changing it again.")
+                return 0
+            set query to saved
+        else:
+            set query.identity to window.crypto.randomUUID()
+            window.localStorage.setItem(key and JSON.stringify(query))
+        set button.disabled to true
+        set request to echo_api("/api/attachment-visibility" and query).then(given result:
+            window.localStorage.removeItem(key)
+            if action == "exclude":
+                set selected to echo_selected_files().filter(given identity:
+                    return identity != file.attachment
+                )
+                window.localStorage.setItem("echo.files:" + window.echoSession and JSON.stringify(selected))
+            echo_attachments()
+            echo_note("Attachment preference saved. Forgotten files stay out of automatic context; Echo can reread the original when explicitly asked. Existing messages and separately shared copies are preserved.")
+            if action == "restore":
+                echo_note("Automatic use restored. You can select this attachment for new messages again.")
+        )
+        set catcher to get_list(request and "catch")
+        catcher.call(request and given error:
+            set error to echo_failure(error)
+            set button.disabled to false
+            if echo_error_code(error) == "revision-conflict" || echo_error_code(error) == "not-authorized":
+                window.localStorage.removeItem(key)
+                echo_attachments()
+            echo_note("Attachment change failed: " + error + ". Retry the same action; duplicate changes are prevented.")
+        )
+    )
+    return button
+
+
+define echo_attachment_visibility_control with file:
+    set action to "exclude"
+    if file.visibility && file.visibility.state == "excluded":
+        set action to "restore"
+    return echo_attachment_visibility_button(file and action)
+
+define echo_restore_legacy_attachment with file:
+    set key to null
+    set hidden to null
+    set button to document.createElement("button")
+    set button.type to "button"
+    set button.textContent to "Restore to this browser’s picker"
+    button.addEventListener("click" and given ignored:
+        set key to "echo.hidden-files:" + window.echoSession
+        set hidden to JSON.parse(window.localStorage.getItem(key) || "[]").filter(given identity:
             return identity != file.attachment
         )
-        window.localStorage.setItem("echo.files:" + window.echoSession and JSON.stringify(selected))
-        set hidden to JSON.parse(window.localStorage.getItem("echo.hidden-files:" + window.echoSession) || "[]")
-        if not hidden.includes(file.attachment):
-            hidden.push(file.attachment)
-        window.localStorage.setItem("echo.hidden-files:" + window.echoSession and JSON.stringify(hidden))
-        item.remove()
-        echo_pending_attachments()
+        window.localStorage.setItem(key and JSON.stringify(hidden))
         echo_attachments()
-        echo_note("Attachment removed from the picker and next message. Previously sent originals remain in conversation history.")
     )
     return button
 
@@ -252,10 +436,209 @@ define echo_copy_message with message:
         )
         set catcher to get_list(copied and "catch")
         catcher.call(copied and given error:
+            set error to echo_failure(error)
             echo_note("Copy failed. Select the message text to copy it manually.")
         )
     )
     return button
+
+# Explicit human sharing uses the server's exact content and recipient preview.
+# It never shares attachments, other history, or future changes implicitly.
+define echo_share_destination with select and session and title:
+    if session == window.echoSession:
+        return 0
+    for each existing in select.options:
+        if existing.value == session:
+            return 0
+    set option to document.createElement("option")
+    set option.value to session
+    set option.textContent to title
+    select.appendChild(option)
+    return 0
+
+define echo_share_button with message:
+    set button to document.createElement("button")
+    set button.type to "button"
+    set button.textContent to "Share…"
+    set button.disabled to window.echoReadOnly
+    button.addEventListener("click" and given ignored:
+        echo_share_dialog(message and button)
+    )
+    return button
+
+define echo_share_dialog with message and opener:
+    set request to null
+    set selection to null
+    set recipients to null
+    set content to null
+    set key to null
+    set identity to null
+    set pending to null
+    set dialog to document.createElement("dialog")
+    dialog.setAttribute("aria-label" and "Share a message")
+    set dialog.style.cssText to "width:min(540px,calc(100vw - 40px));max-height:85vh;box-sizing:border-box;overflow:auto;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:18px;padding:24px"
+    set heading to document.createElement("h2")
+    set heading.textContent to "Share a message"
+    dialog.appendChild(heading)
+    set explanation to document.createElement("p")
+    set explanation.textContent to "Copy this message into another conversation. Only this text is shared, with its original source recorded. Attachments and other messages stay where they are. The copy remains available there even if you later leave the original conversation."
+    dialog.appendChild(explanation)
+    set label to document.createElement("label")
+    set label.textContent to "Destination conversation "
+    set select to document.createElement("select")
+    select.setAttribute("aria-label" and "Destination conversation")
+    set select.style.maxWidth to "100%"
+    label.appendChild(select)
+    dialog.appendChild(label)
+    set status to document.createElement("p")
+    status.setAttribute("role" and "status")
+    set status.textContent to "Loading your conversations…"
+    dialog.appendChild(status)
+    set preview to document.createElement("div")
+    dialog.appendChild(preview)
+    set review to document.createElement("button")
+    set review.type to "button"
+    set review.textContent to "Review share"
+    set review.disabled to true
+    dialog.appendChild(review)
+    set confirm to document.createElement("button")
+    set confirm.type to "button"
+    set confirm.textContent to "Confirm share"
+    set confirm.hidden to true
+    dialog.appendChild(confirm)
+    set close to document.createElement("button")
+    set close.type to "button"
+    set close.textContent to "Cancel"
+    dialog.appendChild(close)
+    set dialog.echoPending to null
+    set dialog.echoSending to false
+    close.addEventListener("click" and given ignored:
+        dialog.close()
+    )
+    dialog.addEventListener("cancel" and given event:
+        if dialog.echoSending:
+            event.preventDefault()
+    )
+    dialog.addEventListener("close" and given ignored:
+        dialog.remove()
+        opener.focus()
+    )
+    select.addEventListener("change" and given ignored:
+        set preview.textContent to ""
+        set confirm.hidden to true
+        set dialog.echoPending to null
+        set status.textContent to "Review the message and recipients before sharing."
+    )
+    review.addEventListener("click" and given ignored:
+        set review.disabled to true
+        set select.disabled to true
+        set confirm.hidden to true
+        set status.textContent to "Checking the selected message and recipients…"
+        set query to Object()
+        set query.action to "preview"
+        set query.source_event to message.event
+        set query.destination to select.value
+        set request to echo_api("/api/memory-share" and query).then(given result:
+            if result.status != "review-required":
+                return Promise.reject(echo_failure(result))
+            set selection to result.selection
+            set preview.textContent to ""
+            set recipients to document.createElement("p")
+            set recipients.textContent to "Recipients: " + selection.destination_audience.join(", ")
+            preview.appendChild(recipients)
+            set content to document.createElement("pre")
+            set content.style.cssText to "white-space:pre-wrap;overflow-wrap:anywhere;max-height:35vh;overflow:auto;font:inherit"
+            set content.textContent to selection.content
+            preview.appendChild(content)
+            set query.action to "commit"
+            set query.review_digest to result.review_digest
+            set key to "echo.share." + message.event + "." + query.destination + "." + result.review_digest
+            set identity to window.localStorage.getItem(key)
+            if not identity:
+                set identity to window.crypto.randomUUID()
+                window.localStorage.setItem(key and identity)
+            set query.identity to identity
+            set dialog.echoPending to query
+            set dialog.echoKey to key
+            set confirm.hidden to false
+            set confirm.disabled to false
+            set review.disabled to false
+            set select.disabled to false
+            set status.textContent to "Review this exact text and its recipients before confirming. Repeating a confirmed share will not create another copy."
+        )
+        set catcher to get_list(request and "catch")
+        catcher.call(request and given error:
+            set error to echo_failure(error)
+            set review.disabled to false
+            set select.disabled to false
+            set status.textContent to "Could not prepare share: " + error + ". Choose a current conversation and retry."
+        )
+    )
+    confirm.addEventListener("click" and given ignored:
+        if dialog.echoSending || not dialog.echoPending:
+            return 0
+        set dialog.echoSending to true
+        set confirm.disabled to true
+        set review.disabled to true
+        set select.disabled to true
+        set close.disabled to true
+        set status.textContent to "Sharing this message…"
+        set request to echo_api("/api/memory-share" and dialog.echoPending).then(given result:
+            if result.status != "recorded" && result.status != "already-recorded":
+                return Promise.reject(echo_failure(result))
+            set dialog.echoSending to false
+            set close.disabled to false
+            set close.textContent to "Done"
+            set confirm.hidden to true
+            set status.textContent to "Shared. The selected conversation now has a source-preserving copy."
+        )
+        set catcher to get_list(request and "catch")
+        catcher.call(request and given error:
+            set error to echo_failure(error)
+            set dialog.echoSending to false
+            set close.disabled to false
+            set confirm.disabled to false
+            set review.disabled to false
+            set select.disabled to false
+            set status.textContent to "Share not confirmed: " + error + ". Retry Confirm share safely; it uses the same identity. If recipients changed, review again."
+        )
+    )
+    document.body.appendChild(dialog)
+    dialog.showModal()
+    set query to Object()
+    set query.query to ""
+    set loading to echo_api("/api/sessions" and query).then(given result:
+        if result.status != "found":
+            return Promise.reject(echo_failure(result))
+        for each session in result.sessions:
+            echo_share_destination(select and session.session and session.title)
+        return echo_api("/api/groups" and Object())
+    ).then(given result:
+        set pending to Array()
+        for each group in result.groups || Array():
+            set query to Object()
+            set query.group to group.group
+            pending.push(echo_share_group_choices(select and query))
+        return Promise.all(pending)
+    ).then(given ignored:
+        set review.disabled to select.options.length == 0
+        set status.textContent to "Review the message and recipients before sharing."
+        if select.options.length == 0:
+            set status.textContent to "Open another private or shared conversation first, then return here to share."
+    )
+    set catcher to get_list(loading and "catch")
+    catcher.call(loading and given error:
+        set error to echo_failure(error)
+        set status.textContent to "Conversation loading failed: " + error + ". Close and reopen Share to retry."
+    )
+    return 0
+
+define echo_share_group_choices with select and query:
+    return echo_api("/api/group-state" and query).then(given result:
+        for each session in result.sessions || Array():
+            if session.writable:
+                echo_share_destination(select and session.session and "Shared · " + query.group)
+    )
 
 define echo_branch_button with message:
     set button to document.createElement("button")
@@ -400,6 +783,7 @@ define echo_code_controls with block:
         )
         set catcher to get_list(copied and "catch")
         catcher.call(copied and given error:
+            set error to echo_failure(error)
             echo_note("Code copy failed. Select the code text to copy it manually.")
         )
     )
@@ -465,6 +849,7 @@ define echo_inline_audio with file and owner:
     )
     set failed to get_list(loaded and "catch")
     failed.call(loaded and given error:
+        set error to echo_failure(error)
         set status.textContent to "Audio unavailable: " + error
     )
     return card
@@ -481,13 +866,15 @@ define echo_speak_button with message and article:
         set query.event to message.event
         set request to echo_api("/api/speak" and query).then(given result:
             if result.status != "complete":
-                return Promise.reject(result.status)
+                return Promise.reject(echo_failure(result))
             set files_query to Object()
             set files_query.session to message.source_session
             return echo_api("/api/attachments" and files_query).then(given files:
                 for each file in files.attachments || Array():
                     if file.attachment == result.attachment:
                         article.appendChild(echo_inline_audio(file and message.event))
+                        if message.source_session == window.echoSession:
+                            echo_history()
                         set button.textContent to "Speak"
                         set button.disabled to false
                         return 0
@@ -496,6 +883,7 @@ define echo_speak_button with message and article:
         )
         set failed to get_list(request and "catch")
         failed.call(request and given error:
+            set error to echo_failure(error)
             set button.textContent to "Retry speech"
             set button.disabled to false
             echo_note("Speech: " + error)
@@ -504,13 +892,22 @@ define echo_speak_button with message and article:
     return button
 
 define echo_render_message with message:
+    # Reuse the connected message so a playing native audio element is never
+    # detached just because another message or a final reply arrives.
+    for each existing in document.getElementById("transcript").children:
+        if existing.echoEvent == message.event:
+            echo_message_attachments(existing and message)
+            return existing
     set article to document.createElement("article")
     set article.className to message.role
+    set article.echoEvent to message.event
     set label to document.createElement("strong")
     if message.role == "user":
         set label.textContent to "You"
         if message.recorded_sender:
             set label.textContent to message.recorded_sender.principal
+    else if message.role == "source":
+        set label.textContent to "Shared source"
     else:
         set label.textContent to "Echo"
     set text to document.createElement("div")
@@ -523,19 +920,18 @@ define echo_render_message with message:
     article.appendChild(label)
     article.appendChild(text)
     article.appendChild(echo_copy_message(message))
+    article.appendChild(echo_share_button(message))
     if message.role == "assistant":
         if not window.echoGroup:
             article.appendChild(echo_branch_button(message))
             article.appendChild(echo_regenerate_button(message))
         if not window.echoGroup || window.echoGroupWritable:
             article.appendChild(echo_speak_button(message and article))
-    else if not window.echoGroup:
+    else if message.role == "user" && not window.echoGroup:
         article.appendChild(echo_edit_button(message))
-    for each file in message.attachments || Array():
-        if file.media_type && file.media_type.slice(0 and 6) == "audio/":
-            article.appendChild(echo_inline_audio(file and message.event))
-        else:
-            article.appendChild(echo_message_source(file))
+    echo_message_attachments(article and message)
+    if message.research_sources && message.research_sources.length > 0:
+        article.appendChild(echo_research_panel(message.research_sources))
     if message.source_reads && message.source_reads.length > 0:
         set source_panel to document.createElement("details")
         set source_panel.className to "sources-read"
@@ -547,6 +943,37 @@ define echo_render_message with message:
             source_panel.appendChild(echo_message_source(file))
         article.appendChild(source_panel)
     return article
+
+define echo_message_attachments with article and message:
+    if not article.echoAttachments:
+        set article.echoAttachments to Array()
+    for each file in message.attachments || Array():
+        if article.echoAttachments.includes(file.attachment):
+            continue
+        if file.media_type && file.media_type.slice(0 and 6) == "audio/":
+            set card to echo_inline_audio(file and message.event)
+            if card.parentNode != article:
+                article.appendChild(card)
+        else:
+            article.appendChild(echo_message_source(file))
+        article.echoAttachments.push(file.attachment)
+    return 0
+
+# Commit a batch without disconnecting retained messages or their media.
+define echo_commit_messages with transcript and nodes and before:
+    if before == "0":
+        for each child in get_list(Array and "from").call(Array and transcript.children):
+            if not nodes.includes(child):
+                set player to child.querySelector("audio")
+                if not player || player.paused:
+                    child.remove()
+    set reference to transcript.firstChild
+    for each node in nodes:
+        if node.parentNode == transcript:
+            set reference to node.nextSibling
+        else:
+            transcript.insertBefore(node and reference)
+    return 0
 
 define echo_history_page with before and marker:
     set query to Object()
@@ -563,11 +990,12 @@ define echo_history_page with before and marker:
         if marker != window.echoHistoryMarker || query.session != window.echoSession:
             return 0
         if result.status != "found":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         echo_history_render(result and before and marker)
     )
     set catcher to get_list(loaded and "catch")
     catcher.call(loaded and given error:
+        set error to echo_failure(error)
         if marker == window.echoHistoryMarker && query.session == window.echoSession:
             set older.disabled to false
             echo_note("Conversation batch could not be loaded: " + error)
@@ -583,21 +1011,21 @@ define echo_history_render with result and before and marker:
     set workspace to document.getElementById("workspace")
     set previous_height to workspace.scrollHeight
     set previous_top to workspace.scrollTop
-    set batch to document.createDocumentFragment()
+    set batch to Array()
     set index to 0
     set draw to given ignored:
         if marker != window.echoHistoryMarker:
             return 0
         if index < result.messages.length:
-            batch.appendChild(echo_render_message(get_list(result.messages and index)))
+            batch.push(echo_render_message(get_list(result.messages and index)))
             set index to index + 1
             window.requestAnimationFrame(draw)
             return 0
-        if before == "0":
-            transcript.replaceChildren(batch)
-        else:
+        if before != "0":
             set window.echoFollowLatest to false
-            transcript.insertBefore(batch and transcript.firstChild)
+        echo_commit_messages(transcript and batch and before)
+        if before == "0" && result.revision:
+            set window.echoRenderedRevision to window.echoSession + ":" + result.revision
         set window.echoHistoryCursor to result.next_before
         set older.hidden to not result.older_possible
         set older.disabled to false
@@ -661,13 +1089,19 @@ define echo_recap_notice with marker:
     )
     set catcher to get_list(loaded and "catch")
     catcher.call(loaded and given error:
+        set error to echo_failure(error)
         # Leave the notice hidden when its saved state cannot be verified.
         return 0
     )
     return 0
 
 define echo_history:
-    echo_math_cancel_all()
+    if window.echoTranscriptSession != window.echoSession || window.echoTranscriptWritable != window.echoGroupWritable:
+        set transcript to document.getElementById("transcript")
+        set transcript.textContent to ""
+        set window.echoTranscriptSession to window.echoSession
+        set window.echoTranscriptWritable to window.echoGroupWritable
+        echo_math_cancel_all()
     echo_attachments()
     set window.echoHistoryMarker to window.crypto.randomUUID()
     echo_recap_notice(window.echoHistoryMarker)
@@ -760,6 +1194,7 @@ define echo_session_rename with session:
         )
         set catcher to get_list(changed and "catch")
         catcher.call(changed and given error:
+            set error to echo_failure(error)
             echo_sessions()
             echo_note("Rename failed: " + error + ". Conversation names refreshed.")
         )
@@ -790,18 +1225,27 @@ define echo_sessions:
         if identity != window.echoSearchRequest:
             return 0
         if result.status != "found":
-            return Promise.reject(result.status)
-        set list to document.getElementById("sessions")
-        set list.textContent to ""
-        for each session in result.sessions:
-            set row to document.createElement("div")
-            row.appendChild(echo_session_button(session))
-            row.appendChild(echo_session_rename(session))
-            list.appendChild(row)
-        if result.sessions.length == 0:
-            set list.textContent to "No conversations match on this device."
+            return Promise.reject(echo_failure(result))
+        echo_sessions_render(result)
     )
     echo_catch(loaded)
+    return 0
+
+
+define echo_sessions_render with result:
+    set signature to JSON.stringify(result.sessions)
+    if signature == window.echoSessionListSignature:
+        return 0
+    set window.echoSessionListSignature to signature
+    set list to document.getElementById("sessions")
+    set list.textContent to ""
+    for each session in result.sessions:
+        set row to document.createElement("div")
+        row.appendChild(echo_session_button(session))
+        row.appendChild(echo_session_rename(session))
+        list.appendChild(row)
+    if result.sessions.length == 0:
+        set list.textContent to "No conversations match in your account."
     return 0
 
 define echo_thinking_panel with run:
@@ -846,6 +1290,15 @@ define echo_trace_load with panel:
             return 0
         set follow_log to log.scrollHeight - log.scrollTop - log.clientHeight < 80
         for each entry in result.entries:
+            if entry.kind == "user_guidance":
+                set receiptKey to "echo.guidance.receipt:" + panel.echoRun
+                set receipt to JSON.parse(window.localStorage.getItem(receiptKey) || "null")
+                if receipt && entry.event == receipt.run + ":guidance:" + receipt.identity + ":applied":
+                    set receipt.phase to "applied"
+                    window.localStorage.setItem(receiptKey and JSON.stringify(receipt))
+                    echo_guidance_clear(receipt)
+                    if panel.echoRun == window.echoRun:
+                        echo_queue_render()
             if entry.kind == "model_reasoning" && panel.echoReasoning:
                 set panel.echoReasoning.textContent to panel.echoReasoning.textContent + entry.text
                 continue
@@ -871,6 +1324,7 @@ define echo_trace_load with panel:
     )
     set failed to get_list(loaded and "catch")
     failed.call(loaded and given error:
+        set error to echo_failure(error)
         set panel.echoLoading to false
     )
     return 0
@@ -911,7 +1365,7 @@ define echo_poll:
         if query.run != window.echoRun:
             return 0
         if result.status != "found":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         set window.echoCompactionUnknownRun to ""
         set window.echoCanStop to result.can_control != false && result.state != "completed" && result.state != "cancelled" && result.state != "failed"
         set window.echoRetryWorker to ""
@@ -921,19 +1375,25 @@ define echo_poll:
             echo_clear_draft()
             echo_note("Saved on this Mac.")
             echo_history()
+            set window.echoQueueReadyRun to query.run
             echo_busy(false)
+            echo_queue_next()
         else if result.state == "cancelled" or else result.state == "failed":
             echo_clear_draft()
             if result.state == "cancelled":
                 echo_note("Stopped. Any received partial output remains in the archive.")
             else:
-                echo_note("Failed: " + result.text)
+                echo_note(String(echo_failure(result.failure || result.text)))
             echo_history()
+            set window.echoQueueReadyRun to query.run
             echo_busy(false)
+            set queued to echo_queue_read()
+            if queued.length > 0 && get_list(queued and 0).steer_run == query.run:
+                echo_queue_next()
         else if result.worker_status != "running" && result.worker_status != "not-started":
-            echo_note("Run needs attention: " + result.worker_status)
+            echo_note(String(echo_failure(result.worker_feedback || result.worker_status)))
             if result.retry_allowed && result.can_control != false:
-                echo_note("Run paused: " + result.worker_status + ". Retry continues this task from saved work.")
+                echo_note(String(echo_failure(result.worker_feedback || result.worker_status)) + " Retry resumes this task from saved work.")
             echo_history()
             echo_busy(false)
         else:
@@ -948,6 +1408,7 @@ define echo_poll:
     )
     set catcher to get_list(loaded and "catch")
     catcher.call(loaded and given error:
+        set error to echo_failure(error)
         if query.run != window.echoRun:
             return 0
         if window.echoCompactionActivity || window.echoCompactionUnknownRun == query.run:
@@ -985,7 +1446,7 @@ define echo_draft:
             echo_clear_draft()
             return 0
         if result.status != "draft":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         set text to document.getElementById("draft-text")
         if result.generation != window.echoDraftGeneration:
             set window.echoDraftText to ""
@@ -1017,7 +1478,7 @@ define echo_reconcile_pending:
     echo_note("Checking the earlier submission; your new draft is kept…")
     return echo_submit_payload(saved).then(given result:
         if result.status != "accepted":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         set input to document.getElementById("message")
         window.localStorage.removeItem("echo.composer:" + (saved.session || "new"))
         if input.value == saved.message:
@@ -1045,7 +1506,7 @@ define echo_send with event:
         echo_note("This group segment is not currently writable. Your draft is kept; open the current membership explicitly to continue.")
         return 0
     if window.echoBusy:
-        return 0
+        return echo_queue_add(false)
     set input to document.getElementById("message")
     set text to input.value
     if not text.trim():
@@ -1080,8 +1541,13 @@ define echo_send with event:
     echo_busy(true)
     echo_note("Saving your message…")
     set sent to echo_submit_payload(payload).then(given result:
+        if result.status == "session-active" && window.echoSession:
+            window.localStorage.removeItem("echo.pending")
+            echo_queue_add(false)
+            echo_linked_session_watch()
+            return 0
         if result.status != "accepted":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         set window.echoSession to result.session
         set window.echoRun to result.run
         window.localStorage.setItem("echo.session" and result.session)
@@ -1091,7 +1557,9 @@ define echo_send with event:
         window.localStorage.removeItem("echo.files:" + result.session)
         window.localStorage.removeItem("echo.composer:" + (payload.session || "new"))
         window.localStorage.removeItem("echo.composer:" + result.session)
-        set input.value to ""
+        if input.value == payload.message:
+            set input.value to ""
+        window.localStorage.setItem("echo.composer:" + result.session and input.value)
         echo_sessions()
         echo_history()
         echo_poll()
@@ -1147,7 +1615,12 @@ define echo_stop with event:
         echo_note("Stop requested. Waiting for the worker to finish cancelling.")
         echo_poll()
     )
-    echo_catch(requested)
+    set catcher to get_list(requested and "catch")
+    catcher.call(requested and given error:
+        set error to echo_failure(error)
+        echo_steer_status("Could not confirm the stop: " + String(error) + ". Your correction stays queued. Click Steer now to retry.")
+        echo_error(error)
+    )
     return 0
 
 define echo_retry with event:
@@ -1163,6 +1636,7 @@ define echo_retry with event:
     )
     set catcher to get_list(retried and "catch")
     catcher.call(retried and given error:
+        set error to echo_failure(error)
         echo_poll()
     )
     return 0
@@ -1188,6 +1662,7 @@ define echo_pair with event:
     )
     set catcher to get_list(paired and "catch")
     catcher.call(paired and given error:
+        set error to echo_failure(error)
         set window.echoToken to ""
         echo_error(error)
     )
@@ -1201,7 +1676,7 @@ define echo_export:
     set query.session to window.echoSession
     set downloaded to echo_api("/api/export" and query).then(given result:
         if result.status != "found":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         set parts to Array()
         parts.push(JSON.stringify(result and null and 2))
         set options to Object()
@@ -1281,12 +1756,13 @@ define echo_download_attachment with file:
     )
     set catcher to get_list(downloaded and "catch")
     catcher.call(downloaded and given error:
+        set error to echo_failure(error)
         echo_note("Download failed: " + error)
     )
     return 0
 
 define echo_image_supported with file:
-    return file.media_type == "image/png" || file.media_type == "image/jpeg" || file.media_type == "image/webp" || file.media_type == "image/gif"
+    return file.media_type == "image/svg+xml" || file.media_type == "image/png" || file.media_type == "image/jpeg" || file.media_type == "image/webp" || file.media_type == "image/gif"
 
 define echo_release_image:
     for each player in document.querySelectorAll("#source-panel audio"):
@@ -1362,6 +1838,7 @@ define echo_preview_audio with file:
     )
     set catcher to get_list(loaded and "catch")
     catcher.call(loaded and given error:
+        set error to echo_failure(error)
         if window.echoSourceRequest == marker:
             set status.textContent to "Audio preview failed: " + error
     )
@@ -1414,7 +1891,7 @@ define echo_preview_image with file:
         )
         picture.addEventListener("error" and given ignored:
             if window.echoSourceRequest == marker:
-                set status.textContent to "The saved bytes are intact, but the browser could not decode this image."
+                set status.textContent to "The saved bytes are intact, but the browser could not decode this image. Download the original and open it in an application that supports its format."
                 echo_release_image()
                 picture.remove()
         )
@@ -1423,6 +1900,7 @@ define echo_preview_image with file:
     )
     set catcher to get_list(loaded and "catch")
     catcher.call(loaded and given error:
+        set error to echo_failure(error)
         if window.echoSourceRequest == marker:
             set status.textContent to "Image preview failed: " + error
     )
@@ -1458,7 +1936,7 @@ define echo_read_source with file:
         return window.fetch("/api/attachment-text" and options).then(given response:
             return response.json().then(given result:
                 if not response.ok || result.status != "found":
-                    return Promise.reject(result.status)
+                    return Promise.reject(echo_failure(result))
                 return result
             )
         )
@@ -1476,6 +1954,7 @@ define echo_read_source with file:
     )
     set catcher to get_list(loaded and "catch")
     catcher.call(loaded and given error:
+        set error to echo_failure(error)
         if window.echoSourceRequest == marker:
             set output.textContent to "Cannot display this text range: " + error
     )
@@ -1598,6 +2077,11 @@ define echo_file_choice with file:
     return choice_label
 
 define echo_attachments:
+    set selected to null
+    set trash to null
+    set trash_title to null
+    set trash_note to null
+    set trash_item to null
     echo_release_image()
     set window.echoSourceRequest to null
     set panel to document.getElementById("source-panel")
@@ -1619,20 +2103,43 @@ define echo_attachments:
         if query.session != window.echoSession:
             return 0
         if result.status != "found":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         set list.textContent to ""
         set window.echoAttachmentFiles to result.attachments
+        set selected to echo_selected_files().filter(given identity:
+            return not result.attachments.some(given file:
+                return file.attachment == identity && file.lifecycle && file.lifecycle.state == "trashed"
+            )
+        )
+        window.localStorage.setItem("echo.files:" + window.echoSession and JSON.stringify(selected))
+        set trash to document.createElement("details")
+        set trash_title to document.createElement("summary")
+        set trash_title.textContent to "Attachment trash and hidden files"
+        trash.appendChild(trash_title)
+        set trash_note to document.createElement("p")
+        set trash_note.textContent to "Trash prevents attaching a file to new messages across linked devices. Shared-file changes affect its current shared conversation. Originals, earlier messages and recall stay available. Restore returns the file to the picker; Forget automatic use keeps the original available for explicit rereading and does not erase history."
+        trash.appendChild(trash_note)
         echo_pending_attachments()
         set hidden to JSON.parse(window.localStorage.getItem("echo.hidden-files:" + window.echoSession) || "[]")
         for each file in result.attachments:
-            if hidden.includes(file.attachment):
+            if (file.lifecycle && file.lifecycle.state == "trashed") || hidden.includes(file.attachment):
+                set trash_item to document.createElement("div")
+                set trash_item.textContent to file.name + " "
+                if file.lifecycle && file.lifecycle.state == "trashed":
+                    trash_item.appendChild(echo_attachment_lifecycle_button(file and "restore"))
+                else:
+                    trash_item.appendChild(echo_restore_legacy_attachment(file))
+                trash_item.appendChild(echo_attachment_visibility_control(file))
+                trash.appendChild(trash_item)
                 continue
             set item to document.createElement("li")
             set item.textContent to file.name + " · " + file.bytes + " bytes"
-            item.appendChild(echo_file_choice(file))
+            if not file.visibility || file.visibility.state != "excluded":
+                item.appendChild(echo_file_choice(file))
             if echo_image_supported(file):
                 item.appendChild(echo_attachment_thumbnail(file))
             item.appendChild(echo_remove_attachment(file and item))
+            item.appendChild(echo_attachment_visibility_control(file))
             set download to document.createElement("button")
             set download.type to "button"
             set download.textContent to "Download"
@@ -1652,6 +2159,7 @@ define echo_attachments:
             )
             item.appendChild(read)
             list.appendChild(item)
+        list.appendChild(trash)
     )
     echo_catch(loaded)
     return 0
@@ -1667,7 +2175,7 @@ define echo_ensure_session:
     set query.identity to identity
     return echo_api("/api/session-create" and query).then(given result:
         if result.status != "accepted":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         set window.echoSession to result.session
         window.localStorage.setItem("echo.session" and result.session)
         window.localStorage.removeItem("echo.session-create")
@@ -1693,7 +2201,7 @@ define echo_upload_one with file:
         return echo_api("/api/upload-prepare" and payload)
     ).then(given prepared:
         if prepared.status != "prepared":
-            return Promise.reject(prepared.status)
+            return Promise.reject(echo_failure(prepared))
         return echo_upload_prepared(file and prepared.upload)
     ).then(given result:
         set selected to echo_selected_files()
@@ -1718,7 +2226,7 @@ define echo_upload_prepared with file and identity:
     return window.fetch("/api/upload-body" and options).then(given response:
         return response.json().then(given result:
             if not response.ok || result.status != "complete":
-                return Promise.reject(result.status)
+                return Promise.reject(echo_failure(result))
             set result.attachment to identity
             return result
         )
@@ -1747,6 +2255,7 @@ define echo_upload_files with originals:
     )
     set catcher to get_list(uploaded and "catch")
     catcher.call(uploaded and given error:
+        set error to echo_failure(error)
         set status.textContent to "Upload did not confirm completion: " + error
         set input.value to ""
         set window.echoUploading to false
@@ -2101,7 +2610,7 @@ define echo_open_recap:
                 set citation.textContent to ""
                 return 0
             if result.status != "found":
-                return Promise.reject(result.status)
+                return Promise.reject(echo_failure(result))
             set current.result to result
             set identity.value to result.checkpoint
             set output.textContent to result.text
@@ -2111,6 +2620,7 @@ define echo_open_recap:
         )
         set catcher to get_list(loaded and "catch")
         catcher.call(loaded and given error:
+            set error to echo_failure(error)
             if window.echoSourceRequest == marker:
                 set output.textContent to "Cannot read saved recap: " + error
         )
@@ -2221,12 +2731,23 @@ define echo_polish_layout:
     set access.style.fontSize to "12px"
     set access.textContent to "Open Options to check this browser’s access."
     contents.appendChild(access)
+    echo_device_links_setup(contents)
     menu.addEventListener("toggle" and given event:
         if menu.open:
             echo_show_identity(access)
     )
     menu.appendChild(contents)
     header.appendChild(menu)
+    set link_shortcut to document.createElement("button")
+    set link_shortcut.type to "button"
+    set link_shortcut.textContent to "Link devices"
+    link_shortcut.addEventListener("click" and given event:
+        set menu.open to true
+        set link_panel to document.getElementById("device-link-panel")
+        set link_panel.open to true
+        document.getElementById("device-link-code").focus()
+    )
+    header.appendChild(link_shortcut)
     set tools to document.createElement("details")
     set tools.className to "tools-drawer"
     set summary to document.createElement("summary")
@@ -2261,17 +2782,27 @@ define echo_show_identity with target:
         if result.status != "observed":
             set target.textContent to "Access could not be verified."
             return 0
-        set target.textContent to "Access: " + result.role + " · Browser ID: " + result.device
+        set target.textContent to "Access: " + result.role + " · Account ID: " + result.device
         if result.authority == "legacy-sandbox":
             set target.textContent to target.textContent + " · Host enrolment is not installed yet."
     )
     set catcher to get_list(pending and "catch")
     catcher.call(pending and given error:
+        set error to echo_failure(error)
         set target.textContent to "Access check failed: " + String(error)
     )
     return 0
 
 define main:
+    window.setInterval(echo_linked_session_watch and 3000)
+    document.addEventListener("visibilitychange" and given event:
+        if document.visibilityState == "visible":
+            echo_linked_session_watch()
+    )
+    window.addEventListener("focus" and given event:
+        echo_linked_session_watch()
+    )
+    echo_playback_setup()
     set window.echoFollowLatest to true
     set workspace to document.getElementById("workspace")
     set workspace.style.scrollBehavior to "auto"
@@ -2320,9 +2851,17 @@ define main:
     set input.value to window.localStorage.getItem("echo.composer:" + (window.echoSession || "new")) || ""
     input.addEventListener("input" and given event:
         window.localStorage.setItem("echo.composer:" + (window.echoSession || "new") and input.value)
+        echo_guidance_render()
     )
     set form to document.getElementById("composer")
     form.addEventListener("submit" and echo_send)
+    input.addEventListener("keydown" and given event:
+        if event.key == "Enter" && not event.shiftKey && not event.isComposing && event.keyCode != 229:
+            event.preventDefault()
+            if not event.repeat:
+                echo_send(event)
+    )
+    echo_queue_setup()
     set fresh to document.getElementById("new-chat")
     fresh.addEventListener("click" and echo_new_chat)
     set stop_button to document.getElementById("stop")
@@ -2409,6 +2948,9 @@ define main:
     set pairing_form to document.getElementById("pair-form")
     pairing_form.addEventListener("submit" and echo_pair)
     echo_polish_layout()
+    echo_settings_setup()
+    echo_sidebar_dismiss_setup()
+    echo_agents_setup()
     echo_busy(true)
     set request to window.fetch("/api/bootstrap").then(given response:
         if not response.ok:
@@ -2450,6 +2992,8 @@ define main:
         echo_history()
         echo_poll()
         echo_sessions()
+        echo_projects_setup()
+        echo_work_setup()
         echo_groups_setup()
         echo_groups_refresh()
         echo_outbox_setup()
@@ -2459,8 +3003,9 @@ define main:
     )
     set catcher to get_list(started and "catch")
     catcher.call(started and given error:
+        set error to echo_failure(error)
         set connection to document.getElementById("connection")
-        set connection.textContent to "Chat service unavailable"
+        set connection.textContent to "Chat service unavailable. Check the connection to the host Mac; reopen Options when it is reachable."
         echo_note("Chat is not configured or the local service is unavailable. No model response is being simulated.")
         echo_busy(true)
     )
@@ -2543,7 +3088,7 @@ define echo_provider_details with provider:
     set modalities.textContent to "Runtime media support — images: " + echo_capability_label(provider.vision) + "; video: " + echo_capability_label(provider.video) + "; audio: " + echo_capability_label(provider.audio) + ". Echo processing routes are qualified separately."
     details.appendChild(modalities)
     set research to document.createElement("p")
-    set research.textContent to "Steering, activation inspection and training: " + provider.research + ". Output allowance: " + provider.output_policy + "."
+    set research.textContent to "Web research: " + provider.research + ". Output allowance: " + provider.output_policy + "."
     details.appendChild(research)
     return 0
 
@@ -2564,6 +3109,7 @@ define echo_provider_refresh with identity:
     )
     set catcher to get_list(request and "catch")
     catcher.call(request and given error:
+        set error to echo_failure(error)
         if window.echoProviderDetailsIdentity == identity && details:
             set details.textContent to "Selected model details unavailable: " + error
     )
@@ -2583,6 +3129,7 @@ define echo_group_action with path and payload and button:
     )
     set catcher to get_list(request and "catch")
     catcher.call(request and given error:
+        set error to echo_failure(error)
         set button.disabled to false
         echo_note("Group change failed: " + error + ". Retry keeps the same operation; refresh to see current membership.")
     )
@@ -2612,7 +3159,7 @@ define echo_group_open with group:
     set query.group to group.group
     set pending to echo_api("/api/group-open" and query).then(given result:
         if result.status != "routed":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         set result.group to group.group
         set result.writable to true
         echo_open_session(result)
@@ -2626,6 +3173,8 @@ define echo_group_row with group and principal:
     set row to document.createElement("details")
     set title to document.createElement("summary")
     set title.textContent to group.group
+    if group.access == "admin":
+        set title.textContent to group.group + " · Admins only"
     if group.state == "invited":
         set title.textContent to group.group + " · Invitation"
     row.appendChild(title)
@@ -2691,7 +3240,7 @@ define echo_groups_refresh:
         return 0
     set request to echo_api("/api/groups" and Object()).then(given result:
         if result.status != "found":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         set list.textContent to ""
         set identity to document.createElement("p")
         set identity.textContent to "Your principal ID: " + result.principal
@@ -2706,6 +3255,7 @@ define echo_groups_refresh:
     )
     set catcher to get_list(request and "catch")
     catcher.call(request and given error:
+        set error to echo_failure(error)
         set list.textContent to "Shared conversations unavailable: " + error
     )
     return 0
@@ -2730,6 +3280,18 @@ define echo_groups_setup:
     set name.required to true
     label.appendChild(name)
     form.appendChild(label)
+    set access_label to document.createElement("label")
+    set access_label.textContent to "Who can join"
+    set access to document.createElement("select")
+    for each entry in ["members", "admin"]:
+        set option to document.createElement("option")
+        set option.value to entry
+        set option.textContent to "Invited users"
+        if entry == "admin":
+            set option.textContent to "Invited admins only"
+        access.appendChild(option)
+    access_label.appendChild(access)
+    form.appendChild(access_label)
     set create_button to document.createElement("button")
     set create_button.type to "submit"
     set create_button.textContent to "Create group"
@@ -2739,6 +3301,7 @@ define echo_groups_setup:
         event.preventDefault()
         set payload to Object()
         set payload.group to name.value.trim()
+        set payload.access to access.value
         if not payload.group:
             return 0
         echo_group_action("/api/group-create" and payload and create_button)
@@ -2825,7 +3388,7 @@ define echo_group_watch with marker:
         if marker != window.echoGroupWatchMarker || group != window.echoGroup || session != window.echoSession:
             return 0
         if result.status != "found" && result.status != "not-found":
-            return Promise.reject(result.status)
+            return Promise.reject(echo_failure(result))
         set selected to null
         for each segment in result.sessions || Array():
             if segment.session == session:
@@ -2870,6 +3433,7 @@ define echo_group_watch with marker:
     )
     set catcher to get_list(request and "catch")
     set settled to catcher.call(request and given error:
+        set error to echo_failure(error)
         if marker == window.echoGroupWatchMarker:
             set window.echoGroupWritable to false
             set status to document.getElementById("group-context-status")
@@ -3020,3 +3584,1370 @@ define echo_outbox_setup:
     panel.appendChild(rows)
     document.getElementById("history-sidebar").appendChild(panel)
     return echo_outbox_render()
+
+
+# Queued messages are device/session bound and keep their original retry identity.
+define echo_queue_key:
+    return "echo.queue:" + encodeURIComponent(window.localStorage.getItem("echo.device") || "") + ":" + encodeURIComponent(window.echoSession || "")
+
+define echo_queue_read:
+    return JSON.parse(window.localStorage.getItem(echo_queue_key()) || "[]")
+
+define echo_queue_render:
+    set panel to document.getElementById("message-queue")
+    if not panel:
+        return 0
+    set queue to echo_queue_read()
+    set heading to document.getElementById("queue-heading")
+    if heading:
+        set heading.hidden to queue.length == 0
+        set heading.textContent to "Up next · " + String(queue.length)
+    set signature to echo_queue_key() + JSON.stringify(queue) + String(window.echoBusy) + String(window.echoCanStop) + String(window.echoGuidanceSending)
+    if window.echoQueueRendered != signature:
+        set window.echoQueueRendered to signature
+        set rows to document.getElementById("message-queue-rows")
+        set rows.textContent to ""
+        for each item in queue:
+            set row to document.createElement("div")
+            set row.className to "queued-message-card"
+            if item.steer_run:
+                row.setAttribute("data-steering" and "true")
+            set label to document.createElement("span")
+            set label.textContent to item.message
+            if item.steer_run:
+                set label.textContent to "Steering correction · " + item.message
+            row.appendChild(label)
+            if window.echoBusy && window.echoCanStop && not (item.attachments && item.attachments.length > 0):
+                set guide to document.createElement("button")
+                set guide.type to "button"
+                set guide.textContent to "Steer now"
+                set guide.disabled to window.echoGuidanceSending || window.echoReadOnly
+                guide.addEventListener("click" and given event:
+                    event.preventDefault()
+                    echo_guidance_send(item)
+                )
+                row.appendChild(guide)
+            set remove to document.createElement("button")
+            set remove.type to "button"
+            set remove.textContent to "×"
+            set remove.className to "queue-remove"
+            remove.setAttribute("aria-label" and "Remove queued message")
+            remove.setAttribute("title" and "Remove queued message")
+            remove.addEventListener("click" and given event:
+                set remaining to echo_queue_read().filter(given entry:
+                    return entry.submission != item.submission
+                )
+                window.localStorage.setItem(echo_queue_key() and JSON.stringify(remaining))
+                echo_queue_render()
+            )
+            row.appendChild(remove)
+            rows.appendChild(row)
+    set steer to document.getElementById("steer-now")
+    set steer.hidden to not window.echoBusy
+    echo_guidance_render()
+    set next to document.getElementById("queue-next")
+    set next.hidden to queue.length == 0
+    set next.disabled to window.echoBusy || window.echoQueueSending || window.echoQueueReadyRun != window.echoRun
+    return 0
+
+define echo_queue_add with steer:
+    if steer:
+        echo_guidance_send()
+        return 0
+    set input to document.getElementById("message")
+    if window.echoReadOnly || window.echoUploading || not window.echoToken:
+        echo_steer_status("Cannot send yet. Wait for uploads to finish and check this browser is connected.")
+        return 0
+    if not input.value.trim():
+        return 0
+    if not window.echoSession || window.localStorage.getItem("echo.pending"):
+        echo_note("Waiting for the current message to be saved. Your draft is kept.")
+        return 0
+    if window.echoGroup && not window.echoGroupWritable:
+        return 0
+    set item to Object()
+    set item.submission to window.crypto.randomUUID()
+    set item.message to input.value
+    set item.session to window.echoSession
+    set item.attachments to echo_selected_files()
+    if window.echoGroup:
+        set item.group to window.echoGroup
+    set picker to document.getElementById("provider-picker")
+    if picker && picker.value && not item.group:
+        set item.provider to picker.value
+    set queue to echo_queue_read()
+    queue.push(item)
+    window.localStorage.setItem(echo_queue_key() and JSON.stringify(queue))
+    set input.value to ""
+    window.localStorage.removeItem("echo.composer:" + window.echoSession)
+    window.localStorage.removeItem("echo.files:" + window.echoSession)
+    echo_queue_render()
+    echo_note("Message queued for this conversation.")
+    return 0
+
+define echo_queue_next:
+    if window.echoQueueSending || window.echoBusy || window.echoReadOnly || not window.echoToken || window.echoQueueReadyRun != window.echoRun || window.localStorage.getItem("echo.pending"):
+        return 0
+    if window.echoGroup && not window.echoGroupWritable:
+        return 0
+    set queue to echo_queue_read()
+    if queue.length == 0:
+        return 0
+    set item to get_list(queue and 0)
+    if item.session != window.echoSession || (item.group || "") != (window.echoGroup || ""):
+        return 0
+    set key to echo_queue_key()
+    set payload to Object.assign(Object() and item)
+    Reflect.deleteProperty(payload and "steer_run")
+    window.localStorage.setItem("echo.pending" and JSON.stringify(payload))
+    # Pending owns the retry before removal from the queue.
+    queue.shift()
+    window.localStorage.setItem(key and JSON.stringify(queue))
+    set window.echoQueueSending to true
+    echo_busy(true)
+    if item.steer_run:
+        echo_steer_status("Sending your steering correction…")
+    set sent to echo_reconcile_pending().then(given result:
+        if item.steer_run:
+            echo_steer_status("Correction sent. Echo is responding to your updated message.")
+        set window.echoQueueSending to false
+        echo_poll()
+    )
+    set catcher to get_list(sent and "catch")
+    catcher.call(sent and given error:
+        set error to echo_failure(error)
+        set window.echoQueueSending to false
+        if item.steer_run:
+            echo_steer_status("Correction is saved, but sending needs attention: " + String(error))
+        if error == "session-active":
+            set saved to window.localStorage.getItem("echo.pending")
+            if saved:
+                set original to JSON.parse(saved)
+                if item.steer_run:
+                    set original.steer_run to item.steer_run
+                set remaining to echo_queue_read()
+                remaining.unshift(original)
+                window.localStorage.setItem(echo_queue_key() and JSON.stringify(remaining))
+                window.localStorage.removeItem("echo.pending")
+                echo_busy(true)
+                echo_linked_session_watch()
+                return 0
+        echo_error(error)
+    )
+    return 0
+
+define echo_steer_status with text:
+    set status to document.getElementById("steering-status")
+    if status:
+        set status.hidden to false
+        set status.textContent to text
+    return 0
+
+define echo_queue_setup:
+    set panel to document.createElement("section")
+    set panel.id to "message-queue"
+    set style to document.createElement("style")
+    set style.textContent to "#message-queue{margin:12px 0 0;padding-top:10px;border-top:1px solid var(--composer-line);font-size:13px}#message-queue[hidden],#message-queue [hidden]{display:none!important}#message-queue .footnote{font-size:11px;margin:8px 0 0;color:var(--muted)}#queue-heading{font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.03em;margin:0 0 8px}#message-queue-rows{display:grid;gap:6px;max-height:160px;overflow:auto;overscroll-behavior:contain}.queued-message-card{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--composer-line);border-radius:12px;background:var(--bg)}.queued-message-card>span{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;line-height:1.45;color:var(--soft)}.queued-message-card[data-steering=true]{border-color:var(--accent)}#message-queue .queue-remove{flex:none;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted);font-size:20px}#message-queue .queue-remove:hover{background:var(--button);color:var(--fg)}.queue-actions{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:8px}.queue-actions button{font-size:12px;padding:8px 12px;border-radius:10px;margin:0}#steer-now{background:transparent;color:var(--accent);border:1px solid var(--accent)}#queue-next{background:var(--button);border:1px solid var(--composer-line);color:var(--soft)}#steering-status{margin:8px 0;line-height:1.5;color:var(--accent);font-size:12px;padding:8px 10px;background:var(--bg);border-radius:10px}.header-options[open]>div{width:min(360px,calc(100vw - 32px));max-height:75vh;overflow:auto}#device-link-panel input{max-width:none;width:100%}#device-link-panel p{font-size:12px;line-height:1.55;color:var(--soft)}@media(max-width:600px){#message-queue .footnote{display:none}.queue-actions button{min-height:40px}.queued-message-card{padding:8px 10px}#message-queue-rows{max-height:130px}}"
+    document.head.appendChild(style)
+    panel.setAttribute("aria-label" and "Queued messages")
+    set hint to document.createElement("p")
+    set hint.className to "footnote"
+    set hint.textContent to "Enter to send or queue · Shift+Enter for a new line"
+    set heading to document.createElement("p")
+    set heading.id to "queue-heading"
+    set heading.hidden to true
+    panel.appendChild(heading)
+    set status to document.createElement("p")
+    set status.id to "steering-status"
+    set status.hidden to true
+    status.setAttribute("role" and "status")
+    status.setAttribute("aria-live" and "polite")
+    panel.appendChild(status)
+    set rows to document.createElement("div")
+    set rows.id to "message-queue-rows"
+    panel.appendChild(rows)
+    set steer to document.createElement("button")
+    set steer.id to "steer-now"
+    set steer.type to "button"
+    set steer.textContent to "Steer now"
+    steer.setAttribute("title" and "Send guidance into the current turn. It will not queue another turn.")
+    steer.addEventListener("click" and given event:
+        echo_queue_add(true)
+    )
+    set actions to document.createElement("div")
+    set actions.className to "queue-actions"
+    actions.appendChild(steer)
+    set next to document.createElement("button")
+    set next.id to "queue-next"
+    set next.type to "button"
+    set next.textContent to "Send next"
+    next.addEventListener("click" and given event:
+        echo_queue_next()
+    )
+    actions.appendChild(next)
+    panel.appendChild(actions)
+    panel.appendChild(hint)
+    document.getElementById("composer").appendChild(panel)
+    echo_queue_render()
+    return 0
+
+
+# Linking switches this browser to an explicitly selected existing account.
+# Prior credentials/context are retained for an explicit return, never merged.
+define echo_link_switch with result:
+    set previous to Object()
+    for each key in ["echo.credential", "echo.device", "echo.session", "echo.run", "echo.group"]:
+        get_list(Reflect and "set").call(Reflect and previous and key and window.localStorage.getItem(key))
+    if window.echoToken:
+        window.localStorage.setItem("echo.previous-account" and JSON.stringify(previous))
+    window.localStorage.setItem("echo.credential" and result.token)
+    window.localStorage.setItem("echo.device" and result.device)
+    for each key in ["echo.session", "echo.run", "echo.group"]:
+        window.localStorage.removeItem(key)
+    window.location.reload()
+    return 0
+
+define echo_link_list with rows:
+    set request to Object()
+    set request.action to "list"
+    set loaded to echo_api("/api/device-link" and request).then(given result:
+        set rows.textContent to ""
+        for each item in result.browsers || Array():
+            set row to document.createElement("div")
+            set label to document.createElement("span")
+            set label.textContent to item.name
+            row.appendChild(label)
+            set revoke to document.createElement("button")
+            set revoke.type to "button"
+            set revoke.textContent to "Unlink"
+            revoke.addEventListener("click" and given event:
+                set query to Object()
+                set query.action to "revoke"
+                set query.identity to item.identity
+                echo_catch(echo_api("/api/device-link" and query).then(given ignored:
+                    echo_link_list(rows)
+                ))
+            )
+            row.appendChild(revoke)
+            rows.appendChild(row)
+    )
+    echo_catch(loaded)
+    return 0
+
+define echo_device_links_setup with parent:
+    set panel to document.createElement("details")
+    set heading to document.createElement("summary")
+    set heading.textContent to "Link your devices"
+    set panel.id to "device-link-panel"
+    panel.appendChild(heading)
+    set note to document.createElement("p")
+    set note.textContent to "Have a code from your phone or another device? Paste it below to open the same conversations here."
+    note.setAttribute("role" and "status")
+    panel.appendChild(note)
+    set code_label to document.createElement("label")
+    set code_label.textContent to "1. Paste the code from your other device"
+    code_label.setAttribute("for" and "device-link-code")
+    panel.appendChild(code_label)
+    set code to document.createElement("input")
+    set code.id to "device-link-code"
+    set code.style.width to "100%"
+    set code.style.boxSizing to "border-box"
+    code.setAttribute("autocapitalize" and "none")
+    code.setAttribute("spellcheck" and "false")
+    code.setAttribute("aria-label" and "Linking code from your other device")
+    set code.placeholder to "Code from your other device"
+    panel.appendChild(code)
+    set name_label to document.createElement("label")
+    set name_label.textContent to "2. Name this device (optional)"
+    name_label.setAttribute("for" and "device-link-name")
+    panel.appendChild(name_label)
+    set name to document.createElement("input")
+    set name.id to "device-link-name"
+    set name.style.width to "100%"
+    set name.style.boxSizing to "border-box"
+    name.setAttribute("aria-label" and "Name for this linked browser")
+    set name.placeholder to "This device name, e.g. Mac browser"
+    panel.appendChild(name)
+    set accept to document.createElement("button")
+    set accept.type to "button"
+    set accept.textContent to "Link this device & open my chats"
+    set accept.style.width to "100%"
+    set accept.style.marginTop to "12px"
+    panel.appendChild(accept)
+    accept.addEventListener("click" and given event:
+        if window.echoBusy || window.echoUploading || window.localStorage.getItem("echo.pending"):
+            set note.textContent to "Finish or stop this browser’s current turn before switching accounts. Your existing history will stay in its original account."
+            return 0
+        if not code.value.trim():
+            set note.textContent to "Paste the code from your other device into step 1."
+            code.focus()
+            return 0
+        set options to Object()
+        set options.method to "POST"
+        set options.headers to Object()
+        get_list(Reflect and "set").call(Reflect and options.headers and "Content-Type" and "application/json")
+        get_list(Reflect and "set").call(Reflect and options.headers and "X-Echo-Token" and code.value.trim())
+        set body to Object()
+        set body.name to name.value.trim() || "Linked browser"
+        set body.previous_token to window.echoToken || ""
+        set options.body to JSON.stringify(body)
+        set accept.disabled to true
+        set accept.textContent to "Linking your device…"
+        set note.textContent to "Opening your other device’s conversations here…"
+        set request to window.fetch("/api/pair" and options).then(given response:
+            if not response.ok:
+                return Promise.reject("That code has expired, was already used, or was copied incorrectly. Create a new code on your other device and paste it here.")
+            return response.json()
+        ).then(given result:
+            if result.status != "paired":
+                return Promise.reject(echo_failure(result))
+            echo_link_switch(result)
+        )
+        set catcher to get_list(request and "catch")
+        catcher.call(request and given error:
+            set error to echo_failure(error)
+            set note.textContent to String(error)
+            set accept.disabled to false
+            set accept.textContent to "Link this device & open my chats"
+        )
+    )
+    set explanation to document.createElement("p")
+    set explanation.textContent to "Your conversations from both devices will appear together. Open any conversation on either device; new messages update automatically. Linking also gives this browser access to the other account’s permissions."
+    panel.appendChild(explanation)
+    set outgoing to document.createElement("details")
+    set outgoing_title to document.createElement("summary")
+    set outgoing_title.textContent to "Want to bring these chats to another device instead?"
+    outgoing.appendChild(outgoing_title)
+    set outgoing_help to document.createElement("p")
+    set outgoing_help.textContent to "Create a code here. On your other device, open Link devices and paste it into step 1. The code works once and expires in 10 minutes."
+    outgoing.appendChild(outgoing_help)
+    set create_button to document.createElement("button")
+    set create_button.type to "button"
+    set create_button.textContent to "Create a code for my other device"
+    outgoing.appendChild(create_button)
+    set output to document.createElement("input")
+    set output.readOnly to true
+    set output.hidden to true
+    set output.style.width to "100%"
+    output.setAttribute("aria-label" and "Your one-use linking code")
+    outgoing.appendChild(output)
+    create_button.addEventListener("click" and given event:
+        set query to Object()
+        set query.action to "create"
+        echo_catch(echo_api("/api/device-link" and query).then(given result:
+            set output.value to result.code || ""
+            set output.hidden to false
+            output.select()
+        ))
+    )
+    panel.appendChild(outgoing)
+    # Upgrade an earlier switch-only link when both credentials are still held here.
+    set previous_text to window.localStorage.getItem("echo.previous-account")
+    if previous_text && window.echoToken:
+        set previous to JSON.parse(previous_text)
+        set merge to Object()
+        set merge.action to "merge"
+        set merge.previous_token to get_list(previous and "echo.credential")
+        set merging to echo_api("/api/device-link" and merge).then(given result:
+            if result.status == "merged":
+                window.localStorage.removeItem("echo.previous-account")
+                set note.textContent to "Your linked devices now share one conversation list. New messages appear automatically."
+                echo_sessions()
+        )
+        set merge_error to get_list(merging and "catch")
+        merge_error.call(merging and given error:
+            set error to echo_failure(error)
+            set note.textContent to "Earlier chats could not be combined yet. Your saved chats remain intact. " + String(error)
+        )
+    set rows to document.createElement("div")
+    panel.appendChild(rows)
+    panel.addEventListener("toggle" and given event:
+        if panel.open && window.echoToken:
+            echo_link_list(rows)
+    )
+    parent.appendChild(panel)
+    return 0
+
+
+# Follow new turns from another linked browser without replacing its draft.
+define echo_linked_session_watch:
+    if not window.echoToken || window.echoPrivateWatching || document.visibilityState != "visible":
+        return 0
+    set window.echoPrivateWatching to true
+    set session to window.echoSession
+    set query to Object()
+    set request to echo_api("/api/sessions" and query).then(given result:
+        set window.echoPrivateWatching to false
+        if result.status != "found":
+            return 0
+        if not document.getElementById("session-search").value:
+            echo_sessions_render(result)
+        else:
+            echo_sessions()
+        if not session || session != window.echoSession || window.echoGroup || window.localStorage.getItem("echo.pending"):
+            return 0
+        for each item in result.sessions || Array():
+            if item.session == session && item.revision && not window.echoBusy && window.echoRenderedRevision != session + ":" + item.revision:
+                echo_history()
+            if item.session == session && item.run && item.run != window.echoRun:
+                set window.echoRun to item.run
+                window.localStorage.setItem("echo.run" and item.run)
+                echo_history()
+                echo_poll()
+    )
+    set catcher to get_list(request and "catch")
+    catcher.call(request and given ignored:
+        set window.echoPrivateWatching to false
+    )
+    return 0
+
+
+define echo_playback_setup:
+    document.addEventListener("play" and given event:
+        if event.target.tagName == "AUDIO":
+            if window.echoActiveAudio && window.echoActiveAudio != event.target:
+                window.echoActiveAudio.pause()
+            set window.echoActiveAudio to event.target
+    and true)
+    return 0
+
+
+# Guidance is sent to the existing durable run, never through Stop or /api/runs.
+define echo_guidance_send with queued:
+    set input to document.getElementById("message")
+    if not input:
+        return 0
+    if window.echoGuidanceSending:
+        echo_guidance_render()
+        return 0
+    if not window.echoToken || window.echoReadOnly || window.echoUploading || not window.echoRun || not window.echoCanStop:
+        echo_steer_status("There is no active turn ready for guidance. Your text is kept.")
+        return 0
+    if (queued && queued.attachments && queued.attachments.length > 0) || (not queued && echo_selected_files().length > 0):
+        echo_steer_status("Send attachments as a queued message. Mid-turn guidance currently accepts text; your draft is kept.")
+        return 0
+    set message to input.value
+    if queued:
+        set message to queued.message
+    if not message.trim():
+        echo_guidance_render()
+        input.focus()
+        return 0
+    set key to "echo.guidance:" + window.echoRun
+    set payload to Object()
+    set saved to window.localStorage.getItem(key)
+    if saved:
+        set payload to JSON.parse(saved)
+        set message to payload.message
+    else:
+        set payload.run to window.echoRun
+        set payload.identity to window.crypto.randomUUID()
+        set payload.message to message
+        set payload.queue_key to echo_queue_key()
+        if queued:
+            set payload.queue_submission to queued.submission
+        window.localStorage.setItem(key and JSON.stringify(payload))
+    set payload.phase to "sending"
+    window.localStorage.setItem("echo.guidance.receipt:" + payload.run and JSON.stringify(payload))
+    set window.echoGuidanceSending to true
+    echo_queue_render()
+    set sent to echo_api("/api/steer" and payload).then(given result:
+        if result.status != "guidance-received":
+            return Promise.reject("Guidance was not accepted: " + result.status)
+        set priorReceipt to JSON.parse(window.localStorage.getItem("echo.guidance.receipt:" + payload.run) || "null")
+        set payload.phase to "received"
+        if priorReceipt && priorReceipt.identity == payload.identity && priorReceipt.phase == "applied":
+            set payload.phase to "applied"
+        window.localStorage.setItem("echo.guidance.receipt:" + payload.run and JSON.stringify(payload))
+        echo_guidance_clear(payload)
+        set window.echoGuidanceSending to false
+        echo_queue_render()
+        echo_poll()
+    )
+    sent.catch(given error:
+        set error to echo_failure(error)
+        set window.echoGuidanceSending to false
+        echo_queue_render()
+        set receipt to JSON.parse(window.localStorage.getItem("echo.guidance.receipt:" + payload.run) || "null")
+        if not (receipt && receipt.identity == payload.identity && receipt.phase == "applied"):
+            echo_steer_status("Delivery not confirmed. Retry guidance uses the same message ID and cannot duplicate it. " + String(error))
+    )
+    return 0
+
+
+# Sending, acknowledged and applied are distinct. Repeated taps never create
+# another identity; a retry retains the durable intake identity.
+define echo_guidance_render:
+    set button to document.getElementById("steer-now")
+    set input to document.getElementById("message")
+    if not button || not input:
+        return 0
+    set pending to window.localStorage.getItem("echo.guidance:" + window.echoRun)
+    set receipt to JSON.parse(window.localStorage.getItem("echo.guidance.receipt:" + window.echoRun) || "null")
+    set button.disabled to window.echoGuidanceSending || not window.echoCanStop || window.echoReadOnly || window.echoUploading || not window.echoToken || not input.value.trim()
+    set button.textContent to "Steer now"
+    if window.echoGuidanceSending:
+        set button.textContent to "Sending guidance…"
+        echo_steer_status("Sending guidance once. Please wait for confirmation.")
+    else if pending:
+        set button.textContent to "Retry guidance"
+        echo_steer_status("Delivery not confirmed. Retry guidance checks the same saved message; it will not send a duplicate.")
+    else if receipt && receipt.phase == "applied":
+        echo_steer_status("Guidance applied to this turn. Echo is continuing with your update.")
+    else if receipt:
+        echo_steer_status("Guidance received once — waiting for Echo to apply it. You do not need to send it again.")
+    else:
+        set status to document.getElementById("steering-status")
+        if status:
+            set status.hidden to true
+            set status.textContent to ""
+    return 0
+
+# Both HTTP acknowledgement and an archived application receipt confirm delivery.
+# Remove only that identity, never a later draft or another queued message.
+define echo_guidance_clear with payload:
+    set key to "echo.guidance:" + payload.run
+    set pending to JSON.parse(window.localStorage.getItem(key) || "null")
+    if pending && pending.identity == payload.identity:
+        window.localStorage.removeItem(key)
+    if payload.queue_key:
+        set remaining to JSON.parse(window.localStorage.getItem(payload.queue_key) || "[]").filter(given entry:
+            return not ((payload.queue_submission && entry.submission == payload.queue_submission) || (entry.steer_run == payload.run && entry.message == payload.message))
+        )
+        window.localStorage.setItem(payload.queue_key and JSON.stringify(remaining))
+    set input to document.getElementById("message")
+    if input && not payload.queue_submission && window.echoRun == payload.run && input.value == payload.message:
+        set input.value to ""
+        window.localStorage.removeItem("echo.composer:" + window.echoSession)
+    return 0
+
+# Project editor fields retain normal labels and browser keyboard behaviour.
+define echo_project_field with parent and title and multiline:
+    set label to document.createElement("label")
+    set label.style.cssText to "display:block;margin:12px 0"
+    set caption to document.createElement("span")
+    set caption.textContent to title
+    label.appendChild(caption)
+    set control to document.createElement("input")
+    if multiline:
+        set control to document.createElement("textarea")
+        set control.rows to 5
+    set control.style.cssText to "display:block;width:100%;box-sizing:border-box;margin-top:6px;padding:10px;border:1px solid var(--border);border-radius:8px"
+    control.setAttribute("aria-label" and title)
+    label.appendChild(control)
+    parent.appendChild(label)
+    return control
+
+define echo_project_task with parent and task:
+    set row to document.createElement("div")
+    set row.style.cssText to "display:flex;gap:8px;flex-wrap:wrap;margin:8px 0"
+    set row.echoIdentity to task.id || window.crypto.randomUUID()
+    set title to document.createElement("input")
+    title.setAttribute("aria-label" and "Task title")
+    set title.value to task.title || ""
+    set title.style.cssText to "flex:1;min-width:140px;padding:8px"
+    row.appendChild(title)
+    set status to document.createElement("select")
+    status.setAttribute("aria-label" and "Task status")
+    for each value in ["todo","doing","done","blocked"]:
+        set option to document.createElement("option")
+        set option.value to value
+        set option.textContent to value
+        status.appendChild(option)
+    set status.value to task.status || "todo"
+    row.appendChild(status)
+    set remove to document.createElement("button")
+    set remove.type to "button"
+    set remove.textContent to "Remove task"
+    remove.addEventListener("click" and given ignored:
+        row.remove()
+    )
+    row.appendChild(remove)
+    parent.appendChild(row)
+    return 0
+
+define echo_project_file with parent and file and checked:
+    for each existing in parent.children:
+        if existing.echoFile.attachment == file.attachment:
+            return 0
+    set label to document.createElement("label")
+    set label.style.cssText to "display:block;margin:8px 0;overflow-wrap:anywhere"
+    set label.echoFile to file
+    set checkbox to document.createElement("input")
+    set checkbox.type to "checkbox"
+    set checkbox.checked to checked
+    checkbox.setAttribute("aria-label" and "Project file: " + file.label)
+    label.appendChild(checkbox)
+    label.appendChild(document.createTextNode(" " + file.label))
+    parent.appendChild(label)
+    return 0
+
+define echo_projects_setup:
+    if document.getElementById("projects-open"):
+        return 0
+    set button to document.createElement("button")
+    set button.id to "projects-open"
+    set button.type to "button"
+    set button.textContent to "Projects"
+    set button.disabled to window.echoReadOnly
+    button.addEventListener("click" and given ignored:
+        echo_catch(echo_ensure_session().then(given session:
+            echo_projects_dialog(session and button)
+        ))
+    )
+    document.getElementById("history-sidebar").appendChild(button)
+    return 0
+
+define echo_projects_dialog with session and opener:
+    set request to null
+    set catcher to null
+    set query to null
+    set selected to null
+    set manifest to null
+    set task to null
+    set control to null
+    set pending_key to null
+    set pending to null
+    set dialog to document.createElement("dialog")
+    dialog.setAttribute("aria-label" and "Projects")
+    set dialog.style.cssText to "width:min(680px,calc(100vw - 32px));max-height:90vh;box-sizing:border-box;overflow:auto;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:18px;padding:24px"
+    set heading to document.createElement("h2")
+    set heading.textContent to "Projects"
+    dialog.appendChild(heading)
+    set status to document.createElement("p")
+    status.setAttribute("role" and "status")
+    set status.textContent to "Loading projects for this conversation…"
+    dialog.appendChild(status)
+    set picker to document.createElement("select")
+    picker.setAttribute("aria-label" and "Choose project")
+    set picker.style.maxWidth to "100%"
+    dialog.appendChild(picker)
+    set activate to document.createElement("button")
+    set activate.type to "button"
+    set activate.textContent to "Use in this conversation"
+    dialog.appendChild(activate)
+    set clear to document.createElement("button")
+    set clear.type to "button"
+    set clear.textContent to "Clear conversation project"
+    dialog.appendChild(clear)
+    set name to echo_project_field(dialog and "Project name" and false)
+    set instructions to echo_project_field(dialog and "Project instructions" and true)
+    set tasks_heading to document.createElement("h3")
+    set tasks_heading.textContent to "Tasks"
+    dialog.appendChild(tasks_heading)
+    set tasks to document.createElement("div")
+    dialog.appendChild(tasks)
+    set add to document.createElement("button")
+    set add.type to "button"
+    set add.textContent to "Add task"
+    add.addEventListener("click" and given ignored:
+        echo_project_task(tasks and Object())
+    )
+    dialog.appendChild(add)
+    set files_heading to document.createElement("h3")
+    set files_heading.textContent to "Project files"
+    dialog.appendChild(files_heading)
+    set explanation to document.createElement("p")
+    set explanation.textContent to "Choose from this conversation’s uploaded files. Existing project references stay available below. Unchecking removes a project reference, not the original file. Task status records your plan, not a verified result."
+    dialog.appendChild(explanation)
+    set files to document.createElement("div")
+    dialog.appendChild(files)
+    set save to document.createElement("button")
+    set save.type to "button"
+    set save.textContent to "Save project"
+    dialog.appendChild(save)
+    set close to document.createElement("button")
+    set close.type to "button"
+    set close.textContent to "Close"
+    close.addEventListener("click" and given ignored:
+        dialog.close()
+    )
+    dialog.appendChild(close)
+    set retry to document.createElement("button")
+    set retry.type to "button"
+    set retry.textContent to "Retry unfinished project change"
+    set retry.hidden to not window.localStorage.getItem("echo.project-request:" + session)
+    retry.addEventListener("click" and given ignored:
+        set pending to window.localStorage.getItem("echo.project-request:" + session)
+        if pending:
+            submit(JSON.parse(pending))
+    )
+    dialog.appendChild(retry)
+    set dialog.echoProjects to Array()
+    set dialog.echoFiles to Array()
+    set dialog.echoBusy to false
+    set save.disabled to true
+    set activate.disabled to true
+    set clear.disabled to true
+    set picker.disabled to true
+    dialog.addEventListener("cancel" and given event:
+        if dialog.echoBusy:
+            event.preventDefault()
+    )
+    dialog.addEventListener("close" and given ignored:
+        dialog.remove()
+        opener.focus()
+    )
+    set render to given ignored:
+        set selected to dialog.echoProjects.find(given item:
+            return item.project == picker.value
+        )
+        set manifest to Object()
+        if selected:
+            set manifest to selected.manifest
+        set name.value to manifest.name || ""
+        set instructions.value to manifest.instructions || ""
+        set tasks.textContent to ""
+        for each task in manifest.tasks || Array():
+            echo_project_task(tasks and task)
+        set files.textContent to ""
+        for each control in manifest.files || Array():
+            echo_project_file(files and control and true)
+        for each control in dialog.echoFiles:
+            echo_project_file(files and control and false)
+        set activate.disabled to not selected
+    picker.addEventListener("change" and render)
+    set refresh to given chosen:
+        set query to Object()
+        set query.operation to "list"
+        set query.session to session
+        return echo_api("/api/projects" and query).then(given result:
+            set dialog.echoProjects to result.projects
+            set picker.textContent to ""
+            set control to document.createElement("option")
+            set control.value to ""
+            set control.textContent to "New project"
+            picker.appendChild(control)
+            for each item in result.projects:
+                set control to document.createElement("option")
+                set control.value to item.project
+                set control.textContent to item.manifest.name
+                if item.project == result.selected:
+                    set control.textContent to control.textContent + " · Active"
+                picker.appendChild(control)
+            set picker.value to chosen || result.selected || ""
+            set save.disabled to false
+            set clear.disabled to false
+            set picker.disabled to false
+            render(null)
+            set status.textContent to "Project instructions apply when Echo builds its next request. Saving retains earlier revisions."
+        )
+    set submit to given payload:
+        if dialog.echoBusy:
+            return 0
+        set pending_key to "echo.project-request:" + session
+        set pending to window.localStorage.getItem(pending_key)
+        if pending:
+            set pending to JSON.parse(pending)
+            set payload.identity to pending.identity
+            if JSON.stringify(payload) != JSON.stringify(pending):
+                set status.textContent to "An earlier project save is unresolved. Retry its unchanged values before saving another change."
+                return 0
+        else:
+            set payload.identity to window.crypto.randomUUID()
+            window.localStorage.setItem(pending_key and JSON.stringify(payload))
+        set retry.hidden to false
+        set dialog.echoBusy to true
+        set close.disabled to true
+        set save.disabled to true
+        set activate.disabled to true
+        set clear.disabled to true
+        set picker.disabled to true
+        set status.textContent to "Saving project change…"
+        set request to echo_api("/api/projects" and payload).then(given result:
+            return refresh(result.project)
+        ).then(given ignored:
+            window.localStorage.removeItem(pending_key)
+            set retry.hidden to true
+            set dialog.echoBusy to false
+            set close.disabled to false
+            set save.disabled to false
+            set clear.disabled to false
+            set picker.disabled to false
+            set status.textContent to "Saved. Project revisions and selection are retained across conversations and linked devices."
+        )
+        set catcher to get_list(request and "catch")
+        catcher.call(request and given error:
+            set error to echo_failure(error)
+            set dialog.echoBusy to false
+            set close.disabled to false
+            set save.disabled to false
+            set clear.disabled to false
+            set picker.disabled to false
+            set activate.disabled to picker.value == ""
+            if echo_error_code(error) == "revision-conflict" || echo_error_code(error) == "invalid-manifest" || echo_error_code(error) == "not-authorized":
+                window.localStorage.removeItem(pending_key)
+                set retry.hidden to true
+            set status.textContent to "Project change failed: " + error + ". Your fields remain here. For a stale revision, close and reopen Projects to load the current version."
+        )
+    save.addEventListener("click" and given ignored:
+        set selected to dialog.echoProjects.find(given item:
+            return item.project == picker.value
+        )
+        set manifest to Object()
+        set manifest.name to name.value
+        set manifest.instructions to instructions.value
+        set manifest.tasks to Array()
+        for each row in tasks.children:
+            set task to Object()
+            set task.id to row.echoIdentity
+            set task.title to row.querySelector("input").value
+            set task.status to row.querySelector("select").value
+            manifest.tasks.push(task)
+        set manifest.files to Array()
+        for each row in files.children:
+            if row.querySelector("input").checked:
+                manifest.files.push(row.echoFile)
+        set query to Object()
+        set query.operation to "create"
+        set query.session to session
+        if selected:
+            set query.operation to "update"
+            set query.project to selected.project
+            set query.expected_revision to selected.revision
+        set query.manifest to manifest
+        submit(query)
+    )
+    activate.addEventListener("click" and given ignored:
+        set query to Object()
+        set query.operation to "select"
+        set query.session to session
+        set query.project to picker.value
+        submit(query)
+    )
+    clear.addEventListener("click" and given ignored:
+        set query to Object()
+        set query.operation to "select"
+        set query.session to session
+        set query.project to ""
+        submit(query)
+    )
+    document.body.appendChild(dialog)
+    dialog.showModal()
+    set query to Object()
+    set query.session to session
+    set request to echo_api("/api/attachments" and query).then(given result:
+        for each file in result.attachments:
+            if file.lifecycle && file.lifecycle.state == "trashed":
+                continue
+            set control to Object()
+            set control.attachment to file.attachment
+            set control.sha256 to file.sha256
+            set control.label to file.name
+            dialog.echoFiles.push(control)
+        return refresh("")
+    )
+    set catcher to get_list(request and "catch")
+    catcher.call(request and given error:
+        set error to echo_failure(error)
+        set status.textContent to "Could not load projects: " + error + ". Close and retry."
+    )
+    return 0
+
+# Render server-bound fetch receipts as text and retained local attachments.
+# No remote page loads automatically and fetched HTML never becomes markup.
+define echo_research_panel with sources:
+    set panel to document.createElement("details")
+    set heading to document.createElement("summary")
+    set heading.textContent to "Web research (" + sources.length + ")"
+    panel.appendChild(heading)
+    set explanation to document.createElement("p")
+    set explanation.textContent to "Fetched sources, not proof that every page was read or every claim verified. HTTP failures and search challenges can retain source files too. Open shows the retained copy; no remote page loads automatically."
+    panel.appendChild(explanation)
+    for each source in sources:
+        set item to document.createElement("section")
+        set title to document.createElement("p")
+        set title.textContent to source.url + " — " + source.status
+        set title.style.overflowWrap to "anywhere"
+        item.appendChild(title)
+        set receipt to document.createElement("p")
+        set receipt.textContent to "Recorded result: " + source.observation + " · SHA-256: " + source.sha256
+        set receipt.style.overflowWrap to "anywhere"
+        item.appendChild(receipt)
+        set file to Object.assign(Object() and source)
+        set file.observation to null
+        item.appendChild(echo_message_source(file))
+        panel.appendChild(item)
+    return panel
+
+# Work is read-only here. Opening a panel never launches or cancels a job.
+define echo_work_setup:
+    set button to document.createElement("button")
+    set button.type to "button"
+    set button.textContent to "Work"
+    button.addEventListener("click" and given ignored:
+        echo_catch(echo_ensure_session().then(given session:
+            echo_work_dialog(session and button)
+        ))
+    )
+    document.getElementById("history-sidebar").appendChild(button)
+    return 0
+
+define echo_work_dialog with session and opener:
+    set query to null
+    set request to null
+    set catcher to null
+    set record to null
+    set line to null
+    set detail to null
+    set heading to null
+    set dialog to document.createElement("dialog")
+    dialog.setAttribute("aria-label" and "Conversation work")
+    set dialog.style.cssText to "width:min(720px,calc(100vw - 32px));max-height:90vh;overflow:auto;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:18px;padding:24px"
+    set title to document.createElement("h2")
+    set title.textContent to "Conversation work"
+    dialog.appendChild(title)
+    set note to document.createElement("p")
+    set note.textContent to "Saved run and schedule states for this conversation. Refresh to check for changes. A cancellation request is not a completed cancellation."
+    dialog.appendChild(note)
+    set family to document.createElement("select")
+    family.setAttribute("aria-label" and "Work type")
+    for each name in ["runs","schedules"]:
+        set option to document.createElement("option")
+        set option.value to name
+        set option.textContent to name
+        family.appendChild(option)
+    dialog.appendChild(family)
+    set amount to echo_project_field(dialog and "Rows per batch" and false)
+    set amount.type to "number"
+    set amount.min to "1"
+    set amount.value to "20"
+    set refresh to document.createElement("button")
+    set refresh.textContent to "Refresh work"
+    set next to document.createElement("button")
+    set next.textContent to "Load more work"
+    set status to document.createElement("p")
+    status.setAttribute("role" and "status")
+    set list to document.createElement("div")
+    set close to document.createElement("button")
+    set close.textContent to "Close"
+    dialog.appendChild(refresh)
+    dialog.appendChild(next)
+    dialog.appendChild(status)
+    dialog.appendChild(list)
+    dialog.appendChild(close)
+    set dialog.echoCursor to "0"
+    set dialog.echoBusy to false
+    set load to given reset:
+        if dialog.echoBusy:
+            return 0
+        set query to Object()
+        set query.session to session
+        set query.family to family.value
+        set query.after to Number(dialog.echoCursor)
+        if reset:
+            set query.after to 0
+        set query.amount to Number(amount.value)
+        if not Number.isSafeInteger(query.amount) || query.amount < 1:
+            set status.textContent to "Choose a positive whole-number batch size."
+            return 0
+        set dialog.echoBusy to true
+        set refresh.disabled to true
+        set next.disabled to true
+        set family.disabled to true
+        set status.textContent to "Reading saved work…"
+        set request to echo_api("/api/work" and query).then(given result:
+            if reset:
+                set list.textContent to ""
+            for each item in result.entries:
+                set record to document.createElement("section")
+                set record.style.cssText to "padding:12px 0;border-bottom:1px solid var(--border);overflow-wrap:anywhere"
+                set heading to document.createElement("strong")
+                set heading.textContent to item.state + " · " + (item.instruction || item.run)
+                record.appendChild(heading)
+                set detail to document.createElement("details")
+                set line to document.createElement("summary")
+                set line.textContent to "Record details"
+                detail.appendChild(line)
+                for each key in Object.keys(item):
+                    if key != "status" && key != "next_after":
+                        set line to document.createElement("p")
+                        set line.textContent to key.replaceAll("_" and " ") + ": " + get_list(item and key)
+                        detail.appendChild(line)
+                record.appendChild(detail)
+                list.appendChild(record)
+            set dialog.echoCursor to result.next_after
+            set next.hidden to not result.more
+            set status.textContent to "Checked " + Reflect.construct(Date and Array()).toLocaleTimeString() + ". " + list.children.length + " records shown."
+            set dialog.echoBusy to false
+            set refresh.disabled to false
+            set next.disabled to false
+            set family.disabled to false
+        )
+        set catcher to get_list(request and "catch")
+        catcher.call(request and given error:
+            set error to echo_failure(error)
+            set status.textContent to "Could not refresh work: " + error + ". Displayed records may be stale."
+            set dialog.echoBusy to false
+            set refresh.disabled to false
+            set next.disabled to false
+            set family.disabled to false
+        )
+        return 0
+    refresh.addEventListener("click" and given ignored:
+        load(true)
+    )
+    family.addEventListener("change" and given ignored:
+        load(true)
+    )
+    next.addEventListener("click" and given ignored:
+        load(false)
+    )
+    close.addEventListener("click" and given ignored:
+        dialog.close()
+    )
+    dialog.addEventListener("close" and given ignored:
+        dialog.remove()
+        opener.focus()
+    )
+    document.body.appendChild(dialog)
+    dialog.showModal()
+    load(true)
+    return 0
+
+# Settings presentation only: existing controls and their handlers are moved intact.
+# Each category owns a section; more controls can be added without enlarging the header menu.
+define echo_settings_section with navigation and content and title and description:
+    set section to document.createElement("section")
+    set section.className to "settings-section"
+    set section.hidden to content.children.length > 0
+    set heading to document.createElement("h3")
+    set heading.textContent to title
+    section.appendChild(heading)
+    set detail to document.createElement("p")
+    set detail.className to "settings-description"
+    set detail.textContent to description
+    section.appendChild(detail)
+    set button to document.createElement("button")
+    set button.type to "button"
+    set button.textContent to title
+    button.setAttribute("aria-current" and String(not section.hidden))
+    button.addEventListener("click" and given event:
+        for each sibling in content.children:
+            set sibling.hidden to sibling != section
+        for each sibling in navigation.children:
+            sibling.setAttribute("aria-current" and String(sibling == button))
+    )
+    navigation.appendChild(button)
+    content.appendChild(section)
+    return section
+
+define echo_settings_card with section and control and description:
+    if not control:
+        return 0
+    set card to document.createElement("div")
+    set card.className to "settings-card"
+    card.appendChild(control)
+    if description:
+        set note to document.createElement("p")
+        set note.textContent to description
+        card.appendChild(note)
+    section.appendChild(card)
+    return 0
+
+define echo_settings_setup:
+    set menu to document.querySelector(".header-options")
+    if not menu || document.getElementById("echo-settings"):
+        return 0
+    set summary to menu.querySelector("summary")
+    set controls to menu.querySelector("div")
+    set dialog to document.createElement("dialog")
+    set dialog.id to "echo-settings"
+    dialog.setAttribute("aria-labelledby" and "echo-settings-title")
+    set heading to document.createElement("div")
+    set heading.className to "settings-heading"
+    set heading.innerHTML to "<div><h2 id='echo-settings-title'>Settings</h2><p>Make this space work for you.</p></div>"
+    set close to document.createElement("button")
+    set close.className to "settings-close"
+    set close.type to "button"
+    set close.textContent to "×"
+    close.setAttribute("aria-label" and "Close settings")
+    close.addEventListener("click" and given event:
+        dialog.close()
+    )
+    heading.appendChild(close)
+    dialog.appendChild(heading)
+    set body to document.createElement("div")
+    set body.className to "settings-body"
+    set navigation to document.createElement("nav")
+    set navigation.className to "settings-nav"
+    navigation.setAttribute("aria-label" and "Settings categories")
+    set content to document.createElement("div")
+    set content.className to "settings-content"
+    body.appendChild(navigation)
+    body.appendChild(content)
+    dialog.appendChild(body)
+    set general to echo_settings_section(navigation and content and "Appearance" and "Choose how Echo looks on this browser.")
+    echo_settings_card(general and controls.querySelector(".theme-control") and "System follows your device’s light or dark appearance. Your choice is saved automatically.")
+    set conversation to echo_settings_section(navigation and content and "Conversations" and "Manage your conversation history and inspect its saved context.")
+    set batch to document.getElementById("history-page-size")
+    if batch:
+        set batch.parentNode.firstChild.textContent to "Messages loaded at a time"
+        echo_settings_card(conversation and batch.parentNode.parentNode and "Controls how many messages load at once. It does not limit Echo’s context or delete older messages.")
+    set devices to null
+    if controls.querySelector("#browser-access") || controls.querySelector("#device-link-panel"):
+        set devices to echo_settings_section(navigation and content and "Devices & access" and "Continue across devices and check this browser’s access.")
+        echo_settings_card(devices and controls.querySelector("#browser-access") and "")
+        echo_settings_card(devices and controls.querySelector("#device-link-panel") and "")
+    for each control in controls.querySelectorAll(":scope > *"):
+        set description to ""
+        if control.id == "export-session":
+            set description to "Download a copy of the current conversation."
+        if control.textContent == "Inspect recap":
+            set description to "View the saved summary used to continue this conversation."
+        echo_settings_card(conversation and control and description)
+    set controls.hidden to true
+    document.body.appendChild(dialog)
+    set open to given ignored:
+        if not dialog.open:
+            dialog.showModal()
+        set access to document.getElementById("browser-access")
+        if access:
+            echo_show_identity(access)
+    summary.addEventListener("click" and given event:
+        event.preventDefault()
+        open()
+    )
+    menu.addEventListener("toggle" and given event:
+        if menu.open:
+            open()
+            if devices:
+                navigation.lastChild.click()
+                set code to document.getElementById("device-link-code")
+                if code:
+                    code.focus()
+            set menu.open to false
+    )
+    dialog.addEventListener("click" and given event:
+        if event.target == dialog:
+            set bounds to dialog.getBoundingClientRect()
+            if event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom:
+                dialog.close()
+    )
+    dialog.addEventListener("close" and given event:
+        summary.focus()
+    )
+    set style to document.createElement("style")
+    set style.textContent to "#echo-settings{padding:0;width:min(880px,calc(100vw - 40px));height:min(560px,calc(100dvh - 64px));max-width:none;max-height:none;border:1px solid var(--composer-line);border-radius:24px;background:var(--surface);color:var(--fg);box-shadow:0 32px 100px #0006;overflow:hidden}#echo-settings::backdrop{background:#05080db3;backdrop-filter:blur(7px)}.settings-heading{display:flex;justify-content:space-between;align-items:center;padding:24px 28px;border-bottom:1px solid var(--line)}.settings-heading h2{font-size:22px;letter-spacing:-.6px;margin:0}.settings-heading p{color:var(--muted);font-size:13px;margin:6px 0 0}.settings-close{border:1px solid var(--line);background:transparent;width:36px;height:36px;padding:0;font-size:22px}.settings-body{display:grid;grid-template-columns:190px minmax(0,1fr);height:calc(100% - 100px)}.settings-nav{padding:20px 12px;background:var(--sidebar);border-right:1px solid var(--line);overflow:auto}.settings-nav button{display:block;text-align:left;width:100%;padding:12px 14px;margin:3px 0;border:1px solid transparent;background:transparent;color:var(--soft);font-size:13px}.settings-nav button[aria-current=true]{background:var(--selected);color:var(--accent);border-color:var(--line)}.settings-content{overflow:auto;padding:28px;overscroll-behavior:contain}.settings-section{margin:0}.settings-section h3{margin:0 0 7px;font-size:19px;letter-spacing:-.3px}.settings-description{color:var(--muted);font-size:13px;line-height:1.6;margin:0 0 24px}.settings-card{padding:20px;border:1px solid var(--line);border-radius:16px;background:var(--bg);margin:12px 0;overflow-wrap:anywhere}.settings-card>p{font-size:12px;line-height:1.6;color:var(--muted);margin:8px 0 0}.settings-card label{font-size:13px;line-height:1.5;margin:0 0 10px}.settings-card .theme-control{display:flex;justify-content:space-between;margin:0;gap:20px}.settings-card input{max-width:100%;font-size:14px}.settings-card:has(>[hidden]:only-child){display:none}.settings-card input[type=number]{display:block;width:100px;margin-top:8px}.settings-card select{min-width:130px;border:1px solid var(--border);font-size:13px}.settings-card>button{width:100%;text-align:left;border:0;background:transparent;padding:0;color:var(--fg);font-size:14px;font-weight:550}.settings-card>button:hover{color:var(--accent)}#echo-settings #device-link-panel{margin:0}#echo-settings #device-link-panel input{max-width:none}#echo-settings #browser-access{margin:0;font-size:12px!important;line-height:1.8;color:var(--soft)}@media(max-width:600px){#echo-settings{width:calc(100vw - 16px);height:calc(100dvh - 24px);border-radius:20px}.settings-heading{padding:20px}.settings-heading p{font-size:12px}.settings-body{display:flex;flex-direction:column;height:calc(100% - 94px)}.settings-nav{display:flex;flex-shrink:0;gap:6px;padding:10px 12px;border-right:0;border-bottom:1px solid var(--line);overflow-x:auto}.settings-nav button{width:auto;white-space:nowrap;margin:0;padding:10px 13px}.settings-content{padding:22px 18px;flex:1;min-height:0}.settings-card{padding:16px}.settings-card button{min-height:32px}.settings-close{min-width:36px}}"
+    document.head.appendChild(style)
+    return 0
+
+# One dismissal path for the mobile conversation drawer.
+define echo_sidebar_dismiss_setup:
+    set sidebar to document.getElementById("history-sidebar")
+    set original to document.getElementById("nav-toggle")
+    if not sidebar || not original:
+        return 0
+    set toggle to original.cloneNode(true)
+    original.replaceWith(toggle)
+    set close to given ignored:
+        sidebar.setAttribute("data-open" and "false")
+        toggle.setAttribute("aria-expanded" and "false")
+    toggle.addEventListener("click" and given event:
+        event.preventDefault()
+        set opened to sidebar.getAttribute("data-open") != "true"
+        sidebar.setAttribute("data-open" and String(opened))
+        toggle.setAttribute("aria-expanded" and String(opened))
+    )
+    document.addEventListener("pointerdown" and given event:
+        if sidebar.getAttribute("data-open") == "true" && not sidebar.contains(event.target) && not toggle.contains(event.target):
+            close()
+    )
+    document.addEventListener("keydown" and given event:
+        if event.key == "Escape" && sidebar.getAttribute("data-open") == "true":
+            close()
+            toggle.focus()
+    )
+    set dismiss to document.createElement("button")
+    set dismiss.type to "button"
+    set dismiss.id to "sidebar-close"
+    set dismiss.textContent to "Close menu ×"
+    dismiss.addEventListener("click" and given event:
+        close()
+        toggle.focus()
+    )
+    sidebar.prepend(dismiss)
+    set style to document.createElement("style")
+    set style.textContent to "#history-sidebar>#sidebar-close{display:none}@media(max-width:800px){#history-sidebar>#sidebar-close{display:block;margin-bottom:12px;background:transparent;color:var(--muted);text-align:right;border:0;padding:8px}#nav-toggle{position:relative;z-index:22;flex-shrink:0}#history-sidebar{max-height:100%;overscroll-behavior:contain}}"
+    document.head.appendChild(style)
+    return 0
+
+# Delegated sessions retain isolated storage but are presented inside the parent chat.
+define echo_agent_panel_load with panel:
+    if panel.echoLoading || not panel.open:
+        return 0
+    set panel.echoLoading to true
+    set query to Object()
+    set query.session to panel.echoSession
+    set query.before to panel.echoBefore || "0"
+    set query.messages to 50
+    set request to echo_api("/api/session" and query).then(given result:
+        set panel.echoLoading to false
+        if result.status != "found":
+            set panel.echoStatus.textContent to String(echo_failure(result))
+            return 0
+        set signature to JSON.stringify(result.messages)
+        if query.before == "0" && panel.echoSignature == signature:
+            return 0
+        if query.before == "0":
+            set panel.echoBody.textContent to ""
+            set panel.echoSignature to signature
+        set batch to document.createElement("div")
+        for each message in result.messages:
+            set block to document.createElement("div")
+            set label to document.createElement("strong")
+            set label.textContent to "Agent result"
+            if message.role == "user":
+                set label.textContent to "Delegated task"
+            set text to document.createElement("div")
+            set text.className to "message-text"
+            set text.textContent to message.text
+            if message.role == "assistant":
+                echo_format_response(text and message.text)
+            block.appendChild(label)
+            block.appendChild(text)
+            batch.appendChild(block)
+        if query.before == "0":
+            panel.echoBody.appendChild(batch)
+        else:
+            panel.echoBody.prepend(batch)
+        set panel.echoBefore to "0"
+        set panel.echoOlderCursor to result.next_before
+        set panel.echoOlder.hidden to not result.older_possible
+    )
+    get_list(request and "catch").call(request and given error:
+        set error to echo_failure(error)
+        set panel.echoLoading to false
+        set panel.echoStatus.textContent to "Could not read agent output: " + String(error) + ". Reopen to retry."
+    )
+    return 0
+
+define echo_agents_refresh:
+    set request to null
+    set panel to null
+    set heading to null
+    set status to null
+    set body to null
+    set older to null
+    set owner to null
+    set holder to null
+    set error_panel to null
+    if not window.echoSession || window.echoAgentsLoading || document.hidden:
+        return 0
+    set session to window.echoSession
+    set window.echoAgentsLoading to true
+    set query to Object()
+    set query.session to session
+    set query.family to "runs"
+    set query.after to 0
+    set query.amount to 50
+    set load to given ignored:
+        set request to echo_api("/api/work" and query).then(given result:
+            if session != window.echoSession:
+                set window.echoAgentsLoading to false
+                return 0
+            set error_panel to document.getElementById("agent-connection-status")
+            if error_panel:
+                error_panel.remove()
+            for each item in result.entries || Array():
+                if not item.parent_run:
+                    continue
+                set panel to window.echoAgentPanels.get(item.run)
+                if not panel:
+                    set panel to document.createElement("details")
+                    set panel.className to "thinking delegated-agent"
+                    set heading to document.createElement("summary")
+                    panel.appendChild(heading)
+                    set panel.echoHeading to heading
+                    set status to document.createElement("p")
+                    set panel.echoStatus to status
+                    panel.appendChild(status)
+                    set body to document.createElement("div")
+                    set body.className to "agent-results"
+                    panel.appendChild(body)
+                    set panel.echoBody to body
+                    set panel.echoSession to item.session
+                    set older to document.createElement("button")
+                    set older.type to "button"
+                    set older.textContent to "Read earlier agent messages"
+                    set older.hidden to true
+                    set panel.echoOlder to older
+                    panel.appendChild(older)
+                    echo_agent_panel_bind(panel and older)
+                    panel.appendChild(echo_thinking_panel(item.run))
+                    get_list(window.echoAgentPanels and "set").call(window.echoAgentPanels and item.run and panel)
+                set panel.echoHeading.textContent to "Agent · " + (item.activity || item.state.replaceAll("_" and " "))
+                set panel.echoStatus.textContent to "Delegated work · Results return to Echo in this conversation."
+                if item.compaction && item.compaction.state == "pending":
+                    if item.worker_status == "running":
+                        set panel.echoHeading.textContent to "Agent · Compacting context"
+                        set panel.echoStatus.textContent to item.activity + ". Original records and completed work remain saved; the agent will continue after the recap is checked."
+                    else:
+                        set panel.echoHeading.textContent to "Agent · Recap saved, waiting to resume"
+                        set panel.echoStatus.textContent to "Completed work is retained. Waiting for a worker to continue compaction."
+                set owner to null
+                for each article in document.getElementById("transcript").children:
+                    if article.echoEvent == item.parent_objective:
+                        set owner to article
+                if owner:
+                    if panel.parentNode != owner:
+                        owner.appendChild(panel)
+                else:
+                    set holder to document.getElementById("delegated-agents")
+                    if panel.parentNode != holder:
+                        holder.appendChild(panel)
+                if panel.open:
+                    echo_agent_panel_load(panel)
+                    echo_trace_load(panel.querySelector("details.thinking"))
+            if result.more == true || result.more == "true":
+                set query.after to Number(result.next_after)
+                load()
+            else:
+                set window.echoAgentsLoading to false
+        )
+        get_list(request and "catch").call(request and given error:
+            set error to echo_failure(error)
+            set window.echoAgentsLoading to false
+            if session != window.echoSession:
+                return 0
+            set error_panel to document.getElementById("agent-connection-status")
+            if not error_panel:
+                set error_panel to document.createElement("p")
+                set error_panel.id to "agent-connection-status"
+                error_panel.setAttribute("role" and "status")
+                document.getElementById("delegated-agents").appendChild(error_panel)
+            set error_panel.textContent to "Reconnecting to agent activity… Your saved work is retained. " + String(error)
+        )
+    load()
+    return 0
+
+define echo_agent_panel_bind with panel and older:
+    panel.addEventListener("toggle" and given event:
+        if event.target == panel && panel.open:
+            echo_agent_panel_load(panel)
+    )
+    older.addEventListener("click" and given event:
+        set panel.echoBefore to panel.echoOlderCursor
+        echo_agent_panel_load(panel)
+    )
+    return 0
+
+define echo_agents_setup:
+    set window.echoAgentPanels to Reflect.construct(Map and Array())
+    set holder to document.createElement("div")
+    set holder.id to "delegated-agents"
+    document.getElementById("composer").before(holder)
+    set previous to window.echoSession
+    window.setInterval(given ignored:
+        if previous != window.echoSession:
+            for each panel in window.echoAgentPanels.values():
+                panel.remove()
+            window.echoAgentPanels.clear()
+            set previous to window.echoSession
+        echo_agents_refresh()
+    and 3000)
+    set style to document.createElement("style")
+    set style.textContent to ".delegated-agent{background:var(--surface);border-color:var(--composer-line);color:var(--fg)}.delegated-agent>summary{font-weight:600}.delegated-agent>p{color:var(--muted);font-size:12px}.agent-results{max-height:55vh;overflow:auto;overscroll-behavior:contain}.agent-results>div>div{padding:14px 0;border-bottom:1px solid var(--line)}.agent-results strong{font-size:12px;color:var(--accent)}.agent-results .message-text{font-size:13px;margin-top:8px}.delegated-agent>button{font-size:12px;margin-top:12px}"
+    document.head.appendChild(style)
+    echo_agents_refresh()
+    return 0

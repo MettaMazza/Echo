@@ -23,7 +23,7 @@ define memory_archive_boundary with database as Int and run as Str returning Lis
         return history_status("not-authorized")
     set values to create_list()
     set added to append_list(values and principal)
-    set row to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(MAX(e.sequence),0) FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal=? AND e.kind IN ('user','assistant_final');" and values))
+    set row to history_collect_one(checkpoint_prepare(database and memory_scope_query(database and "SELECT COALESCE(MAX(e.sequence),0) FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal IN (__MEMORY_SCOPE__) AND e.kind IN ('user','assistant_final','source_import');" ) and values))
     if not (memory_archive_principal(database and run) equals principal):
         return history_status("authorization-changed")
     return row
@@ -41,7 +41,7 @@ define memory_archive_next with database as Int and run as Str and literal as St
     set added to append_list(values and literal)
     set added to append_list(values and int_to_string(after_sequence))
     set added to append_list(values and int_to_string(through_sequence))
-    set row to history_collect_one(checkpoint_prepare(database and "SELECT e.event,e.session,e.sequence,e.kind,e.occurred,e.digest FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal=?1 AND e.kind IN ('user','assistant_final') AND e.sequence>?3 AND e.sequence<=?4 AND instr(e.payload,?2)>0 ORDER BY e.sequence LIMIT 1;" and values))
+    set row to history_collect_one(checkpoint_prepare(database and memory_scope_query(database and "SELECT e.event,e.session,e.sequence,e.kind,e.occurred,e.digest FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal IN (__MEMORY_SCOPE__) AND e.kind IN ('user','assistant_final','source_import') AND e.sequence>?3 AND e.sequence<=?4 AND instr(e.payload,?2)>0 ORDER BY e.sequence LIMIT 1;" ) and values))
     if not (memory_archive_principal(database and run) equals principal):
         return history_status("authorization-changed")
     return row
@@ -57,10 +57,26 @@ define memory_archive_read with database as Int and run as Str and event as Str 
     set values to create_list()
     set added to append_list(values and principal)
     set added to append_list(values and event)
-    set source to history_collect_one(checkpoint_prepare(database and "SELECT e.session FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal=?1 AND e.event=?2 AND e.kind IN ('user','assistant_final');" and values))
+    set source to history_collect_one(checkpoint_prepare(database and memory_scope_query(database and "SELECT e.session FROM echo_events e JOIN echo_session_principals s ON s.session=e.session WHERE s.principal IN (__MEMORY_SCOPE__) AND e.event=?2 AND e.kind IN ('user','assistant_final','source_import');" ) and values))
     if not (archive_list_text(source and 0) equals "found"):
         return source
     set row to history_read_piece(database and archive_list_text(source and 1) and event and offset and characters)
     if not (memory_archive_principal(database and run) equals principal):
         return history_status("authorization-changed")
     return row
+
+# Linked accounts share read access, while source ownership and permissions stay intact.
+# The caller binds its authenticated principal at ?1; no model-selected identity.
+define memory_principal_scope_sql with database as Int returning Str:
+    set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE name='echo_conversation_accounts';"))
+    if not (archive_list_text(schema and 0) equals "found"):
+        return "SELECT ?1"
+    return "SELECT ?1 UNION SELECT b.principal FROM echo_principal_devices own JOIN echo_conversation_accounts a ON a.device=own.device JOIN echo_conversation_accounts m ON m.account=a.account JOIN echo_principal_devices b ON b.device=m.device JOIN echo_devices d ON d.device=m.device AND d.revoked=0 JOIN echo_principals p ON p.identity=b.principal AND p.revoked=0 WHERE own.principal=?1"
+
+define memory_scope_query with database as Int and query as Str returning Str:
+    return ptr_to_str(string_replace(query and "__MEMORY_SCOPE__" and memory_principal_scope_sql(database)))
+
+# The session is supplied by the trusted tool dispatcher, not the model.
+define memory_linked_attachment_sql with database as Int returning Str:
+    set scope to ptr_to_str(string_replace(memory_principal_scope_sql(database) and "?1" and "(SELECT principal FROM echo_session_principals WHERE session=?1)"))
+    return concat("SELECT a.attachment FROM echo_attachments a JOIN echo_session_principals p ON p.session=a.session WHERE p.principal IN (" and concat(scope and ")"))

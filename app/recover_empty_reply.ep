@@ -1,0 +1,55 @@
+import "web/worker"
+
+# Operator repair of the former false-completion bug. Preserve the original
+# event and all tools; only a verified empty terminal reply may be reopened.
+define main returning Int:
+    if get_argument_count() is not equal to 3 and get_argument_count() is not equal to 4:
+        return 1
+    set path to get_argument(1)
+    set run to get_argument(2)
+    set database to archive_open(path)
+    if database equals 0 or else sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 2
+    set row to agent_run_read(database and run)
+    if row equals 0 or else not (archive_list_text(row and 2) equals "completed" or else archive_list_text(row and 2) equals "ready"):
+        return archive_rollback(database)
+    set original to archive_read_event(database and archive_list_text(row and 3))
+    if original is not equal to 0 and archive_list_text(row and 2) equals "ready":
+        set recovery_tokens to provider_json_tokens(archive_list_text(original and 3))
+        if not (archive_list_text(original and 2) equals "agent_recovered") or else not (provider_value(recovery_tokens and provider_member(recovery_tokens and 0 and "reason")) equals "empty-model-response"):
+            return archive_rollback(database)
+        set original to archive_read_event(database and provider_value(recovery_tokens and provider_member(recovery_tokens and 0 and "parent_event")))
+    if original equals 0 or else not (archive_list_text(original and 2) equals "assistant_final"):
+        return archive_rollback(database)
+    set digest to archive_digest(archive_list_text(original and 0) and archive_list_text(original and 1) and archive_list_text(original and 2) and archive_list_text(original and 3) and archive_list_text(original and 4) and archive_list_text(original and 5))
+    set tokens to provider_json_tokens(archive_list_text(original and 3))
+    if not (digest equals archive_list_text(original and 6)) or else tokens equals 0 or else not (provider_kind(tokens and provider_member(tokens and 0 and "content")) equals "string") or else string_length(string_trim(provider_value(tokens and provider_member(tokens and 0 and "content")))) > 0:
+        return archive_rollback(database)
+    set calls to provider_items(tokens and provider_member(tokens and 0 and "tool_calls"))
+    if calls equals 0 or else length_list(calls) > 0:
+        return archive_rollback(database)
+    set values to create_list()
+    set added to append_list(values and run)
+    set previous to history_collect_one(checkpoint_prepare(database and "SELECT o.device,w.worker FROM echo_runs r JOIN echo_session_owners o ON o.session=r.session JOIN echo_web_workers w ON w.run=r.run WHERE r.run=?1 AND w.status<>'running' AND NOT EXISTS(SELECT 1 FROM echo_runs other WHERE other.session=r.session AND other.run<>r.run AND other.state IN ('ready','generating','tools'));" and values))
+    if not (archive_list_text(previous and 0) equals "found"):
+        return archive_rollback(database)
+    if archive_list_text(row and 2) equals "completed":
+        set event to concat(archive_list_text(row and 3) and ":empty-recovery")
+        set payload to concat(agent_event_envelope(run and archive_list_text(row and 3)) and ",\"reason\":\"empty-model-response\",\"repair\":\"Preserved original empty final and all completed tool results; resuming same run.\"}")
+        if archive_append_pending(database and archive_list_text(row and 0) and event and "agent_recovered" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return archive_rollback(database)
+        set added to append_list(values and archive_list_text(row and 3))
+        set added to append_list(values and event)
+        if tool_ledger_change(database and "UPDATE echo_runs SET state='ready',last_event=?3 WHERE run=?1 AND state='completed' AND last_event=?2 AND NOT EXISTS(SELECT 1 FROM echo_tool_calls WHERE run=?1 AND state<>'observed') RETURNING run;" and values) is not equal to 0:
+            return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    set worker to agent_identity()
+    if web_worker_retry_claim(database and archive_list_text(previous and 1) and run and archive_list_text(previous and 2) and worker) is not equal to 0:
+        return 3
+    set profile to agent_provider_read(database and run)
+    set closed to sql_close(database)
+    display "Recovered verified empty final; continuing the original run with saved tool results."
+    if get_argument_count() equals 4 and get_argument(3) equals "--prepare-only":
+        return 0
+    return web_worker_run_provider(path and run and worker and profile and 2048 and 65536)

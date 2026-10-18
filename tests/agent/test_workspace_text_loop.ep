@@ -1,0 +1,53 @@
+import "../../app/web/attachments"
+import "fs"
+import "../../app/agent/run_messages"
+import "../../app/archive/history"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture" and "secret") is not equal to 0:
+        return 1
+    set submitted to web_submit_owned(database and "owner" and "request" and "" and "Search, edit and compare this session workspace.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_session_open(database and library and "owner" and session and get_argument(2))
+    if root is less than 0:
+        return 1
+    set original_text to "Workspace source: café survives restart."
+    set descriptor to workspace_file_open(library and root and "source.txt" and 1)
+    if descriptor is less than 0 or else file_stage_write(library and descriptor and str_to_ptr(original_text) and string_length(original_text)) is not equal to 0 or else file_stage_finish(library and descriptor) is not equal to 0:
+        return 1
+    set closed to net_close(root)
+    set closed to ep_dlclose(library)
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"operation-0\",\"function\":{\"name\":\"workspace_search\",\"arguments\":\"{\\\"path\\\":\\\"source.txt\\\",\\\"query\\\":\\\"caf\\\\u00e9\\\",\\\"offset\\\":0,\\\"matches\\\":2}\"}},{\"index\":1,\"id\":\"operation-1\",\"function\":{\"name\":\"workspace_edit_text\",\"arguments\":\"{\\\"path\\\":\\\"source.txt\\\",\\\"expected_sha256\\\":\\\"c6e6f5f8b6df6cffce52b534f43af20bf90f94ca6a5ebdb815c3d63b727c7cbe\\\",\\\"text\\\":\\\"Changed caf\\\\u00e9 survives restart.\\\"}\"}},{\"index\":2,\"id\":\"operation-2\",\"function\":{\"name\":\"workspace_diff\",\"arguments\":\"{\\\"path\\\":\\\"source.txt\\\",\\\"other_path\\\":\\\"source.txt\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}"
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set messages to agent_run_messages(database and run)
+    set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(messages and concat(",\"tools\":" and concat(session_tool_schemas() and "}"))))
+    set generated to agent_generate_local(database and run and "first-request" and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 1
+    set index to 0
+    repeat while index < 4:
+        if agent_tool_step(database and run) is not equal to 0:
+            return 2
+        set index to index + 1
+    set row to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.state='observed' AND ((t.call_id='operation-0' AND json_extract(e.payload,'$.result.status')='found') OR (t.call_id='operation-1' AND json_extract(e.payload,'$.result.status')='edited') OR (t.call_id='operation-2' AND json_extract(e.payload,'$.result.changed')=0));"))
+    if not (archive_list_text(row and 1) equals "3"):
+        display archive_list_text(row and 1)
+        return 3
+    if archive_verify(database and session) is not equal to 0:
+        return 4
+    display "PASS: streamed search/edit/diff tool calls execute through the normal dispatcher and archive results with an intact event chain."
+    return sql_close(database)

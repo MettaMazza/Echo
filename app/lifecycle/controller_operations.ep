@@ -1,0 +1,139 @@
+import "controller_initialize"
+import "../transport/http_head"
+import "../rights/operation_rollback"
+
+# Trusted configuration is installed with the controller bundle. Requests may
+# select an existing operation, never replace its inventory, policy or ledger.
+define controller_configuration_valid with content as Str returning Int:
+    set tokens to provider_json_tokens(content)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 0
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "ledger_directory" or else key equals "ledger_name" or else key equals "charter" or else key equals "inventory" or else key equals "inventory_sha256" or else key equals "policy" or else key equals "policy_sha256" or else key equals "listen_port" or else key equals "review_profile" or else key equals "review_profile_sha256" or else key equals "review_prompt" or else key equals "review_prompt_sha256" or else key equals "console_script" or else key equals "console_script_sha256") or else not (provider_kind(tokens and index + 2) equals "string"):
+            return 0
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    for each key in ["ledger_directory","charter","inventory","policy"]:
+        set value to provider_value(tokens and provider_member(tokens and 0 and ptr_to_str(key)))
+        if string_length(value) < 2 or else get_character(value and 0) is not equal to 47 or else workspace_path_parts(ptr_to_str(substring(value and 1 and string_length(value) - 1))) equals 0:
+            return 0
+    set name to provider_value(tokens and provider_member(tokens and 0 and "ledger_name"))
+    set parts to workspace_path_parts(name)
+    if parts equals 0 or else length_list(parts) is not equal to 1:
+        return 0
+    for each key in ["inventory_sha256","policy_sha256"]:
+        if protected_digest_valid(provider_value(tokens and provider_member(tokens and 0 and ptr_to_str(key)))) equals 0:
+            return 0
+    set port_field to provider_member(tokens and 0 and "listen_port")
+    if port_field >= 0:
+        set port to http_decimal(provider_value(tokens and port_field))
+        if port < 1 or else port > 65535:
+            return 0
+    set script_field to provider_member(tokens and 0 and "console_script")
+    set script_pin to provider_member(tokens and 0 and "console_script_sha256")
+    if script_field >= 0 or else script_pin >= 0:
+        set path to provider_value(tokens and script_field)
+        if script_field < 0 or else script_pin < 0 or else protected_digest_valid(provider_value(tokens and script_pin)) equals 0:
+            return 0
+        if string_length(path) < 2 or else get_character(path and 0) is not equal to 47 or else workspace_path_parts(ptr_to_str(substring(path and 1 and string_length(path) - 1))) equals 0:
+            return 0
+    set review_fields to ["review_profile","review_profile_sha256","review_prompt","review_prompt_sha256"]
+    set present to 0
+    for each key in review_fields:
+        if provider_member(tokens and 0 and ptr_to_str(key)) >= 0:
+            set present to present + 1
+    if present is not equal to 0 and present is not equal to 4:
+        return 0
+    if present equals 4:
+        for each key in ["review_profile","review_prompt"]:
+            set value to provider_value(tokens and provider_member(tokens and 0 and ptr_to_str(key)))
+            if string_length(value) < 2 or else get_character(value and 0) is not equal to 47 or else workspace_path_parts(ptr_to_str(substring(value and 1 and string_length(value) - 1))) equals 0:
+                return 0
+        for each key in ["review_profile_sha256","review_prompt_sha256"]:
+            if protected_digest_valid(provider_value(tokens and provider_member(tokens and 0 and ptr_to_str(key)))) equals 0:
+                return 0
+    return 1
+
+define controller_configuration_load with configuration as Str returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return history_status("host-unavailable")
+    set user_function to ep_dlsym(library and "geteuid")
+    if user_function equals 0 or else ep_dlcall0(user_function) is not equal to 0:
+        set closed to ep_dlclose(library)
+        return history_status("root-controller-required")
+    set descriptor to protected_path_open(library and configuration and 0)
+    if descriptor < 0:
+        set closed to ep_dlclose(library)
+        return history_status("configuration-not-protected")
+    set content to file_read(configuration)
+    set closed to net_close(descriptor)
+    if controller_configuration_valid(content) equals 0:
+        set closed to ep_dlclose(library)
+        return history_status("configuration-invalid")
+    set tokens to provider_json_tokens(content)
+    for each key in ["charter","inventory","policy"]:
+        set path to provider_value(tokens and provider_member(tokens and 0 and ptr_to_str(key)))
+        set descriptor to protected_path_open(library and path and 0)
+        if descriptor < 0:
+            set closed to ep_dlclose(library)
+            return history_status("controller-input-not-protected")
+        set closed to net_close(descriptor)
+    set closed to ep_dlclose(library)
+    set charter to provider_value(tokens and provider_member(tokens and 0 and "charter"))
+    set inventory to file_read(provider_value(tokens and provider_member(tokens and 0 and "inventory")))
+    set policy to file_read(provider_value(tokens and provider_member(tokens and 0 and "policy")))
+    set inventory_digest to provider_value(tokens and provider_member(tokens and 0 and "inventory_sha256"))
+    set policy_digest to provider_value(tokens and provider_member(tokens and 0 and "policy_sha256"))
+    if string_length(charter_verified_text(charter)) equals 0 or else not (ep_sha256(inventory) equals inventory_digest) or else not (ep_sha256(policy) equals policy_digest):
+        return history_status("controller-input-changed")
+    set directory to provider_value(tokens and provider_member(tokens and 0 and "ledger_directory"))
+    set name to provider_value(tokens and provider_member(tokens and 0 and "ledger_name"))
+    set result to history_status("ready")
+    for each value in [content,charter,inventory,inventory_digest,policy,directory,name]:
+        set added to append_list(result and value)
+    return result
+
+# An unprivileged caller cannot even open the ledger. The installed command is
+# a host boundary, not a model tool and not a public HTTP route.
+define controller_operation_host with configuration as Str and action as Str and identity as Str returning Str:
+    if string_length(identity) equals 0 or else not (action equals "initialize" or else action equals "inspect" or else action equals "apply" or else action equals "reconcile" or else action equals "rollback" or else action equals "rollback-reconcile"):
+        return "invalid-operation-request"
+    set loaded to controller_configuration_load(configuration)
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return archive_list_text(loaded and 0)
+    set content to archive_list_text(loaded and 1)
+    set charter to archive_list_text(loaded and 2)
+    set inventory to archive_list_text(loaded and 3)
+    set inventory_digest to archive_list_text(loaded and 4)
+    set policy to archive_list_text(loaded and 5)
+    set directory to archive_list_text(loaded and 6)
+    set name to archive_list_text(loaded and 7)
+    if action equals "initialize":
+        if not (identity equals ep_sha256(content)):
+            return "bootstrap-configuration-pin-mismatch"
+        return controller_initialize(directory and name and identity)
+    # Operation commands never initialise or migrate a controller archive.
+    if not file_exists(concat(directory and concat("/" and name))):
+        return "controller-ledger-not-initialized"
+    set database to controller_ledger_open(directory and name)
+    if database equals 0:
+        return "controller-ledger-unavailable"
+    set result to ""
+    if action equals "inspect":
+        set operation to protected_operation_read(database and identity)
+        set result to archive_list_text(operation and 0)
+    else if action equals "apply":
+        set result to protected_operation_apply(database and charter and identity and inventory and inventory_digest and policy)
+    else if action equals "reconcile":
+        set result to protected_operation_reconcile(database and identity)
+    else if action equals "rollback-reconcile":
+        set result to protected_rollback_reconcile(database and charter and identity)
+    else:
+        set result to protected_operation_rollback(database and charter and identity)
+    if sql_close(database) is not equal to 0:
+        return concat("controller-close-failed-after:" and result)
+    return result

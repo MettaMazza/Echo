@@ -1,3 +1,4 @@
+import "attachment_revision"
 import "../retained_text"
 import "recap_jobs"
 import "recap_review_synthesis"
@@ -7,12 +8,16 @@ import "../agent/control"
 # accepted run head and prior checkpoint; changed work starts a different job.
 define compaction_job with database as Int and session as Str and run as Str and parent as Str and captured as List returning List:
     set previous to archive_list_text(captured and 3)
+    set visibility_revision to attachment_context_revision(database and session)
+    if string_length(visibility_revision) equals 0:
+        return history_status("archive-error")
     set values to create_list()
     set added to append_list(values and session)
     set added to append_list(values and run)
     set added to append_list(values and parent)
     set added to append_list(values and previous)
-    set saved to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.job') FROM echo_events WHERE session=? AND kind='compaction_binding' AND json_extract(payload,'$.run_id')=? AND json_extract(payload,'$.parent_event')=? AND json_extract(payload,'$.previous_checkpoint')=? ORDER BY sequence DESC LIMIT 1;" and values))
+    set added to append_list(values and visibility_revision)
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.job') FROM echo_events WHERE session=? AND kind='compaction_binding' AND json_extract(payload,'$.run_id')=? AND json_extract(payload,'$.parent_event')=? AND json_extract(payload,'$.previous_checkpoint')=? AND COALESCE(json_extract(payload,'$.attachment_context_revision'),'0')=? ORDER BY sequence DESC LIMIT 1;" and values))
     set result to create_list()
     set added to append_list(result and "archive-error")
     set added to append_list(result and "")
@@ -38,6 +43,7 @@ define compaction_job with database as Int and session as Str and run as Str and
         set payload to concat("{\"run_id\":" and provider_quote(run))
         set payload to concat(payload and concat(",\"parent_event\":" and provider_quote(parent)))
         set payload to concat(payload and concat(",\"previous_checkpoint\":" and provider_quote(previous)))
+        set payload to concat(payload and concat(",\"attachment_context_revision\":" and provider_quote(visibility_revision)))
         set payload to concat(payload and concat(",\"job\":" and concat(provider_quote(job) and "}")))
         if archive_append(database and session and concat(job and ":binding") and "compaction_binding" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
             return result
@@ -46,6 +52,7 @@ define compaction_job with database as Int and session as Str and run as Str and
     set changed to set_list(result and 0 and "ready")
     set changed to set_list(result and 1 and job)
     set changed to set_list(result and 2 and endpoint)
+    set added to append_list(result and visibility_revision)
     return result
 
 # Revalidate saved review evidence against the exact candidate and originals.
@@ -79,6 +86,10 @@ define compaction_saved_review with database as Int and session as Str and endpo
         set changed to set_list(result and 0 and "invalid-source")
         return result
     set status to recap_review_validate(sources and candidate and report)
+    # Old free-text observations cannot decide another rewrite. Re-review the
+    # retained candidate once under the explicit findings contract instead.
+    if status equals "review-repair" and not (provider_value(tokens and provider_member(tokens and 0 and "review_contract")) equals "typed-findings-v2"):
+        return result
     if status equals "review-pass" or else status equals "review-repair":
         set changed to set_list(result and 0 and status)
         set changed to set_list(result and 1 and report)
@@ -121,6 +132,12 @@ define compaction_saved_candidate with database as Int and session as Str and en
             set closed to ep_sqlite3_finalize(statement)
             set changed to set_list(result and 0 and "invalid-receipt")
             return result
+        # Old invalid drafts predate source-bound generation. Preserve their receipts,
+        # but allow the upgraded contract to make a fresh attempt.
+        set saved_candidate to provider_value(tokens and provider_member(tokens and 0 and "candidate"))
+        if not (provider_value(tokens and provider_member(tokens and 0 and "prompt_contract")) equals "source-bound-v1"):
+            if recap_validate_structure(database and session and endpoint and saved_candidate) is not equal to 0:
+                continue
         if not (archive_list_text(result and 0) equals "no-candidate"):
             set added to append_list(seen and ep_sha256(archive_list_text(result and 1)))
         set changed to set_list(result and 0 and "saved")
