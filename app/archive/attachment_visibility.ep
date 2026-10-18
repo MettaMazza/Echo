@@ -6,9 +6,20 @@ import "../tools/history_tools"
 define attachment_visibility_state with database as Int and attachment as Str returning List:
     return history_collect_one(checkpoint_prepare(database and "SELECT COALESCE((SELECT event FROM echo_events WHERE kind='attachment_visibility' AND json_extract(payload,'$.attachment')=?1 ORDER BY sequence DESC LIMIT 1),''),COALESCE((SELECT json_extract(payload,'$.state') FROM echo_events WHERE kind='attachment_visibility' AND json_extract(payload,'$.attachment')=?1 ORDER BY sequence DESC LIMIT 1),'included');" and [attachment]))
 
+# Follow exact video tool output ancestry. UNION makes malformed cycles finite;
+# no text similarity or guessed relationship can make a source disappear.
+define attachment_lineage_sql with database as Int and identity as Str returning Str:
+    set schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_attachment_derivations';"))
+    if not (archive_list_text(schema and 0) equals "found"):
+        return concat("SELECT " and concat(identity and " AS attachment"))
+    return concat("WITH RECURSIVE av_lineage(attachment) AS (SELECT " and concat(identity and " UNION SELECT d.parent FROM av_lineage l JOIN echo_attachment_derivations d ON d.attachment=l.attachment) SELECT attachment FROM av_lineage"))
+
+define attachment_included_sql with database as Int and identity as Str returning Str:
+    return concat("NOT EXISTS(SELECT 1 FROM (" and concat(attachment_lineage_sql(database and identity) and ") av_source WHERE COALESCE((SELECT json_extract(policy.payload,'$.state') FROM echo_events policy WHERE policy.kind='attachment_visibility' AND json_extract(policy.payload,'$.attachment')=av_source.attachment ORDER BY policy.sequence DESC LIMIT 1),'included')='excluded')"))
+
 define attachment_context_included with database as Int and attachment as Str returning Int:
-    set state to attachment_visibility_state(database and attachment)
-    return archive_list_text(state and 0) equals "found" and also archive_list_text(state and 2) equals "included"
+    set row to history_collect_one(checkpoint_prepare(database and concat("SELECT " and concat(attachment_included_sql(database and "?1") and ";")) and [attachment]))
+    return archive_list_text(row and 0) equals "found" and also archive_list_text(row and 1) equals "1"
 
 # Produce a request-only view of an immutable attachment manifest. Never write
 # this filtered view back to the canonical user event or original binding.
@@ -45,7 +56,7 @@ define attachment_context_manifest with database as Int and manifest as Str retu
 # Archived tool arguments identify the source that was actually requested.
 # Keep the call/result pair but replace excluded content with a status receipt.
 define attachment_call_context_included with database as Int and name as Str and arguments as Str returning Int:
-    if not (name equals "attachment_read_text" or else name equals "attachment_view_image" or else name equals "attachment_transcribe"):
+    if not (name equals "attachment_read_text" or else name equals "attachment_view_image" or else name equals "attachment_transcribe" or else name equals "attachment_video"):
         return 1
     set tokens to provider_json_tokens(arguments)
     if tokens equals 0:
@@ -65,7 +76,8 @@ define attachment_observation_visible_sql with database as Int and source as Str
         return "0"
     set query to "NOT EXISTS(SELECT 1 FROM echo_tool_calls av_call JOIN echo_events av_request ON av_request.event=av_call.request_event AND av_request.session=av_call.session WHERE av_call.result_event="
     set query to concat(query and source)
-    return concat(query and " AND av_call.state='observed' AND av_request.kind='tool_call' AND json_extract(av_request.payload,'$.name') IN ('attachment_read_text','attachment_view_image','attachment_transcribe') AND COALESCE((SELECT json_extract(av_policy.payload,'$.state') FROM echo_events av_policy WHERE av_policy.kind='attachment_visibility' AND json_extract(av_policy.payload,'$.attachment')=json_extract(json_extract(av_request.payload,'$.arguments'),'$.attachment') ORDER BY av_policy.sequence DESC LIMIT 1),'included')='excluded')")
+    set query to concat(query and " AND av_call.state='observed' AND av_request.kind='tool_call' AND json_extract(av_request.payload,'$.name') IN ('attachment_read_text','attachment_view_image','attachment_transcribe','attachment_video') AND NOT (")
+    return concat(query and concat(attachment_included_sql(database and "json_extract(json_extract(av_request.payload,'$.arguments'),'$.attachment')") and "))"))
 
 define attachment_observation_context_included with database as Int and event as Str returning Int:
     set row to history_collect_one(checkpoint_prepare(database and concat("SELECT " and concat(attachment_observation_visible_sql(database and "?1") and ";")) and [event]))
@@ -80,5 +92,5 @@ define attachment_fresh_call_included with database as Int and name as Str and a
     if tokens equals 0:
         return 0
     set identity to provider_value(tokens and provider_member(tokens and 0 and "attachment"))
-    set row to history_collect_one(checkpoint_prepare(database and "SELECT EXISTS(SELECT 1 FROM echo_events call WHERE call.event=?1 AND call.kind='tool_call' AND call.sequence>(SELECT MAX(policy.sequence) FROM echo_events policy WHERE policy.kind='attachment_visibility' AND json_extract(policy.payload,'$.attachment')=?2));" and [request,identity]))
+    set row to history_collect_one(checkpoint_prepare(database and concat("SELECT EXISTS(SELECT 1 FROM echo_events call WHERE call.event=?1 AND call.kind='tool_call' AND call.sequence>(SELECT MAX(policy.sequence) FROM echo_events policy WHERE policy.kind='attachment_visibility' AND json_extract(policy.payload,'$.attachment') IN (" and concat(attachment_lineage_sql(database and "?2") and ")));")) and [request,identity]))
     return archive_list_text(row and 0) equals "found" and also archive_list_text(row and 1) equals "1"

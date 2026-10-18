@@ -5,7 +5,7 @@ import "run_store"
 import "../archive/file_digest"
 
 define web_attachment_schema with database as Int returning Int:
-    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_attachments(attachment TEXT PRIMARY KEY,session TEXT NOT NULL REFERENCES echo_sessions(session),path TEXT NOT NULL UNIQUE,name TEXT NOT NULL,media_type TEXT NOT NULL,digest TEXT NOT NULL,bytes INTEGER NOT NULL CHECK(bytes>=0),event TEXT NOT NULL UNIQUE REFERENCES echo_events(event)); CREATE TRIGGER IF NOT EXISTS echo_attachment_no_update BEFORE UPDATE ON echo_attachments BEGIN SELECT RAISE(ABORT,'Attachment originals are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_attachment_no_delete BEFORE DELETE ON echo_attachments BEGIN SELECT RAISE(ABORT,'Attachment originals are immutable'); END;")
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_attachments(attachment TEXT PRIMARY KEY,session TEXT NOT NULL REFERENCES echo_sessions(session),path TEXT NOT NULL UNIQUE,name TEXT NOT NULL,media_type TEXT NOT NULL,digest TEXT NOT NULL,bytes INTEGER NOT NULL CHECK(bytes>=0),event TEXT NOT NULL UNIQUE REFERENCES echo_events(event)); CREATE TRIGGER IF NOT EXISTS echo_attachment_no_update BEFORE UPDATE ON echo_attachments BEGIN SELECT RAISE(ABORT,'Attachment originals are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_attachment_no_delete BEFORE DELETE ON echo_attachments BEGIN SELECT RAISE(ABORT,'Attachment originals are immutable'); END; CREATE TABLE IF NOT EXISTS echo_attachment_derivations(attachment TEXT PRIMARY KEY REFERENCES echo_attachments(attachment),parent TEXT NOT NULL REFERENCES echo_attachments(attachment),event TEXT NOT NULL UNIQUE REFERENCES echo_events(event),CHECK(attachment<>parent)); CREATE TRIGGER IF NOT EXISTS echo_attachment_derivation_no_update BEFORE UPDATE ON echo_attachment_derivations BEGIN SELECT RAISE(ABORT,'Attachment lineage is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_attachment_derivation_no_delete BEFORE DELETE ON echo_attachment_derivations BEGIN SELECT RAISE(ABORT,'Attachment lineage is immutable'); END;")
 
 
 # Session IDs are opaque references, not authority. Shared reads require this
@@ -33,6 +33,11 @@ define web_attachment_register with database as Int and device as Str and sessio
 # the writer transaction with registration, so changed authority cannot publish
 # a staged file merely because the device still belongs to the session.
 define web_attachment_register_call with database as Int and device as Str and session as Str and attachment as Str and path as Str and name as Str and media_type as Str and run as Str and call_id as Str returning Int:
+    return web_attachment_register_derived_call(database and device and session and attachment and path and name and media_type and run and call_id and "")
+
+# Exact derived-source lineage and publication share one transaction. Failed
+# lineage persistence cannot leave a published unlabelled video sample.
+define web_attachment_register_derived_call with database as Int and device as Str and session as Str and attachment as Str and path as Str and name as Str and media_type as Str and run as Str and call_id as Str and parent as Str returning Int:
     if string_length(attachment) equals 0 or else string_length(name) equals 0 or else string_length(path) equals 0:
         return 1
     if get_character(path and 0) is not equal to 47 or else web_attachment_session_allowed(database and device and session and 1) is not equal to 1:
@@ -48,6 +53,12 @@ define web_attachment_register_call with database as Int and device as Str and s
         set scope to [run,call_id,device,session]
         set call to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(e.payload,'$.name') FROM echo_tool_calls t JOIN echo_tool_authority a ON a.run=t.run AND a.call_id=t.call_id JOIN echo_events e ON e.event=t.request_event AND e.session=t.session WHERE t.run=?1 AND t.call_id=?2 AND a.device=?3 AND t.session=?4 AND t.state='running' AND e.kind='tool_call';" and scope))
         if not (archive_list_text(call and 0) equals "found") or else tool_policy_allows(database and run and call_id and archive_list_text(call and 1)) equals 0:
+            return archive_rollback(database)
+    if string_length(parent) > 0:
+        set source to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_attachments WHERE attachment=?;" and [parent]))
+        if string_length(run) equals 0 or else not (archive_list_text(source and 0) equals "found") or else web_attachment_session_allowed(database and device and archive_list_text(source and 1) and 0) equals 0:
+            return archive_rollback(database)
+        if principal_session_active(database and session) equals 0 and not (archive_list_text(source and 1) equals session):
             return archive_rollback(database)
     set event to concat(attachment and ":attachment")
     set digest to archive_list_text(verified and 1)
@@ -68,7 +79,14 @@ define web_attachment_register_call with database as Int and device as Str and s
     set added to append_list(values and digest)
     set added to append_list(values and bytes)
     set added to append_list(values and event)
-    if web_device_write(database and "INSERT INTO echo_attachments(attachment,session,path,name,media_type,digest,bytes,event) VALUES(?,?,?,?,?,?,?,?);" and values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+    if web_device_write(database and "INSERT INTO echo_attachments(attachment,session,path,name,media_type,digest,bytes,event) VALUES(?,?,?,?,?,?,?,?);" and values) is not equal to 0:
+        return archive_rollback(database)
+    if string_length(parent) > 0:
+        set lineage to concat("{\"attachment\":" and concat(provider_quote(attachment) and concat(",\"parent\":" and concat(provider_quote(parent) and "}"))))
+        set lineage_event to concat(event and ":derived")
+        if archive_append_pending(database and session and lineage_event and "attachment_derivation" and lineage and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else web_device_write(database and "INSERT INTO echo_attachment_derivations(attachment,parent,event) VALUES(?,?,?);" and [attachment,parent,lineage_event]) is not equal to 0:
+            return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
         return archive_rollback(database)
     return 0
 
@@ -130,6 +148,10 @@ define web_attachment_list_snapshot with database as Int and device as Str and s
             return "{\"status\":\"database-error\"}"
         set item to substring(item and 0 and string_length(item) - 1)
         set item to concat(item and concat(",\"visibility\":{\"state\":" and concat(provider_quote(archive_list_text(visibility and 2)) and concat(",\"revision\":" and concat(provider_quote(archive_list_text(visibility and 1)) and "}}")))))
+        set inherited to 0
+        if archive_list_text(visibility and 2) equals "included" and attachment_context_included(database and provider_value(fields and provider_member(fields and 0 and "attachment"))) equals 0:
+            set inherited to 1
+        set item to concat(substring(item and 0 and string_length(item) - 1) and concat(",\"inherited_exclusion\":" and concat(int_to_string(inherited) and "}")))
         set added to builder_append(builder and item)
         set count to count + 1
     if ep_sqlite3_finalize(statement) is not equal to 0:

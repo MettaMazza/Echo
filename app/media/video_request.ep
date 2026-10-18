@@ -1,0 +1,59 @@
+import "../retained_text"
+import "../tools/history_tools"
+import "../web/attachments"
+
+# One requested timestamp is one disclosed sample, never a claim of full video
+# comprehension. No hidden frame-count/duration or output-resolution ceiling.
+define video_request with arguments as Str returning List:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return history_status("invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "attachment" or else key equals "action" or else key equals "timestamp_ms"):
+            return history_status("invalid-arguments")
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set identity to provider_member(tokens and 0 and "attachment")
+    set action to provider_member(tokens and 0 and "action")
+    set timestamp to history_tool_integer(tokens and "timestamp_ms")
+    if not (provider_kind(tokens and identity) equals "string") or else string_length(provider_value(tokens and identity)) equals 0 or else not (provider_kind(tokens and action) equals "string") or else timestamp < 0:
+        return history_status("invalid-arguments")
+    set operation to provider_value(tokens and action)
+    if not (operation equals "inspect" or else operation equals "frame") or else (operation equals "inspect" and timestamp is not equal to 0):
+        return history_status("invalid-video-operation")
+    return ["ready",provider_value(tokens and identity),operation,int_to_string(timestamp)]
+
+# Resolve through current device permissions. Shared requests cannot import a
+# caller's private attachment merely because that same caller owns it.
+define video_request_source with database as Int and device as Str and session as Str and identity as Str returning List:
+    set row to web_attachment_owned(database and device and identity)
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("not-found")
+    if principal_session_active(database and session) equals 0 and not (archive_list_text(row and 6) equals session):
+        return history_status("not-found")
+    if string_index_of(archive_list_text(row and 3) and "video/") is not equal to 0:
+        return history_status("unsupported-video-format")
+    return row
+
+# Separate argv and local-only protocols; filenames are fixed inside a private
+# job directory. The process sandbox supplies the second filesystem boundary.
+define video_request_arguments with request as List returning List:
+    if not (archive_list_text(request and 0) equals "ready"):
+        return 0
+    if archive_list_text(request and 2) equals "inspect":
+        return ["-v","error","-protocol_whitelist","file","-show_format","-show_streams","-print_format","json","-o","metadata.json","input.media"]
+    set milliseconds to string_to_int(archive_list_text(request and 3))
+    set fraction to int_to_string(milliseconds modulo 1000)
+    repeat while string_length(fraction) < 3:
+        set fraction to concat("0" and fraction)
+    set seconds to concat(int_to_string(milliseconds / 1000) and concat("." and fraction))
+    return ["-nostdin","-hide_banner","-loglevel","info","-n","-protocol_whitelist","file","-i","input.media","-ss",seconds,"-map","0:v:0","-frames:v","1","-vf","showinfo","-an","-sn","-dn","frame.png"]
+
+define video_sandbox_profile returning Str:
+    return "(version 1)\n(deny default)\n(import \"dyld-support.sb\")\n(allow process-fork)\n(allow process-exec (literal (param \"ECHO_VIDEO_EXECUTABLE\")))\n(allow sysctl-read)\n(allow file-read-metadata (path-ancestors (param \"ECHO_VIDEO_EXECUTABLE\")) (path-ancestors (param \"ECHO_VIDEO_JOB\")))\n(allow file-read* file-map-executable (subpath \"/System\") (subpath \"/usr/lib\") (literal (param \"ECHO_VIDEO_EXECUTABLE\")) (subpath (param \"ECHO_VIDEO_JOB\")) (literal \"/dev/null\") (literal \"/dev/urandom\"))\n(allow file-write* (subpath (param \"ECHO_VIDEO_JOB\")) (literal \"/dev/null\"))\n"
+
+define video_tool_schema returning Str:
+    return "{\"type\":\"function\",\"function\":{\"name\":\"attachment_video\",\"description\":\"Inspect an authorized local video or sample one frame at a requested timestamp. First inspect metadata, then choose timestamps appropriate to the task. A frame is a sampled observation, not the whole video or its audio. Inspect returned PNG attachments with attachment_view_image. Original video, source digest, requested timestamp and decoder logs remain saved; report sampling and uncertainty. Returned attachments appear automatically alongside your reply; no attach_file call is needed. Attachment IDs are not filesystem paths. Set timestamp_ms=0 for inspect. No network access. Explicit reading of a forgotten original is allowed; access checks still apply.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"attachment\":{\"type\":\"string\"},\"action\":{\"type\":\"string\",\"enum\":[\"inspect\",\"frame\"]},\"timestamp_ms\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"attachment\",\"action\",\"timestamp_ms\"],\"additionalProperties\":false}}}"
