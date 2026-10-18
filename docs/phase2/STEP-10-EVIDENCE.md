@@ -1,5 +1,19 @@
 # Step 10 — media, attachment lifecycle and usable UI
 
+## Current reconciliation — 18 October 2026
+
+This section supersedes the historical status statements below, using the original three implementation bullets and exit condition. Step 10 is complete on Codex’s side, with physical microphone permission explicitly owner-deferred under Maria’s instruction. The video gap passed and is deployed; no new plan steps are introduced.
+
+| Original requirement | Current implementation and evidence |
+| --- | --- |
+| Unified text/image/tools, thumbnails and attachment lifecycle | Primary-model image/text/tool evidence is retained. Reversible trash/restore and automatic-use forgetting are deployed; explicit rereading remains allowed and original history is preserved. The 18 October production-browser check verified forgetting, reload persistence and restoration. See `ATTACHMENT-LIFECYCLE.md` and private `evidence/phase2/resume-step10-20261018/browser-forgetting.json`. |
+| Recording, transcription, speech/playback and declared video | Actual local Kokoro/Whisper and browser playback/download passed; synthetic capture and interruption recovery evidence is retained. Physical microphone permission remains explicitly owner-deferred, not a pass. Local video sampling, same-model image inspection and original playback passed and are deployed; evidence and sampling boundaries are recorded in `VIDEO-2026-10-18.md`. |
+| Themes, keyboard, responsive/history UI, projects/research/work panels and compaction display | Existing browser records below cover 240-message history, Enter/Shift+Enter, theme, 390px panels, project conflict recovery, research sources, work state, compaction stages and runtime reduced motion. The real three-agent parent-return browser test passed on 18 October; see `DELEGATION-PROTOCOL-2026-10-18.md`. |
+
+The final physical-device, simultaneous-workload and endurance matrix stays at original Step 27. Step 10 does not claim native whole-video/audio model understanding or a latency pass. The actual service profile is authoritative for the current deployment; historical release names below are not current deployment claims.
+
+## Historical evidence and observations
+
 > 18 October reconciliation: the current [1.5 audit](../releases/1.5/SYSTEM-AUDIT.md) supersedes older outstanding-work statements below. Attachment visibility controls now exist in routes and the browser. Later actual two-child parent-return evidence is recorded in [CHECKLIST-DEPLOYMENT-CACHE-2026-10-17.md](CHECKLIST-DEPLOYMENT-CACHE-2026-10-17.md). Earlier cancelled tests remain historical, not the latest acceptance result.
 
 

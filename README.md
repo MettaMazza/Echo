@@ -24,7 +24,7 @@ Your current task, earlier decisions and the sources behind an answer have somew
 | --- | --- |
 | **Chat with a local multimodal model** | The current default uses one Qwen model through llama.cpp for text, image understanding and tool loops. MLX adapter code is also present. |
 | **Work across turns** | A durable ReAct loop calls tools, reads results and continues until an answer or explicit stopping state. |
-| **Bring your files** | Upload images, UTF-8 text and PDFs. Preview image thumbnails, inspect source passages and expand the sources read beneath a reply. |
+| **Bring your files** | Upload images, UTF-8 text, PDFs and videos. Preview image thumbnails, inspect source passages and expand the sources read beneath a reply. |
 | **Hear the answer** | Speak generates saved Kokoro audio beside the message, with playback, seeking and download. Local transcription is implemented; physical microphone permission acceptance remains deferred. |
 | **Delegate and steer** | Give mid-turn guidance, queue the next message, inspect active agents and receive their results through Echo’s parent reply. Durable task checklists keep multi-step work on scope. |
 | **Follow the work** | Each response retains an expandable Thinking panel with archived activity, tool calls/results and reasoning output when the provider emits it. |
@@ -37,7 +37,7 @@ Your current task, earlier decisions and the sources behind an answer have somew
 
 Echo runs on the host machine; the current installation uses an Apple Silicon Mac Studio. Large assets can live on external storage while active runtime files and the conversation database run internally.
 
-Provider metadata and exact preflight counting inform context admission. There is no fixed agent tool-turn ceiling. Available memory, model architecture and backend support still determine what can run. The current default supports text and images; audio uses explicit local Whisper and Kokoro services. Video metadata has been observed but a complete video workflow is not yet qualified.
+Provider metadata and exact preflight counting inform context admission. There is no fixed agent tool-turn ceiling. Available memory, model architecture and backend support still determine what can run. The current default supports text and images; audio uses explicit local Whisper and Kokoro services. Local video metadata, timestamped frame sampling and browser playback are qualified. The same primary model inspects sampled images; this is not a claim of native whole-video or audio comprehension. See [video evidence](docs/phase2/VIDEO-2026-10-18.md).
 
 See the [unified multimodal implementation](docs/UNIFIED-MULTIMODAL.md), [speech system](docs/KOKORO.md) and [security boundaries](docs/SECURITY-AND-DATA.md).
 
