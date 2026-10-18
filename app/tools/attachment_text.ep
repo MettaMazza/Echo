@@ -14,7 +14,7 @@ define attachment_text_execute with database as Int and session as Str and argum
     set index to 1
     repeat while not (provider_kind(tokens and index) equals "}"):
         set key to provider_value(tokens and index)
-        if not (key equals "attachment" or else key equals "offset" or else key equals "characters" or else key equals "page"):
+        if not (key equals "attachment" or else key equals "offset" or else key equals "characters" or else key equals "page" or else key equals "mode" or else key equals "query"):
             return "{\"status\":\"invalid-arguments\"}"
         set index to provider_after(tokens and index + 2)
         if provider_kind(tokens and index) equals ",":
@@ -24,6 +24,24 @@ define attachment_text_execute with database as Int and session as Str and argum
     set characters to history_tool_integer(tokens and "characters")
     if not (provider_kind(tokens and field) equals "string") or else offset is less than 0 or else characters is less than 1:
         return "{\"status\":\"invalid-arguments\"}"
+    set mode to "read"
+    if provider_member(tokens and 0 and "mode") >= 0:
+        set mode to provider_value(tokens and provider_member(tokens and 0 and "mode"))
+    if not (mode equals "read" or else mode equals "search" or else mode equals "headings"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set query to ""
+    if provider_member(tokens and 0 and "query") >= 0:
+        set query_field to provider_member(tokens and 0 and "query")
+        if not (provider_kind(tokens and query_field) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set query to provider_value(tokens and query_field)
+    if (mode equals "search" and string_length(query) equals 0) or else (not (mode equals "search") and string_length(query) > 0):
+        return "{\"status\":\"invalid-arguments\"}"
+    set scan_offset to offset
+    set scan_characters to characters
+    if not (mode equals "read"):
+        set scan_offset to 0
+        set scan_characters to 9223372036854775807
     set identity to provider_value(tokens and field)
     set values to create_list()
     set added to append_list(values and session)
@@ -51,20 +69,32 @@ define attachment_text_execute with database as Int and session as Str and argum
         set extractor to archive_list_text(extracted and 3)
         if not (archive_list_text(extracted and 0) equals "extracted"):
             return concat("{\"status\":" and concat(provider_quote(archive_list_text(extracted and 0)) and concat(",\"pages\":" and concat(provider_quote(int_to_string(pages)) and "}"))))
-        set read to attachment_unicode_window(archive_list_text(extracted and 1) and offset and characters)
+        set read to attachment_unicode_window(archive_list_text(extracted and 1) and scan_offset and scan_characters)
     else:
         if provider_member(tokens and 0 and "page") is not equal to -1:
             return "{\"status\":\"invalid-arguments\"}"
-        set read to file_text_window(archive_list_text(row and 1) and archive_list_text(row and 2) and http_decimal(archive_list_text(row and 3)) and 65536 and offset and characters)
+        set read to file_text_window(archive_list_text(row and 1) and archive_list_text(row and 2) and http_decimal(archive_list_text(row and 3)) and 65536 and scan_offset and scan_characters)
     if not (archive_list_text(read and 0) equals "verified"):
         return concat("{\"status\":" and concat(provider_quote(archive_list_text(read and 0)) and "}"))
+    set match_offset to offset
+    if not (mode equals "read"):
+        set full_text to archive_list_text(read and 1)
+        set match_offset to attachment_text_find(full_text and mode and query and offset)
+        if match_offset < 0:
+            return concat("{\"status\":\"end\",\"attachment\":" and concat(provider_quote(identity) and concat(",\"sha256\":" and concat(provider_quote(archive_list_text(row and 2)) and ",\"recovery\":\"No further match in this text or PDF page. For PDFs continue with the next page.\"}"))))
+        set read to attachment_unicode_window(full_text and match_offset and characters)
     set text to archive_list_text(read and 1)
     set received to get_list(read and 2)
     set payload to concat("{\"status\":\"found\",\"attachment\":" and provider_quote(identity))
     set payload to concat(payload and concat(",\"event\":" and provider_quote(archive_list_text(row and 4))))
     set payload to concat(payload and concat(",\"sha256\":" and provider_quote(archive_list_text(row and 2))))
-    set payload to concat(payload and concat(",\"offset\":" and provider_quote(int_to_string(offset))))
+    set payload to concat(payload and concat(",\"offset\":" and provider_quote(int_to_string(match_offset))))
     set payload to concat(payload and concat(",\"characters\":" and provider_quote(int_to_string(received))))
+    set next_offset to match_offset + received
+    if not (mode equals "read"):
+        set next_offset to match_offset + 1
+    set payload to concat(payload and concat(",\"next_offset\":" and int_to_string(next_offset)))
+    set payload to concat(payload and concat(",\"mode\":" and provider_quote(mode)))
     set payload to concat(payload and concat(",\"text\":" and provider_quote(text)))
     set payload to concat(payload and concat(",\"representation\":" and provider_quote(representation)))
     if representation equals "pdfkit-page-text":
@@ -95,3 +125,29 @@ define attachment_unicode_window with text as Str and offset as Int and characte
             set scalar to scalar + 1
         set position to position + 1
     return file_text_result("verified" and ptr_to_str(substring(text and start and finish - start)) and received)
+
+
+# Search verified source locally; only the selected passage enters model context.
+define attachment_text_find with text as Str and mode as Str and query as Str and offset as Int returning Int:
+    set pointer to str_to_ptr(text)
+    set position to 0
+    set scalar to 0
+    set size to string_length(text)
+    set line_start to 1
+    repeat while position < size:
+        set code to peek_byte(pointer and position)
+        if code < 128 or else code >= 192:
+            if scalar >= offset:
+                if mode equals "search" and string_length(query) <= size - position:
+                    if ptr_to_str(substring(text and position and string_length(query))) equals query:
+                        return scalar
+                if mode equals "headings" and line_start equals 1 and code equals 35:
+                    set marker to position
+                    repeat while marker < size and peek_byte(pointer and marker) equals 35:
+                        set marker to marker + 1
+                    if marker - position <= 6 and marker < size and (peek_byte(pointer and marker) equals 32 or else peek_byte(pointer and marker) equals 9):
+                        return scalar
+            set scalar to scalar + 1
+        set line_start to code equals 10
+        set position to position + 1
+    return -1
