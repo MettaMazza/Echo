@@ -1,0 +1,40 @@
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3211,8 +3211,17 @@
+ 
+         // Recurrent models process mixed-length sequences inefficiently. Alternate
+         // pure prompt and generation batches instead of mixing them in one graph.
+-        const bool has_generating = std::any_of(slots.begin(), slots.end(), [](const server_slot & s) { return s.state == SLOT_STATE_GENERATING; });
+-        const bool has_prefill = std::any_of(slots.begin(), slots.end(), [](const server_slot & s) { return s.state == SLOT_STATE_STARTED || s.state == SLOT_STATE_PROCESSING_PROMPT; });
++        // Reserving an admission slot does not reserve device time. During an
++        // interactive turn, keep background contexts resident but let the user
++        // finish before continuing their GPU work. No tokens or context are
++        // discarded; background slots resume at the next scheduling iteration.
++        const bool has_interactive = std::any_of(slots.begin(), slots.end(), [](const server_slot & s) {
++            return (s.state == SLOT_STATE_STARTED || s.state == SLOT_STATE_PROCESSING_PROMPT || s.state == SLOT_STATE_GENERATING)
++                && !s.task->params.echo_background;
++        });
++        const auto eligible = [&](const server_slot & s) { return !has_interactive || !s.task->params.echo_background; };
++        const bool has_generating = std::any_of(slots.begin(), slots.end(), [&](const server_slot & s) { return s.state == SLOT_STATE_GENERATING && eligible(s); });
++        const bool has_prefill = std::any_of(slots.begin(), slots.end(), [&](const server_slot & s) { return (s.state == SLOT_STATE_STARTED || s.state == SLOT_STATE_PROCESSING_PROMPT) && eligible(s); });
+         const bool separate_batches = has_generating && has_prefill && (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL || ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS);
+         if (!separate_batches) { fair_prefill_debt_us = 0.0; }
+         // Share measured device time, not batch count: one prompt batch can
+@@ -3223,7 +3232,7 @@
+ 
+         // determine which slots are generating and drafting
+         iterate(slots, [&](server_slot & slot) {
+-            if (slot.state != SLOT_STATE_GENERATING || prompt_only) {
++            if (slot.state != SLOT_STATE_GENERATING || prompt_only || !eligible(slot)) {
+                 return;
+             }
+ 
+@@ -3400,7 +3409,7 @@
+                     return; // batch is full, skip remaining slots
+                 }
+ 
+-                if (!slot.is_processing()) {
++                if (!slot.is_processing() || !eligible(slot)) {
+                     return;
+                 }
+ 

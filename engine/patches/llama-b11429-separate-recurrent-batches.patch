@@ -1,0 +1,53 @@
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1009,6 +1009,7 @@
+ 
+     // Rotate prefill priority so one long prompt cannot starve later slots.
+     size_t prompt_slot_cursor = 0;
++    bool prompt_only_next = true;
+     // Learn a scheduling quantum from this model/device, not a context limit.
+     double fair_decode_step_us = 0.0;
+     double fair_prefill_token_us = 0.0;
+@@ -3189,9 +3190,17 @@
+         std::vector<server_slot *> generating;
+         std::vector<server_slot *> drafting;
+ 
++        // Recurrent models process mixed-length sequences inefficiently. Alternate
++        // pure prompt and generation batches instead of mixing them in one graph.
++        const bool has_generating = std::any_of(slots.begin(), slots.end(), [](const server_slot & s) { return s.state == SLOT_STATE_GENERATING; });
++        const bool has_prefill = std::any_of(slots.begin(), slots.end(), [](const server_slot & s) { return s.state == SLOT_STATE_STARTED || s.state == SLOT_STATE_PROCESSING_PROMPT; });
++        const bool separate_batches = has_generating && has_prefill && (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL || ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS);
++        const bool prompt_only = separate_batches && prompt_only_next;
++        if (separate_batches) { prompt_only_next = !prompt_only_next; }
++
+         // determine which slots are generating and drafting
+         iterate(slots, [&](server_slot & slot) {
+-            if (slot.state != SLOT_STATE_GENERATING) {
++            if (slot.state != SLOT_STATE_GENERATING || prompt_only) {
+                 return;
+             }
+ 
+@@ -3321,7 +3330,7 @@
+         int32_t n_batch  = llama_n_batch(ctx_tgt);
+         int32_t n_ubatch = llama_n_ubatch(ctx_tgt);
+         int32_t n_prompt_batch = n_batch;
+-        if (!generating.empty() && fair_decode_step_us > 0.0 && fair_prefill_token_us > 0.0) {
++        if (has_generating && fair_decode_step_us > 0.0 && fair_prefill_token_us > 0.0) {
+             // Micro-batches below the square root of the device batch are
+             // dominated by fixed dispatch cost; do not starve prompt admission.
+             const int32_t min_quantum = std::max<int32_t>(1, std::ceil(std::sqrt(double(n_ubatch))));
+@@ -3329,11 +3338,13 @@
+             n_prompt_batch = std::min<int32_t>(n_batch, batch.size() + quantum);
+         }
+ 
++        if (prompt_only) { n_prompt_batch = n_ubatch; }
++
+         auto & alora_scale       = batch.alora_scale;
+         auto & alora_disabled_id = batch.alora_disabled_id;
+ 
+         // next, batch any pending prompts without exceeding n_batch
+-        if (params_base.cont_batching || batch.size() == 0) {
++        if ((!separate_batches || prompt_only) && (params_base.cont_batching || batch.size() == 0)) {
+             bool add_ok = true; // false means the batch is full, skip remaining slots
+ 
+             std::vector<server_slot *> prompt_slots;

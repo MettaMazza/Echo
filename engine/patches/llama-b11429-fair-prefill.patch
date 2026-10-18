@@ -1,0 +1,95 @@
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1006,6 +1006,12 @@
+ 
+     // slots / clients
+     std::vector<server_slot> slots;
++
++    // Rotate prefill priority so one long prompt cannot starve later slots.
++    size_t prompt_slot_cursor = 0;
++    // Learn a scheduling quantum from this model/device, not a context limit.
++    double fair_decode_step_us = 0.0;
++    double fair_prefill_token_us = 0.0;
+ 
+     int trace = 0;        // env: LLAMA_TRACE
+     int slots_debug = 0;  // env: LLAMA_SERVER_SLOTS_DEBUG
+@@ -3314,6 +3320,14 @@
+         // process in chunks of params.n_batch
+         int32_t n_batch  = llama_n_batch(ctx_tgt);
+         int32_t n_ubatch = llama_n_ubatch(ctx_tgt);
++        int32_t n_prompt_batch = n_batch;
++        if (!generating.empty() && fair_decode_step_us > 0.0 && fair_prefill_token_us > 0.0) {
++            // Micro-batches below the square root of the device batch are
++            // dominated by fixed dispatch cost; do not starve prompt admission.
++            const int32_t min_quantum = std::max<int32_t>(1, std::ceil(std::sqrt(double(n_ubatch))));
++            const int32_t quantum = std::max<int32_t>(min_quantum, fair_decode_step_us / fair_prefill_token_us);
++            n_prompt_batch = std::min<int32_t>(n_batch, batch.size() + quantum);
++        }
+ 
+         auto & alora_scale       = batch.alora_scale;
+         auto & alora_disabled_id = batch.alora_disabled_id;
+@@ -3322,8 +3336,16 @@
+         if (params_base.cont_batching || batch.size() == 0) {
+             bool add_ok = true; // false means the batch is full, skip remaining slots
+ 
+-            iterate(slots, [&](server_slot & slot) {
+-                if (!add_ok || batch.size() >= n_batch) {
++            std::vector<server_slot *> prompt_slots;
++            prompt_slots.reserve(slots.size());
++            for (size_t i = 0; i < slots.size(); ++i) {
++                prompt_slots.push_back(&slots[(prompt_slot_cursor + i) % slots.size()]);
++            }
++            if (!slots.empty()) {
++                prompt_slot_cursor = (prompt_slot_cursor + 1) % slots.size();
++            }
++            iterate(prompt_slots, [&](server_slot & slot) {
++                if (!add_ok || batch.size() >= n_prompt_batch) {
+                     return; // batch is full, skip remaining slots
+                 }
+ 
+@@ -3778,7 +3800,7 @@
+                     const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
+ 
+                     // add prompt tokens for processing in the current batch
+-                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
++                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_prompt_batch) {
+                         // get next token to process
+                         llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
+                         if (cur_tok == LLAMA_TOKEN_NULL) {
+@@ -4003,15 +4025,35 @@
+             has_output |= batch.tokens[i].output;
+         }
+ 
++        int32_t fair_prompt_tokens = 0;
++        for (int i = off; i < off + batch.view.size(); ++i) {
++            fair_prompt_tokens += !batch.tokens[i].output;
++        }
++        const int64_t fair_started_us = ggml_time_us();
++
+         // yield to the queue, so we can still handle metrics tasks while decoding
+         // note: the sync is done here too, so that the wait is also covered by the yield
+         int ret = 0;
+         queue_tasks.yield_to_queue([&]() {
+             ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());
+-            if (ret == 0 && has_output) {
++            if (ret == 0) {
++                // Measure completed device work so the next scheduling quantum
++                // reflects GPU time rather than asynchronous submission time.
+                 llama_synchronize(ctx_tgt);
+             }
+         });
++
++        if (ret == 0) {
++            const double elapsed = ggml_time_us() - fair_started_us;
++            // Mixed batches include generation's fixed cost. Feeding that cost
++            // back into per-prompt-token calibration collapses the quantum to 1.
++            // Calibrate only homogeneous work; retain the last pure samples.
++            if (fair_prompt_tokens > 0 && !has_output) {
++                fair_prefill_token_us = elapsed / fair_prompt_tokens;
++            } else if (fair_prompt_tokens == 0 && has_output) {
++                fair_decode_step_us = elapsed;
++            }
++        }
+ 
+         if (ret != 0) {
+             {

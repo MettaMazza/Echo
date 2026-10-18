@@ -1,0 +1,38 @@
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1009,7 +1009,9 @@
+ 
+     // Rotate prefill priority so one long prompt cannot starve later slots.
+     size_t prompt_slot_cursor = 0;
+-    bool prompt_only_next = true;
++    double fair_prefill_debt_us = 0.0;
++    bool fair_time_share_batch = false;
++    bool fair_prompt_batch = false;
+     // Learn a scheduling quantum from this model/device, not a context limit.
+     double fair_decode_step_us = 0.0;
+     double fair_prefill_token_us = 0.0;
+@@ -3205,8 +3207,12 @@
+         const bool has_generating = std::any_of(slots.begin(), slots.end(), [](const server_slot & s) { return s.state == SLOT_STATE_GENERATING; });
+         const bool has_prefill = std::any_of(slots.begin(), slots.end(), [](const server_slot & s) { return s.state == SLOT_STATE_STARTED || s.state == SLOT_STATE_PROCESSING_PROMPT; });
+         const bool separate_batches = has_generating && has_prefill && (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL || ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS);
+-        const bool prompt_only = separate_batches && prompt_only_next;
+-        if (separate_batches) { prompt_only_next = !prompt_only_next; }
++        if (!separate_batches) { fair_prefill_debt_us = 0.0; }
++        // Share measured device time, not batch count: one prompt batch can
++        // take longer than many decode steps on a recurrent model.
++        const bool prompt_only = separate_batches && fair_prefill_debt_us <= 0.0;
++        fair_time_share_batch = separate_batches;
++        fair_prompt_batch = prompt_only;
+ 
+         // determine which slots are generating and drafting
+         iterate(slots, [&](server_slot & slot) {
+@@ -4071,6 +4077,9 @@
+ 
+         if (ret == 0) {
+             const double elapsed = ggml_time_us() - fair_started_us;
++            if (fair_time_share_batch) {
++                fair_prefill_debt_us += fair_prompt_batch ? elapsed : -elapsed;
++            }
+             // Mixed batches include generation's fixed cost. Feeding that cost
+             // back into per-prompt-token calibration collapses the quantum to 1.
+             // Calibrate only homogeneous work; retain the last pure samples.

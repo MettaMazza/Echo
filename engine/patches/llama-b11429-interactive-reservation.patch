@@ -1,0 +1,72 @@
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -51,6 +51,7 @@
+ struct task_params {
+     bool stream          = false;
+     bool include_usage   = false;
++    bool echo_background = false; // keep capacity available for interactive requests
+     bool cache_prompt    = true; // remember the prompt to avoid reprocessing all prompt
+     bool return_tokens   = false;
+     bool return_progress = false;
+--- a/tools/server/server-schema.cpp
++++ b/tools/server/server-schema.cpp
+@@ -27,6 +27,9 @@
+         ->add_subfield((new field_bool("include_usage", params.include_usage))
+             ->set_desc("Whether to include usage information in the stream"))
+         ->set_desc("Additional options for streaming responses"));
++
++    add((new field_bool("echo_background", params.echo_background))
++        ->set_desc("Run without occupying the last available interactive slot"));
+ 
+     add((new field_bool("cache_prompt", params.cache_prompt))
+         ->set_desc("Re-use KV cache from a previous request if possible. This way the common prefix does not have to be re-processed, only the suffix that differs between the requests"));
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1687,6 +1687,15 @@
+     }
+ 
+     server_slot * get_available_slot(const server_task & task) {
++        // Background work may use all but the final idle slot. Foreground work
++        // retains access to every slot; single-slot deployments remain usable.
++        if (task.params.echo_background && slots.size() > 1) {
++            const auto idle = std::count_if(slots.begin(), slots.end(),
++                [](const server_slot & slot) { return !slot.is_processing(); });
++            if (idle <= 1) {
++                return nullptr;
++            }
++        }
+         server_slot * ret = nullptr;
+ 
+         bool update_cache = false;
+@@ -3380,6 +3389,12 @@
+                     return slot->task->n_tokens() - cached <= n_prompt_batch;
+                 });
+             }
++            // Finish interactive prompt preparation before background prefill.
++            // Generation still receives its existing measured GPU-time share.
++            std::stable_partition(prompt_slots.begin(), prompt_slots.end(), [](const server_slot * slot) {
++                return (slot->state == SLOT_STATE_PROCESSING_PROMPT || slot->state == SLOT_STATE_STARTED)
++                    && !slot->task->params.echo_background;
++            });
+             iterate(prompt_slots, [&](server_slot & slot) {
+                 if (!add_ok || batch.size() >= n_prompt_batch) {
+                     return; // batch is full, skip remaining slots
+--- a/tools/server/server-queue.cpp
++++ b/tools/server/server-queue.cpp
+@@ -90,6 +90,16 @@
+ void server_queue::pop_deferred_task(int id_slot) {
+     std::unique_lock<std::mutex> lock(mutex_tasks);
+     if (!queue_tasks_deferred.empty()) {
++        // Serve waiting interactive work before deferred background work.
++        auto interactive = std::find_if(queue_tasks_deferred.begin(), queue_tasks_deferred.end(),
++            [](const server_task & task) { return !task.params.echo_background; });
++        if (interactive != queue_tasks_deferred.end()) {
++            queue_tasks.emplace_front(std::move(*interactive));
++            queue_tasks_deferred.erase(interactive);
++            time_last_task = ggml_time_ms();
++            condition_tasks.notify_one();
++            return;
++        }
+         // try to find a task that uses the specified slot
+         bool found = false;
+         for (auto it = queue_tasks_deferred.begin(); it != queue_tasks_deferred.end(); ++it) {

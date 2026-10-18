@@ -1,0 +1,75 @@
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1776,17 +1776,15 @@
+         }
+ 
+         if (ret) {
+-            update_cache = update_cache && prompt_cache;
+-
+-            // cache prompts only for completion tasks
+-            update_cache = update_cache && task.type == SERVER_TASK_TYPE_COMPLETION;
+-
+-            if (update_cache) {
++            // A partial slot can match while the shared cache holds a longer prefix.
++            if (!ret->is_processing() && prompt_cache && task.type == SERVER_TASK_TYPE_COMPLETION && task.params.cache_prompt) {
+                 SRV_TRC("%s", "updating prompt cache\n");
+ 
+                 const int64_t t_start = ggml_time_us();
+ 
+-                ret->prompt_save(*prompt_cache);
++                if (update_cache) {
++                    ret->prompt_save(*prompt_cache);
++                }
+ 
+                 if (!ret->prompt_load(*prompt_cache, task.tokens)) {
+                     ret->prompt_clear();
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -1802,7 +1802,7 @@
+ }
+ 
+ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
+-    const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
++    int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
+ 
+     float f_keep_best = prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
+     float f_sim_best  = float(lcp_best) / tokens_new.size();
+@@ -1825,7 +1825,8 @@
+             continue;
+         }
+ 
+-        if (f_keep_best < f_keep_cur && f_sim_best < f_sim_cur) {
++        if (lcp_cur > lcp_best) {
++            lcp_best = lcp_cur;
+             f_keep_best = f_keep_cur;
+             f_sim_best  = f_sim_cur;
+ 
+--- a/tools/server/tests/unit/test_completion.py
++++ b/tools/server/tests/unit/test_completion.py
+@@ -666,3 +666,26 @@
+         assert "prompt_n" in timings and timings["prompt_n"] + timings["cache_n"] == n_prompt
+         assert "predicted_n" in timings and timings["predicted_n"] == n_predict
+         assert "tokens" in res.body and isinstance(res.body["tokens"], list)
++
++
++def test_completion_longer_shared_prefix():
++    global server
++    server.n_slots = 2
++    server.n_ctx = 32768
++    server.cache_ram = 512
++    server.start()
++
++    short = "Cache selection preserves the original matching prefix. " * 60
++    long = short + "The shared cache holds a longer prefix than this idle slot. " * 500
++
++    def complete(slot, prompt):
++        res = server.make_request("POST", "/completion", data={
++            "prompt": prompt, "id_slot": slot, "n_predict": 1, "cache_prompt": True,
++        })
++        assert res.status_code == 200
++        return res.body["timings"]
++
++    first = complete(0, short)
++    complete(1, long)
++    reused = complete(0, long + " Different final instruction.")
++    assert reused["cache_n"] > first["cache_n"] + first["prompt_n"] + 1000
