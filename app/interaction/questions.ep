@@ -1,0 +1,48 @@
+import "../agent/run_state"
+
+# Full question bodies stay in the immutable event archive. Any subsequent
+# authenticated steering supersedes a pending form, including a typed answer.
+define questions_pending with database as Int and run as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_set(e.payload,'$.request',e.event) FROM echo_events e JOIN echo_runs r ON r.run=?1 WHERE e.kind='user_input_requested' AND json_extract(e.payload,'$.run_id')=?1 AND r.state IN ('ready','tools','generating') AND NOT EXISTS(SELECT 1 FROM echo_events a WHERE a.sequence>e.sequence AND json_extract(a.payload,'$.run_id')=?1 AND a.kind IN ('guidance_received','user_guidance','user_input_answered')) ORDER BY e.sequence DESC LIMIT 1;" and [run]))
+    if archive_list_text(row and 0) equals "error":
+        return "{\"status\":\"question-read-error\"}"
+    if archive_list_text(row and 0) equals "found":
+        return archive_list_text(row and 1)
+    return "null"
+
+define questions_valid with database as Int and arguments as Str returning Int:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return 0
+    set query to "SELECT CASE WHEN json_type(?1)='object' AND json_type(?1,'$.questions')='array' AND json_array_length(?1,'$.questions') BETWEEN 1 AND 3 AND NOT EXISTS(SELECT 1 FROM json_each(?1) WHERE key<>'questions') AND NOT EXISTS(SELECT 1 FROM json_each(?1,'$.questions') q WHERE json_type(q.value)<>'object' OR COALESCE(json_type(q.value,'$.id'),'')<>'text' OR length(trim(json_extract(q.value,'$.id')))=0 OR COALESCE(json_type(q.value,'$.title'),'')<>'text' OR length(trim(json_extract(q.value,'$.title')))=0 OR COALESCE(json_type(q.value,'$.options'),'')<>'array' OR json_array_length(q.value,'$.options')>3 OR EXISTS(SELECT 1 FROM json_each(q.value) WHERE key NOT IN ('id','title','options')) OR EXISTS(SELECT 1 FROM json_each(q.value,'$.options') o WHERE o.type<>'text' OR length(trim(o.value))=0) OR (SELECT count(*) FROM json_each(q.value,'$.options'))<>(SELECT count(DISTINCT value) FROM json_each(q.value,'$.options'))) AND (SELECT count(*) FROM json_each(?1,'$.questions'))=(SELECT count(DISTINCT json_extract(value,'$.id')) FROM json_each(?1,'$.questions')) THEN 1 ELSE 0 END;"
+    set row to history_collect_one(checkpoint_prepare(database and query and [arguments]))
+    return archive_list_text(row and 1) equals "1"
+
+define questions_save with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if questions_valid(database and arguments) equals 0:
+        return "{\"status\":\"invalid-questions\",\"recovery\":\"Provide 1-3 questions with unique id, nonempty title, and options containing 0-3 distinct suggested answers. Other is always supplied by the UI.\"}"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    set event to concat(run and concat(":question:" and call_id))
+    set encoded to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,'$.run_id',?2);" and [arguments,run]))
+    if not (archive_list_text(encoded and 0) equals "found"):
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"question-not-saved\"}"
+    set payload to archive_list_text(encoded and 1)
+    set prior to archive_read_event(database and event)
+    if prior is not equal to 0:
+        if not (archive_list_text(prior and 3) equals payload):
+            set rolled to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"question-conflict\"}"
+    else:
+        if not (questions_pending(database and run) equals "null"):
+            set rolled to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"question-already-pending\"}"
+        set row to agent_run_read(database and run)
+        if row equals 0 or else not (archive_list_text(row and 2) equals "tools") or else archive_append_pending(database and archive_list_text(row and 0) and event and "user_input_requested" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            set rolled to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"question-not-saved\"}"
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"question-not-saved\"}"
+    return concat("{\"status\":\"awaiting-user-input\",\"request\":" and concat(provider_quote(event) and ",\"recovery\":\"Questions are displayed. The runtime waits for an explicit answer or user steering; do not assume a default choice was submitted.\"}"))

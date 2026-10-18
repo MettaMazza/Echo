@@ -1,0 +1,124 @@
+import "cancellation"
+import "../interaction/questions"
+import "../interaction/autonomy"
+
+# Validate the whole submitted batch against its immutable question source.
+# Choice indexes and explicit free text distinguish Other from option labels.
+define web_questions_answer with database as Int and device as Str and run as Str and request as Str and answers as Str returning Int:
+    set tokens to provider_json_tokens(answers)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if web_shared_run_control_allowed(database and device and run) equals 0:
+        return archive_rollback(database)
+    set original to archive_read_event(database and request)
+    if original equals 0 or else not (archive_list_text(original and 2) equals "user_input_requested"):
+        return archive_rollback(database)
+    set source to archive_list_text(original and 3)
+    set query to "SELECT CASE WHEN json_extract(?1,'$.run_id')=?3 AND json_type(?2)='array' AND json_array_length(?2)=json_array_length(?1,'$.questions') AND NOT EXISTS(SELECT 1 FROM json_each(?2) a WHERE json_type(a.value)<>'object' OR COALESCE(json_type(a.value,'$.id'),'')<>'text' OR COALESCE(json_type(a.value,'$.choice'),'')<>'integer' OR COALESCE(json_type(a.value,'$.text'),'')<>'text' OR EXISTS(SELECT 1 FROM json_each(a.value) WHERE key NOT IN ('id','choice','text')) OR NOT EXISTS(SELECT 1 FROM json_each(?1,'$.questions') q WHERE json_extract(q.value,'$.id')=json_extract(a.value,'$.id') AND ((json_extract(a.value,'$.choice')=-1 AND length(trim(json_extract(a.value,'$.text')))>0) OR (json_extract(a.value,'$.choice')>=0 AND json_extract(a.value,'$.choice')<json_array_length(q.value,'$.options') AND json_extract(a.value,'$.text')='')))) AND (SELECT count(*) FROM json_each(?2))=(SELECT count(DISTINCT json_extract(value,'$.id')) FROM json_each(?2)) THEN 1 ELSE 0 END;"
+    set valid to history_collect_one(checkpoint_prepare(database and query and [source,answers,run]))
+    if not (archive_list_text(valid and 1) equals "1"):
+        return archive_rollback(database)
+    set event to concat(request and ":answer")
+    set encoded to history_collect_one(checkpoint_prepare(database and "SELECT json_object('run_id',?1,'request',?2,'answers',json(?3));" and [run,request,answers]))
+    if not (archive_list_text(encoded and 0) equals "found"):
+        return archive_rollback(database)
+    set payload to archive_list_text(encoded and 1)
+    set prior to archive_read_event(database and event)
+    if prior is not equal to 0:
+        if not (archive_list_text(prior and 3) equals payload):
+            return archive_rollback(database)
+    else:
+        set cancelled to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run=?;" and [run]))
+        if not (archive_list_text(cancelled and 0) equals "end"):
+            return archive_rollback(database)
+        set pending to provider_json_tokens(questions_pending(database and run))
+        if not (provider_value(pending and provider_member(pending and 0 and "request")) equals request):
+            return archive_rollback(database)
+        set row to agent_run_read(database and run)
+        set resolved to history_collect_one(checkpoint_prepare(database and "SELECT json_group_array(json_object('question',json_extract(q.value,'$.title'),'answer',CASE WHEN json_extract(a.value,'$.choice')=-1 THEN json_extract(a.value,'$.text') ELSE json_extract(q.value,'$.options['||json_extract(a.value,'$.choice')||']') END)) FROM json_each(?1,'$.questions') q JOIN json_each(?2) a ON json_extract(q.value,'$.id')=json_extract(a.value,'$.id');" and [source,answers]))
+        if not (archive_list_text(resolved and 0) equals "found"):
+            return archive_rollback(database)
+        set message to concat("The user explicitly submitted these answers to your follow-up questions: " and archive_list_text(resolved and 1))
+        set guidance to concat(agent_event_envelope(run and archive_list_text(row and 1)) and concat(",\"message\":" and concat(provider_quote(message) and "}")))
+        set now to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+        if archive_append_pending(database and archive_list_text(row and 0) and event and "user_input_answered" and payload and now) is not equal to 0 or else archive_append_pending(database and archive_list_text(row and 0) and concat(event and ":guidance") and "guidance_received" and guidance and now) is not equal to 0:
+            return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# /autoOff is immediate cancellation from the human; autoOff from Echo allows
+# a closing reply. Both prevent further autonomous continuations durably.
+define web_autonomy_command with database as Int and device as Str and run as Str and identity as Str and enabled as Int returning Int:
+    return web_autonomy_command_goal(database and device and run and identity and enabled and "")
+
+define web_autonomy_command_goal with database as Int and device as Str and run as Str and identity as Str and enabled as Int and goal as Str returning Int:
+    if string_length(identity) equals 0 or else sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if enabled equals 0 and string_length(run) equals 0:
+        set active_device to history_collect_one(checkpoint_prepare(database and "SELECT device FROM echo_devices WHERE device=? AND revoked=0;" and [device]))
+        if not (archive_list_text(active_device and 0) equals "found"):
+            return archive_rollback(database)
+        set receipt to concat("autonomy-command:" and concat(provider_quote(device) and concat(":" and provider_quote(identity))))
+        set prior to archive_read_event(database and receipt)
+        if prior is not equal to 0:
+            if not (archive_list_text(prior and 2) equals "autonomy_global_stop") or else sql_execute(database and "COMMIT;") is not equal to 0:
+                return archive_rollback(database)
+            return 0
+        set payload to concat("{\"device\":" and concat(provider_quote(device) and "}"))
+        if autonomy_stop_others_pending(database and device and "" and receipt) is not equal to 0 or else archive_append_pending(database and concat("autonomy-control:" and device) and receipt and "autonomy_global_stop" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+            return archive_rollback(database)
+        return 0
+    if web_shared_run_control_allowed(database and device and run) equals 0:
+        return archive_rollback(database)
+    set row to agent_run_read(database and run)
+    if row equals 0 or else not (archive_list_text(row and 2) equals "ready" or else archive_list_text(row and 2) equals "tools" or else archive_list_text(row and 2) equals "generating"):
+        return archive_rollback(database)
+    if enabled equals 1:
+        set cancelled to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run=?;" and [run]))
+        if not (archive_list_text(cancelled and 0) equals "end"):
+            return archive_rollback(database)
+    set event to concat(run and concat(":auto-command:" and identity))
+    if enabled equals 1:
+        if autonomy_start_pending(database and device and run and event and goal) is not equal to 0:
+            return archive_rollback(database)
+    else:
+        if autonomy_record_pending(database and run and event and 0 and "Explicit user command") is not equal to 0:
+            return archive_rollback(database)
+    if enabled equals 0:
+        if tool_ledger_change(database and "INSERT INTO echo_cancel_requests(run,device) VALUES(?1,?2) ON CONFLICT(run) DO UPDATE SET device=excluded.device RETURNING run;" and [run,device]) is not equal to 0:
+            return archive_rollback(database)
+    else:
+        set guidance to concat(agent_event_envelope(run and archive_list_text(row and 1)) and concat(",\"message\":" and concat(provider_quote(autonomy_run_prompt(database and run)) and "}")))
+        set guidance_event to concat(event and ":guidance")
+        if archive_read_event(database and guidance_event) equals 0 and archive_append_pending(database and archive_list_text(row and 0) and guidance_event and "guidance_received" and guidance and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# Read-only global indicator uses the same authenticated scope as transfer.
+define web_autonomy_status with database as Int and device as Str returning Str:
+    set runs to autonomy_owned_runs(database and device)
+    if runs equals 0:
+        return "{\"status\":\"unavailable\"}"
+    set index to 0
+    repeat while index < length_list(runs):
+        set run to archive_list_text(runs and index)
+        if web_shared_run_read_allowed(database and device and run):
+            set row to agent_run_read(database and run)
+            set title to history_collect_one(checkpoint_prepare(database and "SELECT title FROM echo_sessions WHERE session=?;" and [archive_list_text(row and 0)]))
+            set payload to concat("{\"status\":\"found\",\"run\":" and provider_quote(run))
+            set payload to concat(payload and concat(",\"session\":" and provider_quote(archive_list_text(row and 0))))
+            set payload to concat(payload and concat(",\"title\":" and provider_quote(archive_list_text(title and 1))))
+            set payload to concat(payload and concat(",\"goal\":" and provider_quote(autonomy_goal(database and run))))
+            set group_schema to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_group_sessions';"))
+            if archive_list_text(group_schema and 0) equals "found":
+                set group_row to history_collect_one(checkpoint_prepare(database and "SELECT group_id FROM echo_group_sessions WHERE session=?;" and [archive_list_text(row and 0)]))
+                if archive_list_text(group_row and 0) equals "found":
+                    set payload to concat(payload and concat(",\"group\":" and provider_quote(archive_list_text(group_row and 1))))
+            return concat(payload and "}")
+        set index to index + 1
+    return "{\"status\":\"off\"}"

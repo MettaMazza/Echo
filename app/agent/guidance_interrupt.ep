@@ -1,0 +1,72 @@
+import "../providers/local_chat"
+
+# A generation-local wake pipe interrupts even a blocked HTTP header read.
+# Guidance retires only that generation; the run-level cancellation pipe is
+# untouched. The monitor owns its own connection and never writes authority.
+define guidance_interrupt_monitor with database_path as Str and run as Str and cancellation as Int and stop_reader as Int and writer as Int and completed as Int returning Int:
+    set database to archive_open(database_path)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set idle to channel
+    set waits to [idle]
+    set reason to 3
+    if database is not equal to 0 and library is not equal to 0:
+        set reason to 0
+        repeat while 1 equals 1:
+            if agent_cancellation_pending(library and cancellation) is not equal to 0:
+                set reason to 2
+                break
+            if agent_cancellation_pending(library and stop_reader) is not equal to 0:
+                break
+            set pending to guidance_pending(database and run)
+            if archive_list_text(pending and 0) equals "found":
+                set reason to 1
+                break
+            if archive_list_text(pending and 0) equals "error":
+                set code to sqlite3_extended_errcode(database) modulo 256
+                if code equals 5 or else code equals 6:
+                    set waited to select(waits and 100)
+                    continue
+                set reason to 3
+                break
+            set waited to select(waits and 100)
+    if database is not equal to 0:
+        set closed to sql_close(database)
+    if library is not equal to 0:
+        set closed to ep_dlclose(library)
+    set closed to net_close(stop_reader)
+    set closed to net_close(writer)
+    send reason to completed
+    return 0
+
+define agent_generate_interruptible with database as Int and run as Str and session as Str and request as Str and port as Int and path as Str and body as Str and cancellation as Int and read_size as Int returning List:
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return provider_collected("guidance-monitor-unavailable" and chat_stream_create())
+    if not (archive_list_text(location and 0) equals "found") or else string_length(archive_list_text(location and 1)) equals 0:
+        set closed to ep_dlclose(library)
+        return provider_collected("guidance-monitor-unavailable" and chat_stream_create())
+    set wake to socket_cancellation_create(library)
+    set finished to socket_cancellation_create(library)
+    if wake equals 0 or else finished equals 0:
+        if wake is not equal to 0:
+            set closed to socket_cancellation_close(wake)
+        if finished is not equal to 0:
+            set closed to socket_cancellation_close(finished)
+        set closed to ep_dlclose(library)
+        return provider_collected("guidance-monitor-unavailable" and chat_stream_create())
+    set completed to channel
+    set monitor_path to concat(archive_list_text(location and 1) and "")
+    set monitor_run to concat(run and "")
+    spawn guidance_interrupt_monitor(monitor_path and monitor_run and cancellation and get_list(finished and 0) and get_list(wake and 1) and completed)
+    set response to local_chat_generate(database and session and request and port and path and body and get_list(wake and 0) and read_size)
+    set closed to net_close(get_list(finished and 1))
+    set reason to receive from completed
+    set closed to net_close(get_list(wake and 0))
+    set cancelled to agent_cancellation_pending(library and cancellation)
+    set closed to ep_dlclose(library)
+    if reason equals 1 and cancelled equals 0:
+        return provider_collected("guidance-interrupted" and get_list(response and 1))
+    if reason equals 3:
+        return provider_collected("guidance-monitor-unavailable" and get_list(response and 1))
+    return response

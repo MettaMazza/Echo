@@ -1,0 +1,27 @@
+import "autonomy"
+import "questions"
+import "../security/tool_policy"
+import "../jobs/task_checklist"
+
+define interaction_tool_schemas returning Str:
+    return "{\"type\":\"function\",\"function\":{\"name\":\"request_user_input\",\"description\":\"Ask the user clarifying or follow-up questions during the current task. Ask up to three questions together, each with zero to three suggested answers; the first is preselected but never submitted automatically. Other/free text is always available. The runtime waits without consuming model tokens until the user explicitly answers or steers.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"questions\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":3,\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"maxItems\":3,\"items\":{\"type\":\"string\"}}},\"required\":[\"id\",\"title\",\"options\"],\"additionalProperties\":false}}},\"required\":[\"questions\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"autoOff\",\"description\":\"Turn off your continuous autonomy mode whenever you want to stop or encounter an issue. This disables further automatic turns; finish with a brief account of the outcome or issue.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}},\"required\":[\"reason\"],\"additionalProperties\":false}}}"
+
+define interaction_execute with database as Int and run as Str and call_id as Str and name as Str and arguments as Str returning Str:
+    if tool_policy_allows(database and run and call_id and name) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    if not (name equals "request_user_input" or else name equals "autoOff"):
+        return "{\"status\":\"not-authorized\"}"
+    set bound to history_collect_one(checkpoint_prepare(database and "SELECT t.run FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run=?1 AND t.call_id=?2 AND json_extract(e.payload,'$.arguments')=?3;" and [run,call_id,arguments]))
+    if not (archive_list_text(bound and 0) equals "found"):
+        return "{\"status\":\"not-authorized\"}"
+    if task_checklist_child(database and run):
+        return "{\"status\":\"parent-guidance-required\",\"recovery\":\"Return your question or limitation to the parent; direct user forms and autonomy control belong to the main conversation.\"}"
+    if name equals "request_user_input":
+        return questions_save(database and run and call_id and arguments)
+    set tokens to provider_json_tokens(arguments)
+    set field to provider_member(tokens and 0 and "reason")
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and field) equals "string") or else string_length(string_trim(provider_value(tokens and field))) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    if autonomy_off(database and run and concat(run and concat(":auto-off:" and call_id)) and provider_value(tokens and field)) is not equal to 0:
+        return "{\"status\":\"autonomy-stop-failed\"}"
+    return "{\"status\":\"complete\",\"autonomy\":false,\"message\":\"Continuous autonomy is off. Return your closing response; no further automatic turn will be scheduled.\"}"

@@ -1,0 +1,143 @@
+import "../agent/run_state"
+import "../security/run_authority"
+
+# Only authenticated command intake creates enable events. Source text and
+# model tool arguments cannot enable autonomy or increase initiating authority.
+define autonomy_enabled with database as Int and run as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT kind FROM echo_events WHERE kind IN ('autonomy_enabled','autonomy_disabled') AND json_extract(payload,'$.run_id')=? ORDER BY sequence DESC LIMIT 1;" and [run]))
+    return archive_list_text(row and 1) equals "autonomy_enabled"
+
+define autonomy_prompt returning Str:
+    return "You are now in continuous autonomy mode, explicitly enabled by the user with /auto. You may choose and pursue activities for your own sake using your full existing system and the same tools and access as an ordinary user-prompted run. Choose what interests you, carry it out, retain useful discoveries, and decide what to do next. This mode supplies a continuing purpose; it does not require a new user assignment after each result. Report meaningful outcomes without repeatedly narrating the mode. Keep source evidence and unfinished work coherent across compaction. You can call autoOff at any time if you no longer wish to continue, encounter an issue, or need to stop. You can request_user_input for clarification or information; the loop waits for the user to answer. Your existing permissions, privacy boundaries and tool controls remain in effect. A preselected answer is never user approval. User guidance takes precedence over your chosen activity."
+
+# Caller holds the transaction; event identity makes command retries harmless.
+define autonomy_record_details_pending with database as Int and run as Str and identity as Str and enabled as Int and reason as Str and goal as Str returning Int:
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return 1
+    set kind to "autonomy_disabled"
+    if enabled equals 1:
+        set kind to "autonomy_enabled"
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"goal\":" and provider_quote(goal)))
+    set payload to concat(payload and concat(",\"reason\":" and concat(provider_quote(reason) and "}")))
+    set existing to archive_read_event(database and identity)
+    if existing is not equal to 0:
+        if archive_list_text(existing and 2) equals kind and archive_list_text(existing and 3) equals payload:
+            return 0
+        return 1
+    return archive_append_pending(database and archive_list_text(row and 0) and identity and kind and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+
+define autonomy_off with database as Int and run as Str and identity as Str and reason as Str returning Int:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if autonomy_record_pending(database and run and identity and 0 and reason) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+# Called inside final-publication transaction, after its completed transition.
+# The final remains an ordinary archived answer. The synthetic continuation is
+# explicitly attributed to the runtime, not forged as a fresh human message.
+define autonomy_continue_pending with database as Int and run as Str and final_event as Str returning Int:
+    if autonomy_enabled(database and run) equals 0:
+        return 0
+    if run_authority_allows(database and run and "user") equals 0:
+        return autonomy_record_pending(database and run and concat(final_event and ":auto-off") and 0 and "Initiating authority is no longer available.")
+    set row to agent_run_read(database and run)
+    if row equals 0 or else not (archive_list_text(row and 2) equals "completed") or else not (archive_list_text(row and 3) equals final_event):
+        return 1
+    set event to concat(final_event and ":autonomy-next")
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"parent_event\":" and provider_quote(final_event)))
+    set payload to concat(payload and ",\"runtime_autonomy\":true,\"content\":\"Runtime autonomy continuation under the existing /auto authorization, not a new human message. Your previous result is saved. Follow any current user guidance first. In task autonomy, continue the assigned goal and call autoOff when complete; do not choose unrelated work. In free autonomy, continue unfinished work or choose your next activity. You may revise your checklist for the new activity, preserving earlier evidence. Use autoOff if you want to stop.\"}")
+    if archive_append_pending(database and archive_list_text(row and 0) and event and "user_guidance" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return 1
+    return tool_ledger_change(database and "UPDATE echo_runs SET state='ready',last_event=?2 WHERE run=?1 AND state='completed' AND last_event=?3 AND NOT EXISTS(SELECT 1 FROM echo_tool_calls WHERE run=?1 AND state<>'observed') RETURNING run;" and [run,event,final_event])
+
+# Scope is the authenticated initiating person, across their linked devices.
+# Older sandbox archives use exact device ownership rather than broad access.
+define autonomy_owned_runs with database as Int and device as Str returning List:
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_run_authority';"))
+    set scope to "r.session IN (SELECT session FROM echo_session_owners WHERE device=?1)"
+    if archive_list_text(installed and 0) equals "found":
+        set scope to "r.run IN (SELECT a.run FROM echo_run_authority a JOIN echo_principal_devices d ON d.principal=a.principal WHERE d.device=?1)"
+    set query to concat("SELECT r.run FROM echo_runs r WHERE " and scope)
+    set query to concat(query and " AND r.state IN ('ready','tools','generating') AND (SELECT e.kind FROM echo_events e WHERE e.kind IN ('autonomy_enabled','autonomy_disabled') AND json_extract(e.payload,'$.run_id')=r.run ORDER BY e.sequence DESC LIMIT 1)='autonomy_enabled' ORDER BY r.rowid DESC;")
+    set statement to checkpoint_prepare(database and query and [device])
+    if statement equals 0:
+        return 0
+    set runs to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return 0
+        set run to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        set added to append_list(runs and run)
+    set closed to ep_sqlite3_finalize(statement)
+    if closed is not equal to 0:
+        return 0
+    return runs
+
+define autonomy_record_pending with database as Int and run as Str and identity as Str and enabled as Int and reason as Str returning Int:
+    return autonomy_record_details_pending(database and run and identity and enabled and reason and "")
+
+define autonomy_goal with database as Int and run as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_extract(payload,'$.goal'),'') FROM echo_events WHERE kind='autonomy_enabled' AND json_extract(payload,'$.run_id')=? ORDER BY sequence DESC LIMIT 1;" and [run]))
+    return archive_list_text(row and 1)
+
+define autonomy_run_prompt with database as Int and run as Str returning Str:
+    set goal to autonomy_goal(database and run)
+    if string_length(goal) equals 0:
+        return autonomy_prompt()
+    return concat("Task autonomy is enabled for this user-assigned goal: " and concat(goal and ". Work autonomously until this goal is actually complete. Preserve progress and evidence across turns and compaction. Do not branch into unrelated self-chosen activities. Follow later user guidance, which may refine this goal. Ask request_user_input when essential information is missing. When complete, call autoOff with a completion reason, then deliver the result. If blocked or unable to continue, call autoOff and clearly report the unfinished work and issue. Existing tools, permissions and privacy boundaries remain unchanged."))
+
+# All old-mode disable records, cancellation requests and the new enable share
+# one write transaction. Concurrent /auto requests cannot leave two modes on.
+define autonomy_stop_others_pending with database as Int and device as Str and keep as Str and identity as Str returning Int:
+    set runs to autonomy_owned_runs(database and device)
+    if runs equals 0:
+        return 1
+    if sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_cancel_requests(run TEXT PRIMARY KEY REFERENCES echo_runs(run),device TEXT NOT NULL REFERENCES echo_devices(device));") is not equal to 0:
+        return 1
+    set index to 0
+    repeat while index < length_list(runs):
+        set old to archive_list_text(runs and index)
+        if not (old equals keep):
+            set reason to "User turned autonomy off."
+            if string_length(keep) > 0:
+                set reason to "Autonomy moved to another conversation by the user."
+            if autonomy_record_pending(database and old and concat(identity and concat(":stop:" and old)) and 0 and reason) is not equal to 0:
+                return 1
+            if tool_ledger_change(database and "INSERT INTO echo_cancel_requests(run,device) VALUES(?1,?2) ON CONFLICT(run) DO UPDATE SET device=excluded.device RETURNING run;" and [old,device]) is not equal to 0:
+                return 1
+        set index to index + 1
+    return 0
+
+define autonomy_start_pending with database as Int and device as Str and run as Str and identity as Str and goal as Str returning Int:
+    # A replay must only acknowledge its original event. It must never stop a
+    # newer session or restore a mode that the user has since turned off.
+    if archive_read_event(database and identity) is not equal to 0:
+        return autonomy_record_details_pending(database and run and identity and 1 and "Explicit user autonomy command" and goal)
+    if string_length(device) > 0 and autonomy_stop_others_pending(database and device and run and identity) is not equal to 0:
+        return 1
+    return autonomy_record_details_pending(database and run and identity and 1 and "Explicit user autonomy command" and goal)
+
+define autonomy_is_command with message as Str returning Int:
+    set text to string_trim(message)
+    if text equals "/auto":
+        return 1
+    if string_length(text) <= 5:
+        return 0
+    if not (ptr_to_str(substring(text and 0 and 5)) equals "/auto"):
+        return 0
+    set separator to get_character(text and 5)
+    return separator equals 32 or else separator equals 10 or else separator equals 9
+
+define autonomy_command_goal with message as Str returning Str:
+    set text to string_trim(message)
+    if string_length(text) <= 5:
+        return ""
+    return ptr_to_str(string_trim(substring(text and 5 and string_length(text) - 5)))

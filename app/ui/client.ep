@@ -71,10 +71,10 @@ define echo_busy with busy:
     set input.disabled to window.echoReadOnly || not window.echoToken
     set button.disabled to window.echoUploading || window.echoReadOnly || not window.echoToken || (window.echoGroup && not window.echoGroupWritable)
     set button.textContent to "Send ↑"
-    if window.echoBusy:
+    if window.echoBusy && not window.echoAutonomy:
         set button.textContent to "Queue ↑"
     echo_queue_render()
-    set fresh.disabled to busy
+    set fresh.disabled to window.echoUploading || window.echoReadOnly || (window.echoBusy && not window.echoAutonomy)
     set picker to document.getElementById("provider-picker")
     if picker:
         set picker.disabled to busy || window.echoGroup || not (not window.localStorage.getItem("echo.pending"))
@@ -1039,6 +1039,12 @@ define echo_history_render with result and before and marker:
             set session_label.textContent to "Shared · " + window.echoGroup
         if before != "0":
             set workspace.scrollTop to previous_top + workspace.scrollHeight - previous_height
+        else if window.echoQuestionRequest:
+            set question_panel to document.getElementById("echo-interaction")
+            if question_panel:
+                set question_scroll to Object()
+                set question_scroll.block to "start"
+                question_panel.scrollIntoView(question_scroll)
         else if window.echoFollowLatest:
             echo_follow_latest()
         else:
@@ -1114,7 +1120,7 @@ define echo_history:
     return echo_history_page("0" and window.echoHistoryMarker)
 
 define echo_open_session with session:
-    if window.echoBusy || window.echoUploading:
+    if (window.echoBusy && not window.echoAutonomy) || window.echoUploading:
         echo_note("Wait for the current run before changing conversations.")
         return 0
     if not window.echoReadOnly && window.localStorage.getItem("echo.pending"):
@@ -1132,6 +1138,7 @@ define echo_open_session with session:
     if navigation:
         navigation.setAttribute("aria-expanded" and "false")
     set window.echoRetryWorker to ""
+    echo_interaction_clear()
     set window.echoRun to session.run
     window.localStorage.setItem("echo.session" and session.session)
     window.localStorage.setItem("echo.run" and session.run)
@@ -1210,6 +1217,8 @@ define echo_session_button with session:
     set button.type to "button"
     set title to document.createElement("span")
     set title.textContent to session.title
+    if session.autonomy:
+        set title.textContent to session.title + " · Autonomy"
     button.appendChild(title)
     set button.className to "session-choice"
     if session.session == window.echoSession:
@@ -1220,6 +1229,7 @@ define echo_session_button with session:
     return button
 
 define echo_sessions:
+    echo_autonomy_refresh()
     set query to Object()
     set search to document.getElementById("session-search")
     set query.query to search.value
@@ -1370,6 +1380,10 @@ define echo_poll:
             return 0
         if result.status != "found":
             return Promise.reject(echo_failure(result))
+        echo_interaction_render(result)
+        if result.autonomy && window.echoAutonomyEvent != result.event:
+            set window.echoAutonomyEvent to result.event
+            echo_history()
         set window.echoCompactionUnknownRun to ""
         set window.echoCanStop to result.can_control != false && result.state != "completed" && result.state != "cancelled" && result.state != "failed"
         set window.echoRetryWorker to ""
@@ -1401,7 +1415,10 @@ define echo_poll:
             echo_history()
             echo_busy(false)
         else:
-            echo_compaction_progress(result)
+            if result.user_input:
+                echo_note("Waiting for your answers. You can also steer or stop this task.")
+            else:
+                echo_compaction_progress(result)
             echo_busy(true)
             if result.state == "generating":
                 return echo_draft().then(given ignored:
@@ -1516,6 +1533,15 @@ define echo_send with event:
     if window.echoGroup && not window.echoGroupWritable:
         echo_note("This group segment is not currently writable. Your draft is kept; open the current membership explicitly to continue.")
         return 0
+    set command to document.getElementById("message").value.trim()
+    if command == "/autoOff":
+        echo_autonomy_command(false)
+        return 0
+    if (command == "/auto" || command.startsWith("/auto ") || command.startsWith("/auto\n") || command.startsWith("/auto\t")) && window.echoBusy:
+        echo_autonomy_command(true)
+        return 0
+    if window.echoBusy && window.echoAutonomy:
+        return echo_guidance_send(false)
     if window.echoBusy:
         return echo_queue_add(false)
     set input to document.getElementById("message")
@@ -1580,7 +1606,7 @@ define echo_send with event:
 
 define echo_new_chat with event:
     echo_math_cancel_all()
-    if window.echoBusy || window.echoUploading:
+    if (window.echoBusy && not window.echoAutonomy) || window.echoUploading:
         return 0
     document.getElementById("history-sidebar").setAttribute("data-open" and "false")
     set navigation to document.getElementById("nav-toggle")
@@ -1604,6 +1630,7 @@ define echo_new_chat with event:
     set window.echoRetryWorker to ""
     echo_busy(false)
     echo_clear_draft()
+    echo_interaction_clear()
     set window.echoRun to ""
     echo_trace_clear_floating()
     window.localStorage.removeItem("echo.session")
@@ -1614,6 +1641,8 @@ define echo_new_chat with event:
     set welcome.hidden to false
     set session_label to document.getElementById("session-label")
     set session_label.textContent to "New conversation"
+    set window.echoCanStop to false
+    echo_busy(false)
     echo_note("Ready for a new conversation.")
     return 0
 
@@ -2825,6 +2854,7 @@ define echo_show_identity with target:
 
 define main:
     window.setInterval(echo_linked_session_watch and 3000)
+    window.setInterval(echo_autonomy_refresh and 3000)
     document.addEventListener("visibilitychange" and given event:
         if document.visibilityState == "visible":
             echo_linked_session_watch()
@@ -3427,6 +3457,7 @@ define echo_group_watch with marker:
         set status to document.getElementById("group-context-status")
         if not selected:
             set notice_text to "This shared history is no longer available to this identity. Your unsent draft stays on this browser."
+            echo_interaction_clear()
             set window.echoRun to ""
             window.localStorage.removeItem("echo.run")
             set window.echoHistoryMarker to window.crypto.randomUUID()
@@ -4123,7 +4154,7 @@ define echo_guidance_render:
         set button.textContent to "Retry guidance"
         echo_steer_status("Delivery not confirmed. Retry guidance checks the same saved message; it will not send a duplicate.")
     else if receipt && receipt.phase == "applied":
-        echo_steer_status("Guidance applied to this turn. Echo is continuing with your update.")
+        echo_steer_status("Guidance applied to this turn.")
     else if receipt:
         echo_steer_status("Guidance received once — waiting for Echo to apply it. You do not need to send it again.")
     else:
@@ -4980,4 +5011,295 @@ define echo_agents_setup:
     set style.textContent to ".delegated-agent{background:var(--surface);border-color:var(--composer-line);color:var(--fg)}.delegated-agent>summary{font-weight:600}.delegated-agent>p{color:var(--muted);font-size:12px}.agent-results{max-height:55vh;overflow:auto;overscroll-behavior:contain}.agent-results>div>div{padding:14px 0;border-bottom:1px solid var(--line)}.agent-results strong{font-size:12px;color:var(--accent)}.agent-results .message-text{font-size:13px;margin-top:8px}.delegated-agent>button{font-size:12px;margin-top:12px}"
     document.head.appendChild(style)
     echo_agents_refresh()
+    return 0
+
+# Durable mid-task questions. Defaults are local UI state only; only the Send
+# answers button produces authenticated guidance for the running task.
+define echo_interaction_clear:
+    set steering to document.getElementById("steering-status")
+    if steering:
+        set steering.hidden to true
+        set steering.textContent to ""
+    set panel to document.getElementById("echo-interaction")
+    if panel:
+        panel.remove()
+    set window.echoQuestionRequest to ""
+    set window.echoAutonomy to false
+
+define echo_interaction_render with result:
+    set styles to document.getElementById("echo-interaction-style")
+    if not styles:
+        set styles to document.createElement("style")
+        set styles.id to "echo-interaction-style"
+        set styles.textContent to "#echo-interaction{margin:16px 0;padding:22px;border:1px solid var(--composer-line);border-radius:22px;background:var(--surface);color:var(--fg);scroll-margin-top:18px}#echo-interaction[hidden]{display:none}#workspace:has(#echo-interaction fieldset) #composer{position:relative;bottom:auto}#echo-interaction h3{font-size:17px;font-weight:600;letter-spacing:-.3px;margin:0 0 7px}#echo-interaction .question-note{font-size:12px;line-height:1.6;color:var(--muted);margin:0 0 20px}#echo-interaction fieldset{border:0;padding:0;margin:0 0 20px;min-width:0}#echo-interaction legend{font-size:14px;font-weight:600;line-height:1.5;margin:0 0 9px;padding:0}#echo-interaction .question-options{display:flex;flex-wrap:wrap;gap:8px}#echo-interaction .question-option{display:inline-flex;gap:8px;align-items:center;min-height:40px;padding:8px 12px;margin:0;box-sizing:border-box;border:1px solid var(--composer-line);border-radius:10px;background:transparent;cursor:pointer;font-size:13px;line-height:1.4}#echo-interaction .question-option:hover{background:var(--button)}#echo-interaction .question-option:has(input:checked){background:var(--selected);border-color:var(--accent)}#echo-interaction .question-option:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:3px}#echo-interaction input[type=radio]{width:15px;height:15px;min-height:0;padding:0;margin:0;flex:none;accent-color:var(--accent)}#echo-interaction textarea{display:block;width:100%;box-sizing:border-box;margin:10px 0 0;min-height:78px;padding:12px 14px;border:1px solid var(--composer-line);border-radius:12px;background:var(--bg);color:var(--fg);font:inherit;font-size:14px;line-height:1.5;resize:vertical}#echo-interaction textarea[hidden]{display:none}#echo-interaction .question-footer{display:flex;gap:16px;align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding-top:16px}#echo-interaction .question-feedback{font-size:12px;line-height:1.5;color:var(--muted);margin:0;flex:1}#echo-interaction .question-submit{background:var(--accent);color:var(--on-accent);border:0;border-radius:12px;font-size:13px;font-weight:600;padding:11px 17px;min-height:40px;flex-shrink:0}#echo-interaction .autonomy-bar{display:flex;gap:16px;align-items:center;justify-content:space-between}#echo-interaction .autonomy-bar:has(+h3){padding-bottom:18px;margin-bottom:20px;border-bottom:1px solid var(--line)}#echo-interaction .autonomy-label{margin:0;font-size:13px;line-height:1.5;color:var(--soft)}#echo-interaction .autonomy-stop{font-size:12px;padding:9px 12px;border:1px solid var(--composer-line);border-radius:10px;background:transparent;white-space:nowrap}@media(max-width:800px){#echo-interaction{padding:18px;border-radius:18px}#echo-interaction .question-options{gap:7px}#echo-interaction .autonomy-bar{align-items:flex-start}}"
+        document.head.appendChild(styles)
+    set panel to document.getElementById("echo-interaction")
+    if not panel:
+        set panel to document.createElement("section")
+        set panel.id to "echo-interaction"
+        panel.setAttribute("aria-label" and "Active task controls")
+        set composer to document.getElementById("composer")
+        composer.parentNode.insertBefore(panel and composer)
+    set window.echoAutonomy to result.autonomy == true
+    set question to result.user_input
+    if question && question.status:
+        echo_note("Question state unavailable. Reconnecting…")
+        return 0
+    set identity to result.run + ":" + String(result.autonomy) + ":" + (result.autonomy_goal || "") + ":" + String(result.can_control) + ":" + (question && question.request || "")
+    if panel.echoIdentity == identity:
+        return 0
+    set panel.echoIdentity to identity
+    set panel.textContent to ""
+    set panel.hidden to not result.autonomy && not question
+    set window.echoQuestionRequest to question && question.request || ""
+    if result.autonomy:
+        set autonomy_bar to document.createElement("div")
+        set autonomy_bar.className to "autonomy-bar"
+        panel.appendChild(autonomy_bar)
+        set label to document.createElement("p")
+        set label.textContent to "Free autonomy · Echo chooses what to work on"
+        if result.autonomy_goal:
+            set label.textContent to "Task autonomy · " + result.autonomy_goal
+        set label.className to "autonomy-label"
+        autonomy_bar.appendChild(label)
+        set stop_button to document.createElement("button")
+        set stop_button.type to "button"
+        set stop_button.textContent to "Turn autonomy off"
+        set stop_button.disabled to result.can_control == false
+        stop_button.addEventListener("click" and given event:
+            echo_autonomy_command(false)
+        )
+        set stop_button.className to "autonomy-stop"
+        autonomy_bar.appendChild(stop_button)
+    if not question:
+        return 0
+    set title to document.createElement("h3")
+    set title.textContent to "Echo has a few questions"
+    panel.appendChild(title)
+    set note to document.createElement("p")
+    set note.className to "question-note"
+    set note.textContent to "Choose an answer or add your own. Echo will continue when you send your answers."
+    panel.appendChild(note)
+    set storage to "echo.questions:" + question.request
+    set drafts to JSON.parse(window.localStorage.getItem(storage) || "{}")
+    set answers to Array()
+    for each item in question.questions:
+        answers.push(echo_question_field(item and question and result and panel and drafts and storage))
+    set footer to document.createElement("div")
+    set footer.className to "question-footer"
+    panel.appendChild(footer)
+    set feedback to document.createElement("p")
+    set feedback.className to "question-feedback"
+    feedback.setAttribute("role" and "status")
+    footer.appendChild(feedback)
+    set submit to document.createElement("button")
+    set submit.type to "button"
+    set submit.textContent to "Send answers"
+    set submit.className to "question-submit"
+    set submit.disabled to result.can_control == false
+    submit.addEventListener("click" and given event:
+        echo_question_submit(result and question and answers and submit and feedback and storage)
+    )
+    footer.appendChild(submit)
+    set scroll_options to Object()
+    set scroll_options.block to "start"
+    panel.scrollIntoView(scroll_options)
+    return 0
+
+define echo_autonomy_command with enabled:
+    if window.echoReadOnly || not window.echoToken || (enabled && (not window.echoRun || not window.echoCanStop)):
+        echo_note("There is no active task to change. Send /auto to start autonomy.")
+        return 0
+    set payload to Object()
+    set payload.run to window.echoRun
+    set payload.identity to window.crypto.randomUUID()
+    set payload.enabled to enabled
+    if not enabled:
+        set payload.run to ""
+    set payload.goal to ""
+    if enabled:
+        set payload.goal to document.getElementById("message").value.trim().slice(5).trim()
+    set input to document.getElementById("message")
+    set sent to echo_api("/api/autonomy" and payload).then(given result:
+        if result.status != "accepted":
+            return Promise.reject(echo_failure(result))
+        echo_autonomy_refresh()
+        echo_sessions()
+        if not enabled || window.echoRun == payload.run:
+            if input.value.trim() == "/autoOff" || input.value.trim().startsWith("/auto"):
+                set input.value to ""
+                window.localStorage.setItem("echo.composer:" + window.echoSession and "")
+            if enabled:
+                echo_note("Continuous autonomy enabled.")
+            else:
+                echo_note("Autonomy off. Stopping the active task…")
+            echo_poll()
+    )
+    echo_catch(sent)
+    return 0
+
+define echo_question_field with item and question and result and panel and drafts and storage:
+    set question_group to document.createElement("fieldset")
+    set legend to document.createElement("legend")
+    set legend.textContent to item.title
+    question_group.appendChild(legend)
+    set answer to Object()
+    set answer.id to item.id
+    set saved to get_list(drafts and "question:" + item.id)
+    set answer.choice to -1
+    if item.options.length > 0:
+        set answer.choice to 0
+    if saved && Number.isInteger(saved.choice) && saved.choice >= -1 && saved.choice < item.options.length:
+        set answer.choice to saved.choice
+    set answer.text to saved && saved.text || ""
+    set free_answer to document.createElement("textarea")
+    set free_answer.value to answer.text
+    set free_answer.rows to 3
+    set free_answer.placeholder to "Type your answer…"
+    free_answer.setAttribute("aria-label" and item.title + " — Other answer")
+    set free_answer.hidden to answer.choice != -1
+    set free_answer.disabled to result.can_control == false || answer.choice != -1
+    set options_row to document.createElement("div")
+    set options_row.className to "question-options"
+    question_group.appendChild(options_row)
+    set index to 0
+    set labels to item.options.slice()
+    if item.options.length > 0:
+        labels.push("Other")
+    for each option in labels:
+        set choice to index
+        if index == item.options.length:
+            set choice to -1
+        echo_question_option(options_row and option and choice and answer and free_answer and drafts and storage and item and question and result)
+        set index to index + 1
+    set save_draft to get_list(Reflect and "set")
+    free_answer.addEventListener("input" and given event:
+        set answer.text to free_answer.value
+        save_draft(drafts and "question:" + item.id and answer)
+        window.localStorage.setItem(storage and JSON.stringify(drafts))
+    )
+    question_group.appendChild(free_answer)
+    panel.appendChild(question_group)
+    return answer
+
+define echo_question_option with question_group and option and choice and answer and free_answer and drafts and storage and item and question and result:
+    set row to document.createElement("label")
+    set row.className to "question-option"
+    set radio to document.createElement("input")
+    set radio.type to "radio"
+    set radio.name to question.request + ":" + item.id
+    set radio.checked to answer.choice == choice
+    set radio.disabled to result.can_control == false
+    set save_draft to get_list(Reflect and "set")
+    radio.addEventListener("change" and given event:
+        set answer.choice to choice
+        set free_answer.disabled to choice != -1
+        set free_answer.hidden to choice != -1
+        save_draft(drafts and "question:" + item.id and answer)
+        window.localStorage.setItem(storage and JSON.stringify(drafts))
+        if choice == -1:
+            free_answer.focus()
+    )
+    row.appendChild(radio)
+    set text to document.createElement("span")
+    set text.textContent to option
+    row.appendChild(text)
+    question_group.appendChild(row)
+    return 0
+
+define echo_question_submit with result and question and answers and submit and feedback and storage:
+    if window.echoRun != result.run || window.echoQuestionRequest != question.request:
+        return 0
+    set payload to Object()
+    set payload.run to result.run
+    set payload.request to question.request
+    set payload.answers to Array()
+    for each answer in answers:
+        if answer.choice == -1 && not answer.text.trim():
+            set feedback.textContent to "Please type an answer for each Other choice."
+            return 0
+        set response to Object()
+        set response.id to answer.id
+        set response.choice to answer.choice
+        set response.text to ""
+        if answer.choice == -1:
+            set response.text to answer.text
+        payload.answers.push(response)
+    set submit.disabled to true
+    set feedback.textContent to "Sending answers…"
+    set sent to echo_api("/api/question-answer" and payload).then(given received:
+        if received.status != "answer-received":
+            return Promise.reject(echo_failure(received))
+        window.localStorage.removeItem(storage)
+        if window.echoRun == result.run:
+            set feedback.textContent to "Answers received. Echo is continuing."
+            echo_poll()
+    )
+    set catcher to get_list(sent and "catch")
+    catcher.call(sent and given error:
+        set submit.disabled to false
+        set feedback.textContent to "Answers were not confirmed. Your choices are kept; retry to check the same answer. " + String(error)
+    )
+    return 0
+
+# A global, account-scoped indicator makes background autonomy visible without
+# taking over the current conversation or changing its draft.
+define echo_autonomy_refresh:
+    if not window.echoToken || window.echoReadOnly || window.echoAutonomyWatching:
+        return 0
+    set window.echoAutonomyWatching to true
+    set token to window.echoToken
+    set loaded to echo_api("/api/autonomy-status" and Object()).then(given result:
+        set window.echoAutonomyWatching to false
+        if token != window.echoToken:
+            return 0
+        set window.echoAutonomyLocation to result
+        echo_autonomy_location_render(result)
+    )
+    set catcher to get_list(loaded and "catch")
+    catcher.call(loaded and given ignored:
+        set window.echoAutonomyWatching to false
+    )
+    return 0
+
+define echo_autonomy_location_render with result:
+    set panel to document.getElementById("echo-autonomy-location")
+    if not panel:
+        set panel to document.createElement("div")
+        set panel.id to "echo-autonomy-location"
+        set panel.style.cssText to "display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 16px;margin:12px 0;border:1px solid var(--composer-line);border-radius:14px;background:var(--surface);font-size:12px;color:var(--soft);"
+        set composer to document.getElementById("composer")
+        composer.parentNode.insertBefore(panel and composer)
+    set panel.hidden to result.status != "found" || result.run == window.echoRun
+    if panel.hidden:
+        set panel.style.display to "none"
+        return 0
+    set panel.style.display to "flex"
+    set identity to result.run + ":" + (result.goal || "") + ":" + (result.title || "")
+    if panel.echoIdentity == identity:
+        return 0
+    set panel.echoIdentity to identity
+    set panel.textContent to ""
+    set label to document.createElement("span")
+    set label.textContent to "Autonomy is running in another conversation"
+    if result.goal:
+        set label.textContent to "Task autonomy is running in another conversation"
+    set label.style.flex to "1"
+    panel.appendChild(label)
+    set open_button to document.createElement("button")
+    set open_button.type to "button"
+    set open_button.textContent to "Open conversation"
+    set open_button.style.cssText to "font-size:12px;padding:9px 12px;border:1px solid var(--composer-line);background:transparent;"
+    open_button.addEventListener("click" and given event:
+        echo_open_session(result)
+    )
+    panel.appendChild(open_button)
+    set off_button to document.createElement("button")
+    set off_button.type to "button"
+    set off_button.textContent to "Turn autonomy off"
+    set off_button.style.cssText to "font-size:12px;padding:9px 12px;border:1px solid var(--composer-line);background:transparent;"
+    off_button.addEventListener("click" and given event:
+        echo_autonomy_command(false)
+    )
+    panel.appendChild(off_button)
     return 0
