@@ -1,0 +1,33 @@
+import "../web/worker"
+
+# Host maintenance only: reopen one proven malformed legacy final, without
+# changing or deleting any original event or replaying any tool action.
+define recover_legacy_protocol with database as Int and run as Str and expected as Str and recovery as Str and worker as Str returning Int:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set row to agent_run_read(database and run)
+    set original to archive_read_event(database and expected)
+    if row equals 0 or else original equals 0 or else not (archive_list_text(row and 2) equals "completed") or else not (archive_list_text(row and 3) equals expected) or else not (archive_list_text(original and 2) equals "assistant_final"):
+        return archive_rollback(database)
+    set tokens to provider_json_tokens(archive_list_text(original and 3))
+    if not (archive_list_text(original and 0) equals archive_list_text(row and 0)) or else not (provider_value(tokens and provider_member(tokens and 0 and "run_id")) equals run) or else run_authority_allows(database and run and "user") equals 0:
+        return archive_rollback(database)
+    set cancelled to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_cancel_requests WHERE run=?1;" and [run]))
+    if not (archive_list_text(cancelled and 1) equals "0"):
+        return archive_rollback(database)
+    set content to string_trim(provider_value(tokens and provider_member(tokens and 0 and "content")))
+    set calls to provider_items(tokens and provider_member(tokens and 0 and "tool_calls"))
+    if calls equals 0 or else length_list(calls) is not equal to 0 or else string_length(content) < 11 or else not (ptr_to_str(substring(content and 0 and 11)) equals "<tool_call>") or else string_contains(content and "<function=") equals 0:
+        return archive_rollback(database)
+    set busy to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_runs WHERE session=?1 AND run<>?2 AND state NOT IN ('completed','failed','cancelled');" and [archive_list_text(row and 0),run]))
+    set owner to history_collect_one(checkpoint_prepare(database and "SELECT a.device,w.worker,w.status FROM echo_run_authority a JOIN echo_web_workers w ON w.run=a.run WHERE a.run=?1;" and [run]))
+    if not (archive_list_text(busy and 1) equals "0") or else not (archive_list_text(owner and 0) equals "found") or else archive_list_text(owner and 3) equals "running":
+        return archive_rollback(database)
+    set payload to concat(agent_event_envelope(run and expected) and ",\"reason\":\"unparsed-tool-response\",\"recovery\":\"Host repair reopened a legacy malformed final. Original response and all completed tool results are retained. No tools were executed from its text. Return the requested report from saved progress.\"}")
+    if archive_append_pending(database and archive_list_text(row and 0) and recovery and "agent_recovered" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return archive_rollback(database)
+    if tool_ledger_change(database and "UPDATE echo_runs SET state='ready',last_event=?3 WHERE run=?1 AND state='completed' AND last_event=?2 AND NOT EXISTS(SELECT 1 FROM echo_tool_calls WHERE run=?1 AND state<>'observed') RETURNING run;" and [run,expected,recovery]) is not equal to 0:
+        return archive_rollback(database)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return web_worker_retry_claim(database and archive_list_text(owner and 1) and run and archive_list_text(owner and 2) and worker)
