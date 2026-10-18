@@ -1,6 +1,17 @@
 # Phase Two progress — Echo 1.5, 18 October 2026
 
-The current consolidated record is [Echo 1.5](../releases/1.5/README.md), including the [original 32-step reconciliation](../releases/1.5/PHASE-TWO-STATUS.md). Current deployed release: `phase2-stable-session-recall-20261018-r2`. Phase Two remains incomplete; later foundations do not close their integrations.
+## Live delegation repair — 18 October 2026
+
+The live raw-tool-call defect was resolved before returning to Step 10 feature work. The isolated repair `phase2-delegation-protocol-20261018-r3` passed the real browser three-agent acceptance run: all children returned, the parent resumed after intervening chat, and its consolidated answer appeared without refreshing. See [the repair record](DELEGATION-PROTOCOL-2026-10-18.md). Existing research workers and saved progress are preserved. No new plan steps have been added.
+
+## Resumed original dependency order — 18 October 2026
+
+Step 10 remains active. Actual production-browser verification reconfirmed automatic-use forgetting, persistence across reload and restoration of the existing disposable test attachment. Evidence: `evidence/phase2/resume-step10-20261018/browser-forgetting.json`. No model workload was submitted for that check.
+
+The section 6 media requirement includes video sampling and playback. The current application exposes provider video metadata but had neither a video sampling tool nor a video player. Ernos implementation and local decoder qualification are now in progress; these candidate changes are **not deployed or accepted yet**. Retain prior valid image/speech/UI evidence; microphone permission remains explicitly owner-deferred. Do not advance to Step 11 until this Step 10 gap is qualified.
+
+
+The current consolidated record is [Echo 1.5](../releases/1.5/README.md), including the [original 32-step reconciliation](../releases/1.5/PHASE-TWO-STATUS.md). Current repair deployment and verification status are recorded above; `phase2-stable-session-recall-20261018-r2` is the preceding 1.5 baseline. Phase Two remains incomplete; later foundations do not close their integrations.
 
 The entries below are dated historical observations. Their older counts, remaining-work statements, pause state and deployment names are superseded by the consolidated record where they differ.
 
