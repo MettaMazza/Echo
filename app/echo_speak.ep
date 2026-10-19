@@ -1,0 +1,119 @@
+import "providers/native_python"
+import "providers/json_access"
+import "providers/archived_stream"
+import "fs"
+
+# Host-enrolled private conditioning is never supplied by generated text.
+# Only installed upstream dependency functions cross the C API bridge.
+define main returning Int:
+    if get_argument_count() is not equal to 7 or else not file_exists("input.txt"):
+        return 1
+    set library to native_python_open(get_argument(1) and get_argument(2))
+    if library equals 0:
+        return 2
+    set builtins to native_python_import(library and "builtins")
+    set mx to native_python_import(library and "mlx.core")
+    set utils to native_python_import(library and "mlx_audio.tts.utils")
+    set load to native_python_attribute(library and utils and "load_model")
+    set model_path to native_python_string(library and get_argument(3))
+    set model to native_python_call(library and load and [model_path] and 0)
+    set load_vectors to native_python_attribute(library and mx and "load")
+    set vector_path to native_python_string(library and get_argument(4))
+    set vectors to native_python_call(library and load_vectors and [vector_path] and 0)
+    set mixed to native_python_member(library and vectors and "mixed")
+    if model equals 0 or else mixed equals 0:
+        return 3
+    # partial(next, repeat(vector)) returns the enrolled vector for every reference.
+    # The optional default argument accepts the upstream audio positional argument.
+    set itertools to native_python_import(library and "itertools")
+    set repeat_vector to native_python_attribute(library and itertools and "repeat")
+    set repeated to native_python_call(library and repeat_vector and [mixed] and 0)
+    set next_item to native_python_attribute(library and builtins and "next")
+    set functools to native_python_import(library and "functools")
+    set partial to native_python_attribute(library and functools and "partial")
+    set enrolled to native_python_call(library and partial and [next_item, repeated] and 0)
+    if native_python_set(library and model and "extract_speaker_embedding" and enrolled) is not equal to 0:
+        return 4
+    set random to native_python_attribute(library and mx and "random")
+    set seed to native_python_attribute(library and random and "seed")
+    set seed_value to native_python_json(library and "105")
+    set seeded to native_python_call(library and seed and [seed_value] and 0)
+    set synthesize to native_python_attribute(library and model and "generate")
+    set text to native_python_string(library and ptr_to_str(read_file("input.txt")))
+    set options to concat("{\"ref_audio\":" and provider_quote(get_argument(5)))
+    set options to concat(options and ",\"ref_text\":null,\"lang_code\":\"English\",\"temperature\":0.65,\"max_tokens\":1200}")
+    set kwargs to native_python_json(library and options)
+    set generator to native_python_call(library and synthesize and [text] and kwargs)
+    set to_list to native_python_attribute(library and builtins and "list")
+    set results to native_python_call(library and to_list and [generator] and 0)
+    if results equals 0:
+        set printer to ep_dlsym(library and "PyErr_Print")
+        set ignored to ep_dlcall0(printer)
+        return 5
+    set size_fn to ep_dlsym(library and "PyList_Size")
+    set item_fn to ep_dlsym(library and "PyList_GetItem")
+    set count to ep_dlcall1(size_fn and results)
+    if count is less than 1:
+        return 6
+    set chunks to create_list()
+    set index to 0
+    set rate to 0
+    repeat while index is less than count:
+        set result to ep_dlcall2(item_fn and results and index)
+        set audio to native_python_attribute(library and result and "audio")
+        set rate to native_python_attribute(library and result and "sample_rate")
+        set added to append_list(chunks and audio)
+        set index to index + 1
+    set tuple_new to ep_dlsym(library and "PyTuple_New")
+    set tuple_set to ep_dlsym(library and "PyTuple_SetItem")
+    set retain to ep_dlsym(library and "Py_IncRef")
+    set arrays to ep_dlcall1(tuple_new and count)
+    set index to 0
+    repeat while index is less than count:
+        set audio to get_list(chunks and index)
+        set held to ep_dlcall1(retain and audio)
+        set stored to ep_dlcall3(tuple_set and arrays and index and audio)
+        set index to index + 1
+    set numpy to native_python_import(library and "numpy")
+    set concatenate to native_python_attribute(library and numpy and "concatenate")
+    set samples to native_python_call(library and concatenate and [arrays] and 0)
+    if samples equals 0:
+        set printer to ep_dlsym(library and "PyErr_Print")
+        set ignored to ep_dlcall0(printer)
+        return 9
+    set multiply to native_python_attribute(library and numpy and "multiply")
+    set scale to native_python_json(library and "32767")
+    set scaled to native_python_call(library and multiply and [samples, scale] and 0)
+    set astype to native_python_attribute(library and scaled and "astype")
+    set dtype to native_python_string(library and "<i2")
+    set pcm to native_python_call(library and astype and [dtype] and 0)
+    set tobytes to native_python_attribute(library and pcm and "tobytes")
+    set bytes to native_python_call(library and tobytes and create_list() and 0)
+    set wave to native_python_import(library and "wave")
+    set open_wave to native_python_attribute(library and wave and "open")
+    set raw to native_python_string(library and "unpitched.wav")
+    set mode to native_python_string(library and "wb")
+    set writer to native_python_call(library and open_wave and [raw, mode] and 0)
+    set parameters to native_python_json(library and "[1,2,24000,0,\"NONE\",\"not compressed\"]")
+    set configure to native_python_attribute(library and writer and "setparams")
+    set configured to native_python_call(library and configure and [parameters] and 0)
+    set write to native_python_attribute(library and writer and "writeframes")
+    set saved to native_python_call(library and write and [bytes] and 0)
+    set close to native_python_attribute(library and writer and "close")
+    set closed to native_python_call(library and close and create_list() and 0)
+    if saved equals 0 or else closed equals 0:
+        set printer to ep_dlsym(library and "PyErr_Print")
+        set ignored to ep_dlcall0(printer)
+        return 7
+    # Same +0.75-semitone resampling/tempo compensation accepted in audition.
+    set command to concat("[" and provider_quote(get_argument(6)))
+    set command to concat(command and ",\"-nostdin\",\"-v\",\"error\",\"-y\",\"-i\",\"unpitched.wav\",\"-af\",\"asetrate=25063,aresample=24000,atempo=0.9575868818577186\",\"-c:a\",\"pcm_s16le\",\"spoken.wav\"]")
+    set arguments to native_python_json(library and command)
+    set subprocess to native_python_import(library and "subprocess")
+    set run to native_python_attribute(library and subprocess and "run")
+    set checked to native_python_json(library and "{\"check\":true}")
+    set converted to native_python_call(library and run and [arguments] and checked)
+    if converted equals 0 or else not file_exists("spoken.wav"):
+        return 8
+    display "Selected Echo voice saved."
+    return 0
