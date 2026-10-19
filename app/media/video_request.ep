@@ -11,7 +11,7 @@ define video_request with arguments as Str returning List:
     set index to 1
     repeat while not (provider_kind(tokens and index) equals "}"):
         set key to provider_value(tokens and index)
-        if not (key equals "attachment" or else key equals "action" or else key equals "timestamp_ms"):
+        if not (key equals "attachment" or else key equals "action" or else key equals "timestamp_ms" or else key equals "duration_ms"):
             return history_status("invalid-arguments")
         set index to provider_after(tokens and index + 2)
         if provider_kind(tokens and index) equals ",":
@@ -22,9 +22,19 @@ define video_request with arguments as Str returning List:
     if not (provider_kind(tokens and identity) equals "string") or else string_length(provider_value(tokens and identity)) equals 0 or else not (provider_kind(tokens and action) equals "string") or else timestamp < 0:
         return history_status("invalid-arguments")
     set operation to provider_value(tokens and action)
-    if not (operation equals "inspect" or else operation equals "frame") or else (operation equals "inspect" and timestamp is not equal to 0):
+    if not (operation equals "inspect" or else operation equals "frame" or else operation equals "audiovisual" or else operation equals "segment") or else ((operation equals "inspect" or else operation equals "audiovisual") and timestamp is not equal to 0):
         return history_status("invalid-video-operation")
-    return ["ready",provider_value(tokens and identity),operation,int_to_string(timestamp)]
+    set duration to 0
+    if operation equals "segment":
+        set duration to history_tool_integer(tokens and "duration_ms")
+        set limit to string_to_int(ptr_to_str(get_env("ECHO_VIDEO_SEGMENT_MS")))
+        if limit <= 0:
+            set limit to 10000
+        if duration <= 0 or else duration > limit or else timestamp > 9223372036854775807 - duration:
+            return history_status("segment-outside-native-budget")
+    else if provider_member(tokens and 0 and "duration_ms") >= 0:
+        return history_status("invalid-arguments")
+    return ["ready",provider_value(tokens and identity),operation,int_to_string(timestamp),int_to_string(duration)]
 
 # Resolve through current device permissions. Shared requests cannot import a
 # caller's private attachment merely because that same caller owns it.
@@ -45,6 +55,12 @@ define video_request_arguments with request as List returning List:
         return 0
     if archive_list_text(request and 2) equals "inspect":
         return ["-v","error","-protocol_whitelist","file","-show_format","-show_streams","-print_format","json","-o","metadata.json","input.media"]
+    if archive_list_text(request and 2) equals "segment":
+        set start to video_seconds(string_to_int(archive_list_text(request and 3)))
+        set duration to video_seconds(string_to_int(archive_list_text(request and 4)))
+        return ["-nostdin","-hide_banner","-loglevel","info","-n","-protocol_whitelist","file","-ss",start,"-i","input.media","-map","0:v:0","-t",duration,"-c:v","mpeg4","-q:v","2","-an","-sn","-dn","-movflags","+faststart","video.mp4","-map","0:a:0","-t",duration,"-vn","-sn","-dn","-ac","1","-ar","24000","-c:a","pcm_s16le","audio.wav"]
+    if archive_list_text(request and 2) equals "audiovisual":
+        return ["-nostdin","-hide_banner","-loglevel","info","-n","-protocol_whitelist","file","-i","input.media","-map","0:v:0","-c:v","mpeg4","-q:v","2","-an","-sn","-dn","-movflags","+faststart","video.mp4","-map","0:a:0","-vn","-sn","-dn","-ac","1","-ar","24000","-c:a","pcm_s16le","audio.wav"]
     set milliseconds to string_to_int(archive_list_text(request and 3))
     set fraction to int_to_string(milliseconds modulo 1000)
     repeat while string_length(fraction) < 3:
@@ -52,8 +68,54 @@ define video_request_arguments with request as List returning List:
     set seconds to concat(int_to_string(milliseconds / 1000) and concat("." and fraction))
     return ["-nostdin","-hide_banner","-loglevel","info","-n","-protocol_whitelist","file","-i","input.media","-ss",seconds,"-map","0:v:0","-frames:v","1","-vf","showinfo","-an","-sn","-dn","frame.png"]
 
+define video_seconds with milliseconds as Int returning Str:
+    set fraction to int_to_string(milliseconds modulo 1000)
+    repeat while string_length(fraction) < 3:
+        set fraction to concat("0" and fraction)
+    return concat(int_to_string(milliseconds / 1000) and concat("." and fraction))
+
+# The current watch boundary is authoritative even when a model requests more.
+# Inspect is metadata only. Ending or seeking backwards invalidates old reads.
+define video_watch_allowed with database as Int and session as Str and request as List returning Int:
+    if not (archive_list_text(request and 0) equals "ready"):
+        return 0
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE session=? AND kind='watch_party_state' ORDER BY sequence DESC LIMIT 1;" and [session]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return 1
+    set state to provider_json_tokens(archive_list_text(row and 1))
+    if not (provider_value(state and provider_member(state and 0 and "attachment")) equals archive_list_text(request and 1)):
+        return 1
+    set action to archive_list_text(request and 2)
+    if action equals "inspect":
+        return 1
+    if not (provider_value(state and provider_member(state and 0 and "status")) equals "active"):
+        return 0
+    set bound to history_tool_integer(state and "position_ms")
+    set start to string_to_int(archive_list_text(request and 3))
+    if action equals "frame":
+        return start < bound
+    if action equals "segment":
+        set duration to string_to_int(archive_list_text(request and 4))
+        if start < 0 or else duration <= 0 or else start > bound or else duration > bound - start:
+            return 0
+        return 1
+    return 0
+
 define video_sandbox_profile returning Str:
     return "(version 1)\n(deny default)\n(import \"dyld-support.sb\")\n(allow process-fork)\n(allow process-exec (literal (param \"ECHO_VIDEO_EXECUTABLE\")))\n(allow sysctl-read)\n(allow file-read-metadata (path-ancestors (param \"ECHO_VIDEO_EXECUTABLE\")) (path-ancestors (param \"ECHO_VIDEO_JOB\")))\n(allow file-read* file-map-executable (subpath \"/System\") (subpath \"/usr/lib\") (literal (param \"ECHO_VIDEO_EXECUTABLE\")) (subpath (param \"ECHO_VIDEO_JOB\")) (literal \"/dev/null\") (literal \"/dev/urandom\"))\n(allow file-write* (subpath (param \"ECHO_VIDEO_JOB\")) (literal \"/dev/null\"))\n"
 
 define video_tool_schema returning Str:
-    return "{\"type\":\"function\",\"function\":{\"name\":\"attachment_video\",\"description\":\"Inspect an authorized local video or sample one frame at a requested timestamp. First inspect metadata, then choose timestamps appropriate to the task. A frame is a sampled observation, not the whole video or its audio. Inspect returned PNG attachments with attachment_view_image. Original video, source digest, requested timestamp and decoder logs remain saved; report sampling and uncertainty. Returned attachments appear automatically alongside your reply; no attach_file call is needed. Attachment IDs are not filesystem paths. Set timestamp_ms=0 for inspect. No network access. Explicit reading of a forgotten original is allowed; access checks still apply.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"attachment\":{\"type\":\"string\"},\"action\":{\"type\":\"string\",\"enum\":[\"inspect\",\"frame\"]},\"timestamp_ms\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"attachment\",\"action\",\"timestamp_ms\"],\"additionalProperties\":false}}}"
+    return "{\"type\":\"function\",\"function\":{\"name\":\"attachment_video\",\"description\":\"Inspect an authorized local video, sample a frame, or use audiovisual to supply its video and decoded soundtrack together to the primary native model. Use audiovisual when asked to understand pictures and sound; first inspect metadata to confirm an audio stream exists. Native video decoding samples frames: do not invent precise timing or unseen motion. A frame alone is not the whole video or its audio. Inspect returned PNG attachments with attachment_view_image. Original video, source digest, requested timestamp and decoder logs remain saved; report sampling and uncertainty. Returned attachments appear automatically alongside your reply; no attach_file call is needed. Attachment IDs are not filesystem paths. Set timestamp_ms=0 for inspect or audiovisual. No network access. Explicit reading of a forgotten original is allowed; access checks still apply. Use segment for bounded native audio/video: timestamp_ms is its start and duration_ms its length (default host limit10000ms). During a watch session only already-played content is allowed; whole audiovisual reads are refused. Preparation is not evidence of completed model analysis. Preserve range and sampling information in your conclusions.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"attachment\":{\"type\":\"string\"},\"action\":{\"type\":\"string\",\"enum\":[\"inspect\",\"frame\",\"audiovisual\",\"segment\"]},\"timestamp_ms\":{\"type\":\"integer\",\"minimum\":0},\"duration_ms\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"attachment\",\"action\",\"timestamp_ms\"],\"additionalProperties\":false}}}"
+
+# The short name is available only inside a host-created watch job. The archive
+# retains the original call; resolution never changes its authorised range.
+define video_bound_arguments with database as Int and run as Str and arguments as Str returning Str:
+    if string_index_of(run and "watch-segment:") is not equal to 0:
+        return arguments
+    set tokens to provider_json_tokens(arguments)
+    if not (provider_value(tokens and provider_member(tokens and 0 and "attachment")) equals "current"):
+        return arguments
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?2,'$.attachment',json_extract(payload,'$.attachment')) FROM echo_events WHERE event=?1||':watch-job' AND kind='watch_segment_job';" and [run,arguments]))
+    if archive_list_text(row and 0) equals "found":
+        return archive_list_text(row and 1)
+    return arguments

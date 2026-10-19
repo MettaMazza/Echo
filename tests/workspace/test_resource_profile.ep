@@ -1,0 +1,71 @@
+import "../../app/workspace/resource_profile"
+import "../../app/workspace/sandbox_process"
+import "../../app/transport/http_stream"
+import "fs"
+
+# A real child proves the OS boundary, not merely the generated policy text.
+# Arguments: binary, workspace, public-read-root, public-write-root, private,
+# protected, secret, live-loopback-port. Parent fixture provides sentinel files.
+define main returning Int:
+    if get_argument_count() is not equal to 10:
+        return 1
+    set workspace to get_argument(2)
+    set readable to get_argument(3)
+    set writable to get_argument(4)
+    set private to get_argument(5)
+    set protected to get_argument(6)
+    set secret to get_argument(7)
+    if get_argument(1) equals "child":
+        if not (ptr_to_str(read_file(concat(readable and "/public.txt"))) equals "Public resource"):
+            return 2
+        if write_file(concat(writable and "/created.txt") and "Authorised resource output") is not equal to 1:
+            return 3
+        if write_file(concat(readable and "/forbidden.txt") and "Unexpected write") equals 1:
+            return 4
+        for each root in [private,secret]:
+            if file_exists(concat(root and "/private.txt")) or else ptr_to_str(read_file(concat(root and "/private.txt"))) equals "Private resource":
+                return 5
+        if ptr_to_str(read_file(concat(writable and "/escape/private.txt"))) equals "Private resource":
+            return 6
+        if write_file(concat(protected and "/accepted.txt") and "Unexpected protected write") equals 1:
+            return 7
+        set connection to net_connect("127.0.0.1" and http_decimal(get_argument(8)))
+        if connection >= 0:
+            set closed to net_close(connection)
+            return 8
+        if write_file(concat(workspace and "/owned.txt") and "Owned workspace output") is not equal to 1:
+            return 9
+        return 0
+    set profile to workspace_resource_profile(concat("[" and concat(provider_quote(readable) and "]")) and concat("[" and concat(provider_quote(writable) and "]")) and concat("[" and concat(provider_quote(private) and "]")))
+    if string_length(profile) equals 0:
+        return 10
+    # Invalid grants/absent private boundaries must not produce a policy.
+    for each invalid in ["", "{}", "null", "[42]", "[\"relative\"]", "[\"/a/../b\"]"]:
+        if string_length(workspace_resource_profile(invalid and "[]" and "[\"/private-fixture\"]")) > 0 or else string_length(workspace_resource_profile("[]" and invalid and "[\"/private-fixture\"]")) > 0 or else string_length(workspace_resource_profile("[]" and "[]" and invalid)) > 0:
+            return 11
+    if string_length(workspace_resource_profile("[]" and "[]" and "[]")) > 0 or else string_length(workspace_resource_profile("[]" and "[]" and "[\"/private-fixture\"]")) equals 0:
+        return 12
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and workspace)
+    set output to workspace_file_open(library and directory and "stdout.txt" and 1)
+    set errors to workspace_file_open(library and directory and "stderr.txt" and 1)
+    if directory < 0 or else output < 0 or else errors < 0:
+        return 13
+    set arguments to ["child",workspace,readable,writable,private,protected,secret,get_argument(8),"fixture"]
+    set handle to workspace_sandbox_start_profile(get_argument(9) and workspace and get_argument(1) and arguments and ["PATH=/usr/bin:/bin"] and directory and output and errors and profile)
+    if handle equals 0:
+        return 14
+    set state to workspace_process_poll(handle)
+    repeat while state equals 0:
+        set slept to sleep_ms(10)
+        set state to workspace_process_poll(handle)
+    if state is not equal to 1 or else get_list(handle and 3) is not equal to 0:
+        display concat("FAIL child wait status " and int_to_string(get_list(handle and 3)))
+        return 15
+    set closed to workspace_process_close(handle)
+    set closed to net_close(output)
+    set closed to net_close(errors)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    display "PASS: explicit read/write resources and owned workspace allowed; private/secret/protected boundaries and loopback denial enforced; malformed policy rejected."
+    return 0

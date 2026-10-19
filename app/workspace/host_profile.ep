@@ -1,53 +1,58 @@
 import "../providers/archived_stream"
 import "files"
 
+# Both host paths consume the same validated, nonempty root lists. Missing or
+# malformed configuration is not an empty deny list. Paths must be absolute,
+# canonical component spellings; reject embedded NUL before any native API.
+define host_policy_roots with configured as Str returning List:
+    set tokens to provider_json_tokens(configured)
+    if tokens equals 0 or else not (provider_kind(tokens and 0) equals "["):
+        return 0
+    set items to provider_items(tokens and 0)
+    if items equals 0 or else length_list(items) equals 0:
+        return 0
+    set roots to create_list()
+    for each item in items:
+        if not (provider_kind(tokens and item) equals "string"):
+            return 0
+        set path to provider_value(tokens and item)
+        if string_length(path) < 2 or else get_character(path and 0) is not equal to 47 or else workspace_path_parts(ptr_to_str(substring(path and 1 and string_length(path) - 1))) equals 0:
+            return 0
+        set index to 0
+        repeat while index < string_length(path):
+            if get_character(path and index) equals 0:
+                return 0
+            set index to index + 1
+        set added to append_list(roots and path)
+    return roots
+
 # These paths come only from host configuration, never tool arguments. Ordinary
 # admin commands cannot write accepted Echo code/state or read connector secrets.
 # Protected modifications use the separate charter controller.
 define host_execution_profile returning Str:
-    set protected_text to ptr_to_str(get_env("ECHO_HOST_PROTECTED_ROOTS"))
-    set secret_text to ptr_to_str(get_env("ECHO_HOST_SECRET_ROOTS"))
-    set protected_tokens to provider_json_tokens(protected_text)
-    set secret_tokens to provider_json_tokens(secret_text)
-    if protected_tokens equals 0 or else secret_tokens equals 0:
-        return ""
-    set protected_items to provider_items(protected_tokens and 0)
-    set secret_items to provider_items(secret_tokens and 0)
-    if protected_items equals 0 or else secret_items equals 0 or else length_list(protected_items) equals 0 or else length_list(secret_items) equals 0:
+    set protected_roots to host_policy_roots(ptr_to_str(get_env("ECHO_HOST_PROTECTED_ROOTS")))
+    set secret_roots to host_policy_roots(ptr_to_str(get_env("ECHO_HOST_SECRET_ROOTS")))
+    if protected_roots equals 0 or else secret_roots equals 0:
         return ""
     set profile to "(version 1)\n(deny default)\n(import \"dyld-support.sb\")\n(allow process-fork process-exec sysctl-read file-read* file-map-executable file-write* network-outbound)\n"
-    for each tokens in [protected_tokens,secret_tokens]:
-        set items to provider_items(tokens and 0)
+    for each roots in [protected_roots,secret_roots]:
         set filters to ""
-        for each item in items:
-            if not (provider_kind(tokens and item) equals "string"):
-                return ""
-            set path to provider_value(tokens and item)
-            if string_length(path) < 2 or else get_character(path and 0) is not equal to 47 or else workspace_path_parts(ptr_to_str(substring(path and 1 and string_length(path) - 1))) equals 0:
-                return ""
+        for each path in roots:
             set filters to concat(filters and concat(" (subpath " and concat(provider_quote(path) and ")")))
         set operation to "file-write*"
-        if tokens equals secret_tokens:
+        if roots equals secret_roots:
             set operation to "file-read* file-write*"
         set profile to concat(profile and concat("(deny " and concat(operation and concat(filters and ")\n"))))
     return profile
 
 # Descriptor traversal already rejects symlinks; this lexical boundary also
 # prevents the separate admin text reader from bypassing connector isolation.
+# Invalid configuration denies reads, consistently with process execution.
 define host_secret_path with path as Str returning Int:
-    set configured to ptr_to_str(get_env("ECHO_HOST_SECRET_ROOTS"))
-    if string_length(configured) equals 0:
-        return 0
-    set tokens to provider_json_tokens(configured)
-    if tokens equals 0:
+    set roots to host_policy_roots(ptr_to_str(get_env("ECHO_HOST_SECRET_ROOTS")))
+    if roots equals 0:
         return 1
-    set items to provider_items(tokens and 0)
-    if items equals 0:
-        return 1
-    for each item in items:
-        if not (provider_kind(tokens and item) equals "string"):
-            return 1
-        set root to provider_value(tokens and item)
+    for each root in roots:
         if path equals root or else string_index_of(path and concat(root and "/")) equals 0:
             return 1
     return 0

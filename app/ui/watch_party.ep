@@ -1,0 +1,321 @@
+# This module is emitted with the accepted client overlay. Media remains local;
+# control state is authenticated and durable in the conversation archive.
+define echo_watch_apply with watch and state:
+    if window.echoWatch != watch:
+        return 0
+    set watch.state to state
+    if watch.mode:
+        set watch.mode.disabled to state.playing || state.position_ms > 0
+    if watch.detail:
+        set watched to Math.max(0 and state.analysed_through_ms || 0)
+        set watch.detail.textContent to "Echo has processed through " + (watched / 1000).toFixed(1) + "s · playback " + ((state.position_ms || 0) / 1000).toFixed(1) + "s. Native audio and sampled video; unprocessed footage is not yet seen."
+
+    if state.status != "active":
+        watch.player.pause()
+        set watch.note.textContent to "Watch session ended. " + (state.reason || "")
+        set watch.player.controls to false
+        return 0
+    set watch.player.controls to true
+    if not state.playing && not watch.player.paused:
+        watch.player.pause()
+    if state.action == "seek" && Math.abs(watch.player.currentTime * 1000 - state.position_ms) > 1500:
+        set watch.restoring to true
+        set watch.player.currentTime to state.position_ms / 1000
+    if not state.playing:
+        set watch.buffering to false
+        set watch.nextCheckpoint to (Math.floor((state.position_ms || 0) / 300000) + 1) * 300000
+    if state.first_speaker == "echo":
+        set watch.note.textContent to "Echo paused — " + (state.reason || "Echo will start the discussion.")
+    else if state.first_speaker == "user":
+        set watch.note.textContent to "Paused — your turn to start the discussion."
+    else:
+        set watch.note.textContent to "Watching together · " + state.mode
+    return 0
+
+define echo_watch_change with watch and action:
+    if window.echoWatch != watch || not watch.state || watch.state.status != "active":
+        return Promise.resolve(null)
+    set next to watch.pending.then(given ignored:
+        if window.echoWatch != watch || watch.state.status != "active":
+            return null
+        set query to Object()
+        set query.session to watch.session
+        set query.identity to window.crypto.randomUUID()
+        set query.action to action
+        set query.revision to watch.state.revision
+        set query.position_ms to Math.min(watch.state.duration_ms and Math.max(0 and Math.round(watch.player.currentTime * 1000)))
+        return echo_api("/api/watch-party" and query).then(given result:
+            echo_watch_apply(watch and result)
+            return result
+        )
+    )
+    set watch.pending to next.then(given result:
+        return result
+    )
+    set catcher to get_list(watch.pending and "catch")
+    set watch.pending to catcher.call(watch.pending and given error:
+        watch.player.pause()
+        set watch.note.textContent to "Playback paused while controls reconnect. " + String(error)
+        return null
+    )
+    return watch.pending
+
+define echo_watch_open with file:
+    if window.echoWatch:
+        window.echoWatch.player.pause()
+        window.clearInterval(window.echoWatch.timer)
+        if window.echoWatch.url:
+            URL.revokeObjectURL(window.echoWatch.url)
+        window.echoWatch.panel.remove()
+    set watch to Object()
+    set watch.session to window.echoSession
+    set watch.file to file
+    set watch.pending to Promise.resolve(null)
+    set watch.panel to document.createElement("section")
+    set watch.panel.className to "settings-card echo-watch"
+    watch.panel.setAttribute("aria-label" and "Watch together")
+    set title to document.createElement("h3")
+    set title.textContent to "Watch together · " + file.name
+    watch.panel.appendChild(title)
+    set watch.player to document.createElement("video")
+    set watch.player.controls to true
+    set watch.player.preload to "metadata"
+    set watch.player.playsInline to true
+    watch.player.setAttribute("aria-label" and file.name)
+    set watch.player.style.width to "100%"
+    set watch.player.style.maxHeight to "55vh"
+    set watch.player.style.borderRadius to "12px"
+    set watch.player.style.background to "#080a0d"
+    set watch.player.style.aspectRatio to "16 / 9"
+    watch.panel.appendChild(watch.player)
+    set style to document.createElement("style")
+    set style.textContent to ".echo-watch{display:block}.echo-watch h3{margin:0 0 16px}.echo-watch:fullscreen{box-sizing:border-box;background:var(--bg,#101318);color:var(--fg,#eceef3);padding:24px;overflow:auto}.echo-watch:fullscreen video{height:calc(100dvh - 240px);max-height:calc(100dvh - 240px)!important;object-fit:contain}.echo-watch button{width:auto;display:inline-flex;align-items:center;padding:10px 16px;border:1px solid var(--composer-line);border-radius:12px;background:var(--button);color:var(--fg);font-size:13px;font-weight:500;cursor:pointer;margin:4px 8px 4px 0}.echo-watch button:hover{background:var(--selected)}.echo-watch p{line-height:1.5}"
+    watch.panel.appendChild(style)
+    set fullscreen to document.createElement("button")
+    set fullscreen.type to "button"
+    set fullscreen.textContent to "Full screen"
+    fullscreen.addEventListener("click" and given ignored:
+        if document.fullscreenElement:
+            document.exitFullscreen()
+        else if watch.panel.requestFullscreen:
+            set expanded to watch.panel.requestFullscreen()
+            echo_catch(expanded)
+        else if watch.player.webkitEnterFullscreen:
+            watch.player.webkitEnterFullscreen()
+        else:
+            set watch.note.textContent to "Use the video’s full-screen control in this browser. Your watch position stays saved."
+    )
+    watch.panel.appendChild(fullscreen)
+    watch.panel.addEventListener("fullscreenchange" and given ignored:
+        if document.fullscreenElement == watch.panel:
+            set fullscreen.textContent to "Back to chat"
+        else:
+            set fullscreen.textContent to "Full screen"
+    )
+    set watch.note to document.createElement("p")
+    watch.note.setAttribute("role" and "status")
+    set watch.note.textContent to "Checking the original media…"
+    watch.panel.appendChild(watch.note)
+    set watch.detail to document.createElement("p")
+    set watch.detail.textContent to "Playback and Echo’s actual processing position are saved separately."
+    watch.panel.appendChild(watch.detail)
+    set mode to document.createElement("select")
+    mode.setAttribute("aria-label" and "Watch mode")
+    for each entry in ["continuous", "checkpoints"]:
+        set option to document.createElement("option")
+        set option.value to entry
+        set option.textContent to "Watch continuously"
+        if entry == "checkpoints":
+            set option.textContent to "Discuss every 5 minutes"
+        mode.appendChild(option)
+    watch.panel.appendChild(mode)
+    set watch.mode to mode
+    mode.addEventListener("change" and given ignored:
+        if not watch.state || watch.state.playing || watch.state.position_ms > 0:
+            return 0
+        set query to Object()
+        set query.session to watch.session
+        set query.action to "start"
+        set query.identity to window.crypto.randomUUID()
+        set query.revision to watch.state.revision
+        set query.attachment to file.attachment
+        set query.duration_ms to Math.round(watch.player.duration * 1000)
+        set query.mode to mode.value
+        set changed to echo_api("/api/watch-party" and query).then(given result:
+            echo_watch_apply(watch and result)
+        )
+        echo_catch(changed)
+    )
+
+    set discuss to document.createElement("button")
+    set discuss.textContent to "Pause and discuss"
+    discuss.addEventListener("click" and given ignored:
+        set watch.buffering to false
+        watch.player.pause()
+        echo_watch_change(watch and "pause")
+        if document.fullscreenElement == watch.panel:
+            set returned to document.exitFullscreen().then(given ignored:
+                document.getElementById("message").focus()
+            )
+            echo_catch(returned)
+        else:
+            document.getElementById("message").focus()
+    )
+    watch.panel.appendChild(discuss)
+    set end to document.createElement("button")
+    set end.textContent to "End watch session"
+    end.addEventListener("click" and given ignored:
+        echo_watch_change(watch and "end")
+    )
+    watch.panel.appendChild(end)
+    set composer to document.getElementById("composer")
+    composer.parentNode.insertBefore(watch.panel and composer)
+    set window.echoWatch to watch
+    set loaded to echo_verified_attachment(file).then(given bytes:
+        if window.echoWatch != watch || window.echoSession != watch.session:
+            return 0
+        set parts to Array()
+        parts.push(bytes)
+        set options to Object()
+        set options.type to file.media_type
+        set arguments to Array()
+        arguments.push(parts)
+        arguments.push(options)
+        set blob to Reflect.construct(Blob and arguments)
+        set watch.url to URL.createObjectURL(blob)
+        set watch.player.src to watch.url
+    )
+    echo_catch(loaded)
+    watch.player.addEventListener("error" and given ignored:
+        set watch.note.textContent to "This browser cannot play this video format. The original is preserved; use a browser-compatible video copy. Watch playback has not started."
+    )
+    watch.player.addEventListener("loadedmetadata" and given ignored:
+        if watch.player.videoWidth == 0:
+            set watch.note.textContent to "The audio loaded, but this browser cannot display the video track. A compatible video copy is needed before watching together."
+            set watch.player.controls to false
+            return 0
+        set query to Object()
+        set query.session to watch.session
+        set query.action to "status"
+        set ready to echo_api("/api/watch-party" and query).then(given state:
+            if window.echoWatch != watch:
+                return null
+            if state.status == "active" && state.attachment == file.attachment:
+                set watch.restoring to true
+                set watch.player.currentTime to state.position_ms / 1000
+                set watch.mode.value to state.mode
+                set watch.mode.disabled to false
+                echo_watch_apply(watch and state)
+                return state
+            set query.action to "start"
+            set query.identity to window.crypto.randomUUID()
+            set query.revision to state.revision
+            set query.attachment to file.attachment
+            set query.duration_ms to Math.round(watch.player.duration * 1000)
+            set query.mode to watch.mode.value
+            set watch.mode.disabled to false
+            return echo_api("/api/watch-party" and query).then(given result:
+                echo_watch_apply(watch and result)
+            )
+        )
+        echo_catch(ready)
+    )
+    watch.player.addEventListener("play" and given ignored:
+        echo_watch_change(watch and "play")
+    )
+    watch.player.addEventListener("pause" and given ignored:
+        if watch.state && watch.state.playing && not watch.buffering && not watch.player.ended:
+            echo_watch_change(watch and "pause")
+    )
+    watch.player.addEventListener("seeked" and given ignored:
+        if watch.restoring:
+            set watch.restoring to false
+            return 0
+        echo_watch_change(watch and "seek")
+    )
+    watch.player.addEventListener("ended" and given ignored:
+        set watch.note.textContent to "Playback finished. Pause and discuss when you’re ready; Echo’s processed position shows any remaining footage."
+    )
+    set watch.timer to window.setInterval(given ignored:
+        if window.echoSession != watch.session:
+            watch.player.pause()
+            window.clearInterval(watch.timer)
+            watch.panel.remove()
+            URL.revokeObjectURL(watch.url)
+            set window.echoWatch to null
+            return 0
+        if not watch.state:
+            return 0
+        set query to Object()
+        set query.session to watch.session
+        set query.action to "status"
+        set polled to echo_api("/api/watch-party" and query).then(given result:
+            echo_watch_apply(watch and result)
+            if result.status == "active" && not result.playing && result.mode == "checkpoints" && result.first_speaker == "echo" && result.reason == "We reached the agreed checkpoint; I will start the discussion." && not watch.analysing:
+                set watch.analysing to true
+                set recovery to Object()
+                set recovery.session to watch.session
+                set recovered to echo_api("/api/watch-analyse" and recovery).then(given accepted:
+                    set watch.analysing to false
+                    if accepted.status == "accepted" && window.echoSession == watch.session:
+                        set window.echoRun to accepted.run
+                        window.localStorage.setItem("echo.run" and accepted.run)
+                        echo_busy(true)
+                        echo_history()
+                        echo_poll()
+                )
+                set recovery_failed to get_list(recovered and "catch")
+                recovery_failed.call(recovered and given error:
+                    set watch.analysing to false
+                    set watch.note.textContent to "Checkpoint discussion is waiting to reconnect."
+                )
+            if result.status == "active" && result.playing && (not watch.player.paused || watch.buffering || watch.player.ended):
+                set ticked to echo_watch_change(watch and "tick").then(given saved:
+                    if not saved || saved.status != "active" || not saved.playing || watch.analysing:
+                        return null
+                    set gap to saved.position_ms - (saved.analysed_through_ms || 0)
+                    if gap >= 10000 && not watch.player.paused:
+                        set watch.buffering to true
+                        watch.player.pause()
+                        set watch.note.textContent to "Waiting for Echo to catch up…"
+                    if saved.mode == "checkpoints" && saved.position_ms >= (watch.nextCheckpoint || 300000) && not watch.player.paused:
+                        set watch.buffering to true
+                        watch.player.pause()
+                    if gap <= 0 || (gap < 1000 && not watch.player.ended):
+                        if watch.buffering && saved.mode != "checkpoints" && not watch.player.ended:
+                            set watch.buffering to false
+                            set resumed to watch.player.play()
+                            echo_catch(resumed)
+                        if watch.player.ended:
+                            echo_watch_change(watch and "pause")
+                        if saved.mode != "checkpoints":
+                            return null
+                    set watch.analysing to true
+                    set request to Object()
+                    set request.session to watch.session
+                    set analysis to echo_api("/api/watch-analyse" and request).then(given accepted:
+                        set watch.analysing to false
+                        if accepted.status == "accepted" && window.echoSession == watch.session:
+                            set window.echoRun to accepted.run
+                            window.localStorage.setItem("echo.run" and accepted.run)
+                            echo_busy(true)
+                            echo_history()
+                            echo_poll()
+                        if accepted.status == "watch-analysis-stopped":
+                            watch.player.pause()
+                            set watch.note.textContent to "Echo’s analysis stopped. Discuss or retry before continuing."
+                        return accepted
+                    )
+                    set failed to get_list(analysis and "catch")
+                    return failed.call(analysis and given error:
+                        set watch.analysing to false
+                        watch.player.pause()
+                        set watch.note.textContent to "Analysis paused: " + String(error)
+                        return null
+                    )
+                )
+                echo_catch(ticked)
+        )
+        echo_catch(polled)
+    and 2000)
+    return 0

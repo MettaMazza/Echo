@@ -1,0 +1,132 @@
+import "../providers/json_access"
+
+# Darwin arm64 sysctl integer ABI. Unknown names and unexpected widths remain
+# unavailable; a failed query must never become a zero measurement.
+define hud_machine_integer with library as Int and name as Str returning Str:
+    set query to ep_dlsym(library and "sysctlbyname")
+    set value to [0]
+    set size to [8]
+    if query equals 0 or else ep_dlcall5(query and str_to_ptr(name) and get_list_data_ptr(value) and get_list_data_ptr(size) and 0 and 0) is not equal to 0:
+        return "{\"status\":\"unavailable\",\"source\":\"sysctlbyname\"}"
+    if get_list(size and 0) is not equal to 4 and get_list(size and 0) is not equal to 8:
+        return "{\"status\":\"unsupported-width\",\"source\":\"sysctlbyname\"}"
+    set result to concat("{\"status\":\"measured\",\"source\":\"sysctlbyname\",\"key\":" and provider_quote(name))
+    set result to concat(result and concat(",\"value\":" and int_to_string(get_list(value and 0))))
+    return concat(result and concat(",\"sampled_unix_ms\":" and concat(int_to_string(ep_time_now_ms()) and "}")))
+
+# Installed Darwin SDK statfs64 is 2168 bytes (271 words) on arm64.
+# Unlike statvfs, its block counters are 64-bit, including large volumes.
+# Report raw counts and unit size rather than risking multiplication overflow.
+define hud_machine_volume with library as Int and path as Str returning Str:
+    if string_length(path) equals 0:
+        return "{\"status\":\"unavailable\",\"reason\":\"Archive has no filesystem path.\"}"
+    set query to ep_dlsym(library and "statfs64")
+    set values to create_list()
+    set index to 0
+    repeat while index < 271:
+        set added to append_list(values and 0)
+        set index to index + 1
+    if query equals 0 or else ep_dlcall2(query and str_to_ptr(path) and get_list_data_ptr(values)) is not equal to 0:
+        return "{\"status\":\"unavailable\",\"source\":\"statfs64\",\"reason\":\"Archive filesystem query failed.\"}"
+    set result to concat("{\"status\":\"measured\",\"source\":\"statfs64\",\"archive_path\":" and provider_quote(path))
+    set result to concat(result and concat(",\"block_unit_bytes\":" and int_to_string(get_list(values and 0) modulo 4294967296)))
+    set result to concat(result and concat(",\"total_blocks\":" and int_to_string(get_list(values and 1))))
+    set result to concat(result and concat(",\"free_blocks\":" and int_to_string(get_list(values and 2))))
+    set result to concat(result and concat(",\"available_blocks\":" and int_to_string(get_list(values and 3))))
+    set result to concat(result and concat(",\"flags\":" and int_to_string(get_list(values and 8) modulo 4294967296)))
+    return concat(result and concat(",\"sampled_unix_ms\":" and concat(int_to_string(ep_time_now_ms()) and "}")))
+
+# Read a Darwin natural_t without combining adjacent 32-bit fields.
+define hud_machine_u32 with library as Int and pointer as Int returning Int:
+    set value to [0]
+    set copied to ep_dlcall3(ep_dlsym(library and "memcpy") and get_list_data_ptr(value) and pointer and 4)
+    return get_list(value and 0)
+
+# HOST_CPU_LOAD_INFO supplies cumulative unsigned ticks. Take an explicit
+# short sample rather than describing since-boot averages as current activity.
+define hud_machine_cpu with library as Int and host as Int returning Str:
+    set query to ep_dlsym(library and "host_statistics")
+    set sleep to ep_dlsym(library and "usleep")
+    if query equals 0 or else sleep equals 0:
+        return "{\"status\":\"unavailable\",\"source\":\"host_statistics\"}"
+    set earlier to [0,0]
+    set later to [0,0]
+    set count to [4]
+    set started to ep_time_now_ms()
+    if ep_dlcall4(query and host and 3 and get_list_data_ptr(earlier) and get_list_data_ptr(count)) is not equal to 0 or else get_list(count and 0) is not equal to 4:
+        return "{\"status\":\"unavailable\",\"source\":\"host_statistics\"}"
+    set waited to ep_dlcall1(sleep and 100000)
+    if waited is not equal to 0 or else ep_dlcall4(query and host and 3 and get_list_data_ptr(later) and get_list_data_ptr(count)) is not equal to 0 or else get_list(count and 0) is not equal to 4:
+        return "{\"status\":\"unavailable\",\"source\":\"host_statistics\"}"
+    set finished to ep_time_now_ms()
+    set total to 0
+    set idle to 0
+    set result to "{\"status\":\"measured\",\"source\":\"host_statistics HOST_CPU_LOAD_INFO\",\"tick_deltas\":["
+    set index to 0
+    repeat while index < 4:
+        set previous to hud_machine_u32(library and get_list_data_ptr(earlier) + index * 4)
+        set current to hud_machine_u32(library and get_list_data_ptr(later) + index * 4)
+        set delta to (current - previous + 4294967296) modulo 4294967296
+        if index > 0:
+            set result to concat(result and ",")
+        set result to concat(result and int_to_string(delta))
+        set total to total + delta
+        if index equals 2:
+            set idle to delta
+        set index to index + 1
+    if total equals 0 or else finished <= started:
+        return "{\"status\":\"insufficient-sample\",\"source\":\"host_statistics\"}"
+    set result to concat(result and "],\"tick_order\":[\"user\",\"system\",\"idle\",\"nice\"]")
+    set result to concat(result and concat(",\"busy_basis_points\":" and int_to_string((total - idle) * 10000 / total)))
+    set result to concat(result and concat(",\"started_unix_ms\":" and int_to_string(started)))
+    return concat(result and concat(",\"finished_unix_ms\":" and concat(int_to_string(finished) and "}")))
+
+define hud_machine_vm with library as Int and host as Int returning Str:
+    set query to ep_dlsym(library and "host_statistics64")
+    set values to create_list()
+    set index to 0
+    repeat while index < 19:
+        set added to append_list(values and 0)
+        set index to index + 1
+    # SDK vm_statistics64_data_t is 152 bytes, count is in 32-bit integers.
+    set count to [38]
+    if query equals 0 or else ep_dlcall4(query and host and 4 and get_list_data_ptr(values) and get_list_data_ptr(count)) is not equal to 0 or else get_list(count and 0) is not equal to 38:
+        return "{\"status\":\"unavailable\",\"source\":\"host_statistics64\"}"
+    set result to "{\"status\":\"measured\",\"source\":\"host_statistics64 HOST_VM_INFO64\",\"unit\":\"pages\""
+    for each entry in [["free","0"],["active","4"],["inactive","8"],["wired","12"],["purgeable","88"],["speculative","92"],["compressor","128"],["throttled","132"],["file_backed","136"],["anonymous","140"]]:
+        set result to concat(result and concat("," and concat(provider_quote(get_list(entry and 0)) and ":")))
+        set result to concat(result and int_to_string(hud_machine_u32(library and get_list_data_ptr(values) + string_to_int(get_list(entry and 1)))))
+    return concat(result and concat(",\"sampled_unix_ms\":" and concat(int_to_string(ep_time_now_ms()) and "}")))
+
+# Balance the send right returned by mach_host_self on every successful open.
+define hud_machine_host with library as Int returning Str:
+    set acquire to ep_dlsym(library and "mach_host_self")
+    set release to ep_dlsym(library and "mach_port_deallocate")
+    set task to ep_dlsym(library and "mach_task_self_")
+    if acquire equals 0 or else release equals 0 or else task equals 0:
+        return "{\"status\":\"unavailable\",\"source\":\"Mach host port\"}"
+    set host to ep_dlcall0(acquire)
+    if host equals 0:
+        return "{\"status\":\"unavailable\",\"source\":\"Mach host port\"}"
+    set result to concat("{\"cpu\":" and hud_machine_cpu(library and host))
+    set result to concat(result and concat(",\"virtual_memory\":" and hud_machine_vm(library and host)))
+    set released to ep_dlcall2(release and hud_machine_u32(library and task) and host)
+    if released is not equal to 0:
+        return "{\"status\":\"host-port-release-failed\"}"
+    return concat(result and "}")
+
+define hud_machine with path as Str returning Str:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "{\"status\":\"unavailable\",\"reason\":\"Native machine telemetry is unavailable.\"}"
+    set result to "{\"status\":\"snapshot\",\"platform\":\"Darwin arm64\",\"measurements\":{"
+    set first to 1
+    for each key in ["hw.memsize","hw.logicalcpu","hw.physicalcpu","hw.pagesize","vm.page_free_count","kern.memorystatus_vm_pressure_level"]:
+        if first equals 0:
+            set result to concat(result and ",")
+        set first to 0
+        set result to concat(result and concat(provider_quote(key) and concat(":" and hud_machine_integer(library and key))))
+    set result to concat(result and concat("},\"archive_filesystem\":" and hud_machine_volume(library and path)))
+    set result to concat(result and concat(",\"host_activity\":" and hud_machine_host(library)))
+    set closed to ep_dlclose(library)
+    return concat(result and ",\"memory_note\":\"Page categories overlap; speculative pages are included in free pages. Free pages are not total available memory. Pressure level is the native kernel code, not a percentage.\",\"remaining_telemetry\":{\"gpu_utilization\":\"unavailable\",\"model_residency\":\"unavailable\",\"cache_usage\":\"unavailable\",\"other_volumes\":\"unavailable\"},\"service_note\":\"This sample proves this host query ran; it does not prove provider or other service health. See scoped work and context views for their own source records.\"}")

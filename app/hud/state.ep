@@ -1,0 +1,190 @@
+import "../tools/trace_tools"
+import "../web/work_status"
+import "../security/group_speakers"
+import "../context/clock"
+import "../agent/provider_profile"
+import "../providers/status"
+import "../jobs/task_checklist"
+import "../interaction/questions"
+import "../interaction/autonomy"
+import "../rights/reviews"
+import "machine"
+
+# Source records retain their own dates. Observed time means this snapshot was
+# read now, not that an old count, error or membership event happened now.
+define hud_wrap with section as Str and data as Str returning Str:
+    if provider_json_tokens(data) equals 0:
+        return "{\"status\":\"archive-error\",\"recovery\":\"Retry the state read; no malformed record was presented as current state.\"}"
+    return concat("{\"status\":\"found\",\"section\":" and concat(provider_quote(section) and concat(",\"observed_unix_ms\":" and concat(int_to_string(ep_time_now_ms()) and concat(",\"freshness\":\"snapshot; source dates remain authoritative\",\"data\":" and concat(data and "}"))))))
+
+define hud_interaction with database as Int and run as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.session,r.objective_event,r.last_event,r.state,a.device,a.principal,a.role FROM echo_runs r JOIN echo_run_authority a ON a.run=r.run WHERE r.run=?;" and [run]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "{\"status\":\"unavailable\"}"
+    set result to history_tool_row(row and ["session","objective_event","latest_event","run_state","device","authenticated_principal","role_at_admission"])
+    set speaker to group_event_speaker(database and archive_list_text(row and 1) and archive_list_text(row and 2))
+    if string_length(speaker) equals 0:
+        set speaker to "null"
+    set incoming to history_collect_one(checkpoint_prepare(database and "WITH latest_source AS (SELECT source.event,source.session FROM echo_events source JOIN echo_runs r ON r.run=?1 AND r.session=source.session WHERE source.event=r.objective_event OR (source.kind='guidance_received' AND json_valid(source.payload) AND json_extract(source.payload,'$.run_id')=r.run) ORDER BY source.sequence DESC LIMIT 1) SELECT e.event,e.occurred,e.digest,e.payload FROM latest_source source JOIN echo_events e ON e.event=source.event||':environment' AND e.session=source.session WHERE e.kind='message_environment' AND json_valid(e.payload) AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.source_event')=source.event;" and [run]))
+    set checklist to task_checklist_read(database and run)
+    if string_length(checklist) equals 0:
+        set checklist to "null"
+    set result to substring(result and 0 and string_length(result) - 1)
+    set result to concat(result and concat(",\"effective_authority\":" and run_authority_observation(database and run)))
+    set result to concat(result and concat(",\"shared_speaker\":" and speaker))
+    set result to concat(result and concat(",\"latest_message_environment\":" and history_tool_row(incoming and ["event","received","digest","original_record"])))
+    set result to concat(result and ",\"environment_note\":\"Shared platform/server/channel come from admission records. Browser/device/app values are client hints. Missing historical environment remains unknown; no geographic location is inferred.\"")
+    set result to concat(result and concat(",\"task_checklist\":" and checklist))
+    set result to concat(result and concat(",\"pending_questions\":" and questions_pending(database and run)))
+    set mode to history_collect_one(checkpoint_prepare(database and "SELECT event,kind,occurred,digest,payload FROM echo_events WHERE kind IN ('autonomy_enabled','autonomy_disabled') AND json_valid(payload) AND json_extract(payload,'$.run_id')=? ORDER BY sequence DESC LIMIT 1;" and [run]))
+    set result to concat(result and concat(",\"autonomy_receipt\":" and history_tool_row(mode and ["event","kind","occurred","digest","original_record"])))
+    set result to concat(result and concat(",\"autonomy_enabled\":" and int_to_string(autonomy_enabled(database and run))))
+    return concat(result and ",\"capability_source\":\"Current tool catalog and per-call authority; a displayed role does not grant a capability.\"}")
+
+define hud_context with database as Int and run as Str returning Str:
+    set current to agent_run_read(database and run)
+    set profile to provider_json_tokens(agent_provider_read(database and run))
+    set result to concat("{\"status\":\"observed\",\"model\":" and provider_quote(provider_value(profile and provider_member(profile and 0 and "model"))))
+    set result to concat(result and concat(",\"adapter\":" and provider_quote(provider_value(profile and provider_member(profile and 0 and "adapter")))))
+    set result to concat(result and concat(",\"compaction\":" and web_run_compaction(database and run)))
+    set values to [run,archive_list_text(current and 0)]
+    set preflight to history_collect_one(checkpoint_prepare(database and "SELECT p.event,p.occurred,p.digest,json_extract(p.payload,'$.decision'),json_extract(p.payload,'$.responses[2].body'),r.event FROM echo_events r JOIN echo_events p ON p.event=r.event||':preflight' AND p.session=r.session AND p.kind='provider_preflight' WHERE r.session=?2 AND r.kind='model_request' AND json_valid(r.payload) AND json_extract(r.payload,'$.run_id')=?1 ORDER BY r.sequence DESC LIMIT 1;" and values))
+    set result to concat(result and concat(",\"last_count_receipt\":" and history_tool_row(preflight and ["event","occurred","digest","admission_decision","provider_count_body","model_request_event"])))
+    set checkpoint to history_collect_one(checkpoint_prepare(database and "SELECT a.checkpoint,c.source_end,c.source_digest FROM echo_active_context a JOIN echo_checkpoints c ON c.identity=a.checkpoint WHERE a.session=?;" and [archive_list_text(current and 0)]))
+    set result to concat(result and concat(",\"active_checkpoint\":" and history_tool_row(checkpoint and ["checkpoint","source_end","source_digest"])))
+    return concat(result and ",\"count_freshness\":\"The receipt belongs to its exact archived request, not a token count for unseen future input. Missing counts are unknown, never zero.\"}")
+
+# Includes original failure feedback and recovery events. A later event is not
+# automatically classified as a verified fix; the original remains inspectable.
+define hud_incidents with database as Int and run as Str and after as Int returning Str:
+    set scope to trace_scope(database and run)
+    if not (archive_list_text(scope and 0) equals "found"):
+        return "{\"status\":\"not-authorized\"}"
+    set query to concat(archive_list_text(scope and 2) and "SELECT e.event,e.kind,e.occurred,e.digest,e.sequence,e.payload FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary WHERE e.sequence>CAST(?2 AS INTEGER) AND json_valid(e.payload) AND (e.kind IN ('agent_failure','agent_recovered','worker_recovery') OR (e.kind='tool_result' AND json_type(e.payload,'$.result.feedback')='object')) ORDER BY e.sequence LIMIT 1;")
+    set row to history_collect_one(checkpoint_prepare(database and query and [archive_list_text(scope and 1),int_to_string(after)]))
+    return history_tool_row(row and ["event","kind","occurred","digest","next_after","original_record"])
+
+# The audience is the immutable conversation revision, never a directory of
+# the speaker's other groups. Paging stays stable when membership later changes.
+define hud_community with database as Int and run as Str and after as Int returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT g.identity,g.platform,g.server,g.channel,s.revision FROM echo_runs r JOIN echo_group_sessions s ON s.session=r.session JOIN echo_groups g ON g.identity=s.group_id WHERE r.run=?;" and [run]))
+    if archive_list_text(row and 0) equals "end":
+        return "{\"status\":\"end\",\"scope\":\"private-conversation\",\"availability\":\"No shared audience is attached to this conversation.\"}"
+    if not (archive_list_text(row and 0) equals "found"):
+        return "{\"status\":\"archive-error\"}"
+    set values to [archive_list_text(row and 1),archive_list_text(row and 5),int_to_string(after)]
+    set member to history_collect_one(checkpoint_prepare(database and "WITH members AS (SELECT principal,ROW_NUMBER() OVER (ORDER BY principal) AS cursor FROM echo_group_audiences WHERE group_id=?1 AND revision=CAST(?2 AS INTEGER)) SELECT a.principal,a.cursor,m.identity,m.revision,m.state FROM members a JOIN echo_group_membership m ON m.group_id=?1 AND m.principal=a.principal AND m.revision=(SELECT MAX(n.revision) FROM echo_group_membership n WHERE n.group_id=m.group_id AND n.principal=m.principal AND n.revision<=CAST(?2 AS INTEGER)) WHERE a.cursor>CAST(?3 AS INTEGER) ORDER BY a.cursor LIMIT 1;" and values))
+    set result to history_tool_row(member and ["principal","next_after","membership_record","membership_revision","state_at_conversation_revision"])
+    set result to substring(result and 0 and string_length(result) - 1)
+    set result to concat(result and concat(",\"conversation_audience\":" and history_tool_row(row and ["group","platform","server","channel","revision"])))
+    return concat(result and ",\"freshness\":\"Immutable audience at this conversation revision; membership records do not contain timestamps. Current access is checked separately.\",\"connector_activity\":\"Unavailable: channel topics, mentions and moderation feeds are not connected to this view.\"}")
+
+# This view is observation only: it cannot create disclosure/consent receipts.
+# Never reuse a principal-wide proposal lookup as a shared audience selector.
+define hud_rights with database as Int and run as Str and after as Int returning Str:
+    if run_authority_allows(database and run and "admin") equals 0 or else group_privileged_audience_allows(database and run) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT identity,created,rowid FROM echo_protected_proposals WHERE run=?1 AND rowid>CAST(?2 AS INTEGER) ORDER BY rowid LIMIT 1;" and [run,int_to_string(after)]))
+    set result to history_tool_row(row and ["proposal","created","next_after"])
+    if archive_list_text(row and 0) equals "found":
+        set proposal to protected_proposal_read(database and run and archive_list_text(row and 1))
+        if not (archive_list_text(proposal and 0) equals "found") or else not (archive_list_text(proposal and 3) equals run):
+            return "{\"status\":\"proposal-integrity-or-authority-failed\"}"
+        set result to substring(result and 0 and string_length(result) - 1)
+        set result to concat(result and concat(",\"manifest\":" and provider_quote(archive_list_text(proposal and 1))))
+        set result to concat(result and concat(",\"manifest_digest\":" and provider_quote(archive_list_text(proposal and 2))))
+        # Review evidence can originate in another conversation owned by the
+        # same principal. Do not carry that private text into this run's HUD.
+        set outside to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_protected_reviews WHERE proposal=?1 AND run<>?2;" and [archive_list_text(row and 1),run]))
+        set review to "{\"status\":\"unavailable-in-this-conversation\"}"
+        if archive_list_text(outside and 0) equals "found" and archive_list_text(outside and 1) equals "0":
+            set review to history_tool_row(protected_review_latest(database and run and archive_list_text(row and 1)) and ["revision","original_evidence"])
+        set result to concat(result and concat(",\"review\":" and concat(review and "}")))
+    set result to substring(result and 0 and string_length(result) - 1)
+    set result to concat(result and concat(",\"expected_charter_sha256\":" and provider_quote(charter_pinned_digest())))
+    return concat(result and ",\"charter_status\":\"Compiled expected identity; live controller charter not inspected by this view.\",\"controller_status\":\"Observer findings, active deployment, recovery and overdue reconciliation are unavailable until a scoped controller connection is verified.\",\"authority\":\"Inspection is not consent or execution approval.\"}")
+
+# No caller-supplied device, principal or scope is accepted. This is the model
+# entry point; the human endpoint must additionally authorize its own reader.
+define hud_read_snapshot with database as Int and run as Str and section as Str and after as Int returning Str:
+    if after < 0:
+        return "{\"status\":\"invalid-cursor\"}"
+    if run_authority_allows(database and run and "user") equals 0:
+        return "{\"status\":\"not-authorized\",\"recovery\":\"Open a current authorized conversation before inspecting its state.\"}"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.session,a.device FROM echo_runs r JOIN echo_run_authority a ON a.run=r.run WHERE r.run=?;" and [run]))
+    if not (archive_list_text(row and 0) equals "found") or else group_history_allows(database and archive_list_text(row and 1)) equals 0:
+        return "{\"status\":\"audience-history-unavailable\"}"
+    if section equals "interaction":
+        return hud_wrap(section and hud_interaction(database and run))
+    if section equals "context":
+        return hud_wrap(section and hud_context(database and run))
+    if section equals "work" or else section equals "schedules":
+        set family to "runs"
+        if section equals "schedules":
+            set family to "schedules"
+        return hud_wrap(section and web_work_status_snapshot(database and archive_list_text(row and 2) and archive_list_text(row and 1) and family and after))
+    if section equals "rights" or else section equals "machine":
+        if run_authority_allows(database and run and "admin") equals 0 or else group_privileged_audience_allows(database and run) equals 0:
+            return "{\"status\":\"not-authorized\"}"
+        if section equals "machine":
+            if after is not equal to 0:
+                return "{\"status\":\"invalid-cursor\"}"
+            set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+            return hud_wrap(section and concat("{\"archive_path\":" and concat(provider_quote(archive_list_text(location and 1)) and "}")))
+        return hud_wrap(section and hud_rights(database and run and after))
+    if section equals "community":
+        return hud_wrap(section and hud_community(database and run and after))
+    if section equals "incidents":
+        return hud_wrap(section and hud_incidents(database and run and after))
+    return "{\"status\":\"unknown-section\",\"recovery\":\"Choose a section supported by the current HUD interface.\"}"
+
+define hud_read with database as Int and run as Str and section as Str and after as Int returning Str:
+    if sql_execute(database and "SAVEPOINT echo_hud_read;") is not equal to 0:
+        return "{\"status\":\"archive-error\"}"
+    set result to hud_read_snapshot(database and run and section and after)
+    if sql_execute(database and "RELEASE echo_hud_read;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK TO echo_hud_read;")
+        set ignored to sql_execute(database and "RELEASE echo_hud_read;")
+        return "{\"status\":\"archive-error\"}"
+    # Provider discovery happens after releasing the read snapshot. It must not
+    # hold the archive transaction open while waiting for an inference service.
+    set fields to provider_json_tokens(result)
+    if section equals "context" and provider_value(fields and provider_member(fields and 0 and "status")) equals "found" and run_authority_allows(database and run and "user") equals 1:
+        set provider to provider_status_read(agent_provider_read(database and run))
+        set current to agent_run_read(database and run)
+        if current equals 0 or else run_authority_allows(database and run and "user") equals 0 or else group_history_allows(database and archive_list_text(current and 0)) equals 0:
+            return "{\"status\":\"authorization-changed\"}"
+        set result to concat(substring(result and 0 and string_length(result) - 1) and concat(",\"live_provider\":" and concat(provider and "}")))
+    if section equals "machine" and provider_value(fields and provider_member(fields and 0 and "status")) equals "found":
+        set data to provider_member(fields and 0 and "data")
+        set sample to hud_machine(provider_value(fields and provider_member(fields and data and "archive_path")))
+        set current to agent_run_read(database and run)
+        if current equals 0 or else group_history_allows(database and archive_list_text(current and 0)) equals 0:
+            return "{\"status\":\"authorization-changed\"}"
+        if run_authority_allows(database and run and "admin") equals 0 or else group_privileged_audience_allows(database and run) equals 0:
+            return "{\"status\":\"authorization-changed\"}"
+        set result to hud_wrap(section and sample)
+    return result
+
+# A human reader is checked independently of the initiating speaker. Knowing a
+# run ID or being an administrator does not select another person's private HUD.
+# Resolve linked private ownership through the same gate as ordinary history.
+define hud_read_for_device with database as Int and device as Str and run as Str and section as Str and after as Int returning Str:
+    if principal_device_active(database and device) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    if section equals "rights" or else section equals "machine":
+        set role to principal_role(database and principal_for_device(database and device))
+        if not (role equals "admin" or else role equals "steward"):
+            return "{\"status\":\"not-authorized\"}"
+    set owner to web_account_resource_device(database and device and "run" and run)
+    if web_shared_run_read_allowed(database and owner and run) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set result to hud_read(database and run and section and after)
+    # Discovery can wait on a service; revocation during that wait must win.
+    if principal_device_active(database and device) equals 0 or else not (web_account_resource_device(database and device and "run" and run) equals owner) or else web_shared_run_read_allowed(database and owner and run) equals 0:
+        return "{\"status\":\"authorization-changed\"}"
+    if section equals "rights" or else section equals "machine":
+        set role to principal_role(database and principal_for_device(database and device))
+        if not (role equals "admin" or else role equals "steward"):
+            return "{\"status\":\"authorization-changed\"}"
+    return result

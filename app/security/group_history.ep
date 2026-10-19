@@ -1,4 +1,5 @@
 import "tool_policy"
+import "data_platform"
 
 # A shared privileged result can be repeated in later replies, recaps and tool
 # arguments. Check the complete source scope before exposing any derived text;
@@ -9,6 +10,25 @@ define group_history_allows with database as Int and session as Str returning In
     if archive_list_text(installed and 0) equals "end":
         return 1
     if not (archive_list_text(installed and 0) equals "found"):
+        return 0
+    # Old selected copies may predate the platform boundary. Quarantine the
+    # whole shared history if it contains such a copy; later replies/recaps can
+    # repeat its contents, so hiding only the original record is insufficient.
+    set imports to checkpoint_prepare(database and concat(session_scope_sql() and "SELECT e.event FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary WHERE e.kind='source_import';") and [session])
+    if imports equals 0:
+        return 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(imports)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(imports)
+            return 0
+        set original to concat(ptr_to_str(ep_sqlite3_column_text(imports and 0)) and "")
+        if data_platform_allows(database and original and session) equals 0:
+            set closed to ep_sqlite3_finalize(imports)
+            return 0
+    if ep_sqlite3_finalize(imports) is not equal to 0:
         return 0
     set values to [session]
     set query to concat(session_scope_sql() and "SELECT DISTINCT g.run,json_extract(q.payload,'$.name') FROM scopes s JOIN echo_group_run_origins g ON g.session=s.session JOIN echo_tool_calls t ON t.run=g.run JOIN echo_events q ON q.event=t.request_event JOIN echo_events e ON e.event=t.result_event WHERE e.sequence<=s.boundary AND NOT (COALESCE(json_extract(e.payload,'$.result.stage'),'')='tool-dispatch' AND COALESCE(json_extract(e.payload,'$.result.effects'),'')='none' AND COALESCE(json_extract(e.payload,'$.result.status'),'') IN ('not-authorized','tool-unavailable'));")

@@ -7,6 +7,7 @@ import "source_reads"
 import "../archive/turn_attachments"
 import "../providers/registry"
 import "../security/group_speakers"
+import "../context/message_environment"
 
 define web_run_schema with database as Int returning Int:
     if agent_run_schema(database) is not equal to 0 or else checkpoint_schema(database) is not equal to 0:
@@ -49,6 +50,9 @@ define web_submit_owned_files with database as Int and device as Str and submiss
 # empty browser selection freezes the registered default, while its original
 # empty selection remains unchanged for idempotent retries after default changes.
 define web_submit_owned_provider with database as Int and device as Str and submission as Str and requested_session as Str and message as Str and attachments as List and provider_identity as Str returning List:
+    return web_submit_owned_environment(database and device and submission and requested_session and message and attachments and provider_identity and "")
+
+define web_submit_owned_environment with database as Int and device as Str and submission as Str and requested_session as Str and message as Str and attachments as List and provider_identity as Str and environment as Str returning List:
     if string_length(submission) equals 0 or else string_length(message) equals 0:
         return web_submit_result("invalid-request" and "" and "" and 0)
     if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
@@ -143,7 +147,10 @@ define web_submit_owned_provider with database as Int and device as Str and subm
                 return web_submit_abort(database and "database-error")
     if string_length(requested_session) is greater than 0:
         set title_values to create_list()
-        set added to append_list(title_values and message)
+        set display_title to message
+        if string_index_of(submission and "watch-segment:") equals 0:
+            set display_title to "Watching together"
+        set added to append_list(title_values and display_title)
         set added to append_list(title_values and session)
         set title_statement to checkpoint_prepare(database and "UPDATE echo_sessions SET title=?1 WHERE session=?2 AND NOT EXISTS(SELECT 1 FROM echo_runs WHERE session=?2) AND NOT EXISTS(SELECT 1 FROM echo_events WHERE session=?2 AND kind='session_title');" and title_values)
         if title_statement equals 0:
@@ -152,6 +159,8 @@ define web_submit_owned_provider with database as Int and device as Str and subm
             return web_submit_abort(database and "database-error")
     set event to concat(submission and ":user")
     if archive_append_pending(database and session and event and "user" and message and occurred) is not equal to 0 or else agent_run_create(database and submission and session and event) is not equal to 0:
+        return web_submit_abort(database and "database-error")
+    if message_environment_pending(database and session and submission and event and device and environment) is not equal to 0:
         return web_submit_abort(database and "database-error")
     if autonomy_is_command(message):
         if autonomy_start_pending(database and device and submission and concat(submission and ":auto-start") and autonomy_command_goal(message)) is not equal to 0:
@@ -208,7 +217,7 @@ define web_session_transcript_window with database as Int and session as Str and
     set added to append_list(values and session)
     set added to append_list(values and int_to_string(before))
     set added to append_list(values and int_to_string(amount))
-    set query to concat(session_scope_sql() and ", accepted(run,event,sequence,payload) AS (SELECT r.run,e.event,e.sequence,e.payload FROM scopes s JOIN echo_runs r ON r.session=s.session JOIN echo_events e ON e.event=r.last_event UNION ALL SELECT a.run,e.event,e.sequence,e.payload FROM accepted a JOIN echo_events e ON e.event=json_extract(CASE WHEN json_valid(a.payload) THEN a.payload ELSE '{}' END,'$.parent_event') WHERE e.sequence<a.sequence) SELECT * FROM (SELECT e.event,e.kind,e.payload,r.run,e.session,r.objective_event,e.sequence,(SELECT COALESCE(MAX(v.sequence),0) FROM echo_events v WHERE v.session=?1 AND v.kind IN ('user','assistant_final','source_import')) AS revision FROM scopes s JOIN echo_runs r ON r.session=s.session JOIN echo_events e ON r.objective_event=e.event OR (e.kind='assistant_final' AND EXISTS(SELECT 1 FROM accepted a WHERE a.run=r.run AND a.event=e.event)) WHERE e.sequence<=s.boundary AND e.event<>s.omit_user AND (CAST(?2 AS INTEGER)=0 OR e.sequence<CAST(?2 AS INTEGER)) UNION ALL SELECT e.event,e.kind,e.payload,'',e.session,'',e.sequence,(SELECT COALESCE(MAX(v.sequence),0) FROM echo_events v WHERE v.session=?1 AND v.kind IN ('user','assistant_final','source_import')) FROM scopes s JOIN echo_events e ON e.session=s.session WHERE e.kind='source_import' AND json_valid(e.payload) AND json_extract(e.payload,'$.origin')='explicit-reviewed-share' AND e.sequence<=s.boundary AND (CAST(?2 AS INTEGER)=0 OR e.sequence<CAST(?2 AS INTEGER)) ORDER BY sequence DESC LIMIT CAST(?3 AS INTEGER)) ORDER BY sequence;")
+    set query to concat(session_scope_sql() and ", accepted(run,event,sequence,payload) AS (SELECT r.run,e.event,e.sequence,e.payload FROM scopes s JOIN echo_runs r ON r.session=s.session JOIN echo_events e ON e.event=r.last_event UNION ALL SELECT a.run,e.event,e.sequence,e.payload FROM accepted a JOIN echo_events e ON e.event=json_extract(CASE WHEN json_valid(a.payload) THEN a.payload ELSE '{}' END,'$.parent_event') WHERE e.sequence<a.sequence) SELECT * FROM (SELECT e.event,e.kind,e.payload,r.run,e.session,r.objective_event,e.sequence,(SELECT COALESCE(MAX(v.sequence),0) FROM echo_events v WHERE v.session=?1 AND v.kind IN ('user','assistant_final','assistant_tool_calls','source_import')) AS revision FROM scopes s JOIN echo_runs r ON r.session=s.session JOIN echo_events e ON r.objective_event=e.event OR ((e.kind='assistant_final' OR (e.kind='assistant_tool_calls' AND json_valid(e.payload) AND length(trim(json_extract(e.payload,'$.content')))>0)) AND EXISTS(SELECT 1 FROM accepted a WHERE a.run=r.run AND a.event=e.event)) WHERE e.sequence<=s.boundary AND e.event<>s.omit_user AND (CAST(?2 AS INTEGER)=0 OR e.sequence<CAST(?2 AS INTEGER)) UNION ALL SELECT e.event,e.kind,e.payload,'',e.session,'',e.sequence,(SELECT COALESCE(MAX(v.sequence),0) FROM echo_events v WHERE v.session=?1 AND v.kind IN ('user','assistant_final','assistant_tool_calls','source_import')) FROM scopes s JOIN echo_events e ON e.session=s.session WHERE e.kind='source_import' AND json_valid(e.payload) AND json_extract(e.payload,'$.origin')='explicit-reviewed-share' AND e.sequence<=s.boundary AND (CAST(?2 AS INTEGER)=0 OR e.sequence<CAST(?2 AS INTEGER)) ORDER BY sequence DESC LIMIT CAST(?3 AS INTEGER)) ORDER BY sequence;")
     set statement to checkpoint_prepare(database and query and values)
     if statement equals 0:
         return "{\"status\":\"database-error\"}"
@@ -234,7 +243,7 @@ define web_session_transcript_window with database as Int and session as Str and
         set kind to ptr_to_str(ep_sqlite3_column_text(statement and 1))
         set content to ptr_to_str(ep_sqlite3_column_text(statement and 2))
         set role to "user"
-        if kind equals "assistant_final" or else kind equals "source_import":
+        if kind equals "assistant_final" or else kind equals "assistant_tool_calls" or else kind equals "source_import":
             set tokens to provider_json_tokens(content)
             if tokens equals 0:
                 set closed to ep_sqlite3_finalize(statement)
@@ -247,6 +256,8 @@ define web_session_transcript_window with database as Int and session as Str and
             set added to builder_append(builder and ",")
         set added to builder_append(builder and concat("{\"event\":" and provider_quote(event)))
         set added to builder_append(builder and concat(",\"role\":" and provider_quote(role)))
+        if kind equals "assistant_tool_calls":
+            set added to builder_append(builder and ",\"interim\":true")
         set added to builder_append(builder and concat(",\"run\":" and provider_quote(source_run)))
         set added to builder_append(builder and concat(",\"source_session\":" and provider_quote(source_session)))
         set added to builder_append(builder and concat(",\"user_event\":" and provider_quote(source_objective)))
@@ -278,13 +289,13 @@ define web_session_transcript_window with database as Int and session as Str and
         set added to builder_append(builder and concat(",\"text\":" and provider_quote(content)))
         set reads to "[]"
         set research to "[]"
-        if role equals "assistant":
+        if kind equals "assistant_final":
             set reads to web_run_source_reads(database and source_session and source_run)
             set research to web_run_research_sources(database and source_session and source_run)
             if string_length(reads) equals 0 or else string_length(research) equals 0:
                 set closed to ep_sqlite3_finalize(statement)
                 return "{\"status\":\"database-error\"}"
-        if role equals "assistant":
+        if kind equals "assistant_final":
             set sources to web_message_audio(database and source_session and source_run and event)
         set added to builder_append(builder and concat(",\"attachments\":" and sources))
         set added to builder_append(builder and concat(",\"research_sources\":" and research))

@@ -165,6 +165,10 @@ define echo_api with path and payload:
     set setter to get_list(Reflect and "set")
     setter.call(Reflect and headers and "Content-Type" and "application/json")
     setter.call(Reflect and headers and "X-Echo-Token" and window.echoToken)
+    set surface to "browser"
+    if window.matchMedia && window.matchMedia("(display-mode: standalone)").matches:
+        set surface to "standalone-web-app"
+    setter.call(Reflect and headers and "X-Echo-Client-Surface" and surface)
     set options.headers to headers
     set options.body to JSON.stringify(payload)
     return window.fetch(path and options).then(given response:
@@ -914,24 +918,30 @@ define echo_render_message with message:
         set label.textContent to "Shared source"
     else:
         set label.textContent to "Echo"
+        if message.interim:
+            set label.textContent to "Echo · update"
     set text to document.createElement("div")
     set text.className to "message-text"
     set text.textContent to message.text
+    if message.role == "user" && String(message.event || "").startsWith("watch-segment:"):
+        set label.textContent to "Watching together"
+        set text.textContent to "Echo is processing the next played segment."
     if message.role == "assistant":
         echo_format_response(text and message.text)
-    if message.role == "assistant" && message.run:
+    if message.role == "assistant" && message.run && not message.interim:
         article.appendChild(echo_thinking_panel(message.run))
     article.appendChild(label)
     article.appendChild(text)
     article.appendChild(echo_copy_message(message))
-    article.appendChild(echo_share_button(message))
-    if message.role == "assistant":
+    if not message.interim:
+        article.appendChild(echo_share_button(message))
+    if message.role == "assistant" && not message.interim:
         if not window.echoGroup:
             article.appendChild(echo_branch_button(message))
             article.appendChild(echo_regenerate_button(message))
         if not window.echoGroup || window.echoGroupWritable:
             article.appendChild(echo_speak_button(message and article))
-    else if message.role == "user" && not window.echoGroup:
+    else if message.role == "user" && not window.echoGroup && not String(message.event || "").startsWith("watch-segment:"):
         article.appendChild(echo_edit_button(message))
     echo_message_attachments(article and message)
     if message.research_sources && message.research_sources.length > 0:
@@ -963,20 +973,46 @@ define echo_message_attachments with article and message:
         article.echoAttachments.push(file.attachment)
     return 0
 
-# Commit a batch without disconnecting retained messages or their media.
+# History responses are windows, not deletion lists. Keep already loaded rows.
+# Replace received streaming text only when its exact saved event is connected.
 define echo_commit_messages with transcript and nodes and before:
-    if before == "0":
-        for each child in get_list(Array and "from").call(Array and transcript.children):
-            if not nodes.includes(child):
-                set player to child.querySelector("audio")
-                if not player || player.paused:
-                    child.remove()
-    set reference to transcript.firstChild
-    for each node in nodes:
-        if node.parentNode == transcript:
-            set reference to node.nextSibling
-        else:
+    set reference to null
+    if before != "0":
+        set reference to transcript.firstChild
+    for each node in get_list(Array and "from").call(Array and nodes).reverse():
+        if node.parentNode != transcript:
             transcript.insertBefore(node and reference)
+        set reference to node
+    for each node in nodes:
+        for each child in get_list(Array and "from").call(Array and transcript.children):
+            if child.echoPendingEvent && child.echoPendingEvent == node.echoEvent:
+                transcript.insertBefore(node and child)
+                child.remove()
+    return 0
+
+# A generation can finish before the asynchronous history request returns.
+# Retain its received text without claiming that it has been saved yet.
+define echo_hold_draft:
+    set text to document.getElementById("draft-text")
+    if window.echoDraftGeneration && text.textContent:
+        set event to window.echoDraftGeneration + ":response"
+        set transcript to document.getElementById("transcript")
+        for each existing in transcript.children:
+            if existing.echoEvent == event || existing.echoPendingEvent == event:
+                echo_clear_draft()
+                return 0
+        set message to Object()
+        set message.event to "pending:" + event
+        set message.role to "assistant"
+        set message.text to window.echoDraftText
+        set message.interim to true
+        set message.attachments to Array()
+        set node to echo_render_message(message)
+        set node.echoPendingEvent to event
+        set label to node.querySelector("strong")
+        set label.textContent to "Echo · received response"
+        transcript.appendChild(node)
+    echo_clear_draft()
     return 0
 
 define echo_history_page with before and marker:
@@ -1028,10 +1064,14 @@ define echo_history_render with result and before and marker:
         if before != "0":
             set window.echoFollowLatest to false
         echo_commit_messages(transcript and batch and before)
+        for each node in batch:
+            if window.echoDraftGeneration && node.echoEvent == window.echoDraftGeneration + ":response":
+                echo_clear_draft()
         if before == "0" && result.revision:
             set window.echoRenderedRevision to window.echoSession + ":" + result.revision
-        set window.echoHistoryCursor to result.next_before
-        set older.hidden to not result.older_possible
+        if not window.echoHistoryCursor || window.echoHistoryCursor == "0" || (Number(result.next_before) > 0 && Number(result.next_before) < Number(window.echoHistoryCursor)):
+            set window.echoHistoryCursor to result.next_before
+            set older.hidden to not result.older_possible
         set older.disabled to false
         set welcome.hidden to transcript.childElementCount > 0
         set session_label.textContent to "Current conversation"
@@ -1109,6 +1149,8 @@ define echo_history:
     if window.echoTranscriptSession != window.echoSession || window.echoTranscriptWritable != window.echoGroupWritable:
         set transcript to document.getElementById("transcript")
         set transcript.textContent to ""
+        set window.echoHistoryCursor to "0"
+        echo_clear_draft()
         set window.echoTranscriptSession to window.echoSession
         set window.echoTranscriptWritable to window.echoGroupWritable
         echo_math_cancel_all()
@@ -1381,8 +1423,9 @@ define echo_poll:
         if result.status != "found":
             return Promise.reject(echo_failure(result))
         echo_interaction_render(result)
-        if result.autonomy && window.echoAutonomyEvent != result.event:
-            set window.echoAutonomyEvent to result.event
+        set window.echoPolledState to result.state
+        if window.echoTranscriptEvent != query.run + ":" + result.event:
+            set window.echoTranscriptEvent to query.run + ":" + result.event
             echo_history()
         set window.echoCompactionUnknownRun to ""
         set window.echoCanStop to result.can_control != false && result.state != "completed" && result.state != "cancelled" && result.state != "failed"
@@ -1390,14 +1433,14 @@ define echo_poll:
         if result.retry_allowed && result.can_control != false:
             set window.echoRetryWorker to result.worker
         if result.state == "completed":
-            echo_clear_draft()
+            echo_hold_draft()
             echo_note("Saved on this Mac.")
             echo_history()
             set window.echoQueueReadyRun to query.run
             echo_busy(false)
             echo_queue_next()
         else if result.state == "cancelled" or else result.state == "failed":
-            echo_clear_draft()
+            echo_hold_draft()
             if result.state == "cancelled":
                 echo_note("Stopped. Any received partial output remains in the archive.")
             else:
@@ -1424,7 +1467,6 @@ define echo_poll:
                 return echo_draft().then(given ignored:
                     window.setTimeout(echo_poll and 500)
                 )
-            echo_clear_draft()
             window.setTimeout(echo_poll and 500)
     )
     set catcher to get_list(loaded and "catch")
@@ -1464,13 +1506,17 @@ define echo_draft:
         if run != window.echoRun:
             return 0
         if result.status == "idle":
-            echo_clear_draft()
+            echo_hold_draft()
             return 0
         if result.status != "draft":
             return Promise.reject(echo_failure(result))
+        for each node in document.getElementById("transcript").children:
+            if node.echoEvent == result.generation + ":response":
+                echo_clear_draft()
+                return 0
         set text to document.getElementById("draft-text")
         if result.generation != window.echoDraftGeneration:
-            set window.echoDraftText to ""
+            echo_hold_draft()
         set window.echoDraftGeneration to result.generation
         set window.echoDraftCursor to result.after
         set window.echoDraftText to (window.echoDraftText || "") + result.text
@@ -1484,6 +1530,10 @@ define echo_draft:
             echo_format_response(text and window.echoDraftText)
         set draft to document.getElementById("draft")
         set draft.hidden to not text.textContent
+        if text.textContent:
+            for each node in get_list(Array and "from").call(Array and document.getElementById("transcript").children):
+                if node.echoPendingEvent == result.generation + ":response":
+                    node.remove()
         echo_follow_latest()
         return 0
     )
@@ -2217,6 +2267,13 @@ define echo_attachments:
                 echo_open_attachment(file)
             )
             item.appendChild(read)
+            if file.media_type.slice(0 and 6) == "video/":
+                set together to document.createElement("button")
+                set together.textContent to "Watch together"
+                together.addEventListener("click" and given ignored:
+                    echo_watch_open(file)
+                )
+                item.appendChild(together)
             list.appendChild(item)
         list.appendChild(trash)
     )
@@ -4532,6 +4589,175 @@ define echo_research_panel with sources:
     return panel
 
 # Work is read-only here. Opening a panel never launches or cancels a job.
+define echo_state_button with run:
+    set button to document.createElement("button")
+    set button.type to "button"
+    set button.textContent to "Inspect state"
+    button.addEventListener("click" and given ignored:
+        echo_state_dialog(run and button)
+    )
+    return button
+
+define echo_state_dialog with run and opener:
+    set dialog to document.createElement("dialog")
+    dialog.setAttribute("aria-label" and "Conversation state")
+    set dialog.style.cssText to "width:min(720px,calc(100vw - 32px));max-height:90vh;overflow:auto;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:18px;padding:24px"
+    set heading to document.createElement("h2")
+    set heading.textContent to "Conversation state"
+    dialog.appendChild(heading)
+    set note to document.createElement("p")
+    set note.textContent to "Read-only observations for this run. Original dates and source records are retained. Refresh to check for changes."
+    dialog.appendChild(note)
+    set section to document.createElement("select")
+    section.setAttribute("aria-label" and "State section")
+    for each pair in [["interaction","Interaction"],["context","Memory and context"],["work","Work"],["schedules","Schedules"],["incidents","Incidents"],["community","Community"],["rights","Identity and rights"],["machine","Machine"]]:
+        set option to document.createElement("option")
+        set option.value to get_list(pair and 0)
+        set option.textContent to get_list(pair and 1)
+        section.appendChild(option)
+    dialog.appendChild(section)
+    set refresh to document.createElement("button")
+    set refresh.textContent to "Refresh"
+    set next to document.createElement("button")
+    set next.textContent to "Next record"
+    set status to document.createElement("p")
+    status.setAttribute("role" and "status")
+    set content to document.createElement("div")
+    set close to document.createElement("button")
+    set close.textContent to "Close"
+    for each element in [refresh,next,status,content,close]:
+        dialog.appendChild(element)
+    set dialog.echoCursor to 0
+    set dialog.echoBusy to false
+    set load to given reset:
+        if dialog.echoBusy:
+            return 0
+        if reset:
+            set dialog.echoCursor to 0
+        set query to Object()
+        set query.run to run
+        set query.section to section.value
+        set query.after to Number(dialog.echoCursor)
+        set dialog.echoBusy to true
+        set refresh.disabled to true
+        set next.disabled to true
+        set section.disabled to true
+        set status.textContent to "Reading current state…"
+        set request to echo_api("/api/state" and query).then(given result:
+            if not dialog.isConnected:
+                return 0
+            set content.textContent to ""
+            set observations to Object.assign(Object() and result.data || Object())
+            if result.live_provider:
+                set observations.live_provider to result.live_provider
+            for each key in Object.keys(observations):
+                set row to document.createElement("section")
+                set row.style.cssText to "padding:12px 0;border-bottom:1px solid var(--border);overflow-wrap:anywhere"
+                set label to document.createElement("strong")
+                set label.textContent to key.replaceAll("_" and " ")
+                row.appendChild(label)
+                set value to get_list(observations and key)
+                set text to document.createElement("pre")
+                set text.style.cssText to "white-space:pre-wrap;font:inherit;margin:6px 0"
+                if key == "latest_message_environment":
+                    set label.textContent to "Message received from"
+                    set origin to document.createElement("p")
+                    set origin.style.cssText to "margin:8px 0;font-weight:600"
+                    set origin.textContent to "Environment not recorded"
+                    if value && value.status == "found" && value.original_record:
+                        set recorded to JSON.parse(value.original_record)
+                        set environment to recorded.environment || Object()
+                        set parts to Array()
+                        if environment.transport == "connector-admission":
+                            parts.push(environment.platform || "Connected service")
+                            if get_list(environment and "channel"):
+                                parts.push(get_list(environment and "channel"))
+                        else:
+                            set platform to environment.platform_hint || "unknown"
+                            if platform == "macOS":
+                                set platform to "Mac"
+                            if platform != "unknown":
+                                parts.push(platform)
+                            if environment.device_class_hint == "mobile":
+                                parts.push("mobile")
+                            set surface to environment.client_hint
+                            if surface == "standalone-web-app":
+                                parts.push("web app")
+                            else if surface == "desktop-app":
+                                parts.push("desktop app")
+                            else:
+                                parts.push("browser / HTTP client")
+                                if surface == "browser":
+                                    parts.pop()
+                                    parts.push("browser")
+                            if environment.browser_hint && environment.browser_hint != "unknown":
+                                parts.push("· " + environment.browser_hint)
+                        set origin.textContent to parts.join(" ")
+                        set confidence to document.createElement("p")
+                        set confidence.style.cssText to "margin:4px 0;color:var(--muted);font-size:0.9em"
+                        set confidence.textContent to "Device and app details are reported by the client."
+                        if environment.transport == "connector-admission":
+                            set confidence.textContent to "Received through this channel. Sender device is unknown."
+                        row.appendChild(origin)
+                        row.appendChild(confidence)
+                    else:
+                        row.appendChild(origin)
+                if value && typeof(value) == "object":
+                    set details to document.createElement("details")
+                    set summary to document.createElement("summary")
+                    set summary.textContent to value.state || value.status || "View source details"
+                    if key == "latest_message_environment":
+                        set summary.textContent to "Source receipt"
+                    details.appendChild(summary)
+                    set text.textContent to JSON.stringify(value and null and 2)
+                    details.appendChild(text)
+                    row.appendChild(details)
+                else:
+                    set text.textContent to value
+                    if value == null || value == "":
+                        set text.textContent to "Not recorded"
+                    row.appendChild(text)
+                content.appendChild(row)
+            set paged to section.value == "work" || section.value == "schedules" || section.value == "incidents" || section.value == "community" || section.value == "rights"
+            set next.hidden to not paged || not result.data || result.data.status != "found" || not result.data.next_after
+            if result.data && result.data.next_after:
+                set dialog.echoCursor to result.data.next_after
+            set status.textContent to "Observed " + Reflect.construct(Date and [result.observed_unix_ms]).toLocaleTimeString() + ". Source dates describe the original records."
+        )
+        set catcher to get_list(request and "catch")
+        set handled to catcher.call(request and given error:
+            set content.textContent to ""
+            set next.hidden to true
+            set status.textContent to "State unavailable: " + echo_failure(error)
+        )
+        handled.then(given ignored:
+            set dialog.echoBusy to false
+            set refresh.disabled to false
+            set next.disabled to false
+            set section.disabled to false
+        )
+        return 0
+    refresh.addEventListener("click" and given ignored:
+        load(true)
+    )
+    section.addEventListener("change" and given ignored:
+        load(true)
+    )
+    next.addEventListener("click" and given ignored:
+        load(false)
+    )
+    close.addEventListener("click" and given ignored:
+        dialog.close()
+    )
+    dialog.addEventListener("close" and given ignored:
+        dialog.remove()
+        opener.focus()
+    )
+    document.body.appendChild(dialog)
+    dialog.showModal()
+    load(true)
+    return 0
+
 define echo_work_setup:
     set button to document.createElement("button")
     set button.type to "button"
@@ -4616,6 +4842,7 @@ define echo_work_dialog with session and opener:
                 set heading to document.createElement("strong")
                 set heading.textContent to item.state + " · " + (item.instruction || item.run)
                 record.appendChild(heading)
+                record.appendChild(echo_state_button(item.run))
                 set detail to document.createElement("details")
                 set line to document.createElement("summary")
                 set line.textContent to "Record details"

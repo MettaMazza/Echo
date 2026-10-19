@@ -1,0 +1,74 @@
+import "../providers/attachment_image"
+
+# A preparation receipt is not a viewing receipt. Only a successfully published
+# native-model response can certify that both verified media parts were sent.
+# Caller holds the response-publication transaction.
+define watch_analysis_publish_pending with database as Int and session as Str and run as Str and request as Str and response as Str returning Int:
+    set published to archive_read_event(database and response)
+    if published equals 0:
+        return 0
+    if not (archive_list_text(published and 0) equals session) or else not (archive_list_text(published and 2) equals "assistant_final" or else archive_list_text(published and 2) equals "assistant_tool_calls"):
+        return 0
+    set evidence to provider_json_tokens(archive_list_text(published and 3))
+    if not (provider_value(evidence and provider_member(evidence and 0 and "parent_event")) equals request) or else not (provider_value(evidence and provider_member(evidence and 0 and "run_id")) equals run):
+        return 0
+    set watch to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.attachment'),json_extract(payload,'$.position_ms') FROM echo_events WHERE session=? AND kind='watch_party_state' AND json_valid(payload) ORDER BY sequence DESC LIMIT 1;" and [session]))
+    if not (archive_list_text(watch and 0) equals "found"):
+        return 0
+    set original to archive_read_event(database and request)
+    if original equals 0:
+        return 1
+    set tokens to provider_json_tokens(archive_list_text(original and 3))
+    set body to provider_value(tokens and provider_member(tokens and 0 and "request_body"))
+    set statement to checkpoint_prepare(database and "SELECT e.event,json_extract(e.payload,'$.result.attachment'),json_extract(e.payload,'$.result.audio_attachment'),json_extract(e.payload,'$.result.requested_start_ms'),json_extract(e.payload,'$.result.requested_duration_ms'),json_extract(e.payload,'$.result.source_sha256') FROM echo_events e JOIN echo_tool_calls t ON t.request_event=json_extract(e.payload,'$.request_event') JOIN echo_events c ON c.event=t.request_event WHERE e.kind='tool_result' AND t.run=?1 AND json_extract(e.payload,'$.result.status')='complete' AND json_extract(c.payload,'$.name')='attachment_video' AND (json_extract(json_extract(c.payload,'$.arguments'),'$.attachment')=?2 OR (json_extract(json_extract(c.payload,'$.arguments'),'$.attachment')='current' AND EXISTS(SELECT 1 FROM echo_events j WHERE j.event=?1||':watch-job' AND j.kind='watch_segment_job' AND json_extract(j.payload,'$.attachment')=?2))) AND json_extract(json_extract(c.payload,'$.arguments'),'$.action')='segment' AND NOT EXISTS(SELECT 1 FROM echo_events saved WHERE saved.event='watch-observed:'||e.event) ORDER BY e.sequence;" and [run,archive_list_text(watch and 1)])
+    if statement equals 0:
+        return 1
+    set rows to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return 1
+        set row to create_list()
+        set column to 0
+        repeat while column < 6:
+            set added to append_list(row and concat(ptr_to_str(ep_sqlite3_column_text(statement and column)) and ""))
+            set column to column + 1
+        set added to append_list(rows and row)
+    set closed to ep_sqlite3_finalize(statement)
+    for each row in rows:
+        set video to attachment_media_original_part(database and session and archive_list_text(row and 1) and "video")
+        set audio to attachment_audio_original_part(database and session and archive_list_text(row and 2))
+        if archive_list_text(video and 0) equals "ready" and archive_list_text(audio and 0) equals "ready":
+            if string_contains(body and archive_list_text(video and 1)) and string_contains(body and archive_list_text(audio and 1)):
+                set start to string_to_int(archive_list_text(row and 3))
+                set duration to string_to_int(archive_list_text(row and 4))
+                if start >= 0 and duration > 0:
+                    set payload to history_collect_one(checkpoint_prepare(database and "SELECT json_object('attachment',?1,'source_sha256',?2,'start_ms',CAST(?3 AS INTEGER),'end_ms',CAST(?4 AS INTEGER),'request_event',?5,'response_event',?6,'tool_result',?7,'representation','native-audio-and-sampled-video');" and [archive_list_text(watch and 1),archive_list_text(row and 5),int_to_string(start),int_to_string(start + duration),request,response,archive_list_text(row and 0)]))
+                    if not (archive_list_text(payload and 0) equals "found") or else archive_append_pending(database and session and concat("watch-observed:" and archive_list_text(row and 0)) and "watch_segment_observed" and archive_list_text(payload and 1) and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+                        return 1
+    return 0
+
+# Report only continuous coverage starting at zero, never the furthest sampled
+# point across a gap. Playback caps display so seeking back reveals no future.
+define watch_analysis_position with database as Int and session as Str and attachment as Str and bound as Int returning Int:
+    set statement to checkpoint_prepare(database and "SELECT json_extract(payload,'$.start_ms'),json_extract(payload,'$.end_ms') FROM echo_events WHERE session=?1 AND kind='watch_segment_observed' AND json_extract(payload,'$.attachment')=?2 ORDER BY CAST(json_extract(payload,'$.start_ms') AS INTEGER);" and [session,attachment])
+    if statement equals 0:
+        return 0
+    set through to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step is not equal to 100:
+            break
+        set start to string_to_int(ptr_to_str(ep_sqlite3_column_text(statement and 0)))
+        set finish to string_to_int(ptr_to_str(ep_sqlite3_column_text(statement and 1)))
+        if start > through:
+            break
+        if finish > through:
+            set through to finish
+    set closed to ep_sqlite3_finalize(statement)
+    if through > bound:
+        set through to bound
+    return through

@@ -1,0 +1,39 @@
+import "../archive/history"
+import "../context/checkpoint"
+
+# Platform is derived from durable admission, never from a user-agent or a
+# model-selected label. Browser private and shared sessions are first-party.
+# Unknown legacy origins do not authorise a cross-platform copy.
+define data_platform with database as Int and session as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT 'first-party' FROM echo_session_principals WHERE session=?1 UNION ALL SELECT CASE WHEN g.platform='browser' THEN 'first-party' ELSE 'connector:'||g.platform END FROM echo_group_sessions s JOIN echo_groups g ON g.identity=s.group_id WHERE s.session=?1;" and [session]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+# A selected copy cannot bridge private platform silos, even for admins. Walk
+# retained copy ancestry so a historical imported copy cannot launder its
+# original platform. Public-channel observations have their separate ACL path.
+define data_platform_allows with database as Int and source_event as Str and destination as Str returning Int:
+    set platform to data_platform(database and destination)
+    if string_length(platform) equals 0:
+        return 0
+    set query to "WITH RECURSIVE lineage(event,session,sequence,kind,payload) AS (SELECT event,session,sequence,kind,payload FROM echo_events WHERE event=?1 UNION SELECT e.event,e.session,e.sequence,e.kind,e.payload FROM lineage l JOIN echo_events e ON e.event=json_extract(CASE WHEN json_valid(l.payload) THEN l.payload ELSE '{}' END,'$.source_event') AND e.digest=json_extract(CASE WHEN json_valid(l.payload) THEN l.payload ELSE '{}' END,'$.source_digest') AND e.sequence<l.sequence WHERE l.kind='source_import') SELECT DISTINCT session FROM lineage;"
+    set statement to checkpoint_prepare(database and query and [source_event])
+    if statement equals 0:
+        return 0
+    set count to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return 0
+        set session to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        if not (data_platform(database and session) equals platform):
+            set closed to ep_sqlite3_finalize(statement)
+            return 0
+        set count to count + 1
+    set closed to ep_sqlite3_finalize(statement)
+    return closed equals 0 and also count > 0
+
