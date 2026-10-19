@@ -1,3 +1,5 @@
+> **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
+
 # Current status — Echo 1.5, 18 October 2026
 
 The current consolidated record is [Echo 1.5](releases/1.5/README.md), including the [original 32-step reconciliation](releases/1.5/PHASE-TWO-STATUS.md). Current deployed release: `phase2-stable-session-recall-20261018-r2`. Phase Two remains incomplete; later foundations do not close their integrations.

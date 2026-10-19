@@ -1,98 +1,29 @@
-![Echo — intelligence with a home. A self-hosted multimodal AI agent written in plain-English Ernos.](docs/assets/echo-cover.svg)
+# Echo 1.75
 
-# Echo 1.5 · Self-hosted multimodal AI agent
+Echo is a local conversational agent built in Ernos, with a durable conversation archive, native tools and a browser interface for Mac and linked devices.
 
-**Talk, see, create and pick up where you left off. On your own machine.**
+This release adds native audio and combined audio/video input through Qwen3-Omni, a private video library, in-chat/fullscreen watching, and the host-enrolled Echo voice. It also carries the multi-turn interim-message persistence fixes, mid-task questions, free/task autonomy and source-authority protections.
 
-Echo is a self-hosted, multimodal AI agent written in **plain-English Ernos**. It brings local LLM inference, a modern browser chat interface, tool use, voice playback and a durable conversation archive into one system. Open it on your Mac or pair a phone on the same Wi-Fi.
+## What you can do
 
-**Phase Two is in progress.** [Read the complete 1.5 forensic release](docs/releases/1.5/README.md), [what remains in the original 32 steps](docs/releases/1.5/PHASE-TWO-STATUS.md), and the [Phase Three sketch](docs/releases/1.5/PHASE-THREE.md).
+- Talk with Echo across multiple turns, attach audio/images/video, and inspect original tool results and model traces.
+- Watch supported episodes or movies in the chat. Choose continuous playback or checkpoints; both participants can pause. Whoever pauses speaks first. Echo can end watching while retaining the original media.
+- See playback position separately from the range actually processed by Echo. Analysis uses bounded native audio/video segments, not a transcript-only substitute.
+- Use a host-enrolled private voice for spoken replies. The default example is **Echo Rounded 08, pitch +0.75 semitone**. Personal recordings and conditioning must be installed locally; they are not distributed here.
+- Use `/auto` for free autonomy or `/auto <task>` for bounded work. The existing authority and source-isolation rules continue to apply.
 
-**[Explore the system](docs/ARCHITECTURE.md) · [Set up Echo](docs/BUILD-AND-TEST.md) · [Read the documentation](docs/README.md) · [See the roadmap](phase2.md)**
+The required release checkpoint is **Qwen3-Omni Thinking**, with explicit reasoning output and native multimodal input. The initial Instruct installation did not meet the reasoning requirement. Its replacement is being acquired and must pass fresh reasoning, tool and media acceptance before final release. The activity panel displays actual returned reasoning and tool events, never invented traces. See [upstream model variants](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Thinking).
 
----
+## Tested scope and limits
 
-## A conversation that can keep going
+The native model context is **65,536 tokens**. Movie duration is not bounded by a single context window: recent source-bound observations are carried between short analysis segments. This is not every-frame perception or perfect recall. Playback may buffer while Echo catches up. Current browser playback loads a whole verified media blob, so file size, memory, codec support and inference speed are practical limits.
 
-Long conversations need more than a larger context window. Echo keeps original messages and tool results locally, builds source-linked recaps when active context needs compaction, and can reread the originals later. A recap is inspectable and fallible; the archive remains the reference.
+Acceptance includes a 24-second synthetic film processed in five actual native audio/video segments, follow-up discussion, end controls, multiple browser turns and reload persistence. Native tests cover ownership, cancellation, no lookahead, coverage gaps and checkpoint recovery. **A full feature-film soak has not been performed.** Models can misdescribe timing or claim an action without performing it; the durable tool/player state is authoritative.
 
-Your current task, earlier decisions and the sources behind an answer have somewhere to live.
+This is a source release for a configured Mac installation, not a portable one-click installer. [Build and test](docs/BUILD-AND-TEST.md), [1.75 operations and acceptance](docs/releases/1.75/README.md), [architecture](docs/ARCHITECTURE.md), [security](docs/SECURITY-AND-DATA.md), and [complete source reference](docs/reference/APPLICATION.md) describe the implementation and its boundaries. Generated source indexes are lexical documentation, not a claim of complete test coverage.
 
-## What you can do today
+## Continuing development
 
-| Experience | What Echo provides |
-| --- | --- |
-| **Chat with a local multimodal model** | The current default uses one Qwen model through llama.cpp for text, image understanding and tool loops. MLX adapter code is also present. |
-| **Work across turns** | A durable ReAct loop calls tools, reads results and continues until an answer or explicit stopping state. |
-| **Bring your files** | Upload images, UTF-8 text, PDFs and videos. Preview image thumbnails, inspect source passages and expand the sources read beneath a reply. |
-| **Hear the answer** | Speak generates saved Kokoro audio beside the message, with playback, seeking and download. Local transcription is implemented; physical microphone permission acceptance remains deferred. |
-| **Delegate and steer** | Give mid-turn guidance, queue the next message, inspect active agents and receive their results through Echo’s parent reply. Durable task checklists keep multi-step work on scope. |
-| **Follow the work** | Each response retains an expandable Thinking panel with archived activity, tool calls/results and reasoning output when the provider emits it. |
-| **Recall earlier chats** | Private cross-session search and original-source reading preserve event references and digests. Evidence-linked fact/episode recording, graph recall and individual derived-record withdrawal/restoration are also available through tools. Automatic episodic, semantic and procedural memory, correction precedence and stable session recall are implemented; originals remain available for scoped rereading. |
-| **Explore another direction** | Branch conversations, edit and regenerate messages, search history and export records. |
-| **Use your phone** | Pair individual browsers over local HTTPS. Link your browsers to continue the same conversations with automatic updates. Unlinked principals retain separate access. |
-| **Inspect and recover** | Saved submissions, effect records, crash diagnostics and backup/restore tools make failures investigable. |
+[Phase Two](phase2.md) remains open. Remaining Discord functionality and server setup, wider integration qualification, the protected improvement/research lifecycle and the final joint prompt review are **not declared complete by 1.75**. See [handover](docs/releases/1.75/HANDOVER.md). Unfinished guardian experiments are retained in the separate local development history and are excluded from this release.
 
-## Local inference. Explicit capabilities.
-
-Echo runs on the host machine; the current installation uses an Apple Silicon Mac Studio. Large assets can live on external storage while active runtime files and the conversation database run internally.
-
-Provider metadata and exact preflight counting inform context admission. There is no fixed agent tool-turn ceiling. Available memory, model architecture and backend support still determine what can run. The current default supports text and images; audio uses explicit local Whisper and Kokoro services. Local video metadata, timestamped frame sampling and browser playback are qualified. The same primary model inspects sampled images; this is not a claim of native whole-video or audio comprehension. See [video evidence](docs/phase2/VIDEO-2026-10-18.md).
-
-See the [unified multimodal implementation](docs/UNIFIED-MULTIMODAL.md), [speech system](docs/KOKORO.md) and [security boundaries](docs/SECURITY-AND-DATA.md).
-
-## Built to be understood
-
-Echo’s application, browser client and test sources are written in Ernos. Native executables and browser JavaScript are generated from that source. The repository documents how a message moves through authentication, context assembly, generation, tool execution and the archive.
-
-```mermaid
-flowchart LR
-    A[Mac or paired phone] --> B[Local HTTPS and device ownership]
-    B --> C[Durable agent loop]
-    C <--> D[Local multimodal model]
-    C <--> E[Session tools and local media]
-    C <--> F[Original conversation archive]
-    F <--> G[Reviewed context recaps]
-    G --> C
-```
-
-**871 application and test source files** are indexed with hashes, imports and definition signatures. The forensic reference distinguishes implemented behavior, observed tests and deferred work. It does not turn a file count into a test-coverage claim.
-
-| You want to… | Start here |
-| --- | --- |
-| Understand the current state | [Status and known limits](docs/STATUS.md) |
-| Follow a message through the system | [Architecture](docs/ARCHITECTURE.md) |
-| Integrate with the local API or inspect tools | [HTTP API and tool contracts](docs/API-AND-TOOLS.md) |
-| Find a source file or definition | [Application reference](docs/reference/APPLICATION.md) |
-| Reproduce checks | [Build and tests](docs/BUILD-AND-TEST.md) · [Test reference](docs/reference/TESTS.md) |
-| Pair, operate, back up or recover Echo | [Operations](docs/OPERATIONS.md) |
-| Trace prompt inheritance | [Prompt migration](docs/PROMPT-MIGRATION.md) |
-| Continue development responsibly | [Maintainer handover](docs/MAINTAINING.md) |
-
-## Get started
-
-This is a source distribution with a working Mac installation, not yet a portable one-click installer.
-
-1. **Read the prerequisites.** Use the pinned Ernos compiler and integration overlay described in [build and test](docs/BUILD-AND-TEST.md) and [dependency provenance](docs/PROVENANCE.md).
-2. **Configure local inference.** Obtain compatible model weights separately, then adapt the [configuration examples](config/examples/) to your paths and provider capabilities.
-3. **Build and launch.** Generate the native commands and browser bundle, configure the local service and HTTPS gateway, and follow [operations](docs/OPERATIONS.md).
-4. **Pair and link your browsers.** Use host pairing for initial access, then Devices & access to link an authorized browser into your conversation library. On a phone, use the Mac’s LAN address; `127.0.0.1` refers to the phone itself.
-5. **Verify your installation.** Exercise a real conversation, image input and the tools you configured. Read the [verification record](docs/forensics/release-verification.json) for the scope of retained evidence.
-
-Model weights, live configuration, identity files, conversations, credentials and raw private evidence are separate local assets, excluded from the current source tree.
-
-## Where Echo goes next
-
-[Phase Two](phase2.md) is a dependency-ordered plan for Discord, scoped multi-user memory, richer tools, reusable tool creation, research and self-improvement interfaces, Gmail and optional external providers. It also carries forward explicitly deferred Phase One work. **Substantial local foundations are delivered; connector, improvement and final integrated qualification remain.** The full decentralized agent network is a longer-term direction.
-
-The final Phase Two prompt work is reserved for a joint review with Maria.
-
-## Help shape Echo
-
-For a reproducible problem, [open an issue](https://github.com/MettaMazza/Echo/issues) with the source revision, platform, provider, observed status and redacted reproduction steps. The [maintainer guide](docs/MAINTAINING.md) explains which diagnostics help and what must remain private.
-
-Echo is maintained by [MettaMazza](https://github.com/MettaMazza). No project-wide software licence has been selected yet; repository visibility is not an open-source licence. Upstream dependencies and models retain their own terms.
-
-## What comes next
-
-Phase Two still includes Discord and Gmail integration, persistent generated tools, the complete protected self-improvement and model-research/training lifecycle, optional external providers, integrated acceptance and the final joint prompt review. Existing foundations are detailed separately from completed integrations in the [32-step status](docs/releases/1.5/PHASE-TWO-STATUS.md). Phase Three is still being sketched around the future decentralized network; it is not a new release promise.
+Models, credentials, live identities, recordings, voice embeddings, conversations, private media and raw private evidence are excluded. Echo is maintained by [MettaMazza](https://github.com/MettaMazza). No project-wide software licence has been selected; upstream dependencies retain their own terms.

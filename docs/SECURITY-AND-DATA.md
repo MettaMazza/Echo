@@ -1,3 +1,5 @@
+> **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
+
 # Security and data boundaries
 
 Device credentials authenticate paired browser profiles; session ownership is checked by server routes. Local Host/Origin checks reject foreign origins while permitting the configured loopback and HTTPS gateway origins. LAN availability is not anonymity or strong separation between people sharing a browser. There is no claim of a completed independent security audit.

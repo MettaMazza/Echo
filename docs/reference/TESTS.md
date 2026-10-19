@@ -1,8 +1,8 @@
-# Tests source reference — Echo 1.5
+# Tests source reference — Echo 1.75
 
-Observed 2026-10-18T14:39:47.119894+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-19T17:58:38.485746+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
-[Release overview](../releases/1.5/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
+[Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
 ## `tests/agent/recover_guardian_fixture.ep`
 
@@ -158,6 +158,22 @@ Definitions:
 3: define main returning Int:
 ```
 
+## `tests/agent/test_legacy_protocol_recovery.ep`
+
+[tests/agent/test_legacy_protocol_recovery.ep](../../tests/agent/test_legacy_protocol_recovery.ep) · 31 lines · 2546 bytes
+
+SHA-256: `f79a501f0bfb7b167a1b23c4ac57f000b93147780d4918fcc48759ebded590ac`
+
+Imports: [../../app/maintenance/protocol_repair](../../app/maintenance/protocol_repair.ep), [../../app/web/run_store](../../app/web/run_store.ep), [../../app/jobs/delegation_schema](../../app/jobs/delegation_schema.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+5: define main returning Int:
+```
+
 ## `tests/agent/test_pdf_loop.ep`
 
 [tests/agent/test_pdf_loop.ep](../../tests/agent/test_pdf_loop.ep) · 97 lines · 6976 bytes
@@ -273,6 +289,23 @@ Definitions:
 
 ```text
 7: define main returning Int:
+```
+
+## `tests/agent/test_unparsed_tool_response.ep`
+
+[tests/agent/test_unparsed_tool_response.ep](../../tests/agent/test_unparsed_tool_response.ep) · 37 lines · 2915 bytes
+
+SHA-256: `7fa9e76a38840e3beb2bb1d1bc8c3245676c4c2ba0be4bfdd789c107bf5b7534`
+
+Imports: [../../app/agent/run_messages](../../app/agent/run_messages.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define publish_fixture with database as Int and request as Str and content as Str returning Int:
+14: define main returning Int:
 ```
 
 ## `tests/agent/test_workspace_create_loop.ep`
@@ -1657,6 +1690,22 @@ Definitions:
 8: define main returning Int:
 ```
 
+## `tests/interaction/test_controls.ep`
+
+[tests/interaction/test_controls.ep](../../tests/interaction/test_controls.ep) · 142 lines · 12384 bytes
+
+SHA-256: `b454edb9f49158a4b82502b02ba2e2f772e823cd8ee277364a7ddea5273ba869`
+
+Imports: [../fixtures/delegation_fixture](../../tests/fixtures/delegation_fixture.ep), [../../app/web/interaction](../../app/web/interaction.ep), [../../app/web/run_store](../../app/web/run_store.ep), [../../app/context/session_messages](../../app/context/session_messages.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+6: define main returning Int:
+```
+
 ## `tests/jobs/test_delegation.ep`
 
 [tests/jobs/test_delegation.ep](../../tests/jobs/test_delegation.ep) · 50 lines · 4344 bytes
@@ -1773,9 +1822,9 @@ Definitions:
 
 ## `tests/jobs/test_delegation_return_overlap.ep`
 
-[tests/jobs/test_delegation_return_overlap.ep](../../tests/jobs/test_delegation_return_overlap.ep) · 72 lines · 5807 bytes
+[tests/jobs/test_delegation_return_overlap.ep](../../tests/jobs/test_delegation_return_overlap.ep) · 78 lines · 6289 bytes
 
-SHA-256: `a16e3895d8a945111983a42699ecf616d2fe6d76a42f832573281ef69f0e0e93`
+SHA-256: `b9ce45e059c7af011ead77811a191db73a1d99255b049e235e0d1925bfc327c2`
 
 Imports: [../fixtures/delegation_fixture](../../tests/fixtures/delegation_fixture.ep), [../../app/jobs/delegation_return](../../app/jobs/delegation_return.ep), [../../app/context/session_messages](../../app/context/session_messages.ep), [../../app/web/work_status](../../app/web/work_status.ep).
 
@@ -1938,18 +1987,18 @@ Definitions:
 
 ## `tests/jobs/test_task_checklist.ep`
 
-[tests/jobs/test_task_checklist.ep](../../tests/jobs/test_task_checklist.ep) · 67 lines · 5888 bytes
+[tests/jobs/test_task_checklist.ep](../../tests/jobs/test_task_checklist.ep) · 86 lines · 7654 bytes
 
-SHA-256: `3a049ebc1682466a40923aa4b27024ed1a2645a651fb83815cf2287bc8c08d38`
+SHA-256: `8000112f08e65a8e063743a73d88e9b6bcc5d5f31ca3c136fc65302bc5cee421`
 
-Imports: [../fixtures/delegation_fixture](../../tests/fixtures/delegation_fixture.ep), [../../app/context/session_messages](../../app/context/session_messages.ep), [../../app/web/run_store](../../app/web/run_store.ep).
+Imports: [../fixtures/delegation_fixture](../../tests/fixtures/delegation_fixture.ep), [../../app/agent/tool_dispatch](../../app/agent/tool_dispatch.ep), [../../app/context/session_messages](../../app/context/session_messages.ep), [../../app/web/run_store](../../app/web/run_store.ep).
 
 Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
 
 Definitions:
 
 ```text
-5: define main returning Int:
+6: define main returning Int:
 ```
 
 ## `tests/lifecycle/controller_console_preview.ep`
@@ -2447,6 +2496,22 @@ Definitions:
 3: define main returning Int:
 ```
 
+## `tests/media/test_enrolled_voice.ep`
+
+[tests/media/test_enrolled_voice.ep](../../tests/media/test_enrolled_voice.ep) · 17 lines · 1281 bytes
+
+SHA-256: `07cde778108025e9ddd582104914477a7b7725dc4e29d24a272d178166a94cdb`
+
+Imports: [../../app/web/routes](../../app/web/routes.ep).
+
+Native `main` present. Argument indices read: none. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
 ## `tests/media/test_group_image_tool.ep`
 
 [tests/media/test_group_image_tool.ep](../../tests/media/test_group_image_tool.ep) · 65 lines · 5111 bytes
@@ -2632,6 +2697,59 @@ Definitions:
 4: define main returning Int:
 ```
 
+## `tests/media/test_video_library.ep`
+
+[tests/media/test_video_library.ep](../../tests/media/test_video_library.ep) · 42 lines · 2921 bytes
+
+SHA-256: `71d8becda92ae565a9773e5706fec05e08021d4035e5a7efa90ce1779bbde977`
+
+Imports: [../../app/web/routes](../../app/web/routes.ep), [../../app/media/video_library](../../app/media/video_library.ep).
+
+Native `main` present. Argument indices read: 1, 2, 3. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+4: define main returning Int:
+```
+
+## `tests/media/test_video_request.ep`
+
+[tests/media/test_video_request.ep](../../tests/media/test_video_request.ep) · 21 lines · 1563 bytes
+
+SHA-256: `c00b10de22a037cd9d14ba30f8f07ea1cd8fac994f5d30ac9676a3b8ea5f7513`
+
+Source annotations: Arguments stay argv, exact timestamps remain uncapped, and the local helper sandbox denies network and unrelated local files. Live decoding is separate.
+
+Imports: [../../app/media/video_request](../../app/media/video_request.ep).
+
+Native `main` present. Argument indices read: none. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+5: define main returning Int:
+```
+
+## `tests/media/test_video_tool.ep`
+
+[tests/media/test_video_tool.ep](../../tests/media/test_video_tool.ep) · 106 lines · 8752 bytes
+
+SHA-256: `54a9e7d00424086bcd05868ff041e366ce5f94ddaae9e895076c484e5b85e745`
+
+Source annotations: Script only the model request. Both synthesis and recognition are real.
+
+Imports: [../../app/web/attachment_visibility](../../app/web/attachment_visibility.ep), [../../app/agent/runner](../../app/agent/runner.ep), [../../app/security/group_output_policy](../../app/security/group_output_policy.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
+
+Native `main` present. Argument indices read: 1, 2, 3, 4. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+7: define video_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
+23: define main returning Int:
+```
+
 ## `tests/media/test_voice_control.ep`
 
 [tests/media/test_voice_control.ep](../../tests/media/test_voice_control.ep) · 75 lines · 5092 bytes
@@ -2647,6 +2765,24 @@ Definitions:
 ```text
 5: define speech_interrupt_fixture with path as Str and mode as Str and writer as Int and completed as Int returning Int:
 24: define main returning Int:
+```
+
+## `tests/media/test_voice_profile_switch.ep`
+
+[tests/media/test_voice_profile_switch.ep](../../tests/media/test_voice_profile_switch.ep) · 49 lines · 3219 bytes
+
+SHA-256: `9e04effdf449217afcdb2d635ab1c211be6f8ce27d72950ef2b4fbb744f5f2f1`
+
+Source annotations: Real local synthesis: profile changes must invalidate message-only reuse.
+
+Imports: [../../app/web/message_speech](../../app/web/message_speech.ep).
+
+Native `main` present. Argument indices read: 1, 2, 3, 4. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+4: define main returning Int:
 ```
 
 ## `tests/media/test_voice_tool.ep`
@@ -2666,6 +2802,23 @@ Definitions:
 ```text
 5: define voice_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
 21: define main returning Int:
+```
+
+## `tests/media/test_watch_party.ep`
+
+[tests/media/test_watch_party.ep](../../tests/media/test_watch_party.ep) · 137 lines · 10366 bytes
+
+SHA-256: `b6b2562c394683d51b758edc24528b73a59df8c6f6c5ffb0f79ffd3ed1ca2f2f`
+
+Imports: [../../app/web/routes](../../app/web/routes.ep).
+
+Native `main` present. Argument indices read: 1, 2. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define watch_test_status with value as Str and expected as Str returning Int:
+7: define main returning Int:
 ```
 
 ## `tests/memory/test_attachment_visibility_recall.ep`
@@ -2955,9 +3108,9 @@ Definitions:
 
 ## `tests/memory/test_memory_sharing.ep`
 
-[tests/memory/test_memory_sharing.ep](../../tests/memory/test_memory_sharing.ep) · 131 lines · 12223 bytes
+[tests/memory/test_memory_sharing.ep](../../tests/memory/test_memory_sharing.ep) · 164 lines · 15144 bytes
 
-SHA-256: `609d868093143ae3b9729c1e4ca4febffa3e946b884b0536ab5b92946d8f36aa`
+SHA-256: `9818679efa8e69f495f7fb5fa7b149b6e88f47050ad78b6d79a423d7000c5089`
 
 Imports: [../../app/web/routes](../../app/web/routes.ep), [../../app/security/group_runs](../../app/security/group_runs.ep), [../../app/jobs/delegation_schema](../../app/jobs/delegation_schema.ep), [../../app/archive/snapshot](../../app/archive/snapshot.ep), [../../app/memory/archive_recall](../../app/memory/archive_recall.ep).
 
@@ -3344,6 +3497,22 @@ Definitions:
 16: define main returning Int:
 ```
 
+## `tests/providers/test_attachment_audio.ep`
+
+[tests/providers/test_attachment_audio.ep](../../tests/providers/test_attachment_audio.ep) · 66 lines · 4664 bytes
+
+SHA-256: `7abe8362a847a7daa4d5dc4883ab2790015cc9b3e759cb48b8a45e3448236233`
+
+Imports: `fs` (toolchain/library), [../../app/providers/attachment_image](../../app/providers/attachment_image.ep), [../../app/web/attachments](../../app/web/attachments.ep).
+
+Native `main` present. Argument indices read: 1, 2. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+5: define main returning Int:
+```
+
 ## `tests/providers/test_attachment_image.ep`
 
 [tests/providers/test_attachment_image.ep](../../tests/providers/test_attachment_image.ep) · 66 lines · 4730 bytes
@@ -3358,6 +3527,22 @@ Definitions:
 
 ```text
 5: define main returning Int:
+```
+
+## `tests/providers/test_audio_context_visibility.ep`
+
+[tests/providers/test_audio_context_visibility.ep](../../tests/providers/test_audio_context_visibility.ep) · 68 lines · 4929 bytes
+
+SHA-256: `645bccda45740d1df91ec1b69805b1f016ca59b34dae6ca6c45687fa36468b42`
+
+Imports: `fs` (toolchain/library), [../../app/web/attachment_visibility](../../app/web/attachment_visibility.ep), [../../app/jobs/delegation_schema](../../app/jobs/delegation_schema.ep), [../../app/providers/attachment_image](../../app/providers/attachment_image.ep), [../../app/web/attachments](../../app/web/attachments.ep).
+
+Native `main` present. Argument indices read: 1, 2. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+7: define main returning Int:
 ```
 
 ## `tests/providers/test_chat_stream.ep`
@@ -4453,11 +4638,29 @@ Definitions:
 10: define main returning Int:
 ```
 
+## `tests/security/test_host_scope.ep`
+
+[tests/security/test_host_scope.ep](../../tests/security/test_host_scope.ep) · 60 lines · 4848 bytes
+
+SHA-256: `5b093f5d7634f31feab9d3d7b99682f2d8c5814c423e6115b7045e84d8001617`
+
+Source annotations: Same person on browser and connector does not imply the same resource scope. Scope is frozen to audience revision and checked against live authority.
+
+Imports: [../../app/web/run_store](../../app/web/run_store.ep), [../../app/archive/snapshot](../../app/archive/snapshot.ep), [../../app/agent/control](../../app/agent/control.ep), [../../app/security/group_output_policy](../../app/security/group_output_policy.ep), [../../app/security/host_scope](../../app/security/host_scope.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+9: define main returning Int:
+```
+
 ## `tests/security/test_host_text.ep`
 
-[tests/security/test_host_text.ep](../../tests/security/test_host_text.ep) · 90 lines · 5331 bytes
+[tests/security/test_host_text.ep](../../tests/security/test_host_text.ep) · 99 lines · 6126 bytes
 
-SHA-256: `2f856629f0dee5e7c8686ea46ae8287c09f69bf949d3a1a7bda5083fe4977336`
+SHA-256: `97cb5e1f43bd5087d3878c684819d54da6900c73544acf098e40578b5e97d114`
 
 Imports: [../../app/archive/snapshot](../../app/archive/snapshot.ep), [../../app/web/attachments](../../app/web/attachments.ep), `fs` (toolchain/library), [../../app/security/tool_authority](../../app/security/tool_authority.ep), [../../app/agent/tool_recovery](../../app/agent/tool_recovery.ep), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../../app/archive/history](../../app/archive/history.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
 
@@ -4467,6 +4670,58 @@ Definitions:
 
 ```text
 10: define main returning Int:
+```
+
+## `tests/security/test_hud_machine.ep`
+
+[tests/security/test_hud_machine.ep](../../tests/security/test_hud_machine.ep) · 59 lines · 5150 bytes
+
+SHA-256: `e6791ee2e496feb9154adb43937f03fec126dcf29f3052bc6836a8fb20fdf768`
+
+Source annotations: Real immutable proposal storage; no protected deployment is performed.
+
+Imports: [../../app/hud/interface](../../app/hud/interface.ep), [../../app/jobs/delegation_schema](../../app/jobs/delegation_schema.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+5: define main returning Int:
+```
+
+## `tests/security/test_hud_rights.ep`
+
+[tests/security/test_hud_rights.ep](../../tests/security/test_hud_rights.ep) · 41 lines · 4032 bytes
+
+SHA-256: `8e7d05c90a61b5e26692ccb27fb3b5bed97fe49924573a47add942ae38da7b3a`
+
+Source annotations: Real immutable proposal storage; no protected deployment is performed.
+
+Imports: [../../app/hud/interface](../../app/hud/interface.ep), [../../app/jobs/delegation_schema](../../app/jobs/delegation_schema.ep).
+
+Native `main` present. Argument indices read: 1, 2. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+5: define main returning Int:
+```
+
+## `tests/security/test_hud_state.ep`
+
+[tests/security/test_hud_state.ep](../../tests/security/test_hud_state.ep) · 95 lines · 8716 bytes
+
+SHA-256: `9bd5a253bb28709fbea3aeb2827eb30e2c030402769d98cd223d1ad562217284`
+
+Imports: [../../app/hud/interface](../../app/hud/interface.ep), [../../app/jobs/delegation_schema](../../app/jobs/delegation_schema.ep), [../../app/web/cancellation](../../app/web/cancellation.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+5: define main returning Int:
 ```
 
 ## `tests/security/test_knowledge.ep`
@@ -4787,6 +5042,22 @@ Definitions:
 ```text
 8: define recall_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
 28: define main returning Int:
+```
+
+## `tests/security/test_message_environment.ep`
+
+[tests/security/test_message_environment.ep](../../tests/security/test_message_environment.ep) · 74 lines · 6114 bytes
+
+SHA-256: `b2a6f05828fab473884ea44bfa0ea2395e66c601c162ab3cbbd359ee1720627f`
+
+Imports: [../../app/hud/interface](../../app/hud/interface.ep), [../../app/web/interaction](../../app/web/interaction.ep), [../../app/web/branches](../../app/web/branches.ep), [../../app/web/groups](../../app/web/groups.ep), [../../app/jobs/delegation_schema](../../app/jobs/delegation_schema.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+7: define main returning Int:
 ```
 
 ## `tests/security/test_observer_evidence.ep`
@@ -5118,9 +5389,9 @@ Definitions:
 
 ## `tests/security/test_protected_tools.ep`
 
-[tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep) · 84 lines · 7621 bytes
+[tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep) · 92 lines · 8346 bytes
 
-SHA-256: `81c8725816a77757c1ce91356de312492d02e944be9af8a5e3312f9ba6f9e5e4`
+SHA-256: `fc23f0427a4ba35a3bb79f154443c3180abbe9c6b3da18fed319e8754c21fc8a`
 
 Source annotations: Exercise the real streaming parser, durable queued request and dispatcher.
 
@@ -5132,7 +5403,7 @@ Definitions:
 
 ```text
 7: define protected_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
-27: define main returning Int:
+31: define main returning Int:
 ```
 
 ## `tests/security/test_reasoning_existing.ep`
@@ -5300,6 +5571,41 @@ Definitions:
 10: define main returning Int:
 ```
 
+## `tests/security/test_trace_dispatch.ep`
+
+[tests/security/test_trace_dispatch.ep](../../tests/security/test_trace_dispatch.ep) · 57 lines · 4765 bytes
+
+SHA-256: `6803216351f2ba45d8f2bae9ad99e66f1d6cdc77688b813c56310fa6cab6d6aa`
+
+Imports: [../../app/agent/tool_recovery](../../app/agent/tool_recovery.ep), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+5: define trace_dispatch_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
+29: define main returning Int:
+```
+
+## `tests/security/test_trace_scope.ep`
+
+[tests/security/test_trace_scope.ep](../../tests/security/test_trace_scope.ep) · 60 lines · 5453 bytes
+
+SHA-256: `4dfcac3a3465129131a36a900c7cf1dfc03c29131b57a9de0959f9a638d2fec6`
+
+Imports: [../../app/tools/trace_tools](../../app/tools/trace_tools.ep), [../../app/web/run_store](../../app/web/run_store.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+4: define trace_fixture with database as Int and session as Str and event as Str and reasoning as Str returning Int:
+8: define trace_read_fixture with database as Int and run as Str and event as Str returning Str:
+11: define main returning Int:
+```
+
 ## `tests/security/test_uninspected_refusal.ep`
 
 [tests/security/test_uninspected_refusal.ep](../../tests/security/test_uninspected_refusal.ep) · 61 lines · 5649 bytes
@@ -5318,9 +5624,9 @@ Definitions:
 
 ## `tests/tools/test_build_modes.ep`
 
-[tests/tools/test_build_modes.ep](../../tests/tools/test_build_modes.ep) · 74 lines · 6458 bytes
+[tests/tools/test_build_modes.ep](../../tests/tools/test_build_modes.ep) · 81 lines · 7410 bytes
 
-SHA-256: `67e7ffe76a2334747ebefd59ac23a527a2da91e79ce20c0acc731e91b1a9c4ed`
+SHA-256: `82b198ec216535bdb1f485ca7626d6c3ff956c51b10b7de16c9bae12443abbb7`
 
 Source annotations: Scripted requests exercise the real parser, authority checks, guardian, compiler, sandbox and archive. No actual-model authoring is claimed here.
 
@@ -5374,9 +5680,9 @@ Definitions:
 
 ## `tests/tools/test_feedback.ep`
 
-[tests/tools/test_feedback.ep](../../tests/tools/test_feedback.ep) · 34 lines · 2903 bytes
+[tests/tools/test_feedback.ep](../../tests/tools/test_feedback.ep) · 41 lines · 3664 bytes
 
-SHA-256: `0d3da155b8c5d49a5c08f4d71755a5bbf6b69608399640895bd80576bcf639bd`
+SHA-256: `9b610ee2923ffd0d43035a021e4b1a0ff397c58af9060665380de335dd31f5e5`
 
 Source annotations: Preserve actual effects and error codes, including unknown outcomes. This contract is shared by tool receipts, HTTP failures and worker diagnostics.
 
@@ -6176,6 +6482,42 @@ Definitions:
 5: define main returning Int:
 ```
 
+## `tests/web/interim_history_seed.ep`
+
+[tests/web/interim_history_seed.ep](../../tests/web/interim_history_seed.ep) · 35 lines · 2712 bytes
+
+SHA-256: `98d70e5e57f4cabee6fb8c6460c9e647c95cc5c375e9be5538df432d5e73fa8c`
+
+Source annotations: An offline display fixture. The streaming/dispatch test covers real tool intake.
+
+Imports: [../../app/web/run_store](../../app/web/run_store.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+4: define main returning Int:
+```
+
+## `tests/web/interim_response_browser.ep`
+
+[tests/web/interim_response_browser.ep](../../tests/web/interim_response_browser.ep) · 32 lines · 2013 bytes
+
+SHA-256: `34b79b0c958befebdf703cae6e4d4d52076d14b463f34a52d90b9ead3b6bd7ed`
+
+Source annotations: Link with the actual client after renaming its startup main. No model calls. Simulate a fresh history render from the same durable server records.
+
+Imports: none.
+
+Native `main` present. Argument indices read: none. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+2: define main:
+```
+
 ## `tests/web/linked_sync_browser.ep`
 
 [tests/web/linked_sync_browser.ep](../../tests/web/linked_sync_browser.ep) · 55 lines · 2006 bytes
@@ -6554,9 +6896,9 @@ Definitions:
 
 ## `tests/web/test_attachment_text.ep`
 
-[tests/web/test_attachment_text.ep](../../tests/web/test_attachment_text.ep) · 30 lines · 2057 bytes
+[tests/web/test_attachment_text.ep](../../tests/web/test_attachment_text.ep) · 44 lines · 3441 bytes
 
-SHA-256: `90c623c461d43ce363405c4547a3105cf125fe679017668c318853df730c3ab4`
+SHA-256: `d21bd7d9d48840b593c234a0c0df4ddaeb96830758f5808e4cc87d68845e7ffc`
 
 Imports: [../../app/tools/attachment_tools](../../app/tools/attachment_tools.ep), [../../app/web/attachments](../../app/web/attachments.ep), `fs` (toolchain/library).
 
@@ -7013,9 +7355,11 @@ Definitions:
 
 ## `tests/web/test_midturn_guidance.ep`
 
-[tests/web/test_midturn_guidance.ep](../../tests/web/test_midturn_guidance.ep) · 123 lines · 8808 bytes
+[tests/web/test_midturn_guidance.ep](../../tests/web/test_midturn_guidance.ep) · 137 lines · 9995 bytes
 
-SHA-256: `bd5733ef1a72687f4737c17c7e63a1a89b54425bf34510483cd0490ea7ab7126`
+SHA-256: `bb1da521882aa0b950625a5dac9618adce70ac2666a426797b1a2f24a51f6134`
+
+Source annotations: Deliberately send no HTTP headers or SSE events. Guidance must wake the
 
 Imports: [../../app/web/routes](../../app/web/routes.ep), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep), `fs` (toolchain/library).
 
@@ -7025,7 +7369,7 @@ Definitions:
 
 ```text
 6: define guidance_arrival_fixture with listener as List and data as Str and completed as Int and database_path as Str returning Int:
-43: define main returning Int:
+42: define main returning Int:
 ```
 
 ## `tests/web/test_pdf_attachment.ep`
@@ -7915,17 +8259,35 @@ Definitions:
 5: define main returning Int:
 ```
 
+## `tests/workspace/test_resource_profile.ep`
+
+[tests/workspace/test_resource_profile.ep](../../tests/workspace/test_resource_profile.ep) · 71 lines · 4295 bytes
+
+SHA-256: `619edca41dfd03b2844ff0c96b45d8122f66eb063a17841c5141f67e619d01ca`
+
+Source annotations: A real child proves the OS boundary, not merely the generated policy text. Arguments: binary, workspace, public-read-root, public-write-root, private, protected, secret, live-loopback-port. Parent fixture provides sentinel files.
+
+Imports: [../../app/workspace/resource_profile](../../app/workspace/resource_profile.ep), [../../app/workspace/sandbox_process](../../app/workspace/sandbox_process.ep), [../../app/transport/http_stream](../../app/transport/http_stream.ep), `fs` (toolchain/library).
+
+Native `main` present. Argument indices read: 1, 2, 3, 4, 5, 6, 7, 8, 9. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+9: define main returning Int:
+```
+
 ## `tests/workspace/test_sandbox.ep`
 
-[tests/workspace/test_sandbox.ep](../../tests/workspace/test_sandbox.ep) · 79 lines · 4169 bytes
+[tests/workspace/test_sandbox.ep](../../tests/workspace/test_sandbox.ep) · 90 lines · 4849 bytes
 
-SHA-256: `672e2a1c97e50ee7f911b67e549b3a98531b0fcf836402948c29ffcd905d5ccb`
+SHA-256: `51596dfda25d621d5024a7d72bc7b928bde2de110b43e2bb5a0b34922a1a195b`
 
 Imports: [../../app/workspace/sandbox_profile](../../app/workspace/sandbox_profile.ep), [../../app/transport/local_socket](../../app/transport/local_socket.ep), [../../app/transport/http_stream](../../app/transport/http_stream.ep), `fs` (toolchain/library).
 
 Environment names: `ECHO_ERNOS_RUNTIME`.
 
-Native `main` present. Argument indices read: 0, 1, 2, 3. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+Native `main` present. Argument indices read: 0, 1, 2, 3, 4. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
 
 Definitions:
 
@@ -7953,9 +8315,9 @@ Definitions:
 
 ## `tests/workspace/test_sandbox_process.ep`
 
-[tests/workspace/test_sandbox_process.ep](../../tests/workspace/test_sandbox_process.ep) · 56 lines · 2952 bytes
+[tests/workspace/test_sandbox_process.ep](../../tests/workspace/test_sandbox_process.ep) · 57 lines · 3006 bytes
 
-SHA-256: `1e2a8943dc0726597dba841d95335e5c29f6485ccdfe5bd9388aabfea60e402a`
+SHA-256: `6ae9089c574fc2e0ef1a42c6e59986e173f6a37b93a69c2188221ceb5f30cb6e`
 
 Imports: [../../app/workspace/native_process](../../app/workspace/native_process.ep), [../../app/workspace/files](../../app/workspace/files.ep), `fs` (toolchain/library), `string` (toolchain/library).
 

@@ -721,3 +721,8 @@ During plan review agree the guest-safe tool set, standing community/mail autono
 ## Phase Three — newly discovered work outside the agreed plans
 
 See the [Phase Three sketch](docs/releases/1.5/PHASE-THREE.md): the full decentralized exchange network and future peer-admission/trust design remain deferred directions. Phase Three is still being sketched. Existing Phase Two promises remain in the original 32 steps.
+
+
+## Echo 1.75 additions — 19 October 2026
+
+Native Omni audio/combined video, private selected voice, segmented shared watching, inline/fullscreen player, source-bound actual progress and private library are additions beyond the original Phase Two scope. See docs/releases/1.75 for exact implementation and test boundaries. Discord parity/server setup and remaining Phase Two are still open; do not infer completion from this release number.

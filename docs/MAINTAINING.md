@@ -1,3 +1,5 @@
+> **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
+
 # Maintainer handover
 
 Start with STATUS.md for current scope, ARCHITECTURE.md for execution boundaries, and API-AND-TOOLS.md for external contracts. APPLICATION.md and TESTS.md under reference map every first-party Ernos source file to its definitions, imports and SHA-256. TOOL-SCHEMAS.json preserves exact literal tool contracts; DATABASE.sql preserves schema without private rows. Config examples and the compiler overlay are catalogued in repository-manifest.json.

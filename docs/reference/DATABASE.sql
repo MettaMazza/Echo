@@ -1,4 +1,4 @@
--- Schema only. Observed 2026-10-18T14:39:47.119894+00:00; no private rows.
+-- Schema only from isolated 1.75 validation archive, not production. Observed 2026-10-19T17:58:38.485746+00:00; no private rows.
 
 CREATE INDEX echo_events_kind_sequence ON echo_events(kind,sequence);
 
@@ -21,6 +21,8 @@ CREATE INDEX echo_protected_proposals_principal ON echo_protected_proposals(prin
 CREATE TABLE echo_account_link_events(identity TEXT PRIMARY KEY,platform TEXT NOT NULL,subject TEXT NOT NULL,previous_principal TEXT NOT NULL,previous_revoked INTEGER NOT NULL,principal TEXT NOT NULL REFERENCES echo_principals(identity),revoked INTEGER NOT NULL CHECK(revoked IN (0,1)),actor TEXT NOT NULL,reason TEXT NOT NULL,occurred TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')));
 
 CREATE TABLE echo_active_context (session TEXT PRIMARY KEY, checkpoint TEXT NOT NULL REFERENCES echo_checkpoints(identity));
+
+CREATE TABLE echo_attachment_derivations(attachment TEXT PRIMARY KEY REFERENCES echo_attachments(attachment),parent TEXT NOT NULL REFERENCES echo_attachments(attachment),event TEXT NOT NULL UNIQUE REFERENCES echo_events(event),CHECK(attachment<>parent));
 
 CREATE TABLE echo_attachments(attachment TEXT PRIMARY KEY,session TEXT NOT NULL REFERENCES echo_sessions(session),path TEXT NOT NULL UNIQUE,name TEXT NOT NULL,media_type TEXT NOT NULL,digest TEXT NOT NULL,bytes INTEGER NOT NULL CHECK(bytes>=0),event TEXT NOT NULL UNIQUE REFERENCES echo_events(event));
 
@@ -74,8 +76,6 @@ CREATE TABLE echo_operations (identity TEXT NOT NULL, scope TEXT NOT NULL, princ
 
 CREATE TABLE echo_pairing(invitation_hash TEXT PRIMARY KEY,consumed INTEGER NOT NULL DEFAULT 0);
 
-CREATE TABLE echo_pdf_text_cache(source_event TEXT NOT NULL REFERENCES echo_events(event),version TEXT NOT NULL,page INTEGER NOT NULL CHECK(page>=0),original_digest TEXT NOT NULL,payload TEXT NOT NULL,payload_digest TEXT NOT NULL,PRIMARY KEY(source_event,version,page));
-
 CREATE TABLE echo_principal_accounts(platform TEXT NOT NULL,subject TEXT NOT NULL,principal TEXT NOT NULL REFERENCES echo_principals(identity),revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),PRIMARY KEY(platform,subject));
 
 CREATE TABLE echo_principal_devices(device TEXT PRIMARY KEY REFERENCES echo_devices(device),principal TEXT NOT NULL REFERENCES echo_principals(identity));
@@ -83,8 +83,6 @@ CREATE TABLE echo_principal_devices(device TEXT PRIMARY KEY REFERENCES echo_devi
 CREATE TABLE echo_principal_revocations(identity TEXT PRIMARY KEY,principal TEXT NOT NULL REFERENCES echo_principals(identity),previous_revoked INTEGER NOT NULL,revoked INTEGER NOT NULL CHECK(revoked IN (0,1)),previous_role TEXT NOT NULL,role TEXT NOT NULL,actor TEXT NOT NULL,reason TEXT NOT NULL,occurred TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')));
 
 CREATE TABLE echo_principals(identity TEXT PRIMARY KEY,role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin','steward')),revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)));
-
-CREATE TABLE echo_process_launches(run TEXT NOT NULL,call_id TEXT NOT NULL,session TEXT NOT NULL,reservation TEXT NOT NULL UNIQUE REFERENCES echo_events(event),started TEXT UNIQUE REFERENCES echo_events(event),finished TEXT UNIQUE REFERENCES echo_events(event),PRIMARY KEY(run,call_id),FOREIGN KEY(run,call_id) REFERENCES echo_tool_calls(run,call_id));
 
 CREATE TABLE echo_protected_proposals(identity TEXT PRIMARY KEY,run TEXT NOT NULL REFERENCES echo_runs(run),principal TEXT NOT NULL REFERENCES echo_principals(identity),manifest TEXT NOT NULL,manifest_digest TEXT NOT NULL,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')));
 
@@ -99,12 +97,6 @@ CREATE TABLE echo_provider_default(singleton INTEGER PRIMARY KEY CHECK(singleton
 CREATE TABLE echo_provider_profiles(identity TEXT PRIMARY KEY,label TEXT NOT NULL,profile TEXT NOT NULL);
 
 CREATE TABLE echo_provider_retirements(identity TEXT PRIMARY KEY REFERENCES echo_provider_profiles(identity),reason TEXT NOT NULL);
-
-CREATE TABLE echo_recall_indexed(model TEXT NOT NULL,quotation TEXT NOT NULL,PRIMARY KEY(model,quotation));
-
-CREATE TABLE echo_recall_passages(quotation TEXT NOT NULL,passage TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(quotation,passage));
-
-CREATE TABLE echo_recall_vectors(model TEXT NOT NULL,digest TEXT NOT NULL,text TEXT NOT NULL,vector TEXT NOT NULL CHECK(json_valid(vector)),PRIMARY KEY(model,digest));
 
 CREATE TABLE echo_run_authority(run TEXT PRIMARY KEY REFERENCES echo_runs(run),device TEXT NOT NULL REFERENCES echo_devices(device),principal TEXT NOT NULL REFERENCES echo_principals(identity),role TEXT NOT NULL,role_revision INTEGER NOT NULL,revocation_revision INTEGER NOT NULL,link_revision INTEGER NOT NULL);
 
@@ -138,11 +130,13 @@ CREATE TABLE echo_web_workers(run TEXT PRIMARY KEY REFERENCES echo_runs(run),wor
 
 CREATE TABLE echo_worker_lock_protocol(worker TEXT PRIMARY KEY,run TEXT NOT NULL REFERENCES echo_runs(run));
 
-CREATE TABLE echo_workspaces(session TEXT PRIMARY KEY REFERENCES echo_sessions(session),device TEXT NOT NULL REFERENCES echo_devices(device),root TEXT NOT NULL,directory TEXT NOT NULL UNIQUE);
-
 CREATE TRIGGER echo_account_links_no_delete BEFORE DELETE ON echo_account_link_events BEGIN SELECT RAISE(ABORT,'Account link history is immutable'); END;
 
 CREATE TRIGGER echo_account_links_no_update BEFORE UPDATE ON echo_account_link_events BEGIN SELECT RAISE(ABORT,'Account link history is immutable'); END;
+
+CREATE TRIGGER echo_attachment_derivation_no_delete BEFORE DELETE ON echo_attachment_derivations BEGIN SELECT RAISE(ABORT,'Attachment lineage is immutable'); END;
+
+CREATE TRIGGER echo_attachment_derivation_no_update BEFORE UPDATE ON echo_attachment_derivations BEGIN SELECT RAISE(ABORT,'Attachment lineage is immutable'); END;
 
 CREATE TRIGGER echo_attachment_no_delete BEFORE DELETE ON echo_attachments BEGIN SELECT RAISE(ABORT,'Attachment originals are immutable'); END;
 
@@ -248,21 +242,9 @@ CREATE TRIGGER echo_operations_no_delete BEFORE DELETE ON echo_operations BEGIN 
 
 CREATE TRIGGER echo_operations_no_update BEFORE UPDATE ON echo_operations BEGIN SELECT RAISE(ABORT,'Operation receipts are immutable'); END;
 
-CREATE TRIGGER echo_pdf_cache_no_delete BEFORE DELETE ON echo_pdf_text_cache BEGIN SELECT RAISE(ABORT,'immutable PDF extraction'); END;
-
-CREATE TRIGGER echo_pdf_cache_no_update BEFORE UPDATE ON echo_pdf_text_cache BEGIN SELECT RAISE(ABORT,'immutable PDF extraction'); END;
-
 CREATE TRIGGER echo_private_owner_not_group BEFORE INSERT ON echo_session_owners WHEN EXISTS(SELECT 1 FROM echo_group_sessions WHERE session=NEW.session) BEGIN SELECT RAISE(ABORT,'Group conversation cannot become private'); END;
 
 CREATE TRIGGER echo_private_principal_not_group BEFORE INSERT ON echo_session_principals WHEN EXISTS(SELECT 1 FROM echo_group_sessions WHERE session=NEW.session) BEGIN SELECT RAISE(ABORT,'Group conversation cannot become private'); END;
-
-CREATE TRIGGER echo_process_finished_immutable BEFORE UPDATE OF finished ON echo_process_launches WHEN OLD.finished IS NOT NULL BEGIN SELECT RAISE(ABORT,'Process finish receipt is immutable'); END;
-
-CREATE TRIGGER echo_process_identity_immutable BEFORE UPDATE OF run,call_id,session,reservation ON echo_process_launches BEGIN SELECT RAISE(ABORT,'Process launch identity is immutable'); END;
-
-CREATE TRIGGER echo_process_no_delete BEFORE DELETE ON echo_process_launches BEGIN SELECT RAISE(ABORT,'Process launch reservations cannot be deleted'); END;
-
-CREATE TRIGGER echo_process_started_immutable BEFORE UPDATE OF started ON echo_process_launches WHEN OLD.started IS NOT NULL BEGIN SELECT RAISE(ABORT,'Process start receipt is immutable'); END;
 
 CREATE TRIGGER echo_protected_proposals_no_delete BEFORE DELETE ON echo_protected_proposals BEGIN SELECT RAISE(ABORT,'Protected proposals are immutable'); END;
 
@@ -331,7 +313,3 @@ CREATE TRIGGER echo_tool_identity_immutable BEFORE UPDATE OF run,call_id,session
 CREATE TRIGGER echo_tool_result_immutable BEFORE UPDATE ON echo_tool_calls WHEN OLD.state='observed' BEGIN SELECT RAISE(ABORT,'Observed tool result is immutable'); END;
 
 CREATE TRIGGER echo_upload_identity_immutable BEFORE UPDATE OF upload,session,device,path,name,media_type ON echo_uploads BEGIN SELECT RAISE(ABORT,'Upload identity is immutable'); END;
-
-CREATE TRIGGER echo_workspace_no_delete BEFORE DELETE ON echo_workspaces BEGIN SELECT RAISE(ABORT,'Workspace identity is immutable'); END;
-
-CREATE TRIGGER echo_workspace_no_update BEFORE UPDATE ON echo_workspaces BEGIN SELECT RAISE(ABORT,'Workspace identity is immutable'); END;

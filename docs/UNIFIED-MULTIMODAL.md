@@ -1,3 +1,5 @@
+> **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
+
 # Unified local model correction — 16 October 2026
 
 The downloaded Qwen 3.5 MLX checkpoint includes 333 vision-tower tensors and processor files. Its serving process was mlx_lm.server, which exposes text-only inference. This was a serving/integration mistake, not evidence that the checkpoint lacks vision. The subsequent automatic switch to another model for image messages was a workaround and has been removed for new runs.

@@ -1,3 +1,5 @@
+> **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
+
 # Documentation index
 
 Start with the [Echo 1.5 forensic release](releases/1.5/README.md): current system audit, original 32-step status, verification and Phase Three sketch.

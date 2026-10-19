@@ -1,3 +1,5 @@
+> **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
+
 # Local Kokoro speech
 
 Echo uses Kokoro-82M v1.0, the full-precision ONNX model, through kokoro-onnx 0.6.1. The selected voice is `bm_fable`, British male Fable, with language `en-gb`. The requested spelling `AM_fable` is not an official Kokoro voice identifier.
