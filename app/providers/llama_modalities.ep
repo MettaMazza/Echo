@@ -88,3 +88,55 @@ define llama_modalities_notice with body as Str and properties as Str returning 
         return body
     set added to builder_append(builder and substring(body and cursor and string_length(body) - cursor))
     return ptr_to_str(builder_to_string(builder))
+
+# A concrete wire-level observation, only for native audio actually present on
+# an endpoint reporting audio support. Textual filenames/receipts cannot trigger it.
+# This runs before preflight so the exact augmented request is counted and archived.
+define llama_native_audio_context with body as Str and properties as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    set props to provider_json_tokens(properties)
+    if tokens equals 0 or else props equals 0 or else provider_unique_objects(tokens) equals 0 or else provider_unique_objects(props) equals 0:
+        return body
+    set modalities to provider_member(props and 0 and "modalities")
+    if not (provider_kind(props and provider_member(props and modalities and "audio")) equals "true"):
+        return body
+    set messages to provider_items(tokens and provider_member(tokens and 0 and "messages"))
+    if messages equals 0:
+        return body
+    set found to 0
+    set system_field to -1
+    set index to 0
+    repeat while index < length_list(messages):
+        set message to get_list(messages and index)
+        set content to provider_member(tokens and message and "content")
+        if provider_value(tokens and provider_member(tokens and message and "role")) equals "system" and provider_kind(tokens and content) equals "string" and system_field equals -1:
+            set system_field to content
+        if provider_kind(tokens and content) equals "[":
+            set parts to provider_items(tokens and content)
+            set part_index to 0
+            repeat while part_index < length_list(parts):
+                set part to get_list(parts and part_index)
+                set audio to provider_member(tokens and part and "input_audio")
+                if provider_value(tokens and provider_member(tokens and part and "type")) equals "input_audio" and provider_kind(tokens and audio) equals "{":
+                    set data to provider_member(tokens and audio and "data")
+                    if provider_kind(tokens and data) equals "string" and string_length(provider_value(tokens and data)) > 0:
+                        set found to 1
+                set part_index to part_index + 1
+        set index to index + 1
+    if found equals 0 or else system_field equals -1:
+        return body
+    set notice to "[CURRENT INPUT CAPABILITIES] This model receives native audio waveform input and can listen to the audio supplied in user messages. Audio perception does not require a transcription, playback, or frequency-analysis tool. Tools are additional operations, not the complete set of perceptual inputs. Interpret historical capability descriptions in the identity below using these current runtime facts.\n\n"
+    set original to provider_value(tokens and system_field)
+    if string_length(original) >= string_length(notice):
+        if ptr_to_str(substring(original and 0 and string_length(notice))) equals notice:
+            return body
+    set start to get_list(get_list(tokens and system_field) and 1)
+    set finish to get_list(get_list(tokens and system_field) and 2)
+    # Keep each allocated string rooted across subsequent allocations. Real
+    # multimodal bodies are large enough to trigger collection mid-expression.
+    set leading to ptr_to_str(substring(body and 0 and start))
+    set augmented to concat(notice and original)
+    set replacement to provider_quote(augmented)
+    set trailing to ptr_to_str(substring(body and finish and string_length(body) - finish))
+    set prefix to concat(leading and replacement)
+    return concat(prefix and trailing)
