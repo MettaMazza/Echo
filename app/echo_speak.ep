@@ -57,29 +57,91 @@ define main returning Int:
     set synthesize to native_python_attribute(library and model and "generate")
     set text to native_python_string(library and ptr_to_str(read_file("input.txt")))
     set options to concat("{\"ref_audio\":" and provider_quote(get_argument(5)))
-    set options to concat(options and ",\"ref_text\":null,\"lang_code\":\"English\",\"temperature\":0.65,\"max_tokens\":1200}")
+    set reference_text to "null"
+    set transcript_path to concat(get_argument(5) and ".txt")
+    if file_exists(transcript_path):
+        set reference_text to provider_quote(ptr_to_str(read_file(transcript_path)))
+    set options to concat(options and ",\"ref_text\":")
+    set options to concat(options and reference_text)
+    set options to concat(options and ",\"lang_code\":\"English\",\"temperature\":0.3,\"max_tokens\":2400}")
     set kwargs to native_python_json(library and options)
-    set generator to native_python_call(library and synthesize and [text] and kwargs)
-    set to_list to native_python_attribute(library and builtins and "list")
-    set results to native_python_call(library and to_list and [generator] and 0)
-    if results equals 0:
-        set printer to ep_dlsym(library and "PyErr_Print")
-        set ignored to ep_dlcall0(printer)
-        return 5
+    set regex to native_python_import(library and "re")
+    set split to native_python_attribute(library and regex and "split")
+    set pattern to native_python_string(library and "(?<=[.!?])\\s+")
+    set sentences to native_python_call(library and split and [pattern, text] and 0)
     set size_fn to ep_dlsym(library and "PyList_Size")
     set item_fn to ep_dlsym(library and "PyList_GetItem")
-    set count to ep_dlcall1(size_fn and results)
-    if count is less than 1:
-        return 6
+    set sentence_count to ep_dlcall1(size_fn and sentences)
     set chunks to create_list()
-    set index to 0
     set rate to 0
-    repeat while index is less than count:
-        set result to ep_dlcall2(item_fn and results and index)
-        set audio to native_python_attribute(library and result and "audio")
-        set rate to native_python_attribute(library and result and "sample_rate")
-        set added to append_list(chunks and audio)
-        set index to index + 1
+    set sentence_index to 0
+    set count to 0
+    repeat while sentence_index is less than sentence_count:
+        set sentence to ep_dlcall2(item_fn and sentences and sentence_index)
+        set seeded_chunk to native_python_call(library and seed and [seed_value] and 0)
+        set generator to native_python_call(library and synthesize and [sentence] and kwargs)
+        set to_list to native_python_attribute(library and builtins and "list")
+        set results to native_python_call(library and to_list and [generator] and 0)
+        if results equals 0:
+            return 5
+        set result_count to ep_dlcall1(size_fn and results)
+        if result_count is less than 1:
+            return 6
+        set result_index to 0
+        repeat while result_index is less than result_count:
+            set result to ep_dlcall2(item_fn and results and result_index)
+            set audio to native_python_attribute(library and result and "audio")
+            set rate to native_python_attribute(library and result and "sample_rate")
+            # Deterministic punctuation/phrase pacing; keep the selected voice and seed.
+            set sentence_text to native_python_text(library and sentence)
+            set tempo to "1.025"
+            set gain to "1.0"
+            set pause to "0.08"
+            if string_length(sentence_text) is less than 65:
+                set tempo to "0.94"
+                set gain to "1.10"
+                set pause to "0.14"
+            if string_length(sentence_text) is greater than 0:
+                set last to substring(sentence_text and string_length(sentence_text) - 1 and 1)
+                if last equals "?":
+                    set tempo to "0.96"
+                    set gain to "1.06"
+                    set pause to "0.16"
+                if last equals "!":
+                    set tempo to "0.96"
+                    set gain to "1.12"
+                    set pause to "0.16"
+            set saved_phrase to prosody_save(library and audio and "phrase-input.wav")
+            if saved_phrase is not equal to 0:
+                return 10
+            set filter to concat("atempo=" and tempo)
+            set filter to concat(filter and ",volume=")
+            set filter to concat(filter and gain)
+            set filter to concat(filter and ",apad=pad_dur=")
+            set filter to concat(filter and pause)
+            set phrase_command to concat("[" and provider_quote(get_argument(6)))
+            set phrase_command to concat(phrase_command and ",\"-nostdin\",\"-v\",\"error\",\"-y\",\"-i\",\"phrase-input.wav\",\"-af\",")
+            set phrase_command to concat(phrase_command and provider_quote(filter))
+            set phrase_command to concat(phrase_command and ",\"-c:a\",\"pcm_s16le\",\"phrase-output.wav\"]")
+            set phrase_subprocess to native_python_import(library and "subprocess")
+            set phrase_run to native_python_attribute(library and phrase_subprocess and "run")
+            set phrase_args to native_python_json(library and phrase_command)
+            set phrase_check to native_python_json(library and "{\"check\":true}")
+            set phrase_done to native_python_call(library and phrase_run and [phrase_args] and phrase_check)
+            if phrase_done equals 0:
+                return 11
+            set audio_utils to native_python_import(library and "mlx_audio.utils")
+            set read_audio to native_python_attribute(library and audio_utils and "load_audio")
+            set phrase_path to native_python_string(library and "phrase-output.wav")
+            set read_opts to native_python_json(library and "{\"sample_rate\":24000}")
+            set shaped to native_python_call(library and read_audio and [phrase_path] and read_opts)
+            if shaped equals 0:
+                return 12
+            set added to append_list(chunks and shaped)
+            set count to count + 1
+            set result_index to result_index + 1
+        set sentence_index to sentence_index + 1
+    set index to 0
     set tuple_new to ep_dlsym(library and "PyTuple_New")
     set tuple_set to ep_dlsym(library and "PyTuple_SetItem")
     set retain to ep_dlsym(library and "Py_IncRef")
@@ -133,4 +195,38 @@ define main returning Int:
     if converted equals 0 or else not file_exists("spoken.wav"):
         return 8
     display "Selected Echo voice saved."
+    return 0
+
+define prosody_save with library as Int and audio as Int and destination as Str returning Int:
+    set numpy to native_python_import(library and "numpy")
+    set concatenate to native_python_attribute(library and numpy and "concatenate")
+    set samples to audio
+    if samples equals 0:
+        set printer to ep_dlsym(library and "PyErr_Print")
+        set ignored to ep_dlcall0(printer)
+        return 9
+    set multiply to native_python_attribute(library and numpy and "multiply")
+    set scale to native_python_json(library and "32767")
+    set scaled to native_python_call(library and multiply and [samples, scale] and 0)
+    set astype to native_python_attribute(library and scaled and "astype")
+    set dtype to native_python_string(library and "<i2")
+    set pcm to native_python_call(library and astype and [dtype] and 0)
+    set tobytes to native_python_attribute(library and pcm and "tobytes")
+    set bytes to native_python_call(library and tobytes and create_list() and 0)
+    set wave to native_python_import(library and "wave")
+    set open_wave to native_python_attribute(library and wave and "open")
+    set raw to native_python_string(library and destination)
+    set mode to native_python_string(library and "wb")
+    set writer to native_python_call(library and open_wave and [raw, mode] and 0)
+    set parameters to native_python_json(library and "[1,2,24000,0,\"NONE\",\"not compressed\"]")
+    set configure to native_python_attribute(library and writer and "setparams")
+    set configured to native_python_call(library and configure and [parameters] and 0)
+    set write to native_python_attribute(library and writer and "writeframes")
+    set saved to native_python_call(library and write and [bytes] and 0)
+    set close to native_python_attribute(library and writer and "close")
+    set closed to native_python_call(library and close and create_list() and 0)
+    if saved equals 0 or else closed equals 0:
+        set printer to ep_dlsym(library and "PyErr_Print")
+        set ignored to ep_dlcall0(printer)
+        return 7
     return 0

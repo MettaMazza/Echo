@@ -1,6 +1,6 @@
 # Application source reference — Echo 1.75
 
-Observed 2026-10-19T19:04:21.386094+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-19T19:46:40.190492+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -1682,9 +1682,9 @@ Definitions:
 
 ## `app/echo_speak.ep`
 
-[app/echo_speak.ep](../../app/echo_speak.ep) · 136 lines · 8003 bytes
+[app/echo_speak.ep](../../app/echo_speak.ep) · 232 lines · 13880 bytes
 
-SHA-256: `b83dfa30dd0cb32a9aac701d990617f1e9b5e439fce32124c203549366fdafed`
+SHA-256: `3295db8fc304738c328f7a70384744c207f02b2653b186bb42a637a17d66506d`
 
 Source annotations: Host-enrolled private conditioning is never supplied by generated text. Only installed upstream dependency functions cross the C API bridge. Helper launcher intentionally uses LC_ALL=C; dependencies contain UTF-8.
 
@@ -1696,6 +1696,7 @@ Definitions:
 
 ```text
 8: define main returning Int:
+200: define prosody_save with library as Int and audio as Int and destination as Str returning Int:
 ```
 
 ## `app/emergency_status.ep`
