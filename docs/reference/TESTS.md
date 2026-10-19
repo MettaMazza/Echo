@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-19T17:58:38.485746+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-19T19:04:21.386094+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -3643,6 +3643,25 @@ Definitions:
 3: define main returning Int:
 ```
 
+## `tests/providers/test_live_audio_fallback.ep`
+
+[tests/providers/test_live_audio_fallback.ep](../../tests/providers/test_live_audio_fallback.ep) · 51 lines · 3747 bytes
+
+SHA-256: `40eaf5957cf9c0e6330fbaac17d911cc49217ff451b902ce9bc3f2223991df59`
+
+Source annotations: Live model acceptance, never a fixture substitute. Run only on an isolated archive and the exact Thinking profile; retain all failures and raw streams.
+
+Imports: [../../app/agent/runner](../../app/agent/runner.ep), [../../app/web/run_store](../../app/web/run_store.ep), `fs` (toolchain/library), [../../app/web/attachments](../../app/web/attachments.ep).
+
+Native `main` present. Argument indices read: 1, 2, 3. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+8: define thinking_turn with database as Int and session as Str and run as Str and prompt as Str and profile as Str and expected as Str returning Int:
+28: define main returning Int:
+```
+
 ## `tests/providers/test_live_context_admission.ep`
 
 [tests/providers/test_live_context_admission.ep](../../tests/providers/test_live_context_admission.ep) · 34 lines · 1813 bytes
@@ -3738,6 +3757,25 @@ Definitions:
 41: define main returning Int:
 ```
 
+## `tests/providers/test_live_thinking_multiturn.ep`
+
+[tests/providers/test_live_thinking_multiturn.ep](../../tests/providers/test_live_thinking_multiturn.ep) · 63 lines · 5801 bytes
+
+SHA-256: `2986ba96ec7daeb85c51e48c6e1a5d1a6a1a103a82d502b9ee0e8fea5c00665d`
+
+Source annotations: Live model acceptance, never a fixture substitute. Run only on an isolated archive and the exact Thinking profile; retain all failures and raw streams.
+
+Imports: [../../app/agent/runner](../../app/agent/runner.ep), [../../app/web/run_store](../../app/web/run_store.ep), `fs` (toolchain/library).
+
+Native `main` present. Argument indices read: 1, 2. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+7: define thinking_turn with database as Int and session as Str and run as Str and prompt as Str and profile as Str and expected as Str returning Int:
+27: define main returning Int:
+```
+
 ## `tests/providers/test_live_unified_image.ep`
 
 [tests/providers/test_live_unified_image.ep](../../tests/providers/test_live_unified_image.ep) · 38 lines · 2550 bytes
@@ -3774,9 +3812,9 @@ Definitions:
 
 ## `tests/providers/test_llama_modalities.ep`
 
-[tests/providers/test_llama_modalities.ep](../../tests/providers/test_llama_modalities.ep) · 19 lines · 1855 bytes
+[tests/providers/test_llama_modalities.ep](../../tests/providers/test_llama_modalities.ep) · 28 lines · 3281 bytes
 
-SHA-256: `2fce4f8d49bc9f8480d027ff090f85f304895c3f1b1c47468690d6e76c323d16`
+SHA-256: `284fb4709e615c56068365fa556251cc5f9dc362d402e9e85def9cd776ab290d`
 
 Imports: [../../app/providers/llama_modalities](../../app/providers/llama_modalities.ep).
 
@@ -6540,6 +6578,24 @@ Definitions:
 22: define echo_note with text:
 27: define echo_selected_files:
 30: define main:
+```
+
+## `tests/web/ordered_list_browser.ep`
+
+[tests/web/ordered_list_browser.ep](../../tests/web/ordered_list_browser.ep) · 14 lines · 889 bytes
+
+SHA-256: `887710d03eb8b237b2f0672d95a472ca67ba0d07e28b944fe8266459f37ef237`
+
+Source annotations: Linked with the actual client after renaming startup main. No model calls.
+
+Imports: none.
+
+Native `main` present. Argument indices read: none. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+2: define main:
 ```
 
 ## `tests/web/outbox_application_browser.ep`
