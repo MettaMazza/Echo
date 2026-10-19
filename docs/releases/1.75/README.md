@@ -28,7 +28,7 @@ The requested **19 October morning, 06:00–12:00 Europe/London** baseline was r
 
 ## Deployment status
 
-Source and isolated validation are being prepared for release. The isolated r12 application with voice-profile-aware speech caching and the enrolled voice are now installed on the local host, with a live browser speech-generation pass. A subsequent explicit request to activate the selected voice superseded the temporary audition hold. Final release remains pending replacement of the initial Instruct checkpoint with the required Thinking checkpoint and fresh acceptance. Preserve audition originals and reproducibility assets. No private recordings or vectors are part of the release.
+Source and isolated validation are being prepared for release. The r14 application is installed locally with Qwen3.8 reasoning, voice-profile-aware speech caching, and explicit unsupported-media notices that keep text turns responsive. Three actual Qwen3.8 turns passed, including an attempted audio listen and follow-up. The currently selected voice is Rounded 09 at +1.25 semitones, explicitly confirmed by the user; native synthesis and the matching Desktop audition were verified. Earlier browser speech tests remain evidence for their recorded versions, not fresh Thinking acceptance. A subsequent explicit request to activate the selected voice superseded the temporary audition hold. Final release remains pending replacement of the initial Instruct checkpoint with the required Thinking checkpoint and fresh acceptance. Preserve audition originals and reproducibility assets. No private recordings or vectors are part of the release.
 
 ## Reasoning and activity
 

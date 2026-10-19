@@ -11,7 +11,7 @@ This release adds native audio and combined audio/video input through Qwen3-Omni
 - Talk with Echo across multiple turns, attach audio/images/video, and inspect original tool results and model traces.
 - Watch supported episodes or movies in the chat. Choose continuous playback or checkpoints; both participants can pause. Whoever pauses speaks first. Echo can end watching while retaining the original media.
 - See playback position separately from the range actually processed by Echo. Analysis uses bounded native audio/video segments, not a transcript-only substitute.
-- Use a host-enrolled private voice for spoken replies. The default example is **Echo Rounded 08, pitch +0.75 semitone**. Personal recordings and conditioning must be installed locally; they are not distributed here.
+- Use a host-enrolled private voice for spoken replies. The default example is **Echo Rounded 09, pitch +1.25 semitones**. Personal recordings and conditioning must be installed locally; they are not distributed here.
 - Use `/auto` for free autonomy or `/auto <task>` for bounded work. The existing authority and source-isolation rules continue to apply.
 
 The required release checkpoint is **Qwen3-Omni Thinking**, with explicit reasoning output and native multimodal input. The initial Instruct installation did not meet the reasoning requirement. Its replacement is being acquired and must pass fresh reasoning, tool and media acceptance before final release. The activity panel displays actual returned reasoning and tool events, never invented traces. See [upstream model variants](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Thinking).
