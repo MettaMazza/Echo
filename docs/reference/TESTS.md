@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-19T21:43:34.097578+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-19T22:03:37.722290+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -893,6 +893,22 @@ SHA-256: `5a7cc4af3e8f2979279df201911ea468674cab1afd1c3ac339d547c268db87f2`
 Imports: [../../app/context/budget](../../app/context/budget.ep).
 
 Native `main` present. Argument indices read: none. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
+## `tests/context/test_cancelled_context.ep`
+
+[tests/context/test_cancelled_context.ep](../../tests/context/test_cancelled_context.ep) · 25 lines · 2072 bytes
+
+SHA-256: `73d0e5a714db13d37a2e43a918f184e6595c2b72cf5b5d35d990fe555bd7a524`
+
+Imports: [../../app/context/session_messages](../../app/context/session_messages.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
 
 Definitions:
 
@@ -1987,9 +2003,9 @@ Definitions:
 
 ## `tests/jobs/test_task_checklist.ep`
 
-[tests/jobs/test_task_checklist.ep](../../tests/jobs/test_task_checklist.ep) · 86 lines · 7654 bytes
+[tests/jobs/test_task_checklist.ep](../../tests/jobs/test_task_checklist.ep) · 88 lines · 7880 bytes
 
-SHA-256: `8000112f08e65a8e063743a73d88e9b6bcc5d5f31ca3c136fc65302bc5cee421`
+SHA-256: `b54239f80926843e8fbee2fd15f6d712d73cee6488f4a6938716207539ccea90`
 
 Imports: [../fixtures/delegation_fixture](../../tests/fixtures/delegation_fixture.ep), [../../app/agent/tool_dispatch](../../app/agent/tool_dispatch.ep), [../../app/context/session_messages](../../app/context/session_messages.ep), [../../app/web/run_store](../../app/web/run_store.ep).
 
