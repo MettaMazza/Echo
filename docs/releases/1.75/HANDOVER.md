@@ -1,5 +1,7 @@
 # Remaining work after 1.75
 
+**Latest r29 deployment / r27 session replay:** see [r27 session replay](session-replay-r27.md). The owner-history replay exposed an audio-capability denial and high end-to-end latency after the earlier r24 checks. r27 preserves native reasoning and Warm, corrects capability/presence context, and separates interactive/background model work. Measured replies still take tens of seconds; the earlier first-output figures are not complete-turn latency.
+
 Continue the dependency-ordered Phase Two plan; this release does not close its remaining items. Preserve the user's additions: cross-platform privacy boundaries, admin-only Discord DMs with public-channel redirection for others, private DM/public memory separation, Discord controls and thinking-trace parity, queue/steering acknowledgement, origin HUD, and server installation/acceptance. Do not grant Discord access to linked Mac/mobile sessions or private voice/video assets.
 
 Weight/vector introspection tied to the HUD remains a separately qualified research interface; model self-report, measured activation and intervention are distinct records. Preserve neutral freedom of expression rather than prescribing affect. The final prompt review remains joint work with Maria.

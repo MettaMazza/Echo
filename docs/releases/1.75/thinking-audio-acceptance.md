@@ -1,5 +1,7 @@
 # Thinking audio acceptance
 
+**Latest r29 deployment / r27 session replay:** see [r27 session replay](session-replay-r27.md). The owner-history replay exposed an audio-capability denial and high end-to-end latency after the earlier r24 checks. r27 preserves native reasoning and Warm, corrects capability/presence context, and separates interactive/background model work. Measured replies still take tens of seconds; the earlier first-output figures are not complete-turn latency.
+
 **Current status: passed within the recorded scope.** The selected-WAV sequence, post-reload listening, two cancellation recoveries, fresh generated-Warm listening and final live four-turn/reload checks are recorded in acceptance.json. Historical failures below are retained, not current pending work.
 
 Run with the actual selected private Echo voice WAV, not a greeting or substitute fixture. Record the exact private audio digest, loaded Thinking model and request provenance privately; publish only non-sensitive outcomes. Keep the reference, audio, embeddings and conversation records out of GitHub and Discord.

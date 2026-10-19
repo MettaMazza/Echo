@@ -1,5 +1,7 @@
 # Echo 1.75 release record
 
+**Latest r29 deployment / r27 session replay:** see [r27 session replay](session-replay-r27.md). The owner-history replay exposed an audio-capability denial and high end-to-end latency after the earlier r24 checks. r27 preserves native reasoning and Warm, corrects capability/presence context, and separates interactive/background model work. Measured replies still take tens of seconds; the earlier first-output figures are not complete-turn latency.
+
 Release source is based on the isolated fec6ab7 runtime and a5ca473 browser overlay, plus the committed changes in this release. Publication preserves GitHub main ancestry; local experimental development has a separate history. The release does not deploy the known-crashing newer guardian.
 
 ## Architecture additions
@@ -24,11 +26,13 @@ The live inherited identity contained contradictory instructions requiring liter
 
 The acceptance manifest records observed checks and known failures. Earlier errors are retained: repeated provider closings, a model claiming end after a status-only call, UUID transcription mistakes, unsupported browser codec, and the first TTS helper's missing WAV dependency. None is erased by a later successful test. No full-film soak, perfect temporal understanding, portable installation or completed Discord parity is claimed.
 
-The requested **19 October morning, 06:00–12:00 Europe/London** baseline was recovered directly from the retained archive: 18 top-level runs and 40 timed requests, including 10 warm requests. Warm median dispatch-to-first-output was 1.864 seconds and generation 31.613 tokens/s. The earlier comparison used 18 October and is retained as historical evidence. Sixteen recent warm Thinking requests measured median first output2.3735s and decode49.8534tokens/s. Different prompts, context and contention prevent an unqualified speedup claim. See [baseline receipt](morning-baseline.json).
+The requested **19 October morning, 06:00–12:00 Europe/London** baseline was recovered directly from the retained archive: 18 top-level runs and 40 timed requests, including 10 warm requests. Warm median dispatch-to-first-output was 1.864 seconds and generation 31.613 tokens/s. The earlier comparison used 18 October and is retained as historical evidence. Sixteen earlier r24 warm Thinking requests measured median first output2.3735s and decode49.8534tokens/s. Different prompts, context and contention prevent an unqualified speedup claim. See [baseline receipt](morning-baseline.json).
 
 ## Deployment status
 
-The r24 application is promoted locally to the verified Thinking checkpoint, with Qwen3.8 retained for rollback and Instruct retired/stopped. Warm controlled-prosody conditioning, acoustic anchor and +1.25 pitch remain active. Candidate acceptance covers actual selected-WAV listening across multiple turns and reattachment/reload, independent fresh generated speech, tool receipts, cancellation recovery and bounded audiovisual watching. Final live-browser checks passed across four turns: selected WAV transcription/acoustics, ending follow-up, reattachment with changed instruction, unrelated arithmetic, Warm Speak and reload persistence. The app was then restarted with zero active runs and left on a new empty conversation. No private recordings or vectors are distributed. See the acceptance manifest for exact scope and retained failures.
+Current deployment is r29 on the same verified Thinking checkpoint, with two 65,536-token slots and interactive priority. Warm is unchanged. The later owner-session regression, failed intermediate trials, final live checks and remaining latency are recorded in [session replay](session-replay-r27.md). The application was restarted idle against its original archive.
+
+The earlier r24 application was promoted locally to the verified Thinking checkpoint, with Qwen3.8 retained for rollback and Instruct retired/stopped. Warm controlled-prosody conditioning, acoustic anchor and +1.25 pitch remain active. Candidate acceptance covers actual selected-WAV listening across multiple turns and reattachment/reload, independent fresh generated speech, tool receipts, cancellation recovery and bounded audiovisual watching. Final live-browser checks passed across four turns: selected WAV transcription/acoustics, ending follow-up, reattachment with changed instruction, unrelated arithmetic, Warm Speak and reload persistence. The app was then restarted with zero active runs and left on a new empty conversation. No private recordings or vectors are distributed. See the acceptance manifest for exact scope and retained failures.
 
 ## Reasoning and activity
 

@@ -1,6 +1,6 @@
 # Application source reference — Echo 1.75
 
-Observed 2026-10-19T22:03:37.722290+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-19T23:01:42.588121+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -3963,9 +3963,9 @@ Lexical test references: [tests/providers/test_llama_metadata.ep](../../tests/pr
 
 ## `app/providers/llama_modalities.ep`
 
-[app/providers/llama_modalities.ep](../../app/providers/llama_modalities.ep) · 142 lines · 9158 bytes
+[app/providers/llama_modalities.ep](../../app/providers/llama_modalities.ep) · 173 lines · 12451 bytes
 
-SHA-256: `b3b5bae7863b36d59f5a77539f6ee0623013444f1d7b5ffcd1584a9987faf4d1`
+SHA-256: `fcbc373167c54cc7a6ecc9693357772fe0f53ae646e11a5013d1e25517fd1f02`
 
 Source annotations: Inspected against pinned llama.cpp b11429: /props.modalities describes the loaded projector's image/audio/video input support. No model-name guesses.
 
@@ -3977,6 +3977,7 @@ Definitions:
 5: define llama_modalities_check with body as Str and properties as Str returning Str:
 49: define llama_modalities_notice with body as Str and properties as Str returning Str:
 95: define llama_native_audio_context with body as Str and properties as Str returning Str:
+134: define llama_native_audio_receipt with body as Str and properties as Str returning Str:
 ```
 
 Lexical test references: [tests/providers/test_llama_modalities.ep](../../tests/providers/test_llama_modalities.ep).
@@ -4131,9 +4132,9 @@ Lexical test references: [tests/providers/test_native_mlx.ep](../../tests/provid
 
 ## `app/providers/prepare.ep`
 
-[app/providers/prepare.ep](../../app/providers/prepare.ep) · 142 lines · 9109 bytes
+[app/providers/prepare.ep](../../app/providers/prepare.ep) · 144 lines · 9347 bytes
 
-SHA-256: `b5091c4276e28a3a3b81a2e93bfbe2b86ef0e1a3737d30b7c4e4ffdf962a24b3`
+SHA-256: `1423ee9aacf4807dcc5e832035a2f2a361e43f6c63d2e7e83ba7a15c6eeed93a`
 
 Source annotations: Stable adapter result: status, loaded context, supported context, exact input, output room, wire body, endpoint, port, retained helper handle. Compatibility constructor for the existing host launch configuration. Host-authorized profile is an input, never selected by model/tool text. Archive its exact value for this attempt. Unsupported adapters fail explicitly.
 
@@ -4146,7 +4147,7 @@ Definitions:
 21: define provider_llama_profile with model as Str and port as Int returning Str:
 27: define provider_profile_status with profile as Str returning Str:
 72: define provider_prepare with database as Int and session as Str and identity as Str and profile as Str and body as Str and reserve as Int and cancellation as Int and batch as Int returning List:
-136: define provider_scheduled_body with session as Str and identity as Str and body as Str returning Str:
+138: define provider_scheduled_body with session as Str and identity as Str and body as Str returning Str:
 ```
 
 Lexical test references: [tests/agent/test_provider_profile.ep](../../tests/agent/test_provider_profile.ep), [tests/context/measure_recap_cache.ep](../../tests/context/measure_recap_cache.ep), [tests/context/test_attachment_recap_sources.ep](../../tests/context/test_attachment_recap_sources.ep), [tests/context/test_group_recap_authority.ep](../../tests/context/test_group_recap_authority.ep), [tests/context/test_group_recap_membership.ep](../../tests/context/test_group_recap_membership.ep), [tests/context/test_group_recap_rebuild.ep](../../tests/context/test_group_recap_rebuild.ep), [tests/context/test_live_group_recap.ep](../../tests/context/test_live_group_recap.ep), [tests/context/test_live_recorded_review.ep](../../tests/context/test_live_recorded_review.ep), [tests/context/test_merge_resume.ep](../../tests/context/test_merge_resume.ep), [tests/context/test_recap_findings.ep](../../tests/context/test_recap_findings.ep), [tests/context/test_recap_generate.ep](../../tests/context/test_recap_generate.ep), [tests/context/test_recap_rebuild.ep](../../tests/context/test_recap_rebuild.ep), [tests/context/test_session_messages.ep](../../tests/context/test_session_messages.ep), [tests/jobs/test_delegation_nonblocking.ep](../../tests/jobs/test_delegation_nonblocking.ep), [tests/jobs/test_live_checklist_return.ep](../../tests/jobs/test_live_checklist_return.ep), [tests/jobs/test_schedule_service.ep](../../tests/jobs/test_schedule_service.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/lifecycle/test_controller_review_inputs.ep](../../tests/lifecycle/test_controller_review_inputs.ep), [tests/lifecycle/test_live_controller_review.ep](../../tests/lifecycle/test_live_controller_review.ep), [tests/memory/test_extraction_coordination.ep](../../tests/memory/test_extraction_coordination.ep), [tests/memory/test_group_extraction.ep](../../tests/memory/test_group_extraction.ep), [tests/memory/test_runtime_memory.ep](../../tests/memory/test_runtime_memory.ep), [tests/providers/test_inference_admission.ep](../../tests/providers/test_inference_admission.ep), [tests/providers/test_long_output.ep](../../tests/providers/test_long_output.ep), [tests/providers/test_registry.ep](../../tests/providers/test_registry.ep), [tests/security/test_group_media.ep](../../tests/security/test_group_media.ep), [tests/security/test_live_group_conversation.ep](../../tests/security/test_live_group_conversation.ep), [tests/security/test_live_group_publication.ep](../../tests/security/test_live_group_publication.ep), [tests/security/test_live_group_workspace.ep](../../tests/security/test_live_group_workspace.ep), [tests/security/test_live_observer.ep](../../tests/security/test_live_observer.ep), [tests/security/test_live_silo_scratchpad.ep](../../tests/security/test_live_silo_scratchpad.ep), [tests/security/test_parallel_memory.ep](../../tests/security/test_parallel_memory.ep), [tests/web/test_provider_submission.ep](../../tests/web/test_provider_submission.ep), [tests/web/test_revisions.ep](../../tests/web/test_revisions.ep).

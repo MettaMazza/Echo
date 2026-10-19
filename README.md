@@ -1,5 +1,7 @@
 # Echo 1.75
 
+**Latest r29 deployment / r27 session replay:** see [r27 session replay](docs/releases/1.75/session-replay-r27.md). The owner-history replay exposed an audio-capability denial and high end-to-end latency after the earlier r24 checks. r27 preserves native reasoning and Warm, corrects capability/presence context, and separates interactive/background model work. Measured replies still take tens of seconds; the earlier first-output figures are not complete-turn latency.
+
 **Installed and validated on the configured host; relaunched idle.** Echo uses Qwen3-Omni Thinking with the selected Warm voice. Source and acceptance records distinguish tested scope from retained failures and remaining Phase Two work.
 
 Echo is a local conversational agent built in Ernos, with a durable conversation archive, native tools and a browser interface for Mac and linked devices.

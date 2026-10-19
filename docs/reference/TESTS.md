@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-19T22:03:37.722290+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-19T23:01:42.588121+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -3844,9 +3844,9 @@ Definitions:
 
 ## `tests/providers/test_llama_modalities.ep`
 
-[tests/providers/test_llama_modalities.ep](../../tests/providers/test_llama_modalities.ep) · 59 lines · 5524 bytes
+[tests/providers/test_llama_modalities.ep](../../tests/providers/test_llama_modalities.ep) · 84 lines · 7809 bytes
 
-SHA-256: `a0325a377936182bcf7769e3ab41aac3cc99b554003b4f599e20c410d768f85f`
+SHA-256: `150997052cf9ab555ce60e342eb13a021b9e2a6a6a09681a769f28028eb2fc38`
 
 Imports: [../../app/providers/llama_modalities](../../app/providers/llama_modalities.ep).
 
