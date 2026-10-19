@@ -1,4 +1,4 @@
--- Schema only from isolated 1.75 validation archive, not production. Observed 2026-10-19T21:07:14.397795+00:00; no private rows.
+-- Schema only from isolated 1.75 validation archive, not production. Observed 2026-10-19T21:27:19.553988+00:00; no private rows.
 
 CREATE INDEX echo_events_kind_sequence ON echo_events(kind,sequence);
 

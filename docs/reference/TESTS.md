@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-19T21:07:14.397795+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-19T21:27:19.553988+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -2733,9 +2733,9 @@ Definitions:
 
 ## `tests/media/test_video_tool.ep`
 
-[tests/media/test_video_tool.ep](../../tests/media/test_video_tool.ep) · 113 lines · 9488 bytes
+[tests/media/test_video_tool.ep](../../tests/media/test_video_tool.ep) · 116 lines · 9732 bytes
 
-SHA-256: `9b31c33f5a387d01da0a10f586311169906eaf5f40b299c42d53ff845fa5b726`
+SHA-256: `a353d8cc468c0f681e065bc4ffb11ca571b247da8041d8d19f45d8d4eedeb637`
 
 Source annotations: Script only the model request. Both synthesis and recognition are real.
 
