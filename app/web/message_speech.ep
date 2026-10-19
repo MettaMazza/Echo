@@ -22,24 +22,35 @@ define web_message_speak with database as Int and device as Str and source as St
         return "{\"status\":\"not-found\"}"
     set session to archive_list_text(row and 1)
     set text to archive_list_text(row and 2)
-    set job to concat("message-speech:plain-v1:" and ep_sha256(source))
+    # Bind reuse to the installed voice profile, not just the text. Older
+    # audio remains archived; a voice change creates a fresh speech job.
+    set voice_path to ptr_to_str(get_env("ECHO_VOICE_PROFILE"))
+    if string_length(voice_path) equals 0:
+        return "{\"status\":\"not-configured\"}"
+    set voice_profile to ptr_to_str(read_file(voice_path))
+    if voice_request_arguments(voice_profile) equals 0:
+        return "{\"status\":\"invalid-speech-profile\"}"
+    set voice_digest to ep_sha256(voice_profile)
+    set seed to concat(archive_hash_field(source) and archive_hash_field(voice_digest))
+    set job to concat("message-speech:voice-v2:" and ep_sha256(seed))
     if shared equals 1:
         # Include authority epochs so a fresh explicit click after a role/link
         # change is new work, while retries within that authority are stable.
         set epoch to history_collect_one(checkpoint_prepare(database and "SELECT p.identity,p.role,CAST((SELECT COUNT(*) FROM echo_authority_events WHERE principal=p.identity) AS TEXT),CAST((SELECT COUNT(*) FROM echo_principal_revocations WHERE principal=p.identity) AS TEXT),CAST((SELECT COUNT(*) FROM echo_device_link_events WHERE device=d.device) AS TEXT),CAST((SELECT COUNT(*) FROM echo_events WHERE kind='emergency_started') AS TEXT) FROM echo_devices d JOIN echo_principal_devices b ON b.device=d.device JOIN echo_principals p ON p.identity=b.principal WHERE d.device=?1 AND d.revoked=0 AND p.revoked=0;" and [device]))
         if not (archive_list_text(epoch and 0) equals "found"):
             return "{\"status\":\"not-authorized\"}"
-        set seed to concat(archive_hash_field(source) and archive_hash_field(device))
+        set seed to concat(archive_hash_field(source) and concat(archive_hash_field(device) and archive_hash_field(voice_digest)))
         set index to 1
         repeat while index < length_list(epoch):
             set seed to concat(seed and archive_hash_field(archive_list_text(epoch and index)))
             set index to index + 1
-        set job to concat("group-speech:plain-v1:" and ep_sha256(seed))
+        set job to concat("group-speech:voice-v2:" and ep_sha256(seed))
     set request to concat(job and ":request")
     set existing to tool_ledger_read(database and job and "speak")
     if existing equals 0:
         set arguments to concat("{\"text\":" and concat(provider_quote(text) and "}"))
         set payload to concat("{\"run_id\":" and provider_quote(job))
+        set payload to concat(payload and concat(",\"voice_profile_digest\":" and provider_quote(voice_digest)))
         set payload to concat(payload and concat(",\"speech_source\":" and provider_quote(source)))
         set payload to concat(payload and concat(",\"call_id\":\"speak\",\"name\":\"speech_synthesize\",\"arguments\":" and concat(provider_quote(arguments) and "}")))
         if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
