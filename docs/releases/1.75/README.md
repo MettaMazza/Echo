@@ -24,11 +24,11 @@ The live inherited identity contained contradictory instructions requiring liter
 
 The acceptance manifest records observed checks and known failures. Earlier errors are retained: repeated provider closings, a model claiming end after a status-only call, UUID transcription mistakes, unsupported browser codec, and the first TTS helper's missing WAV dependency. None is erased by a later successful test. No full-film soak, perfect temporal understanding, portable installation or completed Discord parity is claimed.
 
-Baseline speed data is from the retained **18 October morning** sample, not a proven controlled 19 October morning comparison. Warm Omni decoding observed roughly49–56tokens/s versus the retained warm baseline median25.523; prompt/context/hardware contention differ. Cold prompt preparation can be materially slower. This is not an unqualified speedup or unlimited no-creep guarantee.
+The requested **19 October morning, 06:00–12:00 Europe/London** baseline was recovered directly from the retained archive: 18 top-level runs and 40 timed requests, including 10 warm requests. Warm median dispatch-to-first-output was 1.864 seconds and generation 31.613 tokens/s. The earlier comparison used 18 October and is retained as historical evidence. The fresh Thinking comparison is pending; different prompts, context and contention prevent an unqualified speedup claim. See [baseline receipt](morning-baseline.json).
 
 ## Deployment status
 
-Source and isolated validation are being prepared for release. The isolated r11 application and enrolled voice are now installed on the local host, with a live browser speech-generation pass. A subsequent explicit request to activate the selected voice superseded the temporary audition hold. Final release remains pending replacement of the initial Instruct checkpoint with the required Thinking checkpoint and fresh acceptance. Preserve audition originals and reproducibility assets. No private recordings or vectors are part of the release.
+Source and isolated validation are being prepared for release. The isolated r12 application with voice-profile-aware speech caching and the enrolled voice are now installed on the local host, with a live browser speech-generation pass. A subsequent explicit request to activate the selected voice superseded the temporary audition hold. Final release remains pending replacement of the initial Instruct checkpoint with the required Thinking checkpoint and fresh acceptance. Preserve audition originals and reproducibility assets. No private recordings or vectors are part of the release.
 
 ## Reasoning and activity
 

@@ -1,5 +1,7 @@
 # Echo 1.75
 
+**Qualification in progress — not yet a completed runtime release.** The source changes below are published; Thinking-model acceptance and final idle handoff remain open.
+
 Echo is a local conversational agent built in Ernos, with a durable conversation archive, native tools and a browser interface for Mac and linked devices.
 
 This release adds native audio and combined audio/video input through Qwen3-Omni, a private video library, in-chat/fullscreen watching, and the host-enrolled Echo voice. It also carries the multi-turn interim-message persistence fixes, mid-task questions, free/task autonomy and source-authority protections.
