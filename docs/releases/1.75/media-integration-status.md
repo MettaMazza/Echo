@@ -21,3 +21,11 @@ The 24-second Thinking watch test processed all played footage through four comp
 A second invalid-video regression was found in message reconstruction: a preserved invalid-arguments result could still be replaced with watch-boundary-changed when rebuilt into model context. The r20 guard checks parse success before applying that boundary test. The real native media regression verifies the reconstructed context retains invalid-arguments and continues to subsequent valid calls.
 
 Final Thinking promotion, the remaining watch controls, final latency comparison and idle handoff remain pending. No full-film soak has been performed. Original private media and conversation payloads remain outside this repository; public documentation records test scope and failures only.
+
+## Native audio capability context candidate
+
+A minimal request produced an acoustic description, while the same waveform with the full Echo system context denied receiving audio. An explicit current-capability preface restored a listening response in retained-request diagnostics. The adapter now adds that preface only when the loaded endpoint reports audio support and the request contains nonempty native waveform input. Filenames, transcripts, retrieval receipts, unsupported models and unknown capability metadata do not trigger it. Identity and audio bytes are preserved; the augmented request is token-counted and archived before inference. This is a transport fact, not a required judgment about gender, accent, preference or emotion.
+
+Native checks cover idempotence, text-only and unsupported cases, and repeated large multimodal requests. The first browser build rejected the large request; retaining intermediate splice strings fixed the observed failure on retry. The retry reached inference with the exact selected Warm waveform. Full browser listening acceptance remains pending.
+
+The corrected browser retry returned the exact selected clip transcript and an acoustic description. The follow-up ending, reattachment with changed instructions, and unrelated arithmetic all answered correctly. All four replies survived reload/reopening. The first acoustic answer still speculated about room and equipment; this limitation is retained. Post-reload listening, cancellation and fresh dynamic speech checks remain pending.
