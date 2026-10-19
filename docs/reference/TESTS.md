@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-19T19:46:40.190492+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-19T21:07:14.397795+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -2733,9 +2733,9 @@ Definitions:
 
 ## `tests/media/test_video_tool.ep`
 
-[tests/media/test_video_tool.ep](../../tests/media/test_video_tool.ep) · 106 lines · 8752 bytes
+[tests/media/test_video_tool.ep](../../tests/media/test_video_tool.ep) · 113 lines · 9488 bytes
 
-SHA-256: `54a9e7d00424086bcd05868ff041e366ce5f94ddaae9e895076c484e5b85e745`
+SHA-256: `9b31c33f5a387d01da0a10f586311169906eaf5f40b299c42d53ff845fa5b726`
 
 Source annotations: Script only the model request. Both synthesis and recognition are real.
 
@@ -3595,6 +3595,22 @@ Definitions:
 7: define main returning Int:
 ```
 
+## `tests/providers/test_history_zero_boundary.ep`
+
+[tests/providers/test_history_zero_boundary.ep](../../tests/providers/test_history_zero_boundary.ep) · 20 lines · 1325 bytes
+
+SHA-256: `5901f9bfc8784e0c0b512ed353729b47c1d6cce9b5cbaf72fa3ebc9e03c341a3`
+
+Imports: [../../app/tools/history_tools](../../app/tools/history_tools.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
 ## `tests/providers/test_image_context_visibility.ep`
 
 [tests/providers/test_image_context_visibility.ep](../../tests/providers/test_image_context_visibility.ep) · 68 lines · 4994 bytes
@@ -3759,21 +3775,21 @@ Definitions:
 
 ## `tests/providers/test_live_thinking_multiturn.ep`
 
-[tests/providers/test_live_thinking_multiturn.ep](../../tests/providers/test_live_thinking_multiturn.ep) · 63 lines · 5801 bytes
+[tests/providers/test_live_thinking_multiturn.ep](../../tests/providers/test_live_thinking_multiturn.ep) · 68 lines · 6019 bytes
 
-SHA-256: `2986ba96ec7daeb85c51e48c6e1a5d1a6a1a103a82d502b9ee0e8fea5c00665d`
+SHA-256: `81391fa53926ef3ab74fba162c7af20dca835f7e0d11094462e8d354eaff308b`
 
 Source annotations: Live model acceptance, never a fixture substitute. Run only on an isolated archive and the exact Thinking profile; retain all failures and raw streams.
 
-Imports: [../../app/agent/runner](../../app/agent/runner.ep), [../../app/web/run_store](../../app/web/run_store.ep), `fs` (toolchain/library).
+Imports: [../../app/agent/runner](../../app/agent/runner.ep), [../../app/web/run_store](../../app/web/run_store.ep), [../../app/jobs/delegation_schema](../../app/jobs/delegation_schema.ep), `fs` (toolchain/library).
 
 Native `main` present. Argument indices read: 1, 2. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
 
 Definitions:
 
 ```text
-7: define thinking_turn with database as Int and session as Str and run as Str and prompt as Str and profile as Str and expected as Str returning Int:
-27: define main returning Int:
+8: define thinking_turn with database as Int and session as Str and run as Str and prompt as Str and profile as Str and expected as Str returning Int:
+28: define main returning Int:
 ```
 
 ## `tests/providers/test_live_unified_image.ep`
@@ -3996,9 +4012,9 @@ Definitions:
 
 ## `tests/providers/test_registry.ep`
 
-[tests/providers/test_registry.ep](../../tests/providers/test_registry.ep) · 35 lines · 2248 bytes
+[tests/providers/test_registry.ep](../../tests/providers/test_registry.ep) · 47 lines · 3148 bytes
 
-SHA-256: `51532eb19ab4d8e30777732e0ab2ac80a4012d025be4db63697de143cbddfe93`
+SHA-256: `8ef188c1c4c2af357cad7e3a95dc8be2c591c6ac570380e502dabac42e339d2e`
 
 Imports: [../../app/providers/registry](../../app/providers/registry.ep).
 
