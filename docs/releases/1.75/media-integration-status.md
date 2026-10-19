@@ -1,4 +1,6 @@
-# Media integration qualification — in progress
+# Media integration qualification
+
+**Current status:** Thinking is installed, final live audio/speech/reload checks passed, and Echo is idle. Historical pending statements below describe earlier test stages. Current bounded-watch coverage is 24 seconds; no full-film soak or perfect timing interpretation is claimed.
 
 Thinking model and matching projector are fully downloaded and hash-verified. Four-turn native reasoning and source-bound tool checks passed. Production remains on Qwen3.8 reasoning with the selected Warm voice; Instruct is retired and its server is stopped.
 

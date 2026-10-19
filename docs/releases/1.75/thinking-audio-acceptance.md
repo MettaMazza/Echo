@@ -1,4 +1,6 @@
-# Thinking audio acceptance — required before promotion
+# Thinking audio acceptance
+
+**Current status: passed within the recorded scope.** The selected-WAV sequence, post-reload listening, two cancellation recoveries, fresh generated-Warm listening and final live four-turn/reload checks are recorded in acceptance.json. Historical failures below are retained, not current pending work.
 
 Run with the actual selected private Echo voice WAV, not a greeting or substitute fixture. Record the exact private audio digest, loaded Thinking model and request provenance privately; publish only non-sensitive outcomes. Keep the reference, audio, embeddings and conversation records out of GitHub and Discord.
 

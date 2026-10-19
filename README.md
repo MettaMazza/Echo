@@ -1,6 +1,6 @@
 # Echo 1.75
 
-**Thinking is promoted; final live handoff checks are in progress.** Source and acceptance records distinguish current checks from retained historical failures.
+**Installed and validated on the configured host; relaunched idle.** Echo uses Qwen3-Omni Thinking with the selected Warm voice. Source and acceptance records distinguish tested scope from retained failures and remaining Phase Two work.
 
 Echo is a local conversational agent built in Ernos, with a durable conversation archive, native tools and a browser interface for Mac and linked devices.
 
@@ -14,7 +14,7 @@ This release adds native audio and combined audio/video input through Qwen3-Omni
 - Use a host-enrolled private voice for spoken replies. The default example is **Echo Warm hybrid, pitch +1.25 semitones**. The current host selection uses two user-supplied private recordings blended with a synthetic Warm character; its Desktop audition is verified. The active helper anchors to that accepted voice, generates sentence by sentence and applies controlled pacing/pauses rather than higher sampling randomness. Two native long-speech checks passed within their documented scope; browser Speak/reload and native cache tests passed; actual selected-WAV and fresh generated-speech Thinking multi-turn listening checks passed in the isolated candidate. Personal recordings and conditioning must be installed locally; they are not distributed here.
 - Use `/auto` for free autonomy or `/auto <task>` for bounded work. The existing authority and source-isolation rules continue to apply.
 
-The required release checkpoint is **Qwen3-Omni Thinking**, with explicit reasoning output and native multimodal input. The initial Instruct installation did not meet the reasoning requirement. Thinking artifacts are downloaded and hash-verified. Native four-turn reasoning/tools, selected-voice multi-turn browser listening, fresh speech, cancellation recovery and bounded combined audio/video checks passed in the isolated candidate. Instruct is retired and its service is stopped. The live application is now on Thinking; final live handoff checks remain open. The activity panel displays actual returned reasoning and tool events, never invented traces. See [upstream model variants](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Thinking).
+The required release checkpoint is **Qwen3-Omni Thinking**, with explicit reasoning output and native multimodal input. The initial Instruct installation did not meet the reasoning requirement. Thinking artifacts are downloaded and hash-verified. Native four-turn reasoning/tools, selected-voice multi-turn browser listening, fresh speech, cancellation recovery and bounded combined audio/video checks passed in the isolated candidate. Instruct is retired and its service is stopped. The live application is on Thinking, and the final four-turn audio/speech/reload checks passed before the idle restart. The activity panel displays actual returned reasoning and tool events, never invented traces. See [upstream model variants](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Thinking).
 
 ## Tested scope and limits
 
