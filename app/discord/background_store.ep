@@ -46,7 +46,7 @@ define discord_background_reserve with journal as Int and run as Str and inbox a
 # Explicit state transitions retain an immutable diagnostic trail. Recovery
 # holds a canonical conversation until uncertain work has been reconciled.
 define discord_background_transition with journal as Int and run as Str and expected as Str and next_state as Str and worker as Str and process as Int and detail as Str returning Str:
-    if not ((expected equals "reserved" and (next_state equals "running" or else next_state equals "released" or else next_state equals "recovery")) or else (expected equals "running" and (next_state equals "released" or else next_state equals "recovery")) or else (expected equals "recovery" and next_state equals "released")):
+    if not ((expected equals "reserved" and (next_state equals "running" or else next_state equals "released" or else next_state equals "recovery")) or else (expected equals "running" and (next_state equals "released" or else next_state equals "recovery")) or else (expected equals "recovery" and (next_state equals "released" or else next_state equals "running"))):
         return "invalid-transition"
     if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
         return "busy"
@@ -74,3 +74,22 @@ define discord_background_transition with journal as Int and run as Str and expe
     if sql_execute(journal and "COMMIT;") is not equal to 0:
         return migration_fail(journal and "commit-failed")
     return "recorded"
+
+# A retriable ready run still occupies its canonical conversation. Keep the
+# reservation while clearing the finished worker, so a new foreground message
+# cannot be dequeued into a session that is already active.
+define discord_background_requeue with journal as Int and run as Str and worker as Str returning Str:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "busy"
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and worker)
+    set now to int_to_string(ep_time_now_ms())
+    set added to append_list(values and now)
+    if tool_ledger_change(journal and "UPDATE discord_background_runs SET state='reserved',worker='',process=0,updated_ms=CAST(?3 AS INTEGER) WHERE run=?1 AND worker=?2 AND state IN ('running','recovery') RETURNING run;" and values) is not equal to 0:
+        return migration_fail(journal and "owner-changed")
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_background_events(run,inbox,state,detail,observed_ms) SELECT run,inbox,'reserved','preflight retry retains conversation ownership',CAST(?3 AS INTEGER) FROM discord_background_runs WHERE run=?1;" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "commit-failed")
+    return "requeued"

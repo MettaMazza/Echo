@@ -5,6 +5,7 @@ import "discord/process"
 import "discord/typing"
 import "discord/job_worker"
 import "discord/job_dispatch"
+import "discord/background_supervisor"
 import "string"
 
 # Host-only isolated worker. Arguments: curl, secret file, journal, agent DB,
@@ -79,6 +80,16 @@ define discord_agent_main returning Int:
     set waits to rooted_literal_1
     set status to 1
     set children to create_list()
+    set background_children to create_list()
+    set provisioned to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_delegations';"))
+    set jobs_enabled to archive_list_text(provisioned and 0) equals "found"
+    if jobs_enabled and web_worker_schema(database) is not equal to 0:
+        return 6
+    set job_arguments to create_list()
+    set argument_index to 1
+    repeat while argument_index <= 12:
+        set added to append_list(job_arguments and get_argument(argument_index))
+        set argument_index to argument_index + 1
     repeat while not file_exists(get_argument(6)):
         set remaining to create_list()
         set child_failure to 0
@@ -92,6 +103,20 @@ define discord_agent_main returning Int:
         if child_failure is not equal to 0:
             display "Turn child requires recovery; no implicit replay."
             break
+        set remaining_jobs to create_list()
+        for each job in background_children:
+            set result to discord_process_poll(get_list(job and 1))
+            if result equals 0:
+                set added to append_list(remaining_jobs and job)
+        set background_children to remaining_jobs
+        set background_active to 0
+        if jobs_enabled:
+            if discord_background_settle(journal and database) is not equal to 0 or else discord_background_orphans(journal and database and background_children) is not equal to 0 or else discord_background_settle(journal and database) is not equal to 0 or else discord_background_retry(journal and database and ep_time_now_ms()) is not equal to 0 or else discord_background_prepare(journal and database and ep_time_now_ms()) is not equal to 0:
+                display "Background controller requires reconciliation; claims retained."
+                break
+            set background_active to discord_background_capacity(journal and database and background_children)
+            if background_active < 0:
+                break
         set typing_status to discord_typing_tick(get_argument(1) and token and journal and database and get_argument(5))
         if discord_worker_reconcile(journal) is not equal to 0:
             display "Delivery observation requires recovery."
@@ -115,7 +140,7 @@ define discord_agent_main returning Int:
         # Use the current provider's reported independent inference slots.
         # Different conversations may progress concurrently; a durable claim
         # serializes each user-in-channel/DM conversation.
-        if length_list(children) >= slots:
+        if length_list(children) + background_active >= slots:
             set waited to select(waits and 100)
             continue
         set claimed to discord_worker_claim(journal)
@@ -136,6 +161,12 @@ define discord_agent_main returning Int:
         else if not (archive_list_text(claimed and 0) equals "end" or else archive_list_text(claimed and 0) equals "busy"):
             display "Intake claim requires recovery."
             break
+        else if jobs_enabled and archive_list_text(claimed and 0) equals "end":
+            set launched to discord_background_resume_one(journal and database and job_arguments)
+            if archive_list_text(launched and 0) equals "end":
+                set launched to discord_background_launch_one(journal and database and job_arguments)
+            if archive_list_text(launched and 0) equals "worker-started":
+                set added to append_list(background_children and launched)
         set waited to select(waits and 500)
     if file_exists(get_argument(6)):
         set status to 0
@@ -143,6 +174,11 @@ define discord_agent_main returning Int:
     for each process in children:
         repeat while discord_process_poll(process) equals 0:
             set waited to select(waits and 100)
+    for each job in background_children:
+        repeat while discord_process_poll(get_list(job and 1)) equals 0:
+            set waited to select(waits and 100)
+    if jobs_enabled:
+        set settled to discord_background_settle(journal and database)
     set closed to net_close(lock)
     set closed to ep_dlclose(system)
     set closed to sql_close(database)

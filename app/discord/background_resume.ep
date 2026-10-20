@@ -1,0 +1,55 @@
+import "background_recovery"
+import "process"
+
+# Resume a recovered claim through the same isolated Discord executable role.
+# The native lock check excludes an owner that survived a controller restart.
+# Children independently verify the exact token again after acquiring that lock.
+define discord_background_resume_one with journal as Int and database as Int and arguments as List returning List:
+    if length_list(arguments) is not equal to 12:
+        return history_status("job-launch-configuration-invalid")
+    set rows to history_collect_one(archive_prepare(journal and "SELECT COALESCE(json_group_array(json_object('run',run,'worker',worker)),'[]') FROM discord_background_runs WHERE state='recovery' AND process=0;"))
+    if not (archive_list_text(rows and 0) equals "found"):
+        return history_status("database-error")
+    set tokens to provider_json_tokens(archive_list_text(rows and 1))
+    set items to provider_items(tokens and 0)
+    set index to 0
+    repeat while index < length_list(items):
+        set item to get_list(items and index)
+        set index to index + 1
+        set run to provider_value(tokens and provider_member(tokens and item and "run"))
+        set worker to provider_value(tokens and provider_member(tokens and item and "worker"))
+        if string_length(discord_job_origin(journal and database and run)) equals 0:
+            continue
+        set values to create_list()
+        set added to append_list(values and run)
+        set added to append_list(values and worker)
+        set ready to history_collect_one(checkpoint_prepare(database and "SELECT w.run FROM echo_web_workers w JOIN echo_runs r ON r.run=w.run JOIN echo_worker_lock_protocol p ON p.worker=w.worker AND p.run=w.run WHERE w.run=?1 AND w.worker=?2 AND w.status='running' AND r.state IN ('ready','tools') AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state NOT IN ('queued','observed'));" and values))
+        if not (archive_list_text(ready and 0) equals "found"):
+            continue
+        set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        if library equals 0:
+            return history_status("ownership-unavailable")
+        set lock to compaction_lock_acquire(database and concat("web-worker:" and run) and library)
+        if lock < 0:
+            set closed to ep_dlclose(library)
+            continue
+        set closed to net_close(lock)
+        set closed to ep_dlclose(library)
+        set command to create_list()
+        for each argument in arguments:
+            set added to append_list(command and ptr_to_str(argument))
+        set added to append_list(command and "--job")
+        set added to append_list(command and run)
+        set added to append_list(command and worker)
+        set process to discord_process_start(command and -1)
+        if process < 0:
+            return history_status("recovery-launch-failed")
+        set recorded to discord_background_transition(journal and run and "recovery" and "running" and worker and process and "recovered claim dispatched through isolated Discord role")
+        if not (recorded equals "recorded"):
+            display "Recovered process launched; journal receipt requires reconciliation."
+        set result to history_status("worker-started")
+        set added to append_list(result and process)
+        set added to append_list(result and run)
+        set added to append_list(result and worker)
+        return result
+    return history_status("end")

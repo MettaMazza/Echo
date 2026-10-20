@@ -1,0 +1,80 @@
+import "background_store"
+import "job_origin"
+import "../web/recovery"
+
+# Journal and execution archive have separate transactions. Bind a replacement
+# only to the exact journal owner observed before native-lock recovery. If the
+# host dies between the two commits, the next pass reads the archive's current
+# claim and proves abandonment again; it never executes an old worker token.
+define discord_background_rebind with journal as Int and run as Str and previous as Str and worker as Str returning Str:
+    if string_length(worker) equals 0 or else worker equals previous:
+        return "invalid-worker"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "busy"
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and previous)
+    set added to append_list(values and worker)
+    set now to int_to_string(ep_time_now_ms())
+    set added to append_list(values and now)
+    if tool_ledger_change(journal and "UPDATE discord_background_runs SET worker=?3,process=0,state='recovery',updated_ms=CAST(?4 AS INTEGER) WHERE run=?1 AND worker=?2 AND state IN ('reserved','running','recovery') RETURNING run;" and values) is not equal to 0:
+        return migration_fail(journal and "owner-changed")
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_background_events(run,inbox,state,detail,observed_ms) SELECT run,inbox,'recovery','native ownership recovery; replacement claim awaiting dispatch',CAST(?4 AS INTEGER) FROM discord_background_runs WHERE run=?1;" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "commit-failed")
+    return "rebound"
+
+# Pure recovery/admission, no process spawn and no inference. The controller
+# calls this only for a startup orphan or a child it has observed exit, never
+# simply because a request is slow. The native ownership lock is authoritative.
+define discord_background_recover with journal as Int and database as Int and run as Str returning List:
+    set values to create_list()
+    set added to append_list(values and run)
+    set held to history_collect_one(checkpoint_prepare(journal and "SELECT worker,inbox FROM discord_background_runs WHERE run=?1 AND state IN ('reserved','running','recovery');" and values))
+    if not (archive_list_text(held and 0) equals "found"):
+        return history_status("reservation-unavailable")
+    if not (discord_job_origin(journal and database and run) equals archive_list_text(held and 2)):
+        return history_status("origin-unavailable")
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return history_status("ownership-unavailable")
+    set lock to compaction_lock_acquire(database and concat("web-worker:" and run) and library)
+    if lock < 0:
+        set closed to ep_dlclose(library)
+        return history_status("worker-owned")
+    set outcome to discord_background_recover_owned(journal and database and run and archive_list_text(held and 1))
+    set closed to net_close(lock)
+    set closed to ep_dlclose(library)
+    return outcome
+
+define discord_background_recover_owned with journal as Int and database as Int and run as Str and journal_worker as Str returning List:
+    set values to create_list()
+    set added to append_list(values and run)
+    set claim to history_collect_one(checkpoint_prepare(database and "SELECT w.worker FROM echo_web_workers w JOIN echo_worker_lock_protocol p ON p.worker=w.worker AND p.run=w.run WHERE w.run=?1 AND w.status='running';" and values))
+    if not (archive_list_text(claim and 0) equals "found"):
+        return history_status("claim-not-recoverable")
+    set worker to agent_identity()
+    set restored to agent_recover_generation_owned(database and run and concat(worker and ":generation-recovery") and "0")
+    if not (restored equals "ready" or else restored equals "tools" or else restored equals "completed" or else restored equals "cancelled"):
+        return history_status("generation-needs-review")
+    if agent_recover_tools_owned(database and run) is not equal to 0 or else web_worker_recover_owned(database and run and archive_list_text(claim and 1) and worker) is not equal to 0:
+        return history_status("tool-outcome-needs-review")
+    if not (discord_background_rebind(journal and run and journal_worker and worker) equals "rebound"):
+        return history_status("journal-reconciliation-required")
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return history_status("run-unavailable")
+    set state to archive_list_text(row and 2)
+    if state equals "completed" or else state equals "cancelled":
+        set update_values to create_list()
+        set added to append_list(update_values and state)
+        set added to append_list(update_values and run)
+        set added to append_list(update_values and worker)
+        if tool_ledger_change(database and "UPDATE echo_web_workers SET status=?1 WHERE run=?2 AND worker=?3 AND status='running' RETURNING run;" and update_values) is not equal to 0:
+            return history_status("worker-receipt-required")
+    set result to history_status("recovered")
+    set added to append_list(result and run)
+    set added to append_list(result and worker)
+    set added to append_list(result and state)
+    return result

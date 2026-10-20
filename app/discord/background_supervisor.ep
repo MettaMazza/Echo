@@ -1,0 +1,70 @@
+import "background_resume"
+import "background_controller"
+import "background_settle"
+import "background_retry"
+
+define discord_background_tracked with children as List and run as Str returning Int:
+    for each child in children:
+        if archive_list_text(child and 2) equals run:
+            return 1
+    return 0
+
+# Children recorded by this controller are polled with waitpid. Other claims
+# may belong to a worker that survived the prior controller: only its native
+# ownership lock can establish whether recovery is allowed.
+define discord_background_orphans with journal as Int and database as Int and children as List returning Int:
+    set rows to history_collect_one(archive_prepare(journal and "SELECT COALESCE(json_group_array(json_object('run',run,'worker',worker,'state',state,'process',process)),'[]') FROM discord_background_runs WHERE state IN ('reserved','running','recovery');"))
+    if not (archive_list_text(rows and 0) equals "found"):
+        return 1
+    set tokens to provider_json_tokens(archive_list_text(rows and 1))
+    set items to provider_items(tokens and 0)
+    set index to 0
+    repeat while index < length_list(items):
+        set item to get_list(items and index)
+        set index to index + 1
+        set run to provider_value(tokens and provider_member(tokens and item and "run"))
+        if discord_background_tracked(children and run):
+            continue
+        set values to create_list()
+        set added to append_list(values and run)
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT w.worker,w.status,r.state FROM echo_web_workers w JOIN echo_runs r ON r.run=w.run WHERE w.run=?1;" and values))
+        if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 2) equals "running"):
+            continue
+        set journal_worker to provider_value(tokens and provider_member(tokens and item and "worker"))
+        set state to provider_value(tokens and provider_member(tokens and item and "state"))
+        set process to provider_value(tokens and provider_member(tokens and item and "process"))
+        if state equals "recovery" and process equals "0" and journal_worker equals archive_list_text(row and 1) and (archive_list_text(row and 3) equals "ready" or else archive_list_text(row and 3) equals "tools"):
+            continue
+        set recovered to discord_background_recover(journal and database and run)
+    return 0
+
+define discord_background_active with journal as Int and database as Int returning Int:
+    set rows to history_collect_one(archive_prepare(journal and "SELECT COALESCE(json_group_array(run),'[]') FROM discord_background_runs WHERE state IN ('running','recovery') AND process>0;"))
+    if not (archive_list_text(rows and 0) equals "found"):
+        return -1
+    set tokens to provider_json_tokens(archive_list_text(rows and 1))
+    set items to provider_items(tokens and 0)
+    set count to 0
+    for each item in items:
+        set values to create_list()
+        set added to append_list(values and provider_value(tokens and item))
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT status FROM echo_web_workers WHERE run=?1;" and values))
+        if archive_list_text(row and 0) equals "found" and archive_list_text(row and 1) equals "running":
+            set count to count + 1
+    return count
+
+# Count the union of durable active claims and locally tracked child processes.
+# A failed journal write after spawn must not make a real child disappear from
+# capacity accounting; a finished receipt still counts until waitpid reaps it.
+define discord_background_capacity with journal as Int and database as Int and children as List returning Int:
+    set count to discord_background_active(journal and database)
+    if count < 0:
+        return -1
+    for each child in children:
+        set values to create_list()
+        set added to append_list(values and archive_list_text(child and 2))
+        set held to history_collect_one(checkpoint_prepare(journal and "SELECT run FROM discord_background_runs WHERE run=?1 AND state IN ('running','recovery') AND process>0;" and values))
+        set active to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_web_workers WHERE run=?1 AND status='running';" and values))
+        if not (archive_list_text(held and 0) equals "found" and archive_list_text(active and 0) equals "found"):
+            set count to count + 1
+    return count

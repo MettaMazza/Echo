@@ -1,0 +1,64 @@
+import "background_store"
+import "../web/worker"
+
+define discord_background_transient with status as Str returning Int:
+    set value to status
+    if string_index_of(value and "access:") equals 0:
+        set value to substring(value and 7 and string_length(value) - 7)
+    if string_index_of(value and "transfer-unresolved:") equals 0:
+        return 1
+    return value equals "rate-limited" or else value equals "response-unavailable" or else value equals "rate-response-unresolved" or else value equals "http-429" or else value equals "http-500" or else value equals "http-502" or else value equals "http-503" or else value equals "http-504"
+
+# Only a finished preflight with a ready run can be retried here. Model/tool
+# failures, uncertain side effects and authorization denials are not converted
+# into retry permission. Read-only network checks use a durable backoff.
+define discord_background_retry with journal as Int and database as Int and now as Int returning Int:
+    set rows to history_collect_one(archive_prepare(journal and "SELECT COALESCE(json_group_array(json_object('run',run,'worker',worker,'state',state,'updated',updated_ms)),'[]') FROM discord_background_runs WHERE state IN ('running','recovery');"))
+    if not (archive_list_text(rows and 0) equals "found"):
+        return 1
+    set tokens to provider_json_tokens(archive_list_text(rows and 1))
+    set items to provider_items(tokens and 0)
+    set index to 0
+    repeat while index < length_list(items):
+        set item to get_list(items and index)
+        set index to index + 1
+        set run to provider_value(tokens and provider_member(tokens and item and "run"))
+        set worker to provider_value(tokens and provider_member(tokens and item and "worker"))
+        set state to provider_value(tokens and provider_member(tokens and item and "state"))
+        set updated to http_decimal(provider_value(tokens and provider_member(tokens and item and "updated")))
+        set values to create_list()
+        set added to append_list(values and run)
+        set added to append_list(values and worker)
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT w.status FROM echo_web_workers w JOIN echo_runs r ON r.run=w.run WHERE w.run=?1 AND w.worker=?2 AND r.state='ready' AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state NOT IN ('queued','observed'));" and values))
+        if not (archive_list_text(row and 0) equals "found"):
+            continue
+        set status to archive_list_text(row and 1)
+        if not (status equals "launch-failed") and (discord_background_transient(status) equals 0 or else now - updated < 30000):
+            continue
+        set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        if library equals 0:
+            return 1
+        set lock to compaction_lock_acquire(database and concat("web-worker:" and run) and library)
+        if lock < 0:
+            set closed to ep_dlclose(library)
+            continue
+        set result to 0
+        if not (status equals "launch-failed"):
+            if state equals "running":
+                set noted to discord_background_transition(journal and run and "running" and "recovery" and worker and 0 and concat("read-only preflight retry: " and status))
+                if not (noted equals "recorded"):
+                    set result to 1
+                else:
+                    set state to "recovery"
+            if result equals 0:
+                set added to append_list(values and status)
+                set result to tool_ledger_change(database and "UPDATE echo_web_workers SET status='launch-failed' WHERE run=?1 AND worker=?2 AND status=?3 RETURNING run;" and values)
+        if result equals 0:
+            set released to discord_background_requeue(journal and run and worker)
+            if not (released equals "requeued"):
+                set result to 1
+        set closed to net_close(lock)
+        set closed to ep_dlclose(library)
+        if result is not equal to 0:
+            return 1
+    return 0
