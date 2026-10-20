@@ -1,0 +1,48 @@
+import "steering_store"
+
+# A displayed steering control binds one source to one observed active turn.
+# Never redirect a delayed click to whichever turn happens to be newest.
+define discord_queue_offer_schema with journal as Int returning Int:
+    if discord_steering_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_queue_offers(source TEXT PRIMARY KEY REFERENCES discord_inbox(identity),target TEXT NOT NULL REFERENCES discord_inbox(identity),actor TEXT NOT NULL,created_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_queue_offers_no_update BEFORE UPDATE ON discord_queue_offers BEGIN SELECT RAISE(ABORT,'Queue offer is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_queue_offers_no_delete BEFORE DELETE ON discord_queue_offers BEGIN SELECT RAISE(ABORT,'Queue offer is immutable'); END;")
+
+# Returns offered,target,actor. Recording an offer does not claim the queue item.
+# Both ordinary claimed work and exclusive command/background work participate.
+define discord_queue_offer with journal as Int and source as Str returning List:
+    if discord_queue_offer_schema(journal) is not equal to 0 or else sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("offer-busy")
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT target,actor FROM discord_queue_offers WHERE source=?1;" and [source]))
+    if archive_list_text(prior and 0) equals "found":
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return ["offered",archive_list_text(prior and 1),archive_list_text(prior and 2)]
+    if not (archive_list_text(prior and 0) equals "end"):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("offer-read-failed")
+    set query to "SELECT DISTINCT t.identity,json_extract(s.payload,'$.author.id') FROM discord_inbox s JOIN discord_inbox t ON t.identity<>s.identity AND json_extract(t.payload,'$.channel_id')=json_extract(s.payload,'$.channel_id') AND COALESCE(json_extract(t.payload,'$.guild_id'),'')=COALESCE(json_extract(s.payload,'$.guild_id'),'') AND (CASE WHEN t.kind='INTERACTION_CREATE' THEN json_extract(t.payload,'$.member.user.id') ELSE json_extract(t.payload,'$.author.id') END)=json_extract(s.payload,'$.author.id') WHERE s.identity=?1 AND s.kind='MESSAGE_CREATE' AND NOT EXISTS(SELECT 1 FROM discord_agent_jobs j WHERE j.inbox=s.identity) AND (EXISTS(SELECT 1 FROM discord_agent_jobs j WHERE j.inbox=t.identity AND j.state='claimed') OR EXISTS(SELECT 1 FROM discord_background_runs b WHERE b.inbox=t.identity AND b.exclusive=1 AND b.state IN ('reserved','running'))) ORDER BY t.rowid;"
+    set statement to checkpoint_prepare(journal and concat(substring(query and 0 and string_length(query) - 1) and " LIMIT 1;") and [source])
+    set first to history_collect_one(statement)
+    # history_collect_one finalizes its statement; separately count candidates
+    # rather than choosing arbitrarily if inconsistent state has two targets.
+    set count to history_collect_one(checkpoint_prepare(journal and concat("SELECT COUNT(*) FROM (" and concat(substring(query and 0 and string_length(query) - 1) and ");")) and [source]))
+    if not (archive_list_text(first and 0) equals "found") or else not (archive_list_text(count and 1) equals "1"):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("no-unique-active-target")
+    set target to archive_list_text(first and 1)
+    set actor to archive_list_text(first and 2)
+    if discord_snowflake(actor) equals 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("invalid-actor")
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_queue_offers VALUES(?1,?2,?3,CAST(?4 AS INTEGER));" and [source,target,actor,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("offer-write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("offer-commit-failed")
+    return ["offered",target,actor]
+
+define discord_queue_offer_reserve with journal as Int and source as Str and actor as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT target,actor FROM discord_queue_offers WHERE source=?1;" and [source]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 2) equals actor):
+        return "offer-binding-denied"
+    return discord_steering_reserve(journal and source and archive_list_text(row and 1) and actor)
