@@ -10,7 +10,7 @@ acceptance matrix, not a completion claim. The source inventory is
 | Send and reply | Native mention and reply-to-message | Prior live text acceptance exists |
 | User/account/source labels | Native account plus authenticated source in context/HUD | Name propagation tested; full HUD presentation pending |
 | New session and session selection | `/new`, session selector/history controls | Pending; preserve same user/channel silo and eligible long-term memory |
-| Thinking and tool activity | Source-linked activity thread; private equivalent where threads cannot preserve access | Scoped original-event projection in qualification; thread transport and live UI pending |
+| Thinking and tool activity | Persistent thread attached to the exact originating user message; private equivalent where threads cannot preserve access | Scoped projection native pass; actual empty source-attached thread creation and process-restart reconciliation pass; event delivery/controller and full UI pending |
 | Interim and subsequent replies | Separate durable replies bound to immutable final events | Live delegation source produced two sent replies; broader UI parity pending |
 | Speak | Button on bot response, actual Warm synthesis of that response | Pending; never substitute the audition WAV |
 | Queue, steer and cancel | Queue reactions plus labelled controls, steering confirmation, cancel | Native reservation/intake foundations; live controls pending |
@@ -45,6 +45,12 @@ outcomes and avoid duplicate messages after restart. Native tests are required
 but not sufficient: qualify actual controls over multiple turns, reconnect,
 reload, duplicate/stale clicks, revoked authority and two ordinary users.
 No command or button is registered as usable before its handler exists.
+
+Maria's explicit placement clarification: the prompt stays in the channel and
+Echo's conversational replies stay there too. Only reasoning, tool activity
+and progress belong in the attached thread. Completion must not delete it.
+Discord auto-archiving is not deletion; reopening must retain the original
+thread identity and history. A new user turn gets its own source binding.
 
 API references: [threads](https://docs.discord.com/developers/resources/channel),
 [interactions](https://docs.discord.com/developers/interactions/receiving-and-responding).

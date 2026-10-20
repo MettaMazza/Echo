@@ -1,0 +1,105 @@
+import "activity_thread"
+import "trace"
+
+# Full traces require a destination approved for their complete audience.
+# Public status rendering does not export model reasoning, arguments/results,
+# guidance, source paths or arbitrary tool-returned strings.
+define discord_activity_render with page as Str and full_trace as Int returning Str:
+    set tokens to provider_json_tokens(page)
+    if tokens equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "status")) equals "found"):
+        return ""
+    set entries to provider_items(tokens and provider_member(tokens and 0 and "entries"))
+    set builder to create_builder()
+    set previous to ""
+    for each entry in entries:
+        set kind to provider_value(tokens and provider_member(tokens and entry and "kind"))
+        set text to provider_value(tokens and provider_member(tokens and entry and "text"))
+        if full_trace is not equal to 1:
+            set text to ""
+            if kind equals "model_request":
+                set text to "Model request started."
+            else if kind equals "tool_call":
+                set text to "Tool call recorded."
+            else if kind equals "tool_result":
+                set text to "Tool result recorded."
+            else if kind equals "assistant_final":
+                set text to "Reply completed; main-channel delivery is tracked separately."
+            else if kind equals "model_reasoning" and not (previous equals kind):
+                set text to "Reasoning recorded; privileged details remain in the restricted activity view."
+        if string_length(text) > 0:
+            if not (kind equals "model_reasoning" and previous equals kind and full_trace equals 1):
+                set added to builder_append(builder and concat("\n\n**" and concat(kind and "**\n")))
+            set added to builder_append(builder and text)
+        set previous to kind
+    return string_trim(ptr_to_str(builder_to_string(builder)))
+
+define discord_activity_pages_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_activity_pages(identity TEXT PRIMARY KEY,inbox TEXT NOT NULL REFERENCES discord_inbox(identity),run TEXT NOT NULL,destination TEXT NOT NULL,after_cursor INTEGER NOT NULL,next_cursor INTEGER NOT NULL,full_trace INTEGER NOT NULL CHECK(full_trace IN (0,1)),content TEXT NOT NULL,parts INTEGER NOT NULL,state TEXT NOT NULL CHECK(state IN ('planned','queued'))); CREATE TRIGGER IF NOT EXISTS discord_activity_page_immutable BEFORE UPDATE OF identity,inbox,run,destination,after_cursor,next_cursor,full_trace,content,parts ON discord_activity_pages BEGIN SELECT RAISE(ABORT,'Activity pages are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_page_no_delete BEFORE DELETE ON discord_activity_pages BEGIN SELECT RAISE(ABORT,'Activity pages persist'); END;")
+
+# Stage a page's exact rendered bytes before producing transport intents.
+# The supplied destination is host-authorized; final delivery rechecks it.
+# Re-running the same page reuses its immutable text, never a newer model run.
+define discord_activity_page_plan with journal as Int and inbox as Str and run as Str and destination as Str and after as Int and page as Str and full_trace as Int returning Str:
+    if discord_activity_pages_schema(journal) is not equal to 0 or else discord_snowflake(destination) equals 0 or else after < 0 or else (full_trace is not equal to 0 and full_trace is not equal to 1):
+        return "invalid-page"
+    set tokens to provider_json_tokens(page)
+    if tokens equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "status")) equals "found"):
+        return "invalid-page"
+    set next_cursor to http_decimal(provider_value(tokens and provider_member(tokens and 0 and "after")))
+    if next_cursor < after:
+        return "invalid-cursor"
+    set text to discord_activity_render(page and full_trace)
+    set seed to concat(archive_hash_field(run) and concat(archive_hash_field(destination) and concat(archive_hash_field(int_to_string(after)) and archive_hash_field(int_to_string(full_trace)))))
+    set identity to concat("activity-page:" and ep_sha256(seed))
+    set keys to create_list()
+    set added to append_list(keys and identity)
+    set existing to history_collect_one(checkpoint_prepare(journal and "SELECT inbox,run,destination,after_cursor,next_cursor,full_trace,content FROM discord_activity_pages WHERE identity=?;" and keys))
+    if archive_list_text(existing and 0) equals "found":
+        if not (archive_list_text(existing and 1) equals inbox) or else not (archive_list_text(existing and 7) equals text) or else not (archive_list_text(existing and 5) equals int_to_string(next_cursor)):
+            return "page-conflict"
+        return identity
+    set offset to 0
+    set parts to 0
+    repeat while offset < string_length(text):
+        set chunk to discord_trace_chunk(text and offset)
+        if string_length(chunk) equals 0:
+            return "invalid-utf8"
+        set offset to offset + string_length(chunk)
+        set parts to parts + 1
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and inbox)
+    set added to append_list(values and run)
+    set added to append_list(values and destination)
+    set added to append_list(values and int_to_string(after))
+    set added to append_list(values and int_to_string(next_cursor))
+    set added to append_list(values and int_to_string(full_trace))
+    set added to append_list(values and text)
+    set added to append_list(values and int_to_string(parts))
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_activity_pages VALUES(?1,?2,?3,?4,CAST(?5 AS INTEGER),CAST(?6 AS INTEGER),CAST(?7 AS INTEGER),?8,CAST(?9 AS INTEGER),'planned');" and values) and 101) is not equal to 0:
+        return "page-write-failed"
+    return identity
+
+define discord_activity_page_enqueue with journal as Int and identity as Str returning Str:
+    set values to create_list()
+    set added to append_list(values and identity)
+    set page to history_collect_one(checkpoint_prepare(journal and "SELECT inbox,destination,content FROM discord_activity_pages WHERE identity=?;" and values))
+    if not (archive_list_text(page and 0) equals "found"):
+        return "page-unavailable"
+    set text to archive_list_text(page and 3)
+    set offset to 0
+    set part to 0
+    repeat while offset < string_length(text):
+        set chunk to discord_trace_chunk(text and offset)
+        if string_length(chunk) equals 0:
+            return "invalid-utf8"
+        set body to concat("{\"content\":" and concat(provider_quote(chunk) and ",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false}}"))
+        set output to concat(identity and concat(":" and int_to_string(part)))
+        set result to discord_outbox_enqueue(journal and output and archive_list_text(page and 1) and archive_list_text(page and 2) and body)
+        if not (result equals "enqueued" or else result equals "already-enqueued"):
+            return result
+        set offset to offset + string_length(chunk)
+        set part to part + 1
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_activity_pages SET state='queued' WHERE identity=?;" and values) and 101) is not equal to 0:
+        return "page-state-failed"
+    return "queued"

@@ -1,0 +1,80 @@
+import "activity_thread"
+import "access"
+import "turn_guard"
+
+# Called by the host activity controller, not exposed as a model tool.
+# Thread creation is durable before POST. After an interrupted/uncertain
+# request, reconcile the deterministic source-message thread ID by GET.
+# Never manufacture a second thread or move the source to a newer reply.
+define discord_activity_ensure with library as Str and token as Str and journal as Int and inbox as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set planned to discord_activity_plan(journal and inbox)
+    if not (planned equals "planned" or else planned equals "creating" or else planned equals "uncertain" or else planned equals "ready"):
+        return planned
+    set values to create_list()
+    set added to append_list(values and inbox)
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT i.payload,t.source,t.channel,t.guild FROM discord_activity_threads t JOIN discord_inbox i ON i.identity=t.inbox WHERE t.inbox=?;" and values))
+    if not (archive_list_text(source and 0) equals "found"):
+        return "source-unavailable"
+    set original to archive_list_text(source and 1)
+    set message to archive_list_text(source and 2)
+    set room to archive_list_text(source and 3)
+    set guild to archive_list_text(source and 4)
+    set tokens to provider_json_tokens(original)
+    set user to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id"))
+    if file_exists(stop_file):
+        return "stopped"
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and user and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return concat("access:" and archive_list_text(access and 0))
+    set fresh to discord_source_check(library and token and journal and directory_path and original)
+    if not (fresh equals "current") or else file_exists(stop_file):
+        return "source-not-current"
+    set observed to discord_access_get(library and token and journal and directory_path and concat("/channels/" and message) and "GET:channel" and message)
+    if archive_list_text(observed and 0) equals "observed":
+        return discord_activity_observe(journal and inbox and archive_list_text(observed and 1))
+    if not (archive_list_text(observed and 0) equals "http-404"):
+        return concat("reconcile:" and archive_list_text(observed and 0))
+    if not (planned equals "planned"):
+        # Missing is not permission to replace a previously created thread.
+        return "thread-missing-retained"
+    if file_exists(stop_file):
+        return "stopped"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "busy"
+    set current to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_activity_threads WHERE inbox=?;" and values))
+    if not (archive_list_text(current and 1) equals "planned"):
+        return migration_fail(journal and "already-claimed")
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_activity_threads SET state='creating' WHERE inbox=?;" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "claim-failed")
+    set receipt_values to create_list()
+    set added to append_list(receipt_values and inbox)
+    set added to append_list(receipt_values and int_to_string(ep_time_now_ms()))
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_activity_thread_events(inbox,state,detail,observed_ms) VALUES(?1,'creating','source-attached thread intent committed before HTTP',CAST(?2 AS INTEGER));" and receipt_values) and 101) is not equal to 0:
+        return migration_fail(journal and "receipt-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return "commit-failed"
+    set route to concat("/channels/" and concat(room and concat("/messages/" and concat(message and "/threads"))))
+    set response to discord_access_body(library and token and journal and directory_path and "POST" and route and "POST:message-thread" and room and "{\"name\":\"Echo · Thinking and tools\",\"auto_archive_duration\":1440}")
+    if archive_list_text(response and 0) equals "observed":
+        return discord_activity_observe(journal and inbox and archive_list_text(response and 1))
+    set response_status to archive_list_text(response and 0)
+    set next_state to "uncertain"
+    # These are explicit no-creation outcomes, not timeouts. Retain the source
+    # and retry through fresh access/source checks and the shared rate clock.
+    if response_status equals "rate-limited" or else response_status equals "http-429" or else response_status equals "http-403" or else response_status equals "http-404":
+        set next_state to "planned"
+    set result_values to create_list()
+    set added to append_list(result_values and inbox)
+    set added to append_list(result_values and next_state)
+    set added to append_list(result_values and response_status)
+    set added to append_list(result_values and int_to_string(ep_time_now_ms()))
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "creation-receipt-busy"
+    set state_values to create_list()
+    set added to append_list(state_values and inbox)
+    set added to append_list(state_values and next_state)
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_activity_threads SET state=?2 WHERE inbox=?1 AND state='creating';" and state_values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_activity_thread_events(inbox,state,detail,observed_ms) VALUES(?1,?2,?3,CAST(?4 AS INTEGER));" and result_values) and 101) is not equal to 0:
+        return migration_fail(journal and "creation-receipt-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return "creation-receipt-failed"
+    return concat("creation-held:" and response_status)

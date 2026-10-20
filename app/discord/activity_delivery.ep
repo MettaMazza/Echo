@@ -1,0 +1,44 @@
+import "activity_pages"
+import "activity_transport"
+
+# Final activity delivery is separate from answer delivery: answers remain in
+# the original channel. Only the durable source-attached activity destination
+# may receive these intents. Full privileged traces need a restricted audience
+# controller and cannot be smuggled through this public-thread route.
+define discord_activity_deliver with library as Str and token as Str and journal as Int and database as Int and identity as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if not (string_index_of(identity and "activity-page:") equals 0):
+        return "not-activity"
+    set values to create_list()
+    set added to append_list(values and identity)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT p.inbox,p.run,p.destination,p.full_trace,i.payload,t.source,t.channel,t.guild FROM discord_outbox o JOIN discord_activity_pages p ON o.identity LIKE p.identity||':%' AND o.inbox=p.inbox AND o.channel=p.destination JOIN discord_activity_threads t ON t.inbox=p.inbox AND t.thread=p.destination AND t.state='ready' JOIN discord_inbox i ON i.identity=p.inbox WHERE o.identity=? AND o.state='pending';" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "activity-binding-unavailable"
+    if not (archive_list_text(row and 4) equals "0"):
+        return "restricted-trace-requires-private-destination"
+    set inbox to archive_list_text(row and 1)
+    set run to archive_list_text(row and 2)
+    if not (discord_job_origin(journal and database and run) equals inbox):
+        return "activity-authority-revoked"
+    if file_exists(stop_file):
+        return "stopped"
+    set original to archive_list_text(row and 5)
+    set tokens to provider_json_tokens(original)
+    set user to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id"))
+    set destination to archive_list_text(row and 3)
+    set room to archive_list_text(row and 7)
+    set guild to archive_list_text(row and 8)
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and user and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return concat("source-access:" and archive_list_text(access and 0))
+    set fresh to discord_source_check(library and token and journal and directory_path and original)
+    if not (fresh equals "current"):
+        return fresh
+    set observed to discord_access_get(library and token and journal and directory_path and concat("/channels/" and destination) and "GET:channel" and destination)
+    if not (archive_list_text(observed and 0) equals "observed") or else not (discord_activity_observe(journal and inbox and archive_list_text(observed and 1)) equals "ready"):
+        return "thread-revalidation-failed"
+    set target_access to discord_access_check(library and token and journal and directory_path and bot and guild and destination and user and admins)
+    if not (archive_list_text(target_access and 0) equals "allowed"):
+        return concat("thread-access:" and archive_list_text(target_access and 0))
+    if file_exists(stop_file) or else not (discord_job_origin(journal and database and run) equals inbox):
+        return "delivery-stopped"
+    return discord_delivery_send(library and token and journal and identity and directory_path)
