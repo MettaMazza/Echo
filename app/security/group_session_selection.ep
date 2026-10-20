@@ -1,0 +1,51 @@
+import "group_route"
+import "../jobs/delegation_schema"
+
+# New conversations retain their audience revision. Selection is a separate,
+# append-only operation; neither history nor membership is rewritten.
+define group_session_selection_schema with database as Int returning Str:
+    set prior to delegation_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return prior
+    return migration_apply(database and 27 and "explicit-group-session-selection" and "CREATE TABLE echo_group_session_choices(operation TEXT PRIMARY KEY,group_id TEXT NOT NULL REFERENCES echo_groups(identity),revision INTEGER NOT NULL CHECK(revision>0),session TEXT NOT NULL UNIQUE REFERENCES echo_group_sessions(session) DEFERRABLE INITIALLY DEFERRED,device TEXT NOT NULL REFERENCES echo_devices(device),created_ms INTEGER NOT NULL); CREATE TRIGGER echo_group_choice_no_update BEFORE UPDATE ON echo_group_session_choices BEGIN SELECT RAISE(ABORT,'Session choice provenance is immutable'); END; CREATE TRIGGER echo_group_choice_no_delete BEFORE DELETE ON echo_group_session_choices BEGIN SELECT RAISE(ABORT,'Session choice provenance persists'); END; CREATE TRIGGER echo_group_choice_before_session BEFORE INSERT ON echo_group_session_choices WHEN EXISTS(SELECT 1 FROM echo_sessions WHERE session=NEW.session) BEGIN SELECT RAISE(ABORT,'A new conversation must be empty'); END; DROP TRIGGER echo_group_canonical_unique; CREATE TRIGGER echo_group_canonical_unique BEFORE INSERT ON echo_group_sessions WHEN NOT EXISTS(SELECT 1 FROM echo_delegations WHERE session=NEW.session) AND NOT EXISTS(SELECT 1 FROM echo_group_session_choices c WHERE c.session=NEW.session AND c.group_id=NEW.group_id AND c.revision=NEW.revision) AND EXISTS(SELECT 1 FROM echo_group_sessions s WHERE s.group_id=NEW.group_id AND s.revision=NEW.revision AND NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=s.session) AND NOT EXISTS(SELECT 1 FROM echo_group_session_choices c WHERE c.session=s.session)) BEGIN SELECT RAISE(ABORT,'Canonical group session already exists'); END; CREATE TRIGGER echo_group_choice_audience BEFORE INSERT ON echo_group_sessions WHEN EXISTS(SELECT 1 FROM echo_group_session_choices c WHERE c.session=NEW.session AND (c.group_id<>NEW.group_id OR c.revision<>NEW.revision)) BEGIN SELECT RAISE(ABORT,'New conversation audience must match its choice'); END;")
+
+# The connector supplies an authenticated device, exact namespace and durable
+# operation ID. Fresh permission checks precede this call. Database authority
+# is rechecked under the write lock, including for redelivered operations.
+define group_session_restart with database as Int and device as Str and operation as Str and group_id as Str and platform as Str and server as Str and room as Str and revision as Int returning List:
+    if string_length(operation) equals 0 or else group_text_valid(operation) equals 0:
+        return history_status("invalid-operation")
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("writer-lock-unavailable")
+    if group_audience_allows(database and device and group_id and platform and server and room and revision and 1) equals 0:
+        return history_status(migration_fail(database and "audience-not-authorized"))
+    set values to create_list()
+    set added to append_list(values and operation)
+    set added to append_list(values and group_id)
+    set added to append_list(values and int_to_string(revision))
+    set added to append_list(values and device)
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT session,group_id,revision,device FROM echo_group_session_choices WHERE operation=?1;" and [operation]))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 2) equals group_id) or else not (archive_list_text(old and 3) equals int_to_string(revision)) or else not (archive_list_text(old and 4) equals device):
+            return history_status(migration_fail(database and "operation-identity-conflict"))
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return history_status(migration_fail(database and "commit-failed"))
+        set result to history_status("already-created")
+        set added to append_list(result and archive_list_text(old and 1))
+        return result
+    if not (archive_list_text(old and 0) equals "end"):
+        return history_status(migration_fail(database and "choice-read-failed"))
+    set session to concat("group-conversation:" and ep_sha256(operation))
+    set added to append_list(values and session)
+    set added to append_list(values and int_to_string(ep_time_now_ms()))
+    set audience_values to create_list()
+    set added to append_list(audience_values and session)
+    set added to append_list(audience_values and group_id)
+    set added to append_list(audience_values and int_to_string(revision))
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_session_choices VALUES(?1,?2,CAST(?3 AS INTEGER),?5,?4,CAST(?6 AS INTEGER));" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_sessions(session,title,created) VALUES(?5,'Shared conversation','unix-ms:'||?6);" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_sessions VALUES(?1,?2,CAST(?3 AS INTEGER));" and audience_values) and 101) is not equal to 0:
+        return history_status(migration_fail(database and "session-write-failed"))
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return history_status(migration_fail(database and "commit-failed"))
+    set result to history_status("created")
+    set added to append_list(result and session)
+    return result
