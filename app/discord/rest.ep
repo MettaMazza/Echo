@@ -1,0 +1,79 @@
+import "socket"
+import "routing"
+
+# Host-only transport. This is not a model tool: scoped controllers construct
+# routes and recheck their authority before invoking it. Credentials go only to
+# the fixed Discord API origin, never redirects, proxy configuration or logs.
+# Caller supplies exclusive private output descriptors. This function owns them.
+define discord_rest_transfer with library_path as Str and token as Str and method as Str and route as Str and body as Str and output_fd as Int and headers_fd as Int returning List:
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set library to ep_dlopen(library_path)
+    if system equals 0 or else library equals 0:
+        set closed to net_close(output_fd)
+        set closed to net_close(headers_fd)
+        return ["platform-unavailable","0","-1"]
+    set output to ep_dlcall2(ep_dlsym(system and "fdopen") and output_fd and str_to_ptr("wb"))
+    set header_output to ep_dlcall2(ep_dlsym(system and "fdopen") and headers_fd and str_to_ptr("wb"))
+    set easy to ep_dlcall0(ep_dlsym(library and "curl_easy_init"))
+    set valid to 1
+    if not (method equals "GET" or else method equals "POST" or else method equals "PATCH" or else method equals "PUT" or else method equals "DELETE"):
+        set valid to 0
+    if string_index_of(route and "/") is not equal to 0 or else string_index_of(route and "//") equals 0 or else string_contains(route and "..") is not equal to 0 or else string_contains(route and "#") is not equal to 0:
+        set valid to 0
+    for each value in [token,route]:
+        set text to ptr_to_str(value)
+        set position to 0
+        repeat while position < string_length(text):
+            set code to peek_byte(str_to_ptr(text) and position)
+            if code < 33 or else code > 126:
+                set valid to 0
+            set position to position + 1
+    if string_length(token) < 20 or else output equals 0 or else header_output equals 0 or else easy equals 0:
+        set valid to 0
+    set request_headers to 0
+    set status to "setup-failed"
+    set code to -1
+    set response to "0"
+    if valid equals 1:
+        for each header in [concat("Authorization: Bot " and token),"Content-Type: application/json","Accept: application/json"]:
+            set request_headers to ep_dlcall2(ep_dlsym(library and "curl_slist_append") and request_headers and str_to_ptr(ptr_to_str(header)))
+        if request_headers equals 0:
+            set valid to 0
+        for each pair in [["10002",concat("https://discord.com/api/v10" and route)],["10004",""],["10177","*"],["10318","https"],["10018","DiscordBot (https://github.com/MettaMazza/Echo, 1.75)"],["10036",method]]:
+            if network_curl_call(library and "curl_easy_setopt" and easy and string_to_int(archive_list_text(pair and 0)) and str_to_ptr(archive_list_text(pair and 1)) and 1) is not equal to 0:
+                set valid to 0
+        for each pair in [[10001,output],[10029,header_output],[10023,request_headers]]:
+            if network_curl_call(library and "curl_easy_setopt" and easy and get_list(pair and 0) and get_list(pair and 1) and 1) is not equal to 0:
+                set valid to 0
+        for each pair in [[52,0],[64,1],[81,2],[99,1],[156,20000],[155,60000]]:
+            if network_curl_call(library and "curl_easy_setopt" and easy and get_list(pair and 0) and get_list(pair and 1) and 0) is not equal to 0:
+                set valid to 0
+        if string_length(body) > 0:
+            if network_curl_call(library and "curl_easy_setopt" and easy and 10015 and str_to_ptr(body) and 1) is not equal to 0 or else network_curl_call(library and "curl_easy_setopt" and easy and 60 and string_length(body) and 0) is not equal to 0:
+                set valid to 0
+        if valid equals 1:
+            set code to ep_dlcall1(ep_dlsym(library and "curl_easy_perform") and easy)
+            set response to network_curl_info(library and easy and 2097154)
+            set status to "transfer-failed"
+            if code equals 0:
+                set status to "complete"
+    if easy is not equal to 0:
+        set cleaned to ep_dlcall1(ep_dlsym(library and "curl_easy_cleanup") and easy)
+    if request_headers is not equal to 0:
+        set cleaned to ep_dlcall1(ep_dlsym(library and "curl_slist_free_all") and request_headers)
+    for each stream in [output,header_output]:
+        if stream is not equal to 0:
+            if ep_dlcall1(ep_dlsym(system and "fflush") and stream) is not equal to 0:
+                set status to "flush-failed"
+            set fd to ep_dlcall1(ep_dlsym(system and "fileno") and stream)
+            if ep_dlcall1(ep_dlsym(system and "fsync") and fd) is not equal to 0:
+                set status to "flush-failed"
+            if ep_dlcall1(ep_dlsym(system and "fclose") and stream) is not equal to 0:
+                set status to "close-failed"
+    if output equals 0:
+        set closed to net_close(output_fd)
+    if header_output equals 0:
+        set closed to net_close(headers_fd)
+    set closed to ep_dlclose(library)
+    set closed to ep_dlclose(system)
+    return [status,response,int_to_string(code)]
