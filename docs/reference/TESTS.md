@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-20T09:52:30.199639+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-20T10:02:48.595805+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -1644,6 +1644,24 @@ Definitions:
 3: define main returning Int:
 ```
 
+## `tests/discord/test_gateway_owner_policy.ep`
+
+[tests/discord/test_gateway_owner_policy.ep](../../tests/discord/test_gateway_owner_policy.ep) · 24 lines · 1363 bytes
+
+SHA-256: `060ee641de2b16fa05fc55e044c5477b4900420023a595511a85b8f31107701d`
+
+Source annotations: Fractional cooldowns must round up; malformed or enormous values must never become an immediate retry through integer truncation or overflow.
+
+Imports: [../../app/discord/gateway_owner](../../app/discord/gateway_owner.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
 ## `tests/discord/test_gateway_protocol.ep`
 
 [tests/discord/test_gateway_protocol.ep](../../tests/discord/test_gateway_protocol.ep) · 49 lines · 3090 bytes
@@ -1676,6 +1694,23 @@ Definitions:
 
 ```text
 9: define main returning Int:
+```
+
+## `tests/discord/test_gateway_revisions.ep`
+
+[tests/discord/test_gateway_revisions.ep](../../tests/discord/test_gateway_revisions.ep) · 49 lines · 4342 bytes
+
+SHA-256: `ee6bc7f890cbdd5e2694291e88155244bb2879d6d332d4a3ccc6e3da01c60810`
+
+Imports: [../../app/discord/gateway_intake](../../app/discord/gateway_intake.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define revision_dispatch with sequence as Int and kind as Str and data as Str returning Str:
+6: define main returning Int:
 ```
 
 ## `tests/discord/test_rest_identity.ep`
