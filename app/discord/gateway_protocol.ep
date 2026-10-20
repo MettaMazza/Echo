@@ -1,0 +1,102 @@
+import "socket"
+import "routing"
+
+# Frame state: accumulated text, next frame offset, bytes left, current flags.
+# I/O chunks and WebSocket fragments are different boundaries. Control frames
+# can be interleaved without erasing accumulated application data.
+define discord_frames_new returning List:
+    set state to create_list()
+    set added to append_list(state and "")
+    for each value in [0,0,0,1005,0]:
+        set added to append_list(state and value)
+    return state
+
+define discord_frames_accept with state as List and row as List returning List:
+    set disposition to archive_list_text(row and 0)
+    if disposition equals "again" or else disposition equals "control":
+        return ["pending"]
+    if disposition equals "close-chunk":
+        set first to string_to_int(archive_list_text(row and 1))
+        set second to string_to_int(archive_list_text(row and 2))
+        set count to string_to_int(archive_list_text(row and 3))
+        set offset to string_to_int(archive_list_text(row and 4))
+        set remaining to string_to_int(archive_list_text(row and 5))
+        if offset is not equal to get_list(state and 5) or else count < 0 or else remaining < 0 or else offset + count + remaining > 125:
+            return ["invalid-close-frame"]
+        if offset equals 0 and count > 0:
+            set changed to set_list(state and 4 and first * 256)
+            if count > 1:
+                set changed to set_list(state and 4 and get_list(state and 4) + second)
+        else if offset equals 1 and count > 0:
+            set changed to set_list(state and 4 and get_list(state and 4) + first)
+        set changed to set_list(state and 5 and offset + count)
+        if remaining > 0:
+            return ["pending"]
+        if offset + count equals 1:
+            return ["invalid-close-frame"]
+        return ["closed",int_to_string(get_list(state and 4))]
+    if not (disposition equals "chunk"):
+        return row
+    set flags to string_to_int(archive_list_text(row and 2))
+    set offset to string_to_int(archive_list_text(row and 3))
+    set remaining to string_to_int(archive_list_text(row and 4))
+    set chunk to archive_list_text(row and 1)
+    if not (flags equals 1 or else flags equals 5) or else offset < 0 or else remaining < 0:
+        return ["invalid-frame"]
+    set previous_left to get_list(state and 2)
+    if previous_left > 0:
+        if offset is not equal to get_list(state and 1) or else previous_left is not equal to string_length(chunk) + remaining or else flags is not equal to get_list(state and 3):
+            return ["invalid-frame-continuity"]
+    else if offset is not equal to 0:
+        return ["invalid-frame-offset"]
+    set changed to set_list(state and 0 and concat(archive_list_text(state and 0) and chunk))
+    set changed to set_list(state and 1 and offset + string_length(chunk))
+    set changed to set_list(state and 2 and remaining)
+    set changed to set_list(state and 3 and flags)
+    if remaining is not equal to 0 or else flags equals 5:
+        return ["pending"]
+    set complete to archive_list_text(state and 0)
+    set changed to set_list(state and 0 and "")
+    set changed to set_list(state and 1 and 0)
+    set changed to set_list(state and 3 and 0)
+    return ["message",complete]
+
+# Heartbeat state: interval, next due, oldest outstanding send, last ACK time.
+# The clock and jitter are explicit for deterministic deadline/failure tests.
+define discord_heartbeat_new with interval as Int and now as Int and jitter_ms as Int returning List:
+    if interval <= 0 or else now < 0 or else jitter_ms < 0 or else jitter_ms >= interval:
+        return 0
+    return [interval,now + jitter_ms,-1,-1]
+
+define discord_heartbeat_action with state as List and now as Int returning Str:
+    if state equals 0:
+        return "await-hello"
+    set outstanding to get_list(state and 2)
+    if outstanding >= 0 and now - outstanding >= get_list(state and 0):
+        return "reconnect-missing-ack"
+    if now >= get_list(state and 1):
+        return "send"
+    return "wait"
+
+# Called only after an actual successful write. A server-requested extra
+# heartbeat does not postpone the original unacknowledged-send deadline.
+define discord_heartbeat_sent with state as List and now as Int and scheduled as Int returning Int:
+    if get_list(state and 2) < 0:
+        set changed to set_list(state and 2 and now)
+    if scheduled equals 1:
+        set changed to set_list(state and 1 and now + get_list(state and 0))
+    return 0
+
+define discord_heartbeat_ack with state as List and now as Int returning Int:
+    set changed to set_list(state and 2 and -1)
+    set changed to set_list(state and 3 and now)
+    return 0
+
+# Invalid token, sharding/version/intents require intervention. Session expiry
+# and invalid sequence require new identification; ordinary failures resume.
+define discord_gateway_close_action with code as Int returning Str:
+    if code equals 4004 or else code equals 4010 or else code equals 4011 or else code equals 4012 or else code equals 4013 or else code equals 4014:
+        return "stop-configuration"
+    if code equals 4007 or else code equals 4009 or else code equals 1000 or else code equals 1001:
+        return "identify"
+    return "resume"

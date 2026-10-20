@@ -1,0 +1,84 @@
+import "gateway_journal"
+import "gateway_protocol"
+
+define discord_gateway_runtime_schema with database as Int returning Int:
+    if discord_gateway_schema(database) is not equal to 0:
+        return 1
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_resume(singleton INTEGER PRIMARY KEY CHECK(singleton=1),session TEXT NOT NULL,url TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN (0,1)));")
+
+define discord_json_original with body as Str and tokens as List and index as Int returning Str:
+    if index < 0:
+        return ""
+    set after to provider_after(tokens and index)
+    if after <= index:
+        return ""
+    set start to get_list(get_list(tokens and index) and 1)
+    set finish to get_list(get_list(tokens and after - 1) and 2)
+    return substring(body and start and finish - start)
+
+# READY establishes resumable state and its dispatch cursor in one transaction.
+# A restart cannot pair a new session with an old sequence or resume endpoint.
+define discord_gateway_ready_record with database as Int and generation as Str and bot as Str and body as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "invalid-ready"
+    set data to provider_member(tokens and 0 and "d")
+    set user to provider_member(tokens and data and "user")
+    set session to provider_value(tokens and provider_member(tokens and data and "session_id"))
+    set url to provider_value(tokens and provider_member(tokens and data and "resume_gateway_url"))
+    set sequence to provider_index(tokens and provider_member(tokens and 0 and "s"))
+    if not (provider_index(tokens and provider_member(tokens and 0 and "op")) equals "0") or else not (provider_value(tokens and provider_member(tokens and 0 and "t")) equals "READY") or else not (provider_value(tokens and provider_member(tokens and user and "id")) equals bot) or else string_length(session) equals 0 or else string_length(sequence) equals 0 or else string_length(discord_gateway_endpoint(url)) equals 0 or else string_length(generation) equals 0:
+        return "invalid-ready"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set previous to history_collect_one(archive_prepare(database and "SELECT generation FROM discord_gateway WHERE singleton=1;"))
+    if archive_list_text(previous and 0) equals "found" and archive_list_text(previous and 1) equals generation:
+        return migration_fail(database and "duplicate-ready")
+    if not (archive_list_text(previous and 0) equals "found" or else archive_list_text(previous and 0) equals "end"):
+        return migration_fail(database and "read-failed")
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_gateway(singleton,generation,session,sequence) VALUES(1,?,?,CAST(? AS INTEGER)) ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation,session=excluded.session,sequence=excluded.sequence;" and [generation,session,sequence]) and 101) is not equal to 0:
+        return migration_fail(database and "bind-failed")
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_resume(singleton,session,url,enabled) VALUES(1,?,?,1) ON CONFLICT(singleton) DO UPDATE SET session=excluded.session,url=excluded.url,enabled=1;" and [session,url]) and 101) is not equal to 0:
+        return migration_fail(database and "resume-write-failed")
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_dispatch(session,sequence,kind,digest) VALUES(?,CAST(? AS INTEGER),'READY',?);" and [session,sequence,ep_sha256(body)]) and 101) is not equal to 0:
+        return migration_fail(database and "receipt-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+define discord_gateway_resume_read with database as Int returning List:
+    return history_collect_one(archive_prepare(database and "SELECT g.session,r.url,g.sequence FROM discord_gateway g JOIN discord_resume r ON r.singleton=g.singleton AND r.session=g.session WHERE g.singleton=1 AND r.enabled=1;"))
+
+# Intake does not invoke the model. A separate scoped worker claims admitted
+# messages and rechecks current channel permissions before inference/delivery.
+# Ignored events advance the resume cursor without retaining their text.
+define discord_gateway_intake with database as Int and generation as Str and bot as Str and guilds as List and admins as List and body as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "invalid-dispatch"
+    set sequence to provider_index(tokens and provider_member(tokens and 0 and "s"))
+    set kind to provider_value(tokens and provider_member(tokens and 0 and "t"))
+    if not (provider_index(tokens and provider_member(tokens and 0 and "op")) equals "0") or else string_length(sequence) equals 0 or else string_length(kind) equals 0:
+        return "invalid-dispatch"
+    set current to history_collect_one(archive_prepare(database and "SELECT session FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(current and 0) equals "found"):
+        return "session-unavailable"
+    set identity to ""
+    set payload to ""
+    if kind equals "MESSAGE_CREATE":
+        set data to provider_member(tokens and 0 and "d")
+        set original to discord_json_original(body and tokens and data)
+        set room to provider_value(tokens and provider_member(tokens and data and "channel_id"))
+        set reference to provider_member(tokens and data and "message_reference")
+        set target to provider_value(tokens and provider_member(tokens and reference and "message_id"))
+        set known to discord_reply_channel(database and target and room)
+        set route to discord_message_route(original and bot and guilds and admins and known)
+        if archive_list_text(route and 0) equals "accepted":
+            set identity to concat("message:create:" and archive_list_text(route and 4))
+            set payload to original
+        else if archive_list_text(route and 0) equals "redirect-dm":
+            set identity to concat("message:redirect:" and archive_list_text(route and 4))
+            set payload to concat("{\"admission\":\"redirect-dm\",\"id\":" and provider_quote(archive_list_text(route and 4)))
+            set payload to concat(payload and concat(",\"channel_id\":" and provider_quote(room)))
+            set payload to concat(payload and concat(",\"author_id\":" and concat(provider_quote(archive_list_text(route and 3)) and "}")))
+    return discord_gateway_dispatch(database and generation and archive_list_text(current and 1) and string_to_int(sequence) and kind and ep_sha256(body) and identity and payload)

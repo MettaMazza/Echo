@@ -1,0 +1,50 @@
+import "gateway_intake"
+
+# Parse only authenticated GET /gateway/bot output. The owner must refresh
+# discovery after a budget reset; a clock reaching the deadline alone does not
+# manufacture a new allowance. Session reservations happen before sending.
+define discord_gateway_discovery with body as Str and now as Int returning List:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else now < 0:
+        return ["invalid-discovery"]
+    set url to provider_value(tokens and provider_member(tokens and 0 and "url"))
+    set limit to provider_member(tokens and 0 and "session_start_limit")
+    set total to provider_index(tokens and provider_member(tokens and limit and "total"))
+    set remaining to provider_index(tokens and provider_member(tokens and limit and "remaining"))
+    set reset to provider_index(tokens and provider_member(tokens and limit and "reset_after"))
+    set concurrency to provider_index(tokens and provider_member(tokens and limit and "max_concurrency"))
+    if string_length(discord_gateway_endpoint(url)) equals 0 or else string_length(total) equals 0 or else string_length(remaining) equals 0 or else string_length(reset) equals 0 or else string_length(concurrency) equals 0:
+        return ["invalid-discovery"]
+    if string_to_int(total) <= 0 or else string_to_int(remaining) > string_to_int(total) or else string_to_int(reset) <= 0 or else string_to_int(concurrency) <= 0:
+        return ["invalid-discovery"]
+    return ["discovered",url,remaining,int_to_string(now + string_to_int(reset)),concurrency]
+
+define discord_gateway_budget_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_identify_budget(singleton INTEGER PRIMARY KEY CHECK(singleton=1),remaining INTEGER NOT NULL CHECK(remaining>=0),reset_at INTEGER NOT NULL,next_at INTEGER NOT NULL);")
+
+# A fresh server budget may reduce a local allowance but cannot undo a
+# conservative local reservation in the same reset window.
+define discord_gateway_budget_record with database as Int and discovery as List and now as Int returning Int:
+    if not (archive_list_text(discovery and 0) equals "discovered"):
+        return 1
+    return archive_finish(checkpoint_prepare(database and "INSERT INTO discord_identify_budget(singleton,remaining,reset_at,next_at) VALUES(1,CAST(? AS INTEGER),CAST(? AS INTEGER),0) ON CONFLICT(singleton) DO UPDATE SET remaining=CASE WHEN discord_identify_budget.reset_at<=CAST(? AS INTEGER) THEN excluded.remaining ELSE MIN(discord_identify_budget.remaining,excluded.remaining) END,reset_at=excluded.reset_at;" and [archive_list_text(discovery and 2),archive_list_text(discovery and 3),int_to_string(now)]) and 101)
+
+# Single shard, single locked owner: five-second Identify bucket. Exhaustion
+# and missing discovery fail closed. Resume does not consume Identify quota.
+define discord_gateway_identify_reserve with database as Int and now as Int returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set row to history_collect_one(archive_prepare(database and "SELECT remaining,reset_at,next_at FROM discord_identify_budget WHERE singleton=1;"))
+    if not (archive_list_text(row and 0) equals "found"):
+        return migration_fail(database and "discovery-required")
+    if now >= string_to_int(archive_list_text(row and 2)):
+        return migration_fail(database and "discovery-expired")
+    if string_to_int(archive_list_text(row and 1)) <= 0:
+        return migration_fail(database and "budget-exhausted")
+    if now < string_to_int(archive_list_text(row and 3)):
+        return migration_fail(database and "identify-rate-limited")
+    if archive_finish(checkpoint_prepare(database and "UPDATE discord_identify_budget SET remaining=remaining-1,next_at=CAST(? AS INTEGER) WHERE singleton=1;" and [int_to_string(now + 5000)]) and 101) is not equal to 0:
+        return migration_fail(database and "budget-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "reserved"
