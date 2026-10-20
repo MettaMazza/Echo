@@ -1,0 +1,55 @@
+import "worker_store"
+
+# Ephemeral UI feedback only, never a queued/replayed message or model tool.
+# Discord expires typing after ten seconds; refresh at seven while generating.
+define discord_typing_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_typing_clock(channel TEXT PRIMARY KEY,next_ms INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_typing_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,observed_ms INTEGER NOT NULL,status TEXT NOT NULL);")
+
+define discord_typing_active with state as Str returning Int:
+    if state equals "ready" or else state equals "generating" or else state equals "tools":
+        return 1
+    return 0
+
+# Inspect every due claim: a waiting/uncreated job must not hide an active
+# conversation in the same channel. Only emitted activity advances its clock.
+define discord_typing_due with journal as Int and database as Int and now as Int returning Str:
+    set values to create_list()
+    set stamp to int_to_string(now)
+    set added to append_list(values and stamp)
+    set statement to checkpoint_prepare(journal and "SELECT j.inbox,json_extract(i.payload,'$.channel_id') FROM discord_agent_jobs j JOIN discord_inbox i ON i.identity=j.inbox LEFT JOIN discord_typing_clock t ON t.channel=json_extract(i.payload,'$.channel_id') WHERE j.state='claimed' AND j.inbox LIKE 'message:create:%' AND COALESCE(t.next_ms,0)<=CAST(? AS INTEGER) ORDER BY j.updated_ms;" and values)
+    if statement equals 0:
+        return ""
+    repeat while ep_sqlite3_step(statement) equals 100:
+        set inbox to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set room to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        set run to concat("discord-message:" and substring(inbox and 15 and string_length(inbox) - 15))
+        set state to agent_run_read(database and run)
+        if state is not equal to 0 and discord_snowflake(room) is not equal to 0:
+            if discord_typing_active(archive_list_text(state and 2)) equals 1:
+                set retained_room to concat("" and room)
+                set closed to ep_sqlite3_finalize(statement)
+                return retained_room
+    set closed to ep_sqlite3_finalize(statement)
+    return ""
+
+define discord_typing_tick with library as Str and token as Str and journal as Int and database as Int and directory_path as Str returning Int:
+    set now to ep_time_now_ms()
+    set stamp to int_to_string(now)
+    set room to discord_typing_due(journal and database and now)
+    if string_length(room) equals 0:
+        return 0
+    set clock_values to create_list()
+    set next_stamp to int_to_string(now + 7000)
+    set added to append_list(clock_values and room)
+    set added to append_list(clock_values and next_stamp)
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_typing_clock VALUES(?,CAST(? AS INTEGER)) ON CONFLICT(channel) DO UPDATE SET next_ms=excluded.next_ms;" and clock_values) and 101) is not equal to 0:
+        return 1
+    set route to concat("/channels/" and concat(room and "/typing"))
+    set result to discord_access_request(library and token and journal and directory_path and "POST" and route and "POST:channel-typing" and room)
+    set recorded to create_list()
+    set added to append_list(recorded and room)
+    set added to append_list(recorded and stamp)
+    set status to archive_list_text(result and 0)
+    set added to append_list(recorded and status)
+    set saved to archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_typing_events(channel,observed_ms,status) VALUES(?,CAST(? AS INTEGER),?);" and recorded) and 101)
+    return saved
