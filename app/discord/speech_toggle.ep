@@ -1,0 +1,43 @@
+import "interaction_ack"
+
+# One durable visibility operation per reply. Clicks received while an earlier
+# operation is running are coalesced, not queued as repeated toggles. Retrying
+# an interaction reuses its immutable desired state after crashes or timeouts.
+define discord_speech_toggle_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_speech_visibility(action TEXT PRIMARY KEY,visible INTEGER NOT NULL DEFAULT 0,settled_ms INTEGER NOT NULL DEFAULT 0,operation TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS discord_speech_toggles(interaction TEXT PRIMARY KEY,action TEXT NOT NULL,desired INTEGER NOT NULL CHECK(desired IN (0,1)),state TEXT NOT NULL CHECK(state IN ('pending','complete')));")
+
+define discord_speech_toggle_claim with journal as Int and interaction as Str and action as Str returning Str:
+    if discord_speech_toggle_schema(journal) is not equal to 0 or else sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "store-failed"
+    set values to [interaction,action]
+    set existing to history_collect_one(checkpoint_prepare(journal and "SELECT desired,state FROM discord_speech_toggles WHERE interaction=?1 AND action=?2;" and values))
+    if archive_list_text(existing and 0) equals "found":
+        set committed to sql_execute(journal and "COMMIT;")
+        if archive_list_text(existing and 2) equals "complete":
+            return "speech-toggle-complete"
+        return archive_list_text(existing and 1)
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_speech_visibility(action) VALUES(?2);" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "store-failed")
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT v.visible,v.operation,j.received_ms>v.settled_ms FROM discord_speech_visibility v JOIN discord_interaction_jobs j ON j.identity=?1 WHERE v.action=?2 AND j.state='acknowledged';" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return migration_fail(journal and "action-binding-denied")
+    if string_length(archive_list_text(row and 2)) > 0 or else not (archive_list_text(row and 3) equals "1"):
+        set committed to sql_execute(journal and "COMMIT;")
+        return "speech-coalesced"
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_speech_toggles SELECT ?1,?2,1-visible,'pending' FROM discord_speech_visibility WHERE action=?2;" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "UPDATE discord_speech_visibility SET operation=?1 WHERE action=?2;" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "store-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "store-failed")
+    if archive_list_text(row and 1) equals "0":
+        return "1"
+    return "0"
+
+define discord_speech_toggle_finish with journal as Int and interaction as Str and now as Int returning Str:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "store-failed"
+    set values to [interaction,int_to_string(now)]
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_speech_visibility SET visible=(SELECT desired FROM discord_speech_toggles WHERE interaction=?1),settled_ms=CAST(?2 AS INTEGER),operation='' WHERE operation=?1;" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "UPDATE discord_speech_toggles SET state='complete' WHERE interaction=?1;" and [interaction]) and 101) is not equal to 0:
+        return migration_fail(journal and "store-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "store-failed")
+    return "speech-toggle-complete"

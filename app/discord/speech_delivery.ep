@@ -1,10 +1,10 @@
 import "action_speech"
 import "interaction_ack"
 import "multipart_audio"
+import "speech_toggle"
 
-# Replace the same private interaction response. A lost PATCH response may be
-# retried without creating another channel message or another model turn.
-# The public conversational reply and its attached activity thread stay put.
+# Edit only the bound bot reply in its original channel. PATCH retries are
+# idempotent; no extra public or ephemeral audio messages are created.
 define discord_speech_deliver with library as Str and token as Str and journal as Int and database as Int and interaction as Str and body as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
     set keys to create_list()
     set added to append_list(keys and interaction)
@@ -12,9 +12,49 @@ define discord_speech_deliver with library as Str and token as Str and journal a
     set credential to history_collect_one(checkpoint_prepare(journal and "SELECT c.credential FROM discord_interaction_credentials c JOIN discord_interaction_jobs j ON j.identity=c.identity WHERE c.identity=?1 AND c.expires_ms>CAST(?2 AS INTEGER) AND j.state='acknowledged';" and keys))
     if not (archive_list_text(credential and 0) equals "found") or else discord_interaction_credential_valid(archive_list_text(credential and 1)) equals 0:
         return "speech-response-expired"
+    set action to discord_speech_action_context(journal and database and body and bot and admins)
+    if not (archive_list_text(action and 0) equals "bound-needs-live-access"):
+        return archive_list_text(action and 0)
+    set envelope to provider_json_tokens(body)
+    set action_id to provider_value(envelope and provider_member(envelope and provider_member(envelope and 0 and "data") and "custom_id"))
+    set desired to discord_speech_toggle_claim(journal and interaction and action_id)
+    if not (desired equals "0" or else desired equals "1"):
+        return desired
+    set room to provider_value(envelope and provider_member(envelope and 0 and "channel_id"))
+    set message to provider_value(envelope and provider_member(envelope and provider_member(envelope and 0 and "message") and "id"))
+    set route to concat("/channels/" and concat(room and concat("/messages/" and message)))
     set prepared to discord_speech_action_prepare(library and token and journal and database and body and bot and admins and directory_path and stop_file)
     if not (archive_list_text(prepared and 0) equals "speech-prepared"):
         return archive_list_text(prepared and 0)
+    set original_reply to discord_access_get(library and token and journal and directory_path and route and "GET:shared-speech" and message)
+    if not (archive_list_text(original_reply and 0) equals "observed"):
+        return archive_list_text(original_reply and 0)
+    set original_tokens to provider_json_tokens(archive_list_text(original_reply and 1))
+    if not (provider_value(original_tokens and provider_member(original_tokens and 0 and "id")) equals message) or else not (provider_value(original_tokens and provider_member(original_tokens and provider_member(original_tokens and 0 and "author") and "id")) equals bot):
+        return "action-binding-denied"
+    # Keep unrelated files already on the reply. Only our spoken-reply
+    # attachment is toggled; text, components and other files are untouched.
+    set retained to "["
+    set original_files to provider_items(original_tokens and provider_member(original_tokens and 0 and "attachments"))
+    set file_index to 0
+    set retained_count to 0
+    repeat while file_index < length_list(original_files):
+        set file_item to get_list(original_files and file_index)
+        if not (provider_value(original_tokens and provider_member(original_tokens and file_item and "filename")) equals "Echo-reply.wav"):
+            if retained_count > 0:
+                set retained to concat(retained and ",")
+            set retained to concat(retained and concat("{\"id\":" and concat(provider_quote(provider_value(original_tokens and provider_member(original_tokens and file_item and "id"))) and "}")))
+            set retained_count to retained_count + 1
+        set file_index to file_index + 1
+    set hidden_payload to concat("{\"attachments\":" and concat(retained and "],\"allowed_mentions\":{\"parse\":[]}}"))
+    if desired equals "0":
+        set hidden to discord_access_body(library and token and journal and directory_path and "PATCH" and route and "PATCH:shared-speech" and interaction and hidden_payload)
+        if not (archive_list_text(hidden and 0) equals "observed"):
+            return archive_list_text(hidden and 0)
+        set response to provider_json_tokens(archive_list_text(hidden and 1))
+        if not (provider_value(response and provider_member(response and 0 and "id")) equals message) or else length_list(provider_items(response and provider_member(response and 0 and "attachments"))) is not equal to retained_count:
+            return "speech-upload-unconfirmed"
+        return discord_speech_toggle_finish(journal and interaction and ep_time_now_ms())
     # The click's server-provided ceiling is data, not permission. Use the
     # documented default when absent; never truncate an oversized recording.
     set tokens to provider_json_tokens(body)
@@ -24,7 +64,9 @@ define discord_speech_deliver with library as Str and token as Str and journal a
         set parsed to http_decimal(reported)
         if parsed > 0 and parsed <= 4294967295:
             set maximum to parsed
-    set payload to "{\"content\":\"Spoken reply\",\"attachments\":[{\"id\":0,\"filename\":\"Echo-reply.wav\"}],\"allowed_mentions\":{\"parse\":[]}}"
+    if retained_count > 0:
+        set retained to concat(retained and ",")
+    set payload to concat("{\"attachments\":" and concat(retained and "{\"id\":0,\"filename\":\"Echo-reply.wav\"}],\"allowed_mentions\":{\"parse\":[]}}"))
     set multipart to discord_audio_multipart(archive_list_text(prepared and 2) and archive_list_text(prepared and 3) and string_to_int(archive_list_text(prepared and 4)) and maximum and payload)
     if not (archive_list_text(multipart and 0) equals "multipart-ready"):
         return archive_list_text(multipart and 0)
@@ -41,16 +83,23 @@ define discord_speech_deliver with library as Str and token as Str and journal a
     if not (archive_list_text(fresh and 1) equals archive_list_text(credential and 1)):
         set released to discord_audio_multipart_release(multipart)
         return "speech-response-expired"
-    set route to concat("/webhooks/" and concat(bot and concat("/" and concat(archive_list_text(credential and 1) and "/messages/@original"))))
-    set result to discord_access_bytes(library and token and journal and directory_path and "PATCH" and route and "PATCH:interaction-original" and interaction and get_list(multipart and 1) and get_list(multipart and 2) and archive_list_text(multipart and 3))
+    set result to discord_access_bytes(library and token and journal and directory_path and "PATCH" and route and "PATCH:shared-speech" and interaction and get_list(multipart and 1) and get_list(multipart and 2) and archive_list_text(multipart and 3))
     set released to discord_audio_multipart_release(multipart)
     if not (archive_list_text(result and 0) equals "observed"):
         return archive_list_text(result and 0)
     set saved to provider_json_tokens(archive_list_text(result and 1))
     set attachments to provider_items(saved and provider_member(saved and 0 and "attachments"))
-    if length_list(attachments) is not equal to 1:
+    if length_list(attachments) is not equal to retained_count + 1:
         return "speech-upload-unconfirmed"
-    set item to get_list(attachments and 0)
+    set item to -1
+    set file_index to 0
+    repeat while file_index < length_list(attachments):
+        set candidate to get_list(attachments and file_index)
+        if provider_value(saved and provider_member(saved and candidate and "filename")) equals "Echo-reply.wav":
+            set item to candidate
+        set file_index to file_index + 1
+    if item < 0:
+        return "speech-upload-unconfirmed"
     if not (provider_value(saved and provider_member(saved and item and "filename")) equals "Echo-reply.wav") or else not (provider_value(saved and provider_member(saved and item and "size")) equals archive_list_text(prepared and 4)):
         return "speech-upload-unconfirmed"
-    return "speech-delivered"
+    return discord_speech_toggle_finish(journal and interaction and ep_time_now_ms())
