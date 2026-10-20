@@ -1,0 +1,53 @@
+import "command_admission"
+import "interaction_recovery"
+
+define discord_command_anchor_content returning Str:
+    return "Autonomy request received. Echo's replies and activity will stay attached to this conversation."
+
+# Complete the SAME public original response, never POST a replacement after
+# uncertainty. GET observes a prior successful PATCH before any retry. A
+# deferred response is an ACK, not yet an admitted or running autonomous task.
+define discord_command_public_anchor with library as Str and token as Str and journal as Int and identity as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT i.payload,c.credential FROM discord_inbox i JOIN discord_interaction_credentials c ON c.identity=i.identity WHERE i.identity=?1 AND i.kind='INTERACTION_CREATE' AND c.expires_ms>CAST(?2 AS INTEGER);" and [identity,int_to_string(ep_time_now_ms())]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "command-response-expired"
+    set original to archive_list_text(row and 1)
+    if discord_command_acknowledged(journal and identity and original) equals 0 or else discord_interaction_credential_valid(archive_list_text(row and 2)) equals 0:
+        return "command-not-acknowledged"
+    if not (discord_interaction_visibility_read(journal and identity and original) equals "public"):
+        return "command-requires-public-ack"
+    set command to discord_command_resolve(journal and original and bot and guilds and admins)
+    if not (archive_list_text(command and 0) equals "command-bound-needs-live-access"):
+        return archive_list_text(command and 0)
+    if not (archive_list_text(command and 1) equals "auto"):
+        return "not-auto-command"
+    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(command and 4) and archive_list_text(command and 3) and archive_list_text(command and 2) and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return "command-access-denied"
+    if file_exists(stop_file):
+        return "stopped"
+    set route to concat("/webhooks/" and concat(bot and concat("/" and concat(archive_list_text(row and 2) and "/messages/@original"))))
+    set observed to discord_access_get(library and token and journal and directory_path and route and "GET:command-original" and identity)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return "command-anchor-read-unresolved"
+    set response to archive_list_text(observed and 1)
+    if discord_interaction_public_original_matches(response and original and bot) equals 0:
+        return "command-anchor-binding-denied"
+    set parsed to provider_json_tokens(response)
+    set content to discord_command_anchor_content()
+    if not (provider_value(parsed and provider_member(parsed and 0 and "content")) equals content) or else discord_permission_bit(provider_value(parsed and provider_member(parsed and 0 and "flags")) and 7) equals 1:
+        if file_exists(stop_file):
+            return "stopped"
+        set update to concat("{\"content\":" and concat(provider_quote(content) and ",\"allowed_mentions\":{\"parse\":[]}}"))
+        set changed to discord_access_body(library and token and journal and directory_path and "PATCH" and route and "PATCH:command-original" and identity and update)
+        if not (archive_list_text(changed and 0) equals "observed"):
+            return "command-anchor-patch-unresolved"
+        set response to archive_list_text(changed and 1)
+    if file_exists(stop_file):
+        return "stopped"
+    set completed to provider_json_tokens(response)
+    if not (provider_value(completed and provider_member(completed and 0 and "content")) equals content):
+        return "command-anchor-content-unconfirmed"
+    return discord_command_anchor_observe(journal and identity and response and bot and guilds and admins)

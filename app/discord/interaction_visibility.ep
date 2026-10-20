@@ -1,0 +1,36 @@
+import "command_binding"
+
+# Remember the actual callback visibility BEFORE attempting network delivery.
+# Recovery must not guess from subsequently changed registration/configuration.
+# Existing callbacks without a receipt predate public commands and are private.
+define discord_interaction_visibility_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_interaction_visibility(identity TEXT PRIMARY KEY REFERENCES discord_interaction_jobs(identity),visibility TEXT NOT NULL CHECK(visibility IN ('private','public')),intake_sha256 TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_interaction_visibility_no_update BEFORE UPDATE ON discord_interaction_visibility BEGIN SELECT RAISE(ABORT,'Callback visibility is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_interaction_visibility_no_delete BEFORE DELETE ON discord_interaction_visibility BEGIN SELECT RAISE(ABORT,'Callback visibility receipt persists'); END;")
+
+define discord_interaction_visibility_prepare with journal as Int and identity as Str and body as Str returning Str:
+    if discord_command_schema(journal) is not equal to 0 or else discord_interaction_visibility_schema(journal) is not equal to 0:
+        return "store-failed"
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT i.payload FROM discord_interaction_jobs j JOIN discord_inbox i ON i.identity=j.identity WHERE j.identity=?1 AND j.state='acknowledging' AND i.kind='INTERACTION_CREATE' AND i.payload=?2;" and [identity,body]))
+    if not (archive_list_text(source and 0) equals "found"):
+        return "ack-source-denied"
+    set registered to history_collect_one(checkpoint_prepare(journal and "SELECT c.command FROM discord_command_bindings c JOIN discord_identity b ON b.singleton=1 AND b.bot=c.application WHERE json_extract(?1,'$.type')=2 AND json_extract(?1,'$.data.type')=1 AND json_extract(?1,'$.data.id')=c.command AND json_extract(?1,'$.data.name')='auto' AND c.name='auto' AND json_extract(?1,'$.application_id')=c.application AND json_extract(?1,'$.guild_id')=c.guild;" and [body]))
+    set visibility to "private"
+    if archive_list_text(registered and 0) equals "found":
+        set visibility to "public"
+    else if not (archive_list_text(registered and 0) equals "end"):
+        return "store-failed"
+    set digest to ep_sha256(body)
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_interaction_visibility VALUES(?1,?2,?3);" and [identity,visibility,digest]) and 101) is not equal to 0:
+        return "store-failed"
+    return discord_interaction_visibility_read(journal and identity and body)
+
+define discord_interaction_visibility_read with journal as Int and identity as Str and body as Str returning Str:
+    if discord_interaction_visibility_schema(journal) is not equal to 0:
+        return "store-failed"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT visibility,intake_sha256 FROM discord_interaction_visibility WHERE identity=?1;" and [identity]))
+    if archive_list_text(row and 0) equals "end":
+        return "private"
+    if not (archive_list_text(row and 0) equals "found"):
+        return "store-failed"
+    if not (archive_list_text(row and 2) equals ep_sha256(body)):
+        return "ack-source-denied"
+    return archive_list_text(row and 1)

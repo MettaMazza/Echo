@@ -1,8 +1,8 @@
 import "interaction_ack"
 
 # An uncertain callback is never sent twice. A read of its token-bound original
-# response can prove that Discord accepted it. Only our private response in the
-# original channel is sufficient; source/action authority is still checked later.
+# response can prove that Discord accepted it. Match the recorded visibility;
+# source/action authority is still checked later.
 define discord_interaction_original_matches with body as Str and bot as Str and room as Str returning Int:
     set tokens to provider_json_tokens(body)
     if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
@@ -15,11 +15,28 @@ define discord_interaction_original_matches with body as Str and bot as Str and 
         return 0
     return 1
 
+define discord_interaction_public_original_matches with body as Str and original as Str and bot as Str returning Int:
+    set tokens to provider_json_tokens(body)
+    set source to provider_json_tokens(original)
+    if tokens equals 0 or else source equals 0 or else provider_unique_objects(tokens) equals 0 or else provider_unique_objects(source) equals 0:
+        return 0
+    set metadata to provider_member(tokens and 0 and "interaction_metadata")
+    set actor to provider_value(source and provider_member(source and provider_member(source and provider_member(source and 0 and "member") and "user") and "id"))
+    if discord_snowflake(actor) equals 0 or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and metadata and "user") and "id")) equals actor):
+        return 0
+    if not (provider_value(tokens and provider_member(tokens and metadata and "id")) equals provider_value(source and provider_member(source and 0 and "id"))) or else not (provider_value(tokens and provider_member(tokens and metadata and "type")) equals "2") or else provider_member(tokens and metadata and "original_response_message_id") >= 0:
+        return 0
+    if discord_snowflake(provider_value(tokens and provider_member(tokens and 0 and "id"))) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "channel_id")) equals provider_value(source and provider_member(source and 0 and "channel_id"))) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id")) equals bot):
+        return 0
+    # A public deferred placeholder (128) is enough to prove ACK acceptance;
+    # command_anchor requires the later completed public original before work.
+    return discord_permission_bit(provider_value(tokens and provider_member(tokens and 0 and "flags")) and 6) equals 0
+
 define discord_interaction_recover with library as Str and token as Str and journal as Int and identity as Str and bot as Str and directory_path as Str returning Str:
     set keys to create_list()
     set added to append_list(keys and identity)
     set added to append_list(keys and int_to_string(ep_time_now_ms()))
-    set row to history_collect_one(checkpoint_prepare(journal and "SELECT c.credential,json_extract(i.payload,'$.application_id'),json_extract(i.payload,'$.channel_id') FROM discord_interaction_jobs j JOIN discord_inbox i ON i.identity=j.identity JOIN discord_interaction_credentials c ON c.identity=j.identity WHERE j.identity=?1 AND j.state='uncertain' AND c.expires_ms>CAST(?2 AS INTEGER);" and keys))
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT c.credential,json_extract(i.payload,'$.application_id'),json_extract(i.payload,'$.channel_id'),i.payload FROM discord_interaction_jobs j JOIN discord_inbox i ON i.identity=j.identity JOIN discord_interaction_credentials c ON c.identity=j.identity WHERE j.identity=?1 AND j.state='uncertain' AND c.expires_ms>CAST(?2 AS INTEGER);" and keys))
     if archive_list_text(row and 0) equals "end":
         if archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET state='expired',detail='unresolved-ack-credential-expired' WHERE identity=?1 AND state='uncertain' AND NOT EXISTS(SELECT 1 FROM discord_interaction_credentials c WHERE c.identity=?1 AND c.expires_ms>CAST(?2 AS INTEGER));" and keys) and 101) is not equal to 0:
             return "store-failed"
@@ -32,7 +49,13 @@ define discord_interaction_recover with library as Str and token as Str and jour
     set observed to discord_access_get(library and token and journal and directory_path and route and "GET:interaction-original" and identity)
     if not (archive_list_text(observed and 0) equals "observed"):
         return "ack-unresolved"
-    if discord_interaction_original_matches(archive_list_text(observed and 1) and bot and archive_list_text(row and 3)) is not equal to 1:
+    set visibility to discord_interaction_visibility_read(journal and identity and archive_list_text(row and 4))
+    set matches to 0
+    if visibility equals "private":
+        set matches to discord_interaction_original_matches(archive_list_text(observed and 1) and bot and archive_list_text(row and 3))
+    else if visibility equals "public":
+        set matches to discord_interaction_public_original_matches(archive_list_text(observed and 1) and archive_list_text(row and 4) and bot)
+    if matches is not equal to 1:
         return "ack-unresolved"
     set keys to create_list()
     set added to append_list(keys and identity)
