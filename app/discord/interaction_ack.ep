@@ -1,0 +1,81 @@
+import "interaction_intake"
+import "access"
+
+# Claim before network; never replay an uncertain callback. The execution
+# worker may run only acknowledged jobs and must perform live access checks.
+define discord_interaction_claim with journal as Int and now as Int returning List:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("busy")
+    set clock to create_list()
+    set added to append_list(clock and int_to_string(now))
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET state='expired',detail='ack-deadline-missed' WHERE state='pending' AND received_ms+2500<=CAST(?1 AS INTEGER);" and clock) and 101) is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("store-failed")
+    if archive_finish(checkpoint_prepare(journal and "DELETE FROM discord_interaction_credentials WHERE expires_ms<=CAST(?1 AS INTEGER);" and clock) and 101) is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("store-failed")
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT j.identity,c.credential,i.payload,j.received_ms FROM discord_interaction_jobs j JOIN discord_interaction_credentials c ON c.identity=j.identity JOIN discord_inbox i ON i.identity=j.identity WHERE j.state='pending' AND j.received_ms<=CAST(?1 AS INTEGER) AND j.received_ms+2500>CAST(?1 AS INTEGER) AND c.expires_ms>CAST(?1 AS INTEGER) ORDER BY j.received_ms,j.rowid LIMIT 1;" and clock))
+    if archive_list_text(row and 0) equals "end":
+        set committed to sql_execute(journal and "COMMIT;")
+        return history_status("idle")
+    if not (archive_list_text(row and 0) equals "found"):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("store-failed")
+    set values to create_list()
+    set added to append_list(values and archive_list_text(row and 1))
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET state='acknowledging' WHERE identity=?1 AND state='pending';" and values) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("store-failed")
+    return row
+
+define discord_interaction_ack_record with journal as Int and identity as Str and confirmed as Int returning Str:
+    set state to "uncertain"
+    if confirmed equals 1:
+        set state to "acknowledged"
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and state)
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET state=?2,detail=?2 WHERE identity=?1 AND state='acknowledging';" and values) and 101) is not equal to 0:
+        return "store-failed"
+    set row to history_collect_one(archive_prepare(journal and "SELECT changes();"))
+    if not (archive_list_text(row and 1) equals "1"):
+        return "stale-ack"
+    return state
+
+define discord_interaction_ack_tick with library as Str and bot_token as Str and journal as Int and directory_path as Str returning Str:
+    set claim to discord_interaction_claim(journal and ep_time_now_ms())
+    if not (archive_list_text(claim and 0) equals "found"):
+        return archive_list_text(claim and 0)
+    set identity to archive_list_text(claim and 1)
+    set credential to archive_list_text(claim and 2)
+    set tokens to provider_json_tokens(archive_list_text(claim and 3))
+    set id to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    if discord_snowflake(id) equals 0 or else discord_interaction_credential_valid(credential) equals 0:
+        return discord_interaction_ack_record(journal and identity and 0)
+    set remaining to string_to_int(archive_list_text(claim and 4)) + 2800 - ep_time_now_ms()
+    if remaining < 1:
+        return discord_interaction_ack_record(journal and identity and 0)
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(system and directory_path)
+    if directory < 0:
+        set closed to ep_dlclose(system)
+        return discord_interaction_ack_record(journal and identity and 0)
+    set name to ptr_to_str(ep_uuid_v4())
+    set output to workspace_file_open(system and directory and concat(name and ".json") and 1)
+    set headers to workspace_file_open(system and directory and concat(name and ".headers") and 1)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(system)
+    if output < 0 or else headers < 0:
+        if output >= 0:
+            set closed to net_close(output)
+        if headers >= 0:
+            set closed to net_close(headers)
+        return discord_interaction_ack_record(journal and identity and 0)
+    set route to concat("/interactions/" and concat(id and concat("/" and concat(credential and "/callback"))))
+    # A private deferred response contains no source text or trace. No raw
+    # credential, route or callback payload is emitted to logs/model activity.
+    set response to discord_rest_transfer_timed(library and bot_token and "POST" and route and "{\"type\":5,\"data\":{\"flags\":64}}" and output and headers and remaining and remaining)
+    set confirmed to 0
+    if archive_list_text(response and 0) equals "complete" and archive_list_text(response and 1) equals "204":
+        set confirmed to 1
+    return discord_interaction_ack_record(journal and identity and confirmed)

@@ -1,0 +1,80 @@
+import "store"
+import "../providers/archived_stream"
+
+# Continuation credentials are kept outside the immutable event payload and
+# never projected into model context or activity. Pruning removes expired
+# credentials while leaving the original sanitized dispatch receipt intact.
+define discord_interaction_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_interaction_credentials(identity TEXT PRIMARY KEY,credential TEXT NOT NULL,digest TEXT NOT NULL,received_ms INTEGER NOT NULL,expires_ms INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_interaction_jobs(identity TEXT PRIMARY KEY REFERENCES discord_inbox(identity),state TEXT NOT NULL CHECK(state IN ('pending','acknowledging','acknowledged','uncertain','expired','completed','denied')),received_ms INTEGER NOT NULL,detail TEXT NOT NULL DEFAULT '');")
+
+define discord_interaction_credential_valid with value as Str returning Int:
+    if string_length(value) < 20 or else string_length(value) > 2048:
+        return 0
+    set index to 0
+    repeat while index < string_length(value):
+        set code to peek_byte(str_to_ptr(value) and index)
+        if not ((code >= 48 and code <= 57) or else (code >= 65 and code <= 90) or else (code >= 97 and code <= 122) or else code equals 45 or else code equals 95 or else code equals 46):
+            return 0
+        set index to index + 1
+    return 1
+
+# Validate only the transport envelope here. The message-action resolver and
+# fresh live authority checks decide whether an admitted click may execute.
+define discord_interaction_admit with body as Str and bot as Str and guilds as List and admins as List returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    if not (provider_index(tokens and provider_member(tokens and 0 and "type")) equals "3") or else not (provider_value(tokens and provider_member(tokens and 0 and "application_id")) equals bot):
+        return ""
+    set id to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    set token_index to provider_member(tokens and 0 and "token")
+    if discord_snowflake(id) equals 0 or else discord_snowflake(room) equals 0 or else not (provider_kind(tokens and token_index) equals "string") or else discord_interaction_credential_valid(provider_value(tokens and token_index)) equals 0:
+        return ""
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    if discord_snowflake(guild) equals 1:
+        if discord_contains(guilds and guild) equals 0:
+            return ""
+        set member to provider_member(tokens and 0 and "member")
+        set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and member and "user") and "id"))
+        if discord_snowflake(actor) equals 0:
+            return ""
+    else:
+        if not (guild equals "null" or else string_length(guild) equals 0):
+            return ""
+        set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "user") and "id"))
+        if discord_snowflake(actor) equals 0 or else discord_contains(admins and actor) equals 0:
+            return ""
+    return concat("interaction:" and id)
+
+# Called inside the Gateway dispatch transaction. On failure the caller must
+# roll back, including its resume cursor. No independent transaction here.
+define discord_interaction_retain with journal as Int and identity as Str and original as Str returning Str:
+    set tokens to provider_json_tokens(original)
+    set credential to provider_value(tokens and provider_member(tokens and 0 and "token"))
+    if discord_interaction_credential_valid(credential) equals 0:
+        return ""
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and credential)
+    set added to append_list(values and ep_sha256(credential))
+    set added to append_list(values and int_to_string(ep_time_now_ms()))
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_interaction_credentials VALUES(?1,?2,?3,COALESCE((SELECT received_ms FROM discord_inbox WHERE identity=?1),CAST(?4 AS INTEGER)),COALESCE((SELECT received_ms FROM discord_inbox WHERE identity=?1),CAST(?4 AS INTEGER))+900000);" and values) and 101) is not equal to 0:
+        return ""
+    set keys to create_list()
+    set added to append_list(keys and identity)
+    set added to append_list(keys and ep_sha256(credential))
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT digest FROM discord_interaction_credentials WHERE identity=?1 AND digest=?2;" and keys))
+    if not (archive_list_text(prior and 0) equals "found"):
+        return ""
+    set values to create_list()
+    set added to append_list(values and original)
+    set clean to history_collect_one(checkpoint_prepare(journal and "SELECT json_remove(?1,'$.token');" and values))
+    if not (archive_list_text(clean and 0) equals "found"):
+        return ""
+    return archive_list_text(clean and 1)
+
+define discord_interaction_queue with journal as Int and identity as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and identity)
+    return archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_interaction_jobs(identity,state,received_ms) SELECT identity,'pending',received_ms FROM discord_inbox WHERE identity=?1 AND kind='INTERACTION_CREATE';" and values) and 101)
