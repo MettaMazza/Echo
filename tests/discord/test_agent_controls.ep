@@ -1,0 +1,94 @@
+import "../../app/discord/agent_output"
+import "../../app/discord/process"
+import "select"
+
+define main returning Int:
+    if get_argument_count() equals 4 and also get_argument(3) equals "--isolated-controls":
+        return test_isolated_reply_controls()
+    if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)):
+        return 1
+    # Exercise the production child environment, not just an in-process call.
+    set arguments to [get_argument(1), get_argument(2), "--isolated-controls"]
+    set process to discord_process_start(arguments and -1)
+    if process <= 0:
+        return 21
+    set idle to channel
+    set waits to [idle]
+    repeat while 1 equals 1:
+        set status to discord_process_poll(process)
+        if status equals 1:
+            return 0
+        if status is not equal to 0:
+            return 22
+        set waited to select(waits and 25)
+    return 23
+
+define test_isolated_reply_controls returning Int:
+    set journal to discord_store_open(get_argument(1) and "900")
+    set database to discord_agent_open(get_argument(2) and "900")
+    if journal equals 0 or else database equals 0:
+        return 2
+    set body to "{\"id\":\"100\",\"channel_id\":\"300\",\"guild_id\":\"200\",\"type\":0,\"author\":{\"id\":\"500\"},\"mentions\":[{\"id\":\"900\"}],\"content\":\"test\"}"
+    if not (discord_inbox_record(journal and "message:create:100" and "MESSAGE_CREATE" and body) equals "recorded"):
+        return 3
+    set submitted to discord_agent_submit(journal and database and "message:create:100" and "900" and ["200"] and ["400"])
+    if not (archive_list_text(submitted and 0) equals "accepted") or else not (discord_agent_output(journal and database and "message:create:100") equals "no-completed-bound-run"):
+        return 4
+    set session to archive_list_text(submitted and 1)
+    set content to "@everyone "
+    set index to 0
+    repeat while index < 700:
+        set content to concat(content and "🙂é")
+        set index to index + 1
+    # Explicit fixture provenance; no claim these events came from inference.
+    set request to "{\"run_id\":\"discord-message:100\",\"parent_event\":\"discord-message:100:user\",\"fixture\":true}"
+    if archive_append(database and session and "fixture-request" and "model_request" and request and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "ready" and "discord-message:100:user" and "generating" and "fixture-request") is not equal to 0:
+        return 5
+    set response to concat("{\"run_id\":\"discord-message:100\",\"parent_event\":\"fixture-request\",\"content\":" and concat(provider_quote(content) and "}"))
+    if archive_append(database and session and "fixture-final" and "assistant_final" and response and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "generating" and "fixture-request" and "completed" and "fixture-final") is not equal to 0:
+        return 6
+    if not (discord_agent_output(journal and database and "message:create:100") equals "enqueued") or else not (discord_agent_output(journal and database and "message:create:100") equals "enqueued"):
+        return 7
+    set rows to history_collect_one(archive_prepare(journal and "SELECT COUNT(*),group_concat(json_extract(body,'$.content'),'') FROM (SELECT body FROM discord_outbox ORDER BY identity);"))
+    if not (archive_list_text(rows and 1) equals "3") or else not (archive_list_text(rows and 2) equals content):
+        return 8
+    set bad to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_outbox WHERE channel<>'300' OR length(CAST(json_extract(body,'$.content') AS BLOB))>1900 OR json_extract(body,'$.message_reference.message_id')<>'100' OR json_array_length(body,'$.allowed_mentions.parse')<>0 OR json_extract(body,'$.allowed_mentions.replied_user')<>0;"))
+    if not (archive_list_text(bad and 1) equals "0"):
+        return 9
+    # A later accepted parent final must not overwrite or collide with the
+    # original response. Explicit synthetic lineage tests transport behavior.
+    set returned to "{\"run_id\":\"discord-message:100\",\"parent_event\":\"fixture-final\",\"results\":[],\"fixture\":true}"
+    if archive_append(database and session and "fixture-return" and "delegation_results" and returned and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "completed" and "fixture-final" and "ready" and "fixture-return") is not equal to 0:
+        return 11
+    set request to "{\"run_id\":\"discord-message:100\",\"parent_event\":\"fixture-return\",\"fixture\":true}"
+    if archive_append(database and session and "fixture-request-2" and "model_request" and request and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "ready" and "fixture-return" and "generating" and "fixture-request-2") is not equal to 0:
+        return 12
+    set response to "{\"run_id\":\"discord-message:100\",\"parent_event\":\"fixture-request-2\",\"content\":\"The delegated result is available.\",\"fixture\":true}"
+    if archive_append(database and session and "fixture-final-2" and "assistant_final" and response and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "generating" and "fixture-request-2" and "completed" and "fixture-final-2") is not equal to 0:
+        return 13
+    if not (discord_agent_output(journal and database and "message:create:100") equals "enqueued"):
+        return 14
+    set closed to sql_close(database)
+    set database to discord_agent_open(get_argument(2) and "900")
+    if database equals 0 or else not (discord_agent_output(journal and database and "message:create:100") equals "enqueued"):
+        return 15
+    set later to history_collect_one(archive_prepare(journal and "SELECT COUNT(*),COUNT(DISTINCT nonce) FROM discord_outbox;"))
+    if not (archive_list_text(later and 1) equals "4") or else not (archive_list_text(later and 2) equals "4"):
+        return 16
+    set original to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_outbox WHERE identity LIKE 'discord-message:100:final:%';"))
+    if not (archive_list_text(original and 1) equals "3"):
+        return 17
+    set controls to history_collect_one(archive_prepare(journal and "SELECT COUNT(*),COUNT(DISTINCT final_event) FROM discord_message_actions WHERE action='speak';"))
+    if not (archive_list_text(controls and 1) equals "2") or else not (archive_list_text(controls and 2) equals "2"):
+        return 18
+    set controls to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_message_actions WHERE action='trace';"))
+    if not (archive_list_text(controls and 1) equals "0"):
+        return 19
+    set controls to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_outbox WHERE json_array_length(body,'$.components[0].components')=1;"))
+    if not (archive_list_text(controls and 1) equals "2"):
+        return 20
+    set revoked to sql_execute(database and "UPDATE echo_devices SET revoked=1 WHERE device='discord:500';")
+    if revoked is not equal to 0 or else not (discord_agent_output(journal and database and "message:create:100") equals "authority-revoked"):
+        return 10
+    display "PASS: Speak bound to each distinct final, no ordinary-user private trace control, completed bound output, UTF-8 chunks, resumed final without overwrite, reopen idempotency and revoked authority denial"
+    return 0
