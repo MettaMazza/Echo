@@ -1,0 +1,68 @@
+import "interaction_intake"
+
+# Registration receipts come from the host's authenticated Discord API call,
+# never from command text or an interaction claiming to register itself.
+define discord_command_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_command_bindings(command TEXT PRIMARY KEY,application TEXT NOT NULL,guild TEXT NOT NULL,name TEXT NOT NULL CHECK(name IN ('new','auto','autooff')),digest TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_command_binding_no_update BEFORE UPDATE ON discord_command_bindings BEGIN SELECT RAISE(ABORT,'Command registration identity is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_command_binding_no_delete BEFORE DELETE ON discord_command_bindings BEGIN SELECT RAISE(ABORT,'Command registration evidence persists'); END;")
+
+define discord_command_observe with journal as Int and body as Str and bot as Str and guild as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "invalid-registration"
+    set identity to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set name to provider_value(tokens and provider_member(tokens and 0 and "name"))
+    if discord_snowflake(identity) equals 0 or else discord_snowflake(bot) equals 0 or else discord_snowflake(guild) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "application_id")) equals bot) or else not (provider_value(tokens and provider_member(tokens and 0 and "guild_id")) equals guild) or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "1") or else not (name equals "new" or else name equals "auto" or else name equals "autooff"):
+        return "registration-binding-denied"
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and bot)
+    set added to append_list(values and guild)
+    set added to append_list(values and name)
+    set added to append_list(values and ep_sha256(body))
+    if discord_command_schema(journal) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_command_bindings VALUES(?1,?2,?3,?4,?5);" and values) and 101) is not equal to 0:
+        return "store-failed"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT command FROM discord_command_bindings WHERE command=?1 AND application=?2 AND guild=?3 AND name=?4 AND digest=?5;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "registration-conflict"
+    return "registered"
+
+# Input is an archived authenticated Gateway dispatch. This result is only a
+# binding, not execution authority: the executor must recheck current channel
+# access, device authority and the acknowledged interaction before mutation.
+define discord_command_resolve with journal as Int and body as Str and bot as Str and guilds as List and admins as List returning List:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "2") or else not (provider_value(tokens and provider_member(tokens and 0 and "application_id")) equals bot):
+        return history_status("invalid-command")
+    set data to provider_member(tokens and 0 and "data")
+    set identity to provider_value(tokens and provider_member(tokens and data and "id"))
+    set name to provider_value(tokens and provider_member(tokens and data and "name"))
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    set member to provider_member(tokens and 0 and "member")
+    set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and member and "user") and "id"))
+    if discord_snowflake(identity) equals 0 or else discord_snowflake(room) equals 0 or else discord_snowflake(actor) equals 0 or else discord_contains(guilds and guild) equals 0 or else not (provider_value(tokens and provider_member(tokens and data and "type")) equals "1"):
+        return history_status("command-scope-denied")
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and bot)
+    set added to append_list(values and guild)
+    set added to append_list(values and name)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT name FROM discord_command_bindings WHERE command=?1 AND application=?2 AND guild=?3 AND name=?4;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("command-binding-denied")
+    if (name equals "auto" or else name equals "autooff") and also discord_contains(admins and actor) equals 0:
+        return history_status("admin-required")
+    # Validate optional task text structurally without interpreting it as
+    # roles, destinations, tool instructions or authority. Never truncate it.
+    set arguments to create_list()
+    set added to append_list(arguments and body)
+    set option to history_collect_one(checkpoint_prepare(journal and "SELECT CASE WHEN json_type(?1,'$.data.options') IS NULL THEN 'empty' WHEN json_type(?1,'$.data.options')='array' AND json_array_length(?1,'$.data.options')=0 THEN 'empty' WHEN json_type(?1,'$.data.options')='array' AND json_array_length(?1,'$.data.options')=1 AND json_extract(?1,'$.data.options[0].name')='prompt' AND json_extract(?1,'$.data.options[0].type')=3 AND json_type(?1,'$.data.options[0].value')='text' THEN 'prompt' ELSE 'invalid' END,COALESCE(json_extract(?1,'$.data.options[0].value'),'');" and arguments))
+    if not (archive_list_text(option and 0) equals "found") or else archive_list_text(option and 1) equals "invalid" or else (not (name equals "auto") and not (archive_list_text(option and 1) equals "empty")):
+        return history_status("invalid-command-options")
+    set result to history_status("command-bound-needs-live-access")
+    set added to append_list(result and name)
+    set added to append_list(result and actor)
+    set added to append_list(result and room)
+    set added to append_list(result and guild)
+    set added to append_list(result and archive_list_text(option and 2))
+    return result
