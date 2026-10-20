@@ -1,0 +1,53 @@
+import "steering_recovery"
+
+# Repair only a missing journal acknowledgement of an already committed event.
+# This does not submit guidance, restore revoked authority, or display a tick.
+define discord_steering_reconcile_accepted with journal as Int and database as Int and source as Str and run as Str returning Str:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "reconcile-busy"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT s.identity,j.state,s.target,s.actor,i.payload FROM discord_steering_intents s JOIN discord_agent_jobs j ON j.inbox=s.source JOIN discord_inbox i ON i.identity=s.source WHERE s.source=?1;" and [source]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 2) equals "steering-reserved" or else archive_list_text(row and 2) equals "steered"):
+        return migration_fail(journal and "reconcile-binding-denied")
+    set target to discord_intake_source(journal and archive_list_text(row and 3))
+    set expected to concat("discord-message:" and archive_list_text(target and 6))
+    if archive_list_text(target and 1) equals "INTERACTION_CREATE":
+        set expected to concat("discord-command:" and archive_list_text(row and 3))
+    if not (archive_list_text(target and 0) equals "found") or else not (expected equals run) or else not (archive_list_text(target and 3) equals archive_list_text(row and 4)):
+        return migration_fail(journal and "reconcile-binding-denied")
+    set event to concat(run and concat(":guidance:" and archive_list_text(row and 1)))
+    set body to provider_json_tokens(archive_list_text(row and 5))
+    set message to provider_value(body and provider_member(body and 0 and "content"))
+    set bot to history_collect_one(archive_prepare(journal and "SELECT bot FROM discord_identity WHERE singleton=1;"))
+    set proof to history_collect_one(checkpoint_prepare(database and "SELECT e.event FROM echo_events e JOIN echo_run_authority a ON a.run=?2 JOIN echo_discord_binding b ON b.singleton=1 WHERE e.event=?1 AND e.kind='guidance_received' AND json_extract(e.payload,'$.run_id')=?2 AND json_extract(e.payload,'$.message')=?3 AND a.device=?4 AND b.bot=?5;" and [event,run,message,concat("discord:" and archive_list_text(row and 4)),archive_list_text(bot and 1)]))
+    if not (archive_list_text(proof and 0) equals "found"):
+        return migration_fail(journal and "guidance-proof-unavailable")
+    if archive_list_text(row and 2) equals "steered":
+        return migration_fail(journal and "already-steered")
+    set now to int_to_string(ep_time_now_ms())
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_agent_jobs SET state='steered',detail=?2,updated_ms=CAST(?3 AS INTEGER) WHERE inbox=?1 AND state='steering-reserved';" and [source,event,now]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'steered',?2,CAST(?3 AS INTEGER));" and [source,event,now]) and 101) is not equal to 0:
+        return migration_fail(journal and "reconcile-write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return "reconcile-commit-failed"
+    return "steered"
+
+# Fair durable scan independent of reaction retries: an old access failure
+# cannot strand a queue reservation or starve recovery for later messages.
+define discord_steering_recovery_tick with journal as Int and database as Int returning Str:
+    if discord_steering_schema(journal) is not equal to 0 or else sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_steering_recovery_clock(source TEXT PRIMARY KEY REFERENCES discord_steering_intents(source),next_ms INTEGER NOT NULL);") is not equal to 0:
+        return "recovery-store-failed"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT s.source,s.target FROM discord_steering_intents s JOIN discord_agent_jobs j ON j.inbox=s.source LEFT JOIN discord_steering_recovery_clock c ON c.source=s.source WHERE j.state='steering-reserved' AND COALESCE(c.next_ms,0)<=CAST(?1 AS INTEGER) ORDER BY COALESCE(c.next_ms,0),s.created_ms,s.source LIMIT 1;" and [int_to_string(ep_time_now_ms())]))
+    if archive_list_text(row and 0) equals "end":
+        return "idle"
+    if not (archive_list_text(row and 0) equals "found"):
+        return "recovery-store-failed"
+    set source to archive_list_text(row and 1)
+    set target to discord_intake_source(journal and archive_list_text(row and 2))
+    set run to concat("discord-message:" and archive_list_text(target and 6))
+    if archive_list_text(target and 1) equals "INTERACTION_CREATE":
+        set run to concat("discord-command:" and archive_list_text(row and 2))
+    set result to discord_steering_release_invalidated(journal and database and source and run)
+    if result equals "guidance-reconciliation-required":
+        set result to discord_steering_reconcile_accepted(journal and database and source and run)
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_steering_recovery_clock VALUES(?1,CAST(?2 AS INTEGER)) ON CONFLICT(source) DO UPDATE SET next_ms=excluded.next_ms;" and [source,int_to_string(ep_time_now_ms() + 1000)]) and 101) is not equal to 0:
+        return "recovery-store-failed"
+    return result

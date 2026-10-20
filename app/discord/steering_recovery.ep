@@ -5,15 +5,38 @@ import "steering_apply"
 # queue claim. Ordinary intake will repeat all current access/source checks.
 # Both this path and apply acquire the journal writer lock before archive reads.
 define discord_steering_release_terminal with journal as Int and database as Int and source as Str and run as Str returning Str:
+    return discord_steering_release_unconsumed(journal and database and source and run and 0)
+
+# Recovery is not permission to execute. Requeued input passes ordinary current
+# source/access checks again. Accepted guidance is never duplicated in a new turn.
+define discord_steering_release_invalidated with journal as Int and database as Int and source as Str and run as Str returning Str:
+    return discord_steering_release_unconsumed(journal and database and source and run and 1)
+
+define discord_steering_release_unconsumed with journal as Int and database as Int and source as Str and run as Str and invalidated as Int returning Str:
     if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
         return "recovery-busy"
     set row to history_collect_one(checkpoint_prepare(journal and "SELECT s.target,s.identity,j.state FROM discord_steering_intents s JOIN discord_agent_jobs j ON j.inbox=s.source WHERE s.source=?1;" and [source]))
     if not (archive_list_text(row and 0) equals "found"):
         return migration_fail(journal and "no-reservation")
-    if not (archive_list_text(row and 3) equals "steering-reserved") or else not (discord_job_origin(journal and database and run) equals archive_list_text(row and 1)):
+    if not (archive_list_text(row and 3) equals "steering-reserved"):
+        return migration_fail(journal and "recovery-binding-denied")
+    set target to discord_intake_source(journal and archive_list_text(row and 1))
+    if not (archive_list_text(target and 0) equals "found"):
+        return migration_fail(journal and "recovery-binding-denied")
+    set expected to concat("discord-message:" and archive_list_text(target and 6))
+    if archive_list_text(target and 1) equals "INTERACTION_CREATE":
+        set expected to concat("discord-command:" and archive_list_text(row and 1))
+    if not (expected equals run):
+        return migration_fail(journal and "recovery-binding-denied")
+    # Historical identity is sufficient for recovery after revocation. It never
+    # supplies dispatch authority; require the two stores to belong to one bot.
+    set journal_bot to history_collect_one(archive_prepare(journal and "SELECT bot FROM discord_identity WHERE singleton=1;"))
+    set archive_bot to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set authority to history_collect_one(checkpoint_prepare(database and "SELECT a.device FROM echo_run_authority a JOIN echo_group_run_origins g ON g.run=a.run WHERE a.run=?1 AND a.device=?2;" and [run,concat("discord:" and archive_list_text(target and 3))]))
+    if not (archive_list_text(journal_bot and 0) equals "found") or else not (archive_list_text(archive_bot and 0) equals "found") or else not (archive_list_text(journal_bot and 1) equals archive_list_text(archive_bot and 1)) or else not (archive_list_text(authority and 0) equals "found"):
         return migration_fail(journal and "recovery-binding-denied")
     set event to concat(run and concat(":guidance:" and archive_list_text(row and 2)))
-    set receipt to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE event=?1;" and [event]))
+    set receipt to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='guidance_received' AND substr(event,-length(?1))=?1;" and [concat(":guidance:" and archive_list_text(row and 2))]))
     if not (archive_list_text(receipt and 0) equals "found"):
         return migration_fail(journal and "archive-read-failed")
     if not (archive_list_text(receipt and 1) equals "0"):
@@ -22,10 +45,29 @@ define discord_steering_release_terminal with journal as Int and database as Int
     if state equals 0:
         return migration_fail(journal and "target-unavailable")
     set status to archive_list_text(state and 2)
+    set reason to "target-terminal"
     if not (status equals "completed" or else status equals "cancelled" or else status equals "failed"):
-        return migration_fail(journal and "target-not-terminal")
+        if invalidated equals 0:
+            return migration_fail(journal and "target-not-terminal")
+        set reason to ""
+        for each inbox in [source,archive_list_text(row and 1)]:
+            set origin to discord_intake_source(journal and ptr_to_str(inbox))
+            if not (archive_list_text(origin and 0) equals "found"):
+                return migration_fail(journal and "recovery-source-unavailable")
+            set barrier to discord_run_barrier(journal and ptr_to_str(inbox) and string_to_int(archive_list_text(origin and 7)) and archive_list_text(origin and 6) and archive_list_text(origin and 4) and archive_list_text(origin and 5))
+            if barrier < 0:
+                return migration_fail(journal and "recovery-source-unavailable")
+            if barrier equals 1:
+                set reason to "source-or-audience-invalidated"
+        set revoked to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_run_authority a JOIN echo_devices d ON d.device=a.device JOIN echo_principals p ON p.identity=a.principal WHERE a.run=?1 AND (d.revoked<>0 OR p.revoked<>0 OR p.role<>a.role OR a.role_revision<>(SELECT COUNT(*) FROM echo_authority_events e WHERE e.principal=a.principal) OR a.revocation_revision<>(SELECT COUNT(*) FROM echo_principal_revocations v WHERE v.principal=a.principal) OR a.link_revision<>(SELECT COUNT(*) FROM echo_device_link_events l WHERE l.device=a.device));" and [run]))
+        if not (archive_list_text(revoked and 0) equals "found"):
+            return migration_fail(journal and "archive-read-failed")
+        if not (archive_list_text(revoked and 1) equals "0"):
+            set reason to "authority-revoked"
+        if string_length(reason) equals 0:
+            return migration_fail(journal and "target-not-terminal")
     set now to int_to_string(ep_time_now_ms())
-    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'steering-returned-to-queue',?2,CAST(?3 AS INTEGER));" and [source,event,now]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "DELETE FROM discord_agent_jobs WHERE inbox=?1 AND state='steering-reserved';" and [source]) and 101) is not equal to 0:
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'steering-returned-to-queue',?2,CAST(?3 AS INTEGER));" and [source,concat(reason and concat(":" and event)),now]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "DELETE FROM discord_agent_jobs WHERE inbox=?1 AND state='steering-reserved';" and [source]) and 101) is not equal to 0:
         return migration_fail(journal and "requeue-write-failed")
     if sql_execute(journal and "COMMIT;") is not equal to 0:
         return "requeue-commit-failed"
