@@ -81,7 +81,12 @@ define web_guidance_request with database as Int and device as Str and run as St
     return web_guidance_environment(database and device and run and identity and message and "")
 
 define web_guidance_environment with database as Int and device as Str and run as Str and identity as Str and message as Str and environment as Str returning Int:
-    if string_length(identity) equals 0 or else string_length(message) equals 0:
+    return web_guidance_files_environment(database and device and run and identity and message and create_list() and environment)
+
+# Text and selected sources are one accepted update. A retry cannot add, drop
+# or substitute attachments, and failed binding leaves no text-only guidance.
+define web_guidance_files_environment with database as Int and device as Str and run as Str and identity as Str and message as Str and attachments as List and environment as Str returning Int:
+    if string_length(identity) equals 0 or else (string_length(message) equals 0 and length_list(attachments) equals 0):
         return 1
     if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
         return 1
@@ -91,10 +96,19 @@ define web_guidance_environment with database as Int and device as Str and run a
     if row equals 0:
         return archive_rollback(database)
     set event to concat(run and concat(":guidance:" and identity))
+    set manifest to turn_attachment_manifest(database and device and archive_list_text(row and 0) and event and attachments)
+    if string_length(manifest) equals 0:
+        return archive_rollback(database)
     set payload to concat(agent_event_envelope(run and archive_list_text(row and 1)) and concat(",\"message\":" and concat(provider_quote(message) and "}")))
     set existing to archive_read_event(database and event)
     if existing is not equal to 0:
         if not (archive_list_text(existing and 3) equals payload):
+            return archive_rollback(database)
+        set binding to turn_attachment_read(database and archive_list_text(row and 0) and event)
+        if length_list(attachments) > 0:
+            if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals manifest) or else not (archive_list_text(binding and 2) equals "turn_attachments"):
+                return archive_rollback(database)
+        else if not (archive_list_text(binding and 0) equals "end"):
             return archive_rollback(database)
     else:
         set state to archive_list_text(row and 2)
@@ -102,6 +116,9 @@ define web_guidance_environment with database as Int and device as Str and run a
             return archive_rollback(database)
         if archive_append_pending(database and archive_list_text(row and 0) and event and "guidance_received" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else message_environment_pending(database and archive_list_text(row and 0) and run and event and device and environment) is not equal to 0:
             return archive_rollback(database)
+        if length_list(attachments) > 0:
+            if archive_append_pending(database and archive_list_text(row and 0) and concat(event and ":attachments") and "turn_attachments" and manifest and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+                return archive_rollback(database)
     if sql_execute(database and "COMMIT;") is not equal to 0:
         return archive_rollback(database)
     return 0

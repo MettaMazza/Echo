@@ -9,6 +9,7 @@ import "../../app/jobs/delegation_schema"
 import "../../app/agent/run_messages"
 import "../../app/archive/history"
 import "../fixtures/generation_fixture"
+import "../fixtures/recap_candidate_fixture"
 
 define main returning Int:
     if get_argument_count() is not equal to 3:
@@ -68,6 +69,14 @@ define main returning Int:
     set observation_tokens to provider_json_tokens(observation)
     if observation_tokens equals 0:
         return 1
+    # Tool observations are now inside the runtime's source-boundary envelope.
+    # Assert that boundary rather than weakening production output for this test.
+    if string_length(provider_value(observation_tokens and provider_member(observation_tokens and 0 and "source_boundary"))) equals 0:
+        return 2
+    set observation to agent_json_source(observation and observation_tokens and provider_member(observation_tokens and 0 and "observation"))
+    set observation_tokens to provider_json_tokens(observation)
+    if observation_tokens equals 0:
+        return 3
     if not (provider_value(observation_tokens and provider_member(observation_tokens and 0 and "text")) equals "The attached word is café ☕."):
         return 1
     if not (provider_value(observation_tokens and provider_member(observation_tokens and 0 and "event")) equals "note:attachment") or else not (provider_value(observation_tokens and provider_member(observation_tokens and 0 and "sha256")) equals ep_sha256("The attached word is café ☕.")):
@@ -153,10 +162,18 @@ define main returning Int:
     set feedback to concat("{\"candidate_digest\":" and provider_quote(ep_sha256(candidate)))
     set feedback to concat(feedback and concat(",\"source_end\":" and provider_quote(endpoint)))
     set feedback to concat(feedback and concat(",\"records\":[" and concat(judgments and "],\"findings\":[\"Keep the original request pending.\"]}")))
-    set repaired to recap_repair_provider(database and session and endpoint and candidate and feedback and "revision-repair" and provider_llama_profile("fixture" and 0) and 1 and -1 and 65536)
+    set repair_listener to local_socket_listen(0)
+    set repair_completed to channel
+    set repair_port to get_list(repair_listener and 2)
+    set fixture_candidate to concat(candidate and "")
+    spawn recap_candidate_fixture(repair_listener and fixture_candidate and "café" and repair_completed)
+    set repaired to recap_repair_provider(database and session and endpoint and candidate and feedback and "revision-repair" and provider_llama_profile("fixture" and repair_port) and 1 and -1 and 65536)
     if not (archive_list_text(repaired and 0) equals "structure-valid"):
         display archive_list_text(repaired and 0)
         return 48
+    set fixture_status to receive from repair_completed
+    if fixture_status is not equal to 0:
+        return 57
     set receipt to archive_read_event(database and "revision-repair:candidate")
     set receipt_tokens to provider_json_tokens(archive_list_text(receipt and 3))
     if not (provider_value(receipt_tokens and provider_member(receipt_tokens and 0 and "attachment_context_revision")) equals revision):
