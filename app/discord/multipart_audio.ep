@@ -1,0 +1,79 @@
+import "../archive/file_digest"
+import "message_actions"
+
+# Freeze the exact verified bytes in native memory before HTTP. No pathname
+# is reopened by curl and binary NUL bytes are never treated as text. Caller
+# owns the returned native buffer and must free it after transfer.
+define discord_audio_multipart with path as Str and digest as Str and size as Int and limit as Int and payload as Str returning List:
+    if size < 1 or else limit < 1 or else size > limit or else size > 4294967295:
+        return history_status("attachment-too-large-or-empty")
+    set tokens to provider_json_tokens(payload)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return history_status("invalid-payload")
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return history_status("platform-unavailable")
+    set descriptor to socket_signed_result(ep_dlcall2(ep_dlsym(system and "open") and str_to_ptr(path) and 553648132))
+    if descriptor < 0:
+        set closed to ep_dlclose(system)
+        return history_status("audio-open-failed")
+    set boundary to concat("EchoAudio" and ptr_to_str(ep_uuid_v4()))
+    set prefix to concat("--" and concat(boundary and "\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n"))
+    set prefix to concat(prefix and concat(payload and concat("\r\n--" and concat(boundary and "\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"Echo-reply.wav\"\r\nContent-Type: audio/wav\r\n\r\n"))))
+    set suffix to concat("\r\n--" and concat(boundary and "--\r\n"))
+    set prefix_size to string_length(prefix)
+    set total to prefix_size + size + string_length(suffix)
+    set buffer to ep_dlcall1(ep_dlsym(system and "malloc") and total + 1)
+    if buffer equals 0:
+        set closed to net_close(descriptor)
+        set closed to ep_dlclose(system)
+        return history_status("allocation-failed")
+    set copied to ep_dlcall3(ep_dlsym(system and "memcpy") and buffer and str_to_ptr(prefix) and prefix_size)
+    set received to 0
+    set valid to 1
+    repeat while received < size and valid equals 1:
+        set count to socket_signed_result(ep_dlcall3(ep_dlsym(system and "read") and descriptor and buffer + prefix_size + received and size - received))
+        if count <= 0:
+            set valid to 0
+        else:
+            set received to received + count
+    # Detect growth without overwriting audio bytes.
+    if ep_dlcall3(ep_dlsym(system and "read") and descriptor and buffer + total and 1) is not equal to 0:
+        set valid to 0
+    set closed to net_close(descriptor)
+    set hash to create_list()
+    set index to 0
+    repeat while index < 4:
+        set added to append_list(hash and 0)
+        set index to index + 1
+    if valid equals 1:
+        if ep_dlcall3(ep_dlsym(system and "CC_SHA256") and buffer + prefix_size and size and get_list_data_ptr(hash)) equals 0:
+            set valid to 0
+    set actual to ""
+    set index to 0
+    repeat while index < 32:
+        set value to peek_byte(get_list_data_ptr(hash) and index)
+        set actual to concat(actual and substring("0123456789abcdef" and value / 16 and 1))
+        set actual to concat(actual and substring("0123456789abcdef" and value modulo 16 and 1))
+        set index to index + 1
+    if valid equals 0 or else not (actual equals digest):
+        set released to ep_dlcall1(ep_dlsym(system and "free") and buffer)
+        set closed to ep_dlclose(system)
+        return history_status("audio-integrity-failed")
+    set copied to ep_dlcall3(ep_dlsym(system and "memcpy") and buffer + prefix_size + size and str_to_ptr(suffix) and string_length(suffix))
+    set closed to ep_dlclose(system)
+    set result to history_status("multipart-ready")
+    set added to append_list(result and buffer)
+    set added to append_list(result and total)
+    set added to append_list(result and concat("multipart/form-data; boundary=" and boundary))
+    set added to append_list(result and prefix_size)
+    return result
+
+define discord_audio_multipart_release with result as List returning Int:
+    if not (archive_list_text(result and 0) equals "multipart-ready"):
+        return 0
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return 1
+    set released to ep_dlcall1(ep_dlsym(system and "free") and get_list(result and 1))
+    return ep_dlclose(system)
