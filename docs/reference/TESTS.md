@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-20T08:20:56.387573+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-20T08:55:31.433503+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -3459,6 +3459,24 @@ Definitions:
 22: define main returning Int:
 ```
 
+## `tests/providers/benchmark_json_payload.ep`
+
+[tests/providers/benchmark_json_payload.ep](../../tests/providers/benchmark_json_payload.ep) · 36 lines · 2038 bytes
+
+SHA-256: `88a624eab73d129de89ce7e6f7339dfa766ccfce214a359908fe416a56cded8c`
+
+Source annotations: Private orchestration supplies a retained request; never publish its payload. Compare every decoded string with the prior escape-capable decoder, outside the timed parse. This checks the entire retained request, not only selected media fields or aggregate token counts.
+
+Imports: [../../app/providers/llama_modalities](../../app/providers/llama_modalities.ep), `fs` (toolchain/library).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+5: define main returning Int:
+```
+
 ## `tests/providers/measure_recorded_stream.ep`
 
 [tests/providers/measure_recorded_stream.ep](../../tests/providers/measure_recorded_stream.ep) · 84 lines · 4210 bytes
@@ -3663,9 +3681,9 @@ Definitions:
 
 ## `tests/providers/test_json_tokens.ep`
 
-[tests/providers/test_json_tokens.ep](../../tests/providers/test_json_tokens.ep) · 52 lines · 2517 bytes
+[tests/providers/test_json_tokens.ep](../../tests/providers/test_json_tokens.ep) · 65 lines · 3334 bytes
 
-SHA-256: `3c476ad2db92df2ea4afb6f0e04d367a121048cf8795e0139558f0b616cdff70`
+SHA-256: `78a7995425e54cc4e2e0a2da539b52baf8daadb5031e0f1c0b72b80aa527e805`
 
 Imports: [../../app/providers/json_tokens](../../app/providers/json_tokens.ep).
 

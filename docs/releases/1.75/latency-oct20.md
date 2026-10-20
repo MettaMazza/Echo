@@ -1,6 +1,6 @@
 # 20 October latency investigation
 
-Status: r33 application changes deployed; latency target remains unresolved. This is not a claim that all replies now finish below 20 seconds.
+Status: r35 application changes deployed; latency target remains unresolved. This is not a claim that all replies now finish below 20 seconds.
 
 The requested historical comparison is the 19 October morning session. The 1.864-second statistic measures model dispatch to first output, often reasoning, not a finished answer. Five short single-request follow-ups in that session finished in 13.336, 12.105, 13.491, 16.816 and 11.560 seconds (median 13.336). The initial greeting took 27.057 seconds; a four-request tool turn took 33.712 seconds. These are historical observations with a different model and context, not controlled same-input benchmarks.
 
@@ -24,4 +24,25 @@ Reload retained the observed replies, audio cards and visible reasoning. Remembe
 
 Private timings, original traces and rollback snapshots are retained under the local maintenance evidence directory. Recordings, transcripts, memory excerpts and request payloads are not published.
 
-The r33 audio and image transport tests also passed with a 1 MiB fixture containing every byte value, decoded exactly; ownership, revocation and source receipts remained enforced. Its first post-deployment audio turn took 55.928 seconds with a changed context prefix; the following short text reply, retaining native audio, took 20.242 seconds. This does not meet a claim of consistently faster conversation. A locally derived Q8_0 weight candidate from the same verified Thinking checkpoint is being evaluated; production remains BF16. This is distinct from the earlier rejected KV-cache quantization experiment. No extra model download is required; no automatic promotion is authorised by these notes.
+The r33 audio and image transport tests also passed with a 1 MiB fixture containing every byte value, decoded exactly; ownership, revocation and source receipts remained enforced. Its first post-deployment audio turn took 55.928 seconds with a changed context prefix; the following short text reply, retaining native audio, took 20.242 seconds. This does not meet a claim of consistently faster conversation. The locally derived Q8_0 weights were tested separately: matched warm turns were 13.441/10.512 seconds for BF16 and 10.296/11.816 for Q8, with different generated reasoning lengths. A further Q8 follow-up took 79.120 seconds. This did not establish a reliable latency improvement; Q8 was not promoted and its endpoint was stopped. Production remains the pinned BF16 Thinking model. No additional download was used.
+
+## r35 parser and uninterrupted browser sequence
+
+The JSON tokenizer repeatedly scanned the entire multi-megabyte request while extracting each token. It now caches the input length and uses bounded native string copies, retaining strict escape/control validation. A retained 3.35 MB request fell from 728 ms to 20–32 ms for parsing, with 6,175 tokens unchanged. Every decoded string matched the prior decoder; all native audio hashes matched. Strict JSON, Unicode/escape/control, deep nesting, large native media and local HTTP JSON regressions passed. The intermediate unescaped-only optimization did not materially improve performance and was not deployed.
+
+Six consecutive browser turns used the original owner archive and the exact selected Warm waveform. Preparation was 3.598–4.298 seconds, versus roughly 7.5 seconds in preceding audio turns. Results include all turns, including the slow one:
+
+| Turn | Complete reply seconds | Observation |
+|---|---:|---|
+| Reattach actual Warm clip | 50.226 | Correct requested sentence; changed-prefix cold prefill 38.191 s |
+| Unrelated arithmetic | 14.169 | Correct; native audio retained |
+| Audio ending follow-up | 17.700 | Correct ending |
+| Remembered identity/correction | 17.798 | Correct user identity and correction |
+| Audio preceding-sentence follow-up | 54.054 | Included adjacent phrase; 46.501 s generation, 1,787 tokens; not a strict sentence-boundary pass |
+| Unrelated recovery | 12.302 | Correct; native audio retained |
+
+The five warm turns have median 17.700 seconds and range 12.302–54.054. The historical five short-turn median is 13.336 seconds; these are different models/contexts, so this is not a controlled speedup claim. The historical 1.864-second first-output statistic is not comparable to completed replies. Current warm decoding was about 38–40 tokens/second; long reasoning remains a major source of variability. No reasoning cap or memory reduction was introduced.
+
+Reload preserved all observed replies and audio cards; the Thinking disclosure still showed actual model-request, reasoning and final events. The selected voice profile was byte-identical. Original media bytes remained present in every request, including arithmetic and memory follow-ups. No transcript substitution was used.
+
+A separate r33 tool test successfully executed attachment_list but selected an older generated audio filename from the accessible archive rather than the requested current upload. That is a retained source-selection failure, not an all-tools success claim. Cold context rebuilds, long model deliberation and this selection issue remain unresolved. The application is improved, not certified to meet a universal latency target.

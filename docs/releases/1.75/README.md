@@ -1,6 +1,6 @@
 # Echo 1.75 release record
 
-**20 October update:** r33 preserves reasoning, memory and native audio while reducing avoidable processing. Consistent conversational latency is still unresolved; a local Thinking Q8 weight candidate is not yet qualified. See [measurements and limits](latency-oct20.md). Earlier deployment statements below are historical.
+**20 October update:** r35 preserves reasoning, memory and native audio. Five consecutive warm browser turns had a 17.7-second median (12.3–54.1 seconds), versus the historical short-turn median of 13.3 seconds. Latency remains inconsistent; the tested Q8 candidate was not promoted. See [measurements and limits](latency-oct20.md). Earlier deployment statements below are historical.
 
 **Latest r29 deployment / r27 session replay:** see [r27 session replay](session-replay-r27.md). The owner-history replay exposed an audio-capability denial and high end-to-end latency after the earlier r24 checks. r27 preserves native reasoning and Warm, corrects capability/presence context, and separates interactive/background model work. Measured replies still take tens of seconds; the earlier first-output figures are not complete-turn latency.
 
