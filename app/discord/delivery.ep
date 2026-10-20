@@ -1,0 +1,210 @@
+import "store"
+import "gateway_owner"
+import "string"
+
+define discord_delivery_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_rate_routes(route TEXT NOT NULL,major TEXT NOT NULL,bucket TEXT NOT NULL,PRIMARY KEY(route,major)); CREATE TABLE IF NOT EXISTS discord_rate_deadlines(bucket TEXT PRIMARY KEY,until_ms INTEGER NOT NULL);")
+
+# curl may retain interim HTTP blocks. Only the final block is authoritative.
+define discord_response_header with headers as Str and name as Str returning Str:
+    set found to ""
+    for each line in string_split(headers and "\n"):
+        set text to string_trim(ptr_to_str(line))
+        if string_index_of(text and "HTTP/") equals 0:
+            set found to ""
+        else:
+            set colon to string_index_of(text and ":")
+            if colon > 0:
+                if ptr_to_str(string_to_lower(substring(text and 0 and colon))) equals name:
+                    set value to string_trim(substring(text and colon + 1 and string_length(text) - colon - 1))
+                    if string_length(found) > 0 and not (found equals value):
+                        return "!conflicting-header"
+                    set found to value
+    return found
+
+define discord_rate_deadline with database as Int and route as Str and major as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(MAX(until_ms),0) FROM discord_rate_deadlines WHERE bucket='global' OR bucket=json_array(?1,?2) OR bucket=(SELECT bucket FROM discord_rate_routes WHERE route=?1 AND major=?2);" and [route,major]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return -1
+    return string_to_int(archive_list_text(row and 1))
+
+# Response-derived buckets include the major resource, so unrelated channels
+# are not merged. Shared routes reuse their advertised bucket identity.
+define discord_rate_observe with database as Int and route as Str and major as Str and status as Str and headers as Str and body as Str and now as Int returning Str:
+    set bucket to discord_response_header(headers and "x-ratelimit-bucket")
+    set remaining to discord_response_header(headers and "x-ratelimit-remaining")
+    set reset to discord_response_header(headers and "x-ratelimit-reset-after")
+    set global_header to discord_response_header(headers and "x-ratelimit-global")
+    set global to global_header equals "true"
+    set seconds to 0
+    if bucket equals "!conflicting-header" or else remaining equals "!conflicting-header" or else global_header equals "!conflicting-header":
+        return "invalid-rate-headers"
+    if remaining equals "0":
+        set seconds to discord_retry_seconds(reset)
+        if seconds < 0:
+            return "invalid-rate-reset"
+    if status equals "429":
+        set tokens to provider_json_tokens(body)
+        if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+            return "invalid-rate-response"
+        set retry to discord_retry_seconds(provider_value(tokens and provider_member(tokens and 0 and "retry_after")))
+        set retry_header to discord_response_header(headers and "retry-after")
+        if string_length(retry_header) > 0:
+            set header_seconds to discord_retry_seconds(retry_header)
+            if header_seconds < 0:
+                return "invalid-retry-header"
+            if header_seconds > retry:
+                set retry to header_seconds
+        if retry < 0:
+            return "invalid-retry-after"
+        if retry > seconds:
+            set seconds to retry
+        if provider_value(tokens and provider_member(tokens and 0 and "global")) equals "true":
+            set global to 1
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set key_row to history_collect_one(checkpoint_prepare(database and "SELECT json_array(?1,?2);" and [route,major]))
+    if not (archive_list_text(key_row and 0) equals "found"):
+        return migration_fail(database and "bucket-read-failed")
+    set key to archive_list_text(key_row and 1)
+    if string_length(bucket) > 0:
+        set key_row to history_collect_one(checkpoint_prepare(database and "SELECT json_array(?1,?2);" and [bucket,major]))
+        if not (archive_list_text(key_row and 0) equals "found"):
+            return migration_fail(database and "bucket-read-failed")
+        set key to archive_list_text(key_row and 1)
+        if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_rate_routes VALUES(?,?,?) ON CONFLICT(route,major) DO UPDATE SET bucket=excluded.bucket;" and [route,major,key]) and 101) is not equal to 0:
+            return migration_fail(database and "bucket-write-failed")
+    if global equals 1:
+        set key to "global"
+    if seconds > 0:
+        if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_rate_deadlines VALUES(?,CAST(? AS INTEGER)) ON CONFLICT(bucket) DO UPDATE SET until_ms=MAX(discord_rate_deadlines.until_ms,excluded.until_ms);" and [key,int_to_string(now + seconds * 1000)]) and 101) is not equal to 0:
+            return migration_fail(database and "deadline-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+define discord_delivery_body with body as Str and nonce as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{") or else provider_member(tokens and 0 and "nonce") >= 0 or else provider_member(tokens and 0 and "enforce_nonce") >= 0:
+        return ""
+    set clean to string_trim(body)
+    set prefix to substring(clean and 0 and string_length(clean) - 1)
+    if not (string_trim(prefix) equals "{"):
+        set prefix to concat(prefix and ",")
+    return concat(prefix and concat("\"nonce\":" and concat(provider_quote(nonce) and ",\"enforce_nonce\":true}")))
+
+# Only authenticated Discord API/Gateway results reach this verifier.
+define discord_delivery_message with database as Int and identity as Str and body as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT o.channel,o.nonce,i.bot FROM discord_outbox o CROSS JOIN discord_identity i WHERE o.identity=?;" and [identity]))
+    set tokens to provider_json_tokens(body)
+    if not (archive_list_text(row and 0) equals "found") or else tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set author to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id"))
+    if discord_snowflake(message) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "channel_id")) equals archive_list_text(row and 1)) or else not (provider_value(tokens and provider_member(tokens and 0 and "nonce")) equals archive_list_text(row and 2)) or else not (author equals archive_list_text(row and 3)):
+        return ""
+    return message
+
+# A verified observation can resolve either a lost response or a crash after
+# send intent. No observation/no match leaves it uncertain, never requeued.
+define discord_delivery_reconcile with database as Int and identity as Str and body as Str returning Str:
+    set message to discord_delivery_message(database and identity and body)
+    if string_length(message) equals 0:
+        return "not-proven"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT state,attempt,message FROM discord_outbox WHERE identity=?;" and [identity]))
+    if archive_list_text(row and 1) equals "sent":
+        if archive_list_text(row and 3) equals message:
+            return migration_fail(database and "already-reconciled")
+        return migration_fail(database and "message-conflict")
+    if not (archive_list_text(row and 1) equals "sending" or else archive_list_text(row and 1) equals "uncertain"):
+        return migration_fail(database and "not-uncertain")
+    if archive_finish(checkpoint_prepare(database and "UPDATE discord_outbox SET state='sent',message=?2 WHERE identity=?1;" and [identity,message]) and 101) is not equal to 0:
+        return migration_fail(database and "result-write-failed")
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_delivery_events(identity,attempt,state,detail,observed_ms) VALUES(?,?,'sent',?,CAST(? AS INTEGER));" and [identity,archive_list_text(row and 2),concat("authenticated-message-sha256:" and ep_sha256(body)),int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return migration_fail(database and "receipt-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "reconciled"
+
+# HTTP429 proves this request was not accepted. Only that known failure may
+# return to pending; server-derived cooldown must already be persisted.
+define discord_delivery_rate_retry with database as Int and identity as Str and attempt as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT state,attempt FROM discord_outbox WHERE identity=?;" and [identity]))
+    if not (archive_list_text(row and 1) equals "sending") or else not (archive_list_text(row and 2) equals attempt):
+        return migration_fail(database and "stale-attempt")
+    if archive_finish(checkpoint_prepare(database and "UPDATE discord_outbox SET state='pending',attempt='' WHERE identity=?;" and [identity]) and 101) is not equal to 0:
+        return migration_fail(database and "requeue-failed")
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_delivery_events(identity,attempt,state,detail,observed_ms) VALUES(?,?,'pending','HTTP429: no message accepted; cooldown persisted',CAST(? AS INTEGER));" and [identity,attempt,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return migration_fail(database and "receipt-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "retry-scheduled"
+
+# Host-only single attempt. The scoped delivery controller must recheck the
+# requester and destination's current audience before calling. Never expose
+# token, raw route or journal selection to a model tool.
+define discord_delivery_send with library_path as Str and token as Str and database as Int and identity as Str and directory_path as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT channel FROM discord_outbox WHERE identity=?;" and [identity]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "delivery-unavailable"
+    set room to archive_list_text(row and 1)
+    set deadline to discord_rate_deadline(database and "POST:messages" and room)
+    if deadline < 0:
+        return "rate-state-unavailable"
+    if deadline > ep_time_now_ms():
+        return "rate-limited"
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(system and directory_path)
+    if directory < 0:
+        set closed to ep_dlclose(system)
+        return "private-output-unavailable"
+    set attempt to ptr_to_str(ep_uuid_v4())
+    set filename to concat(attempt and ".json")
+    set headerfile to concat(attempt and ".headers")
+    set output to workspace_file_open(system and directory and filename and 1)
+    set headers to workspace_file_open(system and directory and headerfile and 1)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(system)
+    if output < 0 or else headers < 0:
+        if output >= 0:
+            set closed to net_close(output)
+        if headers >= 0:
+            set closed to net_close(headers)
+        return "private-output-unavailable"
+    set claim to discord_outbox_claim(database and identity and attempt)
+    if not (archive_list_text(claim and 0) equals "claimed"):
+        set closed to net_close(output)
+        set closed to net_close(headers)
+        return archive_list_text(claim and 0)
+    set request to discord_delivery_body(archive_list_text(claim and 2) and archive_list_text(claim and 3))
+    if string_length(request) equals 0:
+        set closed to net_close(output)
+        set closed to net_close(headers)
+        return discord_outbox_finish(database and identity and attempt and "rejected" and "" and "Invalid adapter payload; no HTTP request made")
+    set result to discord_rest_transfer(library_path and token and "POST" and concat("/channels/" and concat(room and "/messages")) and request and output and headers)
+    set detail to concat("private-response:" and filename)
+    if not (archive_list_text(result and 0) equals "complete"):
+        return discord_outbox_finish(database and identity and attempt and "uncertain" and "" and concat(detail and "; transfer outcome unknown"))
+    set response_file to read_file(concat(directory_path and concat("/" and filename)))
+    set header_file to read_file(concat(directory_path and concat("/" and headerfile)))
+    if response_file equals 0 or else header_file equals 0:
+        return discord_outbox_finish(database and identity and attempt and "uncertain" and "" and concat(detail and "; retained response unreadable"))
+    set body to ptr_to_str(response_file)
+    set status to archive_list_text(result and 1)
+    set rate to discord_rate_observe(database and "POST:messages" and room and status and ptr_to_str(header_file) and body and ep_time_now_ms())
+    if not (rate equals "recorded"):
+        set recorded to discord_outbox_finish(database and identity and attempt and "uncertain" and "" and concat(detail and concat("; " and rate)))
+        return "rate-response-unresolved"
+    if status equals "429":
+        return discord_delivery_rate_retry(database and identity and attempt)
+    if status equals "200" or else status equals "201":
+        set message to discord_delivery_message(database and identity and body)
+        if string_length(message) > 0:
+            return discord_outbox_finish(database and identity and attempt and "sent" and message and concat(detail and concat("; sha256:" and ep_sha256(body))))
+    if status equals "400" or else status equals "401" or else status equals "403" or else status equals "404":
+        return discord_outbox_finish(database and identity and attempt and "rejected" and "" and concat(detail and concat("; HTTP" and status)))
+    return discord_outbox_finish(database and identity and attempt and "uncertain" and "" and concat(detail and concat("; HTTP" and status)))
