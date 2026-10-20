@@ -1,0 +1,108 @@
+import "routing"
+import "../web/attachments"
+import "../network/curl_native"
+import "../workspace/directories"
+
+# Signed CDN queries expire. Identity, size, name and type must remain equal,
+# but a fresh authenticated message fetch may renew the URL query.
+define discord_attachment_manifest with original as Str returning Str:
+    set tokens to provider_json_tokens(original)
+    set field to provider_member(tokens and 0 and "attachments")
+    if field < 0:
+        return "[]"
+    if not (provider_kind(tokens and field) equals "["):
+        return ""
+    set result to "["
+    set count to 0
+    set ids to create_list()
+    for each item in provider_items(tokens and field):
+        set identity to provider_value(tokens and provider_member(tokens and item and "id"))
+        set size to provider_value(tokens and provider_member(tokens and item and "size"))
+        set name to provider_value(tokens and provider_member(tokens and item and "filename"))
+        set media to provider_value(tokens and provider_member(tokens and item and "content_type"))
+        if discord_snowflake(identity) equals 0 or else discord_contains(ids and identity) equals 1 or else string_length(name) equals 0 or else string_length(size) equals 0:
+            return ""
+        set added to append_list(ids and identity)
+        set position to 0
+        repeat while position < string_length(size):
+            if provider_digit(size and position) equals 0:
+                return ""
+            set position to position + 1
+        if count > 0:
+            set result to concat(result and ",")
+        set result to concat(result and concat("{\"id\":" and provider_quote(identity)))
+        set result to concat(result and concat(",\"size\":" and provider_quote(size)))
+        set result to concat(result and concat(",\"filename\":" and provider_quote(name)))
+        set result to concat(result and concat(",\"content_type\":" and concat(provider_quote(media) and "}")))
+        set count to count + 1
+    return concat(result and "]")
+
+define discord_attachment_url with url as Str and room as Str and identity as Str returning List:
+    set parsed to network_url_parse(url and "")
+    if not (archive_list_text(parsed and 0) equals "parsed") or else not (archive_list_text(parsed and 4) equals "https") or else not (archive_list_text(parsed and 3) equals "443"):
+        return history_status("attachment-url-denied")
+    set host to archive_list_text(parsed and 2)
+    if not (host equals "cdn.discordapp.com" or else host equals "media.discordapp.net") or else discord_snowflake(room) equals 0 or else discord_snowflake(identity) equals 0:
+        return history_status("attachment-origin-denied")
+    set prefix to concat("https://" and concat(host and concat("/attachments/" and concat(room and concat("/" and concat(identity and "/"))))))
+    if string_index_of(archive_list_text(parsed and 1) and prefix) is not equal to 0:
+        return history_status("attachment-path-denied")
+    return parsed
+
+# Host-only fetch of one authenticated attachment. No bot credential is sent
+# to the CDN. No redirects; DNS is public-address pinned and TLS is verified.
+# A partial file is retained privately but never registered as an attachment.
+define discord_attachment_import with database as Int and device as Str and session as Str and room as Str and message as Str and tokens as List and item as Int and directory_path as Str returning List:
+    set identity to provider_value(tokens and provider_member(tokens and item and "id"))
+    set name to provider_value(tokens and provider_member(tokens and item and "filename"))
+    set media to provider_value(tokens and provider_member(tokens and item and "content_type"))
+    if media equals "null" or else string_length(media) equals 0:
+        set media to "application/octet-stream"
+    set size to provider_value(tokens and provider_member(tokens and item and "size"))
+    set attachment to concat("discord-file:" and concat(message and concat(":" and identity)))
+    set old to web_attachment_owned(database and device and attachment)
+    if archive_list_text(old and 0) equals "found":
+        set digest to file_digest(archive_list_text(old and 1) and 65536)
+        if archive_list_text(old and 2) equals name and archive_list_text(old and 3) equals media and archive_list_text(old and 5) equals size and archive_list_text(old and 6) equals session and archive_list_text(digest and 0) equals "verified" and archive_list_text(digest and 1) equals archive_list_text(old and 4):
+            set result to history_status("imported")
+            set added to append_list(result and attachment)
+            return result
+        return history_status("attachment-conflict")
+    if not (archive_list_text(old and 0) equals "end"):
+        return history_status("attachment-store-unavailable")
+    set parsed to discord_attachment_url(provider_value(tokens and provider_member(tokens and item and "url")) and room and identity)
+    if not (archive_list_text(parsed and 0) equals "parsed"):
+        return parsed
+    set resolved to network_resolve_public(archive_list_text(parsed and 2) and archive_list_text(parsed and 3))
+    if not (archive_list_text(resolved and 0) equals "public-addresses"):
+        return resolved
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_root_open(system and directory_path)
+    if root < 0:
+        set closed to ep_dlclose(system)
+        return history_status("attachment-storage-unavailable")
+    set filename to concat(ptr_to_str(ep_uuid_v4()) and ".attachment")
+    set headername to concat(filename and ".headers")
+    set body to workspace_file_open(system and root and filename and 1)
+    set headers to workspace_file_open(system and root and headername and 1)
+    set closed to net_close(root)
+    set closed to ep_dlclose(system)
+    if body < 0 or else headers < 0:
+        if body >= 0:
+            set closed to net_close(body)
+        if headers >= 0:
+            set closed to net_close(headers)
+        return history_status("attachment-stage-unavailable")
+    set receipt to network_curl_transfer(parsed and get_list(resolved and 1) and body and headers)
+    set transfer to provider_json_tokens(receipt)
+    if not (provider_value(transfer and provider_member(transfer and 0 and "status")) equals "complete") or else not (provider_value(transfer and provider_member(transfer and 0 and "http_status")) equals "200"):
+        return history_status("attachment-transfer-failed")
+    set path to concat(directory_path and concat("/" and filename))
+    set verified to file_digest(path and 65536)
+    if not (archive_list_text(verified and 0) equals "verified") or else not (int_to_string(get_list(verified and 2)) equals size):
+        return history_status("attachment-size-mismatch")
+    if web_attachment_register(database and device and session and attachment and path and name and media) is not equal to 0:
+        return history_status("attachment-registration-failed")
+    set result to history_status("imported")
+    set added to append_list(result and attachment)
+    return result

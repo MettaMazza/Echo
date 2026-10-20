@@ -1,0 +1,104 @@
+import "../web/attachments"
+import "../media/video_request"
+import "../providers/helper_process"
+import "../archive/file_copy"
+import "../workspace/directories"
+
+# Verified waveform conversion, never transcription. Original and lineage stay
+# in the same audience; the decoder has no network or unrelated filesystem access.
+define discord_audio_decode with database as Int and device as Str and session as Str and attachment as Str and directory_path as Str returning List:
+    set source to web_attachment_owned(database and device and attachment)
+    if not (archive_list_text(source and 0) equals "found") or else not (archive_list_text(source and 6) equals session):
+        return history_status("audio-source-unavailable")
+    set media to archive_list_text(source and 3)
+    if not (media equals "audio/ogg" or else media equals "audio/opus" or else media equals "audio/mp4" or else media equals "audio/x-m4a" or else media equals "audio/webm" or else media equals "audio/flac"):
+        set result to history_status("decoded")
+        set added to append_list(result and attachment)
+        return result
+    set identity to concat(attachment and ":decoded-wav")
+    set old to web_attachment_owned(database and device and identity)
+    if archive_list_text(old and 0) equals "found":
+        set digest to file_digest(archive_list_text(old and 1) and 65536)
+        if not (archive_list_text(old and 6) equals session) or else not (archive_list_text(digest and 0) equals "verified") or else not (archive_list_text(digest and 1) equals archive_list_text(old and 4)):
+            return history_status("audio-cache-integrity-failed")
+        set result to history_status("decoded")
+        set added to append_list(result and identity)
+        return result
+    set profile_path to ptr_to_str(get_env("ECHO_VIDEO_PROFILE"))
+    if string_length(profile_path) equals 0 or else not file_exists(profile_path):
+        return history_status("audio-decoder-unconfigured")
+    set profile to provider_json_tokens(ptr_to_str(read_file(profile_path)))
+    set executable to provider_value(profile and provider_member(profile and 0 and "ffmpeg"))
+    set expected to provider_value(profile and provider_member(profile and 0 and "ffmpeg_sha256"))
+    set binary to file_digest(executable and 65536)
+    if string_length(expected) is not equal to 64 or else not (archive_list_text(binary and 0) equals "verified") or else not (archive_list_text(binary and 1) equals expected):
+        return history_status("audio-decoder-integrity-failed")
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_root_open(system and directory_path)
+    set name to concat("audio-" and ptr_to_str(ep_uuid_v4()))
+    set directory to workspace_directory_open(system and root and name and 1)
+    if root >= 0:
+        set closed to net_close(root)
+    set closed to ep_dlclose(system)
+    if directory < 0:
+        return history_status("audio-stage-unavailable")
+    set job to concat(directory_path and concat("/" and name))
+    set input_path to concat(job and "/input.media")
+    set copied to file_copy_verified(archive_list_text(source and 1) and input_path and archive_list_text(source and 4) and string_to_int(archive_list_text(source and 5)) and 65536)
+    if copied is not equal to 0:
+        set closed to net_close(directory)
+        return history_status("audio-source-integrity-failed")
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set output to workspace_file_open(system and directory and "stdout" and 1)
+    set errors to workspace_file_open(system and directory and "stderr" and 1)
+    set closed to ep_dlclose(system)
+    if output < 0 or else errors < 0:
+        if output >= 0:
+            set closed to net_close(output)
+        if errors >= 0:
+            set closed to net_close(errors)
+        set closed to net_close(directory)
+        return history_status("audio-log-unavailable")
+    set arguments to create_list()
+    set executable_parameter to concat("ECHO_VIDEO_EXECUTABLE=" and executable)
+    set job_parameter to concat("ECHO_VIDEO_JOB=" and job)
+    set sandbox to video_sandbox_profile()
+    set added to append_list(arguments and "-D")
+    set added to append_list(arguments and executable_parameter)
+    set added to append_list(arguments and "-D")
+    set added to append_list(arguments and job_parameter)
+    set added to append_list(arguments and "-p")
+    set added to append_list(arguments and sandbox)
+    set added to append_list(arguments and executable)
+    set added to append_list(arguments and "-nostdin")
+    set added to append_list(arguments and "-v")
+    set added to append_list(arguments and "error")
+    set added to append_list(arguments and "-protocol_whitelist")
+    set added to append_list(arguments and "file,pipe")
+    set added to append_list(arguments and "-i")
+    set added to append_list(arguments and "input.media")
+    set added to append_list(arguments and "-map")
+    set added to append_list(arguments and "0:a:0")
+    set added to append_list(arguments and "-vn")
+    set added to append_list(arguments and "-ac")
+    set added to append_list(arguments and "1")
+    set added to append_list(arguments and "-ar")
+    set added to append_list(arguments and "24000")
+    set added to append_list(arguments and "-c:a")
+    set added to append_list(arguments and "pcm_s16le")
+    set added to append_list(arguments and "-n")
+    set added to append_list(arguments and "output.wav")
+    set environment to create_list()
+    set added to append_list(environment and "PATH=/usr/bin:/bin")
+    set added to append_list(environment and "LC_ALL=C")
+    set dispatched to provider_helper_run(database and session and concat(identity and concat(":" and name)) and "/usr/bin/sandbox-exec" and arguments and environment and directory and output and errors and -1)
+    set closed to net_close(output)
+    set closed to net_close(errors)
+    set closed to net_close(directory)
+    if not (archive_list_text(dispatched and 0) equals "complete"):
+        return history_status("audio-decode-failed")
+    if web_attachment_register_decoded_import(database and device and session and identity and concat(job and "/output.wav") and concat(archive_list_text(source and 2) and " (decoded).wav") and attachment) is not equal to 0:
+        return history_status("audio-publication-failed")
+    set result to history_status("decoded")
+    set added to append_list(result and identity)
+    return result

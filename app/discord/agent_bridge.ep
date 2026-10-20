@@ -2,6 +2,8 @@ import "gateway_intake"
 import "../security/channel_silo"
 import "../security/group_output_policy"
 import "../web/run_store"
+import "attachments"
+import "audio_decode"
 
 external define ep_uuid_v4
 
@@ -79,6 +81,9 @@ define discord_agent_principal with database as Int and user as Str and admins a
 # before this call and again before releasing output. This function cannot
 # infer Discord permissions from message text or a stored role label.
 define discord_agent_submit with journal as Int and database as Int and inbox as Str and bot as Str and guilds as List and admins as List returning List:
+    return discord_agent_submit_media(journal and database and inbox and bot and guilds and admins and "" and "")
+
+define discord_agent_submit_media with journal as Int and database as Int and inbox as Str and bot as Str and guilds as List and admins as List and directory_path as Str and fresh_message as Str returning List:
     if not (string_index_of(inbox and "message:create:") equals 0):
         set rooted_literal_3 to create_list()
         set retained_value_added to append_list(rooted_literal_3 and "not-user-intake")
@@ -99,9 +104,11 @@ define discord_agent_submit with journal as Int and database as Int and inbox as
         set rooted_literal_6 to create_list()
         set retained_value_added to append_list(rooted_literal_6 and "intake-no-longer-authorized")
         return rooted_literal_6
-    # Attachment-only turns need the attachment importer; do not invent text
-    # or silently drop attachments into an otherwise text-only turn.
-    if length_list(provider_items(tokens and provider_member(tokens and 0 and "attachments"))) > 0:
+    set manifest to discord_attachment_manifest(original)
+    if string_length(manifest) equals 0:
+        return history_status("invalid-attachments")
+    set has_files to not (manifest equals "[]")
+    if has_files and string_length(directory_path) equals 0:
         set rooted_literal_7 to create_list()
         set retained_value_added to append_list(rooted_literal_7 and "attachment-import-required")
         return rooted_literal_7
@@ -114,7 +121,32 @@ define discord_agent_submit with journal as Int and database as Int and inbox as
     if string_length(server) equals 0:
         set server to concat("dm:" and bot)
     set run to concat("discord-message:" and archive_list_text(route and 4))
-    set submitted to channel_silo_submit(database and device and "discord" and server and room and run and archive_list_text(route and 5) and create_list())
+    set attachments to create_list()
+    if has_files:
+        if web_attachment_schema(database) is not equal to 0:
+            return history_status("attachment-store-unavailable")
+        if not (discord_attachment_manifest(fresh_message) equals manifest):
+            return history_status("attachment-source-changed")
+        set group_id to channel_silo_identity("discord" and server and room and principal_for_device(database and device))
+        set origin to concat("silo:user-in-channel:" and ep_sha256(group_id))
+        set created to group_create(database and device and group_id and "discord" and server and room and origin)
+        if not (created equals "created" or else created equals "already-created"):
+            return history_status(created)
+        set selected to group_route(database and device and group_id and "discord" and server and room)
+        if not (archive_list_text(selected and 0) equals "routed"):
+            return selected
+        set fresh_tokens to provider_json_tokens(fresh_message)
+        for each item in provider_items(fresh_tokens and provider_member(fresh_tokens and 0 and "attachments")):
+            set imported to discord_attachment_import(database and device and archive_list_text(selected and 1) and room and archive_list_text(route and 4) and fresh_tokens and item and directory_path)
+            if not (archive_list_text(imported and 0) equals "imported"):
+                return imported
+            set added to append_list(attachments and archive_list_text(imported and 1))
+            set decoded to discord_audio_decode(database and device and archive_list_text(selected and 1) and archive_list_text(imported and 1) and directory_path)
+            if not (archive_list_text(decoded and 0) equals "decoded"):
+                return decoded
+            if not (archive_list_text(decoded and 1) equals archive_list_text(imported and 1)):
+                set added to append_list(attachments and archive_list_text(decoded and 1))
+    set submitted to channel_silo_submit(database and device and "discord" and server and room and run and archive_list_text(route and 5) and attachments)
     if archive_list_text(submitted and 0) equals "accepted" or else archive_list_text(submitted and 0) equals "already-accepted":
         if discord_agent_sender_record(database and run and original) is not equal to 0:
             return ["sender-record-unavailable"]

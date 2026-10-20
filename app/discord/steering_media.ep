@@ -1,0 +1,67 @@
+import "attachments"
+import "audio_decode"
+
+# Reconstruct the exact import selection from immutable message metadata.
+# This is not an authority grant: live apply also checks run and device scope.
+# Recovery can inspect this historical binding after authority is revoked.
+define discord_steering_media_selection with database as Int and session as Str and original as Str returning List:
+    set manifest to discord_attachment_manifest(original)
+    if string_length(manifest) equals 0 or else string_length(session) equals 0:
+        return history_status("invalid-media-binding")
+    set tokens to provider_json_tokens(original)
+    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set selected to create_list()
+    for each item in provider_items(tokens and provider_member(tokens and 0 and "attachments")):
+        set identity to concat("discord-file:" and concat(message and concat(":" and provider_value(tokens and provider_member(tokens and item and "id")))))
+        set name to provider_value(tokens and provider_member(tokens and item and "filename"))
+        set media to provider_value(tokens and provider_member(tokens and item and "content_type"))
+        if media equals "null" or else string_length(media) equals 0:
+            set media to "application/octet-stream"
+        set size to provider_value(tokens and provider_member(tokens and item and "size"))
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT name,media_type,CAST(bytes AS TEXT),session FROM echo_attachments WHERE attachment=?1;" and [identity]))
+        if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 1) equals name) or else not (archive_list_text(row and 2) equals media) or else not (archive_list_text(row and 3) equals size) or else not (archive_list_text(row and 4) equals session):
+            return history_status("steering-media-import-required")
+        set added to append_list(selected and identity)
+        if media equals "audio/ogg" or else media equals "audio/opus" or else media equals "audio/mp4" or else media equals "audio/x-m4a" or else media equals "audio/webm" or else media equals "audio/flac":
+            set decoded to concat(identity and ":decoded-wav")
+            set lineage to history_collect_one(checkpoint_prepare(database and "SELECT a.session,a.media_type,d.parent FROM echo_attachments a JOIN echo_attachment_derivations d ON d.attachment=a.attachment WHERE a.attachment=?1;" and [decoded]))
+            if not (archive_list_text(lineage and 0) equals "found") or else not (archive_list_text(lineage and 1) equals session) or else not (archive_list_text(lineage and 2) equals "audio/wav") or else not (archive_list_text(lineage and 3) equals identity):
+                return history_status("steering-media-import-required")
+            set added to append_list(selected and decoded)
+    set result to history_status("selected")
+    set added to append_list(result and selected)
+    return result
+
+# Historical proof checks every selected source against immutable storage and
+# exact order/count. It performs no new read on behalf of a revoked principal.
+define discord_steering_media_proof with database as Int and session as Str and event as Str and original as Str returning Int:
+    set selection to discord_steering_media_selection(database and session and original)
+    if not (archive_list_text(selection and 0) equals "selected"):
+        return 0
+    set selected to get_list(selection and 1)
+    set receipt to turn_attachment_read(database and session and event)
+    if length_list(selected) equals 0 and archive_list_text(receipt and 0) equals "end":
+        return 1
+    if not (archive_list_text(receipt and 0) equals "found") or else not (archive_list_text(receipt and 2) equals "turn_attachments"):
+        return 0
+    set tokens to provider_json_tokens(archive_list_text(receipt and 1))
+    if not (provider_value(tokens and provider_member(tokens and 0 and "user_event")) equals event):
+        return 0
+    set files to provider_items(tokens and provider_member(tokens and 0 and "attachments"))
+    if length_list(files) is not equal to length_list(selected):
+        return 0
+    set index to 0
+    for each item in files:
+        set identity to archive_list_text(selected and index)
+        if not (provider_value(tokens and provider_member(tokens and item and "attachment")) equals identity):
+            return 0
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT event,digest,CAST(bytes AS TEXT),media_type,name FROM echo_attachments WHERE attachment=?1 AND session=?2;" and [identity,session]))
+        if not (archive_list_text(row and 0) equals "found"):
+            return 0
+        set column to 1
+        for each field in ["event","sha256","bytes","media_type","name"]:
+            if not (provider_value(tokens and provider_member(tokens and item and ptr_to_str(field))) equals archive_list_text(row and column)):
+                return 0
+            set column to column + 1
+        set index to index + 1
+    return 1
