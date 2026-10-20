@@ -1,0 +1,71 @@
+import "command_binding"
+import "agent_bridge"
+import "access"
+import "../security/group_session_selection"
+
+# A caller cannot substitute a body for the authenticated, acknowledged intake.
+# This check is repeated immediately before the local operation. Command text
+# never supplies the device, session, guild, destination or privilege level.
+define discord_command_acknowledged with journal as Int and identity as Str and body as Str returning Int:
+    set tokens to provider_json_tokens(body)
+    set id to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    if discord_snowflake(id) equals 0 or else not (identity equals concat("interaction:" and id)):
+        return 0
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and body)
+    set added to append_list(values and int_to_string(ep_time_now_ms()))
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT j.identity FROM discord_interaction_jobs j JOIN discord_inbox i ON i.identity=j.identity JOIN discord_interaction_credentials c ON c.identity=j.identity WHERE j.identity=?1 AND j.state='acknowledged' AND i.kind='INTERACTION_CREATE' AND i.payload=?2 AND c.expires_ms>CAST(?3 AS INTEGER);" and values))
+    return archive_list_text(row and 0) equals "found"
+
+# Internal application step, invoked only after the live Discord access check.
+# The group writer rechecks database authority under its transaction lock.
+define discord_command_new_apply with journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List returning Str:
+    if discord_command_acknowledged(journal and identity and body) equals 0:
+        return "command-not-acknowledged"
+    set command to discord_command_resolve(journal and body and bot and guilds and admins)
+    if not (archive_list_text(command and 0) equals "command-bound-needs-live-access"):
+        return archive_list_text(command and 0)
+    if not (archive_list_text(command and 1) equals "new"):
+        return "not-new-command"
+    set ready to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_group_session_choices';"))
+    if not (archive_list_text(ready and 0) equals "found"):
+        return "session-migration-required"
+    set actor to archive_list_text(command and 2)
+    set room to archive_list_text(command and 3)
+    set guild to archive_list_text(command and 4)
+    set device to discord_agent_principal(database and actor and admins)
+    if string_length(device) equals 0:
+        return "principal-unavailable"
+    set group_id to channel_silo_identity("discord" and guild and room and principal_for_device(database and device))
+    set created to group_create(database and device and group_id and "discord" and guild and room and concat("silo:user-in-channel:" and ep_sha256(group_id)))
+    if not (created equals "created" or else created equals "already-created"):
+        return created
+    set keys to create_list()
+    set added to append_list(keys and group_id)
+    set audience to history_collect_one(checkpoint_prepare(database and "SELECT MAX(revision) FROM echo_group_membership WHERE group_id=?1;" and keys))
+    if not (archive_list_text(audience and 0) equals "found"):
+        return "audience-read-failed"
+    if discord_command_acknowledged(journal and identity and body) equals 0:
+        return "command-not-acknowledged"
+    set selected to group_session_restart(database and device and concat("discord-command:" and identity) and group_id and "discord" and guild and room and string_to_int(archive_list_text(audience and 1)))
+    if archive_list_text(selected and 0) equals "created" or else archive_list_text(selected and 0) equals "already-created":
+        return "new-session-created"
+    return archive_list_text(selected and 0)
+
+define discord_command_tick with library as Str and token as Str and journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    if discord_command_acknowledged(journal and identity and body) equals 0:
+        return "command-not-acknowledged"
+    set command to discord_command_resolve(journal and body and bot and guilds and admins)
+    if not (archive_list_text(command and 0) equals "command-bound-needs-live-access"):
+        return archive_list_text(command and 0)
+    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(command and 4) and archive_list_text(command and 3) and archive_list_text(command and 2) and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return "command-access-denied"
+    if file_exists(stop_file):
+        return "stopped"
+    if archive_list_text(command and 1) equals "new":
+        return discord_command_new_apply(journal and database and identity and body and bot and guilds and admins)
+    return "command-handler-unavailable"
