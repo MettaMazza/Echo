@@ -15,6 +15,15 @@ define discord_agent_output with journal as Int and database as Int and inbox as
 # originating transport audience. Delegated children report to their parent;
 # they cannot independently publish their working output through this route.
 define discord_agent_output_run with journal as Int and database as Int and inbox as Str and run as Str returning Str:
+    set current to agent_run_read(database and run)
+    if current equals 0 or else not (archive_list_text(current and 2) equals "completed"):
+        return "no-completed-bound-run"
+    return discord_agent_output_final(journal and database and inbox and run and archive_list_text(current and 3))
+
+# A committed final remains an accepted reply when autonomy or delegation
+# resumes its run. Bind the exact event to both run and session before export;
+# never infer an answer from current state or scan unrelated conversation text.
+define discord_agent_output_final with journal as Int and database as Int and inbox as Str and run as Str and final_event as Str returning Str:
     if not (string_index_of(inbox and "message:create:") equals 0):
         return "not-user-intake"
     set rooted_literal_1 to create_list()
@@ -48,14 +57,16 @@ define discord_agent_output_run with journal as Int and database as Int and inbo
     set retained_value_added to append_list(rooted_literal_2 and run)
     set retained_value_added to append_list(rooted_literal_2 and expected_group)
     set bound to history_collect_one(checkpoint_prepare(database and "SELECT r.session,r.state,r.last_event FROM echo_runs r JOIN echo_group_run_origins o ON o.run=r.run AND o.session=r.session JOIN echo_group_sessions s ON s.session=o.session WHERE r.run=?1 AND s.group_id=?2;" and rooted_literal_2))
-    if not (archive_list_text(bound and 0) equals "found") or else not (archive_list_text(bound and 2) equals "completed"):
+    if not (archive_list_text(bound and 0) equals "found"):
         return "no-completed-bound-run"
     if run_authority_allows(database and run and "user") equals 0 or else group_run_session_allows(database and run and archive_list_text(bound and 1)) equals 0:
         return "authority-revoked"
-    set final to archive_read_event(database and archive_list_text(bound and 3))
-    if final equals 0 or else not (archive_list_text(final and 2) equals "assistant_final"):
+    set final to archive_read_event(database and final_event)
+    if final equals 0 or else not (archive_list_text(final and 2) equals "assistant_final") or else not (archive_list_text(final and 0) equals archive_list_text(bound and 1)):
         return "final-unavailable"
     set payload to provider_json_tokens(archive_list_text(final and 3))
+    if not (provider_value(payload and provider_member(payload and 0 and "run_id")) equals run):
+        return "final-run-mismatch"
     set content_index to provider_member(payload and 0 and "content")
     if not (provider_kind(payload and content_index) equals "string"):
         return "final-content-unavailable"
@@ -68,13 +79,13 @@ define discord_agent_output_run with journal as Int and database as Int and inbo
     # earlier outbox body or be duplicated on recovery.
     set final_values to create_list()
     set added to append_list(final_values and run)
-    set added to append_list(final_values and archive_list_text(bound and 3))
+    set added to append_list(final_values and final_event)
     set earlier to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='assistant_final' AND json_extract(payload,'$.run_id')=?1 AND sequence<(SELECT sequence FROM echo_events WHERE event=?2);" and final_values))
     if not (archive_list_text(earlier and 0) equals "found"):
         return "final-lineage-unavailable"
     set output_prefix to concat(run and ":final:")
     if not (archive_list_text(earlier and 1) equals "0"):
-        set final_hash to ep_sha256(archive_list_text(bound and 3))
+        set final_hash to ep_sha256(final_event)
         set output_prefix to concat(run and concat(":final-event:" and concat(final_hash and ":")))
     # Byte-bounded chunks also fit Discord's character limit, including emoji.
     # Back off continuation bytes rather than corrupting a Unicode codepoint.
@@ -97,7 +108,7 @@ define discord_agent_output_run with journal as Int and database as Int and inbo
         # process environment feature. Authority remains checked at click time.
         if part equals 0:
             set private_trace to run_authority_allows(database and run and "admin")
-            set queued to discord_action_output(journal and identity and inbox and room and body and archive_list_text(bound and 3) and 1 and private_trace)
+            set queued to discord_action_output(journal and identity and inbox and room and body and final_event and 1 and private_trace)
         else:
             set queued to discord_outbox_enqueue(journal and identity and inbox and room and body)
         if not (queued equals "enqueued" or else queued equals "already-enqueued"):

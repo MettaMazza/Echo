@@ -1,0 +1,57 @@
+import "../../app/discord/final_stream"
+
+# Explicit synthetic model outcomes exercise the same committed completion
+# and autonomy continuation transitions; this is not a live inference claim.
+define autonomy_final_fixture with database as Int and run as Str and identity as Str and text as Str returning Int:
+    set row to agent_run_read(database and run)
+    set session to archive_list_text(row and 0)
+    set parent to archive_list_text(row and 3)
+    set request to concat(identity and ":request")
+    set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"parent_event\":" and concat(provider_quote(parent) and ",\"fixture\":true}"))))
+    if archive_append(database and session and request and "model_request" and payload and "fixture") is not equal to 0 or else agent_run_transition(database and run and "ready" and parent and "generating" and request) is not equal to 0:
+        return 1
+    set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"parent_event\":" and concat(provider_quote(request) and concat(",\"fixture\":true,\"content\":" and concat(provider_quote(text) and "}"))))))
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if archive_append_pending(database and session and identity and "assistant_final" and payload and "fixture") is not equal to 0 or else agent_run_transition(database and run and "generating" and request and "completed" and identity) is not equal to 0 or else autonomy_continue_pending(database and run and identity) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    set database to discord_agent_open(get_argument(2) and "900")
+    if journal equals 0 or else database equals 0 or else not (delegation_schema(database) equals "applied"):
+        return 11
+    set body to "{\"id\":\"100\",\"channel_id\":\"300\",\"guild_id\":\"200\",\"type\":0,\"author\":{\"id\":\"500\"},\"mentions\":[{\"id\":\"900\"}],\"content\":\"/auto fixture goal\"}"
+    set saved to discord_inbox_record(journal and "message:create:100" and "MESSAGE_CREATE" and body)
+    set submitted to discord_agent_submit(journal and database and "message:create:100" and "900" and ["200"] and ["500"])
+    if not (archive_list_text(submitted and 0) equals "accepted") or else autonomy_enabled(database and "discord-message:100") equals 0:
+        return 2
+    if autonomy_final_fixture(database and "discord-message:100" and "fixture:first" and "First saved result.") is not equal to 0:
+        return 3
+    set state to agent_run_read(database and "discord-message:100")
+    if not (archive_list_text(state and 2) equals "ready") or else not (discord_agent_output(journal and database and "message:create:100") equals "no-completed-bound-run"):
+        return 4
+    # Leave the outbox durable without a delivery cursor, then reopen the
+    # journal to exercise the enqueue-before-cursor interruption window.
+    if not (discord_agent_output_final(journal and database and "message:create:100" and "discord-message:100" and "fixture:first") equals "enqueued"):
+        return 6
+    set closed to sql_close(journal)
+    set journal to discord_store_open(get_argument(1) and "900")
+    if not (discord_final_stream_step(journal and database and "message:create:100" and "discord-message:100") equals "final-enqueued"):
+        return 5
+    if autonomy_final_fixture(database and "discord-message:100" and "fixture:second" and "Second saved result.") is not equal to 0:
+        return 7
+    set closed to sql_close(journal)
+    set journal to discord_store_open(get_argument(1) and "900")
+    if not (discord_final_stream_step(journal and database and "message:create:100" and "discord-message:100") equals "final-enqueued") or else not (discord_final_stream_step(journal and database and "message:create:100" and "discord-message:100") equals "finals-caught-up"):
+        return 8
+    set rows to history_collect_one(archive_prepare(journal and "SELECT COUNT(*),COUNT(DISTINCT nonce),group_concat(json_extract(body,'$.content'),'|') FROM discord_outbox;"))
+    if not (archive_list_text(rows and 1) equals "2") or else not (archive_list_text(rows and 2) equals "2") or else not (archive_list_text(rows and 3) equals "First saved result.|Second saved result."):
+        return 9
+    if sql_execute(database and "UPDATE echo_devices SET revoked=1 WHERE device='discord:500';") is not equal to 0 or else not (discord_final_stream_step(journal and database and "message:create:100" and "discord-message:100") equals "scope-denied"):
+        return 10
+    display "PASS: two true autonomy ready transitions export exact accepted finals, repeated enqueue/reopen has two distinct outputs, revoked authority blocks export"
+    return 0
