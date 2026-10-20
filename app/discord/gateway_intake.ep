@@ -49,6 +49,52 @@ define discord_gateway_ready_record with database as Int and generation as Str a
 define discord_gateway_resume_read with database as Int returning List:
     return history_collect_one(archive_prepare(database and "SELECT g.session,r.url,g.sequence FROM discord_gateway g JOIN discord_resume r ON r.singleton=g.singleton AND r.session=g.session WHERE g.singleton=1 AND r.enabled=1;"))
 
+# Resolve an edit/delete against the immutable admitted original. A partial
+# event cannot invent its author, move channels or expose a foreign scope.
+define discord_message_origin with database as Int and message as Str and room as Str and guilds as List and admins as List returning Str:
+    if discord_snowflake(message) equals 0 or else discord_snowflake(room) equals 0:
+        return ""
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM discord_inbox WHERE identity=? AND kind='MESSAGE_CREATE';" and [concat("message:create:" and message)]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    set tokens to provider_json_tokens(archive_list_text(row and 1))
+    set saved_room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    if provider_kind(tokens and provider_member(tokens and 0 and "guild_id")) equals "null":
+        set guild to ""
+    set author to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id"))
+    if not (saved_room equals room):
+        return ""
+    if string_length(guild) > 0:
+        if discord_contains(guilds and guild) equals 0:
+            return ""
+    else if discord_contains(admins and author) equals 0:
+        return ""
+    return archive_list_text(row and 1)
+
+define discord_message_revision with database as Int and kind as Str and original as Str and guilds as List and admins as List returning Str:
+    set tokens to provider_json_tokens(original)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set prior to discord_message_origin(database and message and room and guilds and admins)
+    if string_length(prior) equals 0:
+        return ""
+    set saved to provider_json_tokens(prior)
+    set guild_index to provider_member(tokens and 0 and "guild_id")
+    if guild_index >= 0 and not (provider_value(tokens and guild_index) equals provider_value(saved and provider_member(saved and 0 and "guild_id"))):
+        return ""
+    set author_index to provider_member(tokens and 0 and "author")
+    if author_index >= 0:
+        if not (provider_value(tokens and provider_member(tokens and author_index and "id")) equals provider_value(saved and provider_member(saved and provider_member(saved and 0 and "author") and "id"))):
+            return ""
+    if kind equals "MESSAGE_DELETE":
+        return concat("{\"id\":" and concat(provider_quote(message) and concat(",\"channel_id\":" and concat(provider_quote(room) and "}"))))
+    # An edit is retained as a patch, never mistaken for a complete message.
+    # Consumer must preserve absent fields and keep every prior revision.
+    return original
+
 # Intake does not invoke the model. A separate scoped worker claims admitted
 # messages and rechecks current channel permissions before inference/delivery.
 # Ignored events advance the resume cursor without retaining their text.
@@ -81,4 +127,37 @@ define discord_gateway_intake with database as Int and generation as Str and bot
             set payload to concat("{\"admission\":\"redirect-dm\",\"id\":" and provider_quote(archive_list_text(route and 4)))
             set payload to concat(payload and concat(",\"channel_id\":" and provider_quote(room)))
             set payload to concat(payload and concat(",\"author_id\":" and concat(provider_quote(archive_list_text(route and 3)) and "}")))
+    else if kind equals "MESSAGE_UPDATE" or else kind equals "MESSAGE_DELETE":
+        set data to provider_member(tokens and 0 and "d")
+        set payload to discord_message_revision(database and kind and discord_json_original(body and tokens and data) and guilds and admins)
+        if string_length(payload) > 0:
+            set identity to concat("revision:" and concat(ep_sha256(archive_list_text(current and 1)) and concat(":" and sequence)))
+    else if kind equals "MESSAGE_DELETE_BULK":
+        set data to provider_member(tokens and 0 and "d")
+        set room to provider_value(tokens and provider_member(tokens and data and "channel_id"))
+        set ids to provider_items(tokens and provider_member(tokens and data and "ids"))
+        set admitted to ""
+        for each entry in ids:
+            set message to provider_value(tokens and entry)
+            set deletion to concat("{\"id\":" and concat(provider_quote(message) and concat(",\"channel_id\":" and concat(provider_quote(room) and "}"))))
+            set guild_index to provider_member(tokens and data and "guild_id")
+            if guild_index >= 0:
+                set deletion to concat("{\"id\":" and concat(provider_quote(message) and concat(",\"channel_id\":" and concat(provider_quote(room) and concat(",\"guild_id\":" and concat(provider_quote(provider_value(tokens and guild_index)) and "}"))))))
+            if string_length(discord_message_revision(database and "MESSAGE_DELETE" and deletion and guilds and admins)) > 0:
+                if string_length(admitted) > 0:
+                    set admitted to concat(admitted and ",")
+                set admitted to concat(admitted and provider_quote(message))
+        if string_length(admitted) > 0:
+            set identity to concat("revision:" and concat(ep_sha256(archive_list_text(current and 1)) and concat(":" and sequence)))
+            set payload to concat("{\"channel_id\":" and concat(provider_quote(room) and concat(",\"ids\":[" and concat(admitted and "]}"))))
+    else if kind equals "GUILD_DELETE" or else kind equals "GUILD_UPDATE" or else kind equals "GUILD_ROLE_CREATE" or else kind equals "GUILD_ROLE_UPDATE" or else kind equals "GUILD_ROLE_DELETE" or else kind equals "CHANNEL_UPDATE" or else kind equals "CHANNEL_DELETE" or else kind equals "THREAD_UPDATE" or else kind equals "THREAD_DELETE":
+        set data to provider_member(tokens and 0 and "d")
+        set guild to provider_value(tokens and provider_member(tokens and data and "guild_id"))
+        if kind equals "GUILD_DELETE" or else kind equals "GUILD_UPDATE":
+            set guild to provider_value(tokens and provider_member(tokens and data and "id"))
+        if discord_snowflake(guild) equals 1 and discord_contains(guilds and guild) equals 1:
+            set identity to concat("audience:" and concat(ep_sha256(archive_list_text(current and 1)) and concat(":" and sequence)))
+            # A scope invalidation barrier, not a grant inferred from names.
+            # Worker must refresh actual permissions before continuing work.
+            set payload to concat("{\"guild_id\":" and concat(provider_quote(guild) and "}"))
     return discord_gateway_dispatch(database and generation and archive_list_text(current and 1) and string_to_int(sequence) and kind and ep_sha256(body) and identity and payload)
