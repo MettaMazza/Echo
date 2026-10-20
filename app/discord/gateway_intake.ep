@@ -108,6 +108,52 @@ define discord_message_revision with database as Int and kind as Str and origina
     # Consumer must preserve absent fields and keep every prior revision.
     return original
 
+# Reactions are transport observations, never permission grants. Retain only
+# reactions to admitted source messages, excluding the bot's own UI markers.
+# The control worker must still bind the intended run and recheck live access.
+define discord_reaction_observation with database as Int and bot as Str and original as Str and guilds as List and admins as List returning Str:
+    set tokens to provider_json_tokens(original)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    set message to provider_value(tokens and provider_member(tokens and 0 and "message_id"))
+    set actor to provider_value(tokens and provider_member(tokens and 0 and "user_id"))
+    if discord_snowflake(actor) equals 0 or else actor equals bot:
+        return ""
+    set prior to discord_message_origin(database and message and room and guilds and admins)
+    if string_length(prior) equals 0:
+        return ""
+    set saved to provider_json_tokens(prior)
+    set source_guild to provider_value(saved and provider_member(saved and 0 and "guild_id"))
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    if provider_kind(saved and provider_member(saved and 0 and "guild_id")) equals "null":
+        set source_guild to ""
+    if provider_kind(tokens and provider_member(tokens and 0 and "guild_id")) equals "null":
+        set guild to ""
+    if not (source_guild equals guild):
+        return ""
+    set author to provider_value(saved and provider_member(saved and provider_member(saved and 0 and "author") and "id"))
+    if string_length(guild) equals 0:
+        if not (actor equals author) or else discord_contains(admins and actor) equals 0:
+            return ""
+    else if not (actor equals author) and discord_contains(admins and actor) equals 0:
+        return ""
+    set emoji to provider_member(tokens and 0 and "emoji")
+    set emoji_id to provider_value(tokens and provider_member(tokens and emoji and "id"))
+    if provider_kind(tokens and provider_member(tokens and emoji and "id")) equals "null":
+        set emoji_id to ""
+    set name to provider_value(tokens and provider_member(tokens and emoji and "name"))
+    if string_length(emoji_id) > 0 and discord_snowflake(emoji_id) equals 0:
+        return ""
+    if string_length(name) equals 0 or else string_length(name) > 128:
+        return ""
+    set result to concat("{\"channel_id\":" and provider_quote(room))
+    set result to concat(result and concat(",\"message_id\":" and provider_quote(message)))
+    set result to concat(result and concat(",\"user_id\":" and provider_quote(actor)))
+    set result to concat(result and concat(",\"guild_id\":" and provider_quote(guild)))
+    set result to concat(result and concat(",\"emoji_id\":" and provider_quote(emoji_id)))
+    return concat(result and concat(",\"emoji_name\":" and concat(provider_quote(name) and "}")))
+
 # Intake does not invoke the model. A separate scoped worker claims admitted
 # messages and rechecks current channel permissions before inference/delivery.
 # Ignored events advance the resume cursor without retaining their text.
@@ -154,6 +200,11 @@ define discord_gateway_intake with database as Int and generation as Str and bot
             set payload to concat("{\"admission\":\"redirect-dm\",\"id\":" and provider_quote(archive_list_text(route and 4)))
             set payload to concat(payload and concat(",\"channel_id\":" and provider_quote(room)))
             set payload to concat(payload and concat(",\"author_id\":" and concat(provider_quote(archive_list_text(route and 3)) and "}")))
+    else if kind equals "MESSAGE_REACTION_ADD" or else kind equals "MESSAGE_REACTION_REMOVE":
+        set data to provider_member(tokens and 0 and "d")
+        set payload to discord_reaction_observation(database and bot and discord_json_original(body and tokens and data) and guilds and admins)
+        if string_length(payload) > 0:
+            set identity to concat("reaction:" and concat(ep_sha256(archive_list_text(current and 1)) and concat(":" and sequence)))
     else if kind equals "MESSAGE_UPDATE" or else kind equals "MESSAGE_DELETE":
         set data to provider_member(tokens and 0 and "d")
         set payload to discord_message_revision(database and kind and discord_json_original(body and tokens and data) and guilds and admins)
