@@ -1,0 +1,67 @@
+import "queue_marker_transport"
+import "steering_controller"
+
+define discord_queue_control_schema with journal as Int returning Int:
+    if discord_queue_marker_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_queue_refresh(source TEXT PRIMARY KEY REFERENCES discord_inbox(identity),next_ms INTEGER NOT NULL,position INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_reaction_jobs(identity TEXT PRIMARY KEY REFERENCES discord_inbox(identity),state TEXT NOT NULL,detail TEXT NOT NULL,next_ms INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_reaction_job_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,identity TEXT NOT NULL,state TEXT NOT NULL,detail TEXT NOT NULL,observed_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_reaction_job_events_no_update BEFORE UPDATE ON discord_reaction_job_events BEGIN SELECT RAISE(ABORT,'Reaction receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_reaction_job_events_no_delete BEFORE DELETE ON discord_reaction_job_events BEGIN SELECT RAISE(ABORT,'Reaction receipts are immutable'); END;")
+
+# Refresh one message's complete desired state. The transport still validates
+# immediately before PUT; source changes while planning cannot grant anything.
+define discord_queue_refresh_source with journal as Int and database as Int and source as Str returning Str:
+    set position to discord_queue_position(journal and source)
+    if position < 0:
+        return "queue-read-failed"
+    set queue_marker to discord_queue_position_glyph(position)
+    set steer_marker to ""
+    set confirmation to ""
+    if position > 0:
+        set offered to discord_queue_offer(journal and source)
+        if archive_list_text(offered and 0) equals "offered" and also discord_queue_marker_eligible(journal and database and source and "steer" and "↪️") equals 1:
+            set steer_marker to "↪️"
+    set job to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_agent_jobs WHERE inbox=?1;" and [source]))
+    if archive_list_text(job and 1) equals "steering-reserved" and also discord_queue_marker_eligible(journal and database and source and "steer" and "↪️") equals 1:
+        set steer_marker to "↪️"
+    if archive_list_text(job and 1) equals "steered" and also discord_queue_marker_eligible(journal and database and source and "confirm" and "✅") equals 1:
+        set confirmation to "✅"
+    for each slot in ["queue","steer","confirm"]:
+        set marker to queue_marker
+        if ptr_to_str(slot) equals "steer":
+            set marker to steer_marker
+        else if ptr_to_str(slot) equals "confirm":
+            set marker to confirmation
+        if not (discord_queue_marker_desire(journal and source and ptr_to_str(slot) and marker) equals "desired"):
+            return "marker-store-failed"
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_queue_refresh VALUES(?1,CAST(?2 AS INTEGER),CAST(?3 AS INTEGER)) ON CONFLICT(source) DO UPDATE SET next_ms=excluded.next_ms,position=excluded.position;" and [source,int_to_string(ep_time_now_ms() + 1000),int_to_string(position)]) and 101) is not equal to 0:
+        return "marker-store-failed"
+    return "refreshed"
+
+# Settled completed history is excluded. Only pending work, a missing confirmed
+# tick, or markers that need changing are revisited. No history-size cap.
+define discord_queue_refresh_next with journal as Int returning List:
+    return history_collect_one(checkpoint_prepare(journal and "SELECT i.identity FROM discord_inbox i LEFT JOIN discord_agent_jobs j ON j.inbox=i.identity LEFT JOIN discord_queue_refresh c ON c.source=i.identity WHERE i.kind='MESSAGE_CREATE' AND i.identity LIKE 'message:create:%' AND COALESCE(c.next_ms,0)<=CAST(?1 AS INTEGER) AND (j.inbox IS NULL OR j.state='steering-reserved' OR (j.state='steered' AND NOT EXISTS(SELECT 1 FROM discord_queue_markers m WHERE m.source=i.identity AND m.slot='confirm' AND m.desired='✅' AND m.applied='✅')) OR EXISTS(SELECT 1 FROM discord_queue_markers m WHERE m.source=i.identity AND m.desired<>m.applied) OR (j.state NOT IN ('steering-reserved','steered') AND EXISTS(SELECT 1 FROM discord_queue_markers m WHERE m.source=i.identity AND (m.desired<>'' OR m.applied<>'')))) ORDER BY COALESCE(c.next_ms,0),i.rowid LIMIT 1;" and [int_to_string(ep_time_now_ms())]))
+
+define discord_reaction_job_next with journal as Int returning List:
+    if sql_execute(journal and "INSERT OR IGNORE INTO discord_reaction_jobs SELECT identity,'pending','',0 FROM discord_inbox i WHERE kind IN ('MESSAGE_REACTION_ADD','MESSAGE_REACTION_REMOVE') AND NOT EXISTS(SELECT 1 FROM discord_reaction_jobs j WHERE j.identity=i.identity) ORDER BY rowid LIMIT 1;") is not equal to 0:
+        return history_status("reaction-store-failed")
+    return history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_reaction_jobs WHERE state='pending' AND next_ms<=CAST(?1 AS INTEGER) ORDER BY next_ms,rowid LIMIT 1;" and [int_to_string(ep_time_now_ms())]))
+
+define discord_reaction_job_record with journal as Int and identity as Str and result as Str returning Str:
+    set state to "pending"
+    if result equals "steered" or else result equals "already-steered" or else result equals "returned-to-queue":
+        set state to "completed"
+    else if result equals "not-steering-add" or else result equals "reaction-binding-denied" or else result equals "invalid-reaction" or else result equals "queue-or-target-unavailable" or else result equals "offer-binding-denied" or else result equals "steering-source-invalidated" or else result equals "steering-guild-denied" or else result equals "steering-dm-denied" or else result equals "admin-required" or else result equals "steering-media-import-required":
+        set state to "denied"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "reaction-store-failed"
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_reaction_jobs WHERE identity=?1;" and [identity]))
+    if not (archive_list_text(prior and 0) equals "found"):
+        return migration_fail(journal and "reaction-store-failed")
+    if not (archive_list_text(prior and 1) equals "pending"):
+        return migration_fail(journal and archive_list_text(prior and 1))
+    set now to int_to_string(ep_time_now_ms())
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_reaction_jobs SET state=?2,detail=?3,next_ms=CAST(?4 AS INTEGER) WHERE identity=?1 AND state='pending';" and [identity,state,result,int_to_string(ep_time_now_ms() + 1000)]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_reaction_job_events(identity,state,detail,observed_ms) VALUES(?1,?2,?3,CAST(?4 AS INTEGER));" and [identity,state,result,now]) and 101) is not equal to 0:
+        return migration_fail(journal and "reaction-store-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return "reaction-store-failed"
+    return state
