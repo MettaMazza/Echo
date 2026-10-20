@@ -53,6 +53,38 @@ define discord_command_new_apply with journal as Int and database as Int and ide
         return "new-session-created"
     return archive_list_text(selected and 0)
 
+# Stop only the authenticated administrator's runs in this isolated Discord
+# archive. The immutable receipt makes retrying an old command harmless after
+# the same person has explicitly enabled a newer autonomous activity.
+define discord_command_autooff_apply with journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List returning Str:
+    if discord_command_acknowledged(journal and identity and body) equals 0:
+        return "command-not-acknowledged"
+    set command to discord_command_resolve(journal and body and bot and guilds and admins)
+    if not (archive_list_text(command and 0) equals "command-bound-needs-live-access"):
+        return archive_list_text(command and 0)
+    if not (archive_list_text(command and 1) equals "autooff"):
+        return "not-autooff-command"
+    set device to discord_agent_principal(database and archive_list_text(command and 2) and admins)
+    if string_length(device) equals 0:
+        return "principal-unavailable"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set principal to principal_for_device(database and device)
+    if not (principal_role(database and principal) equals "admin") or else discord_command_acknowledged(journal and identity and body) equals 0:
+        return migration_fail(database and "admin-required")
+    set receipt to concat("discord-autonomy-stop:" and identity)
+    set payload to concat("{\"device\":" and concat(provider_quote(device) and concat(",\"interaction\":" and concat(provider_quote(identity) and concat(",\"intake_sha256\":" and concat(provider_quote(ep_sha256(body)) and "}"))))))
+    set prior to archive_read_event(database and receipt)
+    if prior is not equal to 0:
+        if not (archive_list_text(prior and 2) equals "autonomy_global_stop") or else not (archive_list_text(prior and 3) equals payload):
+            return migration_fail(database and "command-binding-denied")
+    else:
+        if autonomy_stop_others_pending(database and device and "" and receipt) is not equal to 0 or else archive_append_pending(database and concat("autonomy-control:" and device) and receipt and "autonomy_global_stop" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return migration_fail(database and "autonomy-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "autonomy-stopped"
+
 define discord_command_tick with library as Str and token as Str and journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
     if file_exists(stop_file):
         return "stopped"
@@ -68,4 +100,6 @@ define discord_command_tick with library as Str and token as Str and journal as 
         return "stopped"
     if archive_list_text(command and 1) equals "new":
         return discord_command_new_apply(journal and database and identity and body and bot and guilds and admins)
+    if archive_list_text(command and 1) equals "autooff":
+        return discord_command_autooff_apply(journal and database and identity and body and bot and guilds and admins)
     return "command-handler-unavailable"
