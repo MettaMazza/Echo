@@ -1,0 +1,125 @@
+import "background_store"
+import "job_dispatch"
+import "../jobs/delegation_return"
+
+define discord_background_exclusive with database as Int and run as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and run)
+    set child to history_collect_one(checkpoint_prepare(database and "SELECT child FROM echo_delegations WHERE child=?1;" and values))
+    if archive_list_text(child and 0) equals "found":
+        return 0
+    if archive_list_text(child and 0) equals "end":
+        return 1
+    return -1
+
+define discord_background_is_reserved with journal as Int and run as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and run)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT run FROM discord_background_runs WHERE run=?1 AND state='reserved';" and values))
+    return archive_list_text(row and 0) equals "found"
+
+# Snapshot due definitions, preserve the core catch-up/coalescing rules, then
+# reserve their conversation before materialisation. Admission never spawns a
+# process; launch capacity is enforced separately by the connector.
+define discord_background_prepare with journal as Int and database as Int and now as Int returning Int:
+    if node_admission_allows(database) equals 0:
+        return 1
+    set values to create_list()
+    set time_text to int_to_string(now)
+    set added to append_list(values and time_text)
+    set due to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_group_array(identity),'[]') FROM (SELECT s.identity FROM echo_schedules s JOIN echo_schedule_state c ON c.identity=s.identity WHERE c.status='enabled' AND c.next_due<=CAST(?1 AS INTEGER) AND NOT EXISTS(SELECT 1 FROM echo_schedule_occurrences o LEFT JOIN echo_runs r ON r.run=o.identity WHERE o.schedule=s.identity AND (r.run IS NULL OR r.state NOT IN ('completed','cancelled','failed') OR EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state<>'observed'))) ORDER BY c.next_due,s.rowid);" and values))
+    if not (archive_list_text(due and 0) equals "found"):
+        return 1
+    set tokens to provider_json_tokens(archive_list_text(due and 1))
+    set items to provider_items(tokens and 0)
+    set index to 0
+    repeat while index < length_list(items):
+        set item to get_list(items and index)
+        set index to index + 1
+        set identity to provider_value(tokens and item)
+        set lookup to create_list()
+        set added to append_list(lookup and identity)
+        set origin to history_collect_one(checkpoint_prepare(database and "SELECT origin_run FROM echo_schedules WHERE identity=?1;" and lookup))
+        if not (archive_list_text(origin and 0) equals "found"):
+            return 1
+        if string_length(discord_job_origin(journal and database and archive_list_text(origin and 1))) > 0:
+            set taken to schedule_take_due(database and identity and now)
+    set pending to history_collect_one(archive_prepare(database and "SELECT COALESCE(json_group_array(identity),'[]') FROM (SELECT o.identity FROM echo_schedule_occurrences o LEFT JOIN echo_runs r ON r.run=o.identity WHERE r.run IS NULL ORDER BY o.rowid);"))
+    if not (archive_list_text(pending and 0) equals "found"):
+        return 1
+    set tokens to provider_json_tokens(archive_list_text(pending and 1))
+    set items to provider_items(tokens and 0)
+    set index to 0
+    repeat while index < length_list(items):
+        set item to get_list(items and index)
+        set index to index + 1
+        set occurrence to provider_value(tokens and item)
+        set lookup to create_list()
+        set added to append_list(lookup and occurrence)
+        set origin to history_collect_one(checkpoint_prepare(database and "SELECT s.origin_run FROM echo_schedule_occurrences o JOIN echo_schedules s ON s.identity=o.schedule WHERE o.identity=?1;" and lookup))
+        if not (archive_list_text(origin and 0) equals "found"):
+            return 1
+        set inbox to discord_job_origin(journal and database and archive_list_text(origin and 1))
+        if string_length(inbox) equals 0:
+            continue
+        set held to discord_background_reserve(journal and occurrence and inbox and 1)
+        if not (held equals "reserved" or else held equals "already-reserved") or else discord_background_is_reserved(journal and occurrence) equals 0:
+            continue
+        set admitted to schedule_materialize(database and occurrence)
+        if not (admitted equals "materialized" or else admitted equals "already-materialized"):
+            set released to discord_background_transition(journal and occurrence and "reserved" and "released" and "" and 0 and admitted)
+    # Only collect a new child head. A prior authority-withheld receipt is
+    # terminal for that frozen child authority, avoiding repeated empty resumes.
+    set parents to history_collect_one(archive_prepare(database and "SELECT COALESCE(json_group_array(run),'[]') FROM (SELECT DISTINCT p.run FROM echo_delegations d JOIN echo_runs p ON p.run=d.parent JOIN echo_runs c ON c.run=d.child WHERE p.state='completed' AND c.state IN ('completed','cancelled','failed','waiting') AND NOT EXISTS(SELECT 1 FROM echo_events e,json_each(e.payload,'$.results') j WHERE e.kind='delegation_results' AND json_extract(e.payload,'$.run_id')=p.run AND json_extract(j.value,'$.run')=c.run AND (json_extract(j.value,'$.event')=c.last_event OR json_extract(j.value,'$.state')='authority-changed')));"))
+    if not (archive_list_text(parents and 0) equals "found"):
+        return 1
+    set tokens to provider_json_tokens(archive_list_text(parents and 1))
+    set items to provider_items(tokens and 0)
+    set index to 0
+    repeat while index < length_list(items):
+        set item to get_list(items and index)
+        set index to index + 1
+        set parent to provider_value(tokens and item)
+        set inbox to discord_job_origin(journal and database and parent)
+        set exclusive to discord_background_exclusive(database and parent)
+        if string_length(inbox) equals 0 or else exclusive < 0:
+            continue
+        set held to discord_background_reserve(journal and parent and inbox and exclusive)
+        if not (held equals "reserved" or else held equals "already-reserved") or else discord_background_is_reserved(journal and parent) equals 0:
+            continue
+        set collected to delegation_collect(database and parent)
+        if not (collected equals "collected"):
+            set released to discord_background_transition(journal and parent and "reserved" and "released" and "" and 0 and collected)
+    return 0
+
+# Launch at most one selected ready job per controller pass. The caller supplies
+# the currently available provider slot; there is no model-context/token cap.
+# A reserved journal record survives a crash between admission and OS launch.
+define discord_background_launch_one with journal as Int and database as Int and arguments as List returning List:
+    set ready to history_collect_one(archive_prepare(database and "SELECT COALESCE(json_group_array(run),'[]') FROM (SELECT r.run FROM echo_runs r LEFT JOIN echo_web_workers w ON w.run=r.run JOIN echo_events e ON e.event=r.last_event WHERE r.state='ready' AND (EXISTS(SELECT 1 FROM echo_delegations d WHERE d.child=r.run) OR EXISTS(SELECT 1 FROM echo_schedule_occurrences o WHERE o.identity=r.run) OR e.kind='delegation_results') AND (w.run IS NULL OR w.status='launch-failed' OR (w.status='completed' AND e.kind='delegation_results')) ORDER BY r.rowid);"))
+    if not (archive_list_text(ready and 0) equals "found"):
+        return history_status("database-error")
+    set tokens to provider_json_tokens(archive_list_text(ready and 1))
+    set items to provider_items(tokens and 0)
+    set index to 0
+    repeat while index < length_list(items):
+        set item to get_list(items and index)
+        set index to index + 1
+        set run to provider_value(tokens and item)
+        set inbox to discord_job_origin(journal and database and run)
+        set exclusive to discord_background_exclusive(database and run)
+        if string_length(inbox) equals 0 or else exclusive < 0:
+            continue
+        set held to discord_background_reserve(journal and run and inbox and exclusive)
+        if not (held equals "reserved" or else held equals "already-reserved") or else discord_background_is_reserved(journal and run) equals 0:
+            continue
+        set launched to discord_job_dispatch(journal and database and run and arguments)
+        if archive_list_text(launched and 0) equals "worker-started":
+            set process to get_list(launched and 1)
+            set worker to archive_list_text(launched and 3)
+            set recorded to discord_background_transition(journal and run and "reserved" and "running" and worker and process and "owned job process launched")
+            if not (recorded equals "recorded"):
+                display "Background process launched; journal receipt requires reconciliation."
+            return launched
+        set released to discord_background_transition(journal and run and "reserved" and "released" and "" and 0 and archive_list_text(launched and 0))
+    return history_status("end")

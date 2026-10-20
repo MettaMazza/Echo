@@ -1,0 +1,76 @@
+import "worker_store"
+
+# Reserve a canonical conversation before materialising a scheduled turn or
+# resuming a parent. Independent delegated contexts do not lock conversation.
+# This transaction shares the inbox dequeue lock, so neither side can win a
+# check-then-claim race and silently discard the other's work.
+define discord_background_reserve with journal as Int and run as Str and inbox as Str and exclusive as Int returning Str:
+    if string_length(run) equals 0 or else (exclusive is not equal to 0 and exclusive is not equal to 1):
+        return "invalid-reservation"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "busy"
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and inbox)
+    set exclusive_text to int_to_string(exclusive)
+    set source_values to create_list()
+    set added to append_list(source_values and inbox)
+    set run_values to create_list()
+    set added to append_list(run_values and run)
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_inbox WHERE identity=?1 AND kind='MESSAGE_CREATE' AND identity LIKE 'message:create:%';" and source_values))
+    if not (archive_list_text(source and 0) equals "found"):
+        return migration_fail(journal and "source-unavailable")
+    set old to history_collect_one(checkpoint_prepare(journal and "SELECT inbox,exclusive,state FROM discord_background_runs WHERE run=?1;" and run_values))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals inbox) or else not (archive_list_text(old and 2) equals exclusive_text):
+            return migration_fail(journal and "reservation-conflict")
+        if not (archive_list_text(old and 3) equals "released"):
+            return migration_fail(journal and "already-reserved")
+    else if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(journal and "database-error")
+    if exclusive equals 1:
+        set busy to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_inbox source WHERE source.identity=?2 AND (EXISTS(SELECT 1 FROM discord_agent_jobs j JOIN discord_inbox i ON i.identity=j.inbox WHERE j.state='claimed' AND json_extract(i.payload,'$.channel_id')=json_extract(source.payload,'$.channel_id') AND json_extract(i.payload,'$.author.id')=json_extract(source.payload,'$.author.id')) OR EXISTS(SELECT 1 FROM discord_background_runs b JOIN discord_inbox i ON i.identity=b.inbox WHERE b.run<>?1 AND b.exclusive=1 AND b.state IN ('reserved','running','recovery') AND json_extract(i.payload,'$.channel_id')=json_extract(source.payload,'$.channel_id') AND json_extract(i.payload,'$.author.id')=json_extract(source.payload,'$.author.id')));" and values))
+        if not (archive_list_text(busy and 0) equals "found"):
+            return migration_fail(journal and "database-error")
+        if not (archive_list_text(busy and 1) equals "0"):
+            return migration_fail(journal and "conversation-busy")
+    set now to int_to_string(ep_time_now_ms())
+    set added to append_list(values and exclusive_text)
+    set added to append_list(values and now)
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_background_runs VALUES(?1,?2,CAST(?3 AS INTEGER),'reserved','',0,CAST(?4 AS INTEGER)) ON CONFLICT(run) DO UPDATE SET state='reserved',worker='',process=0,updated_ms=excluded.updated_ms WHERE discord_background_runs.state='released';" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_background_events(run,inbox,state,detail,observed_ms) VALUES(?1,?2,'reserved','conversation reservation before background admission',CAST(?4 AS INTEGER));" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "commit-failed")
+    return "reserved"
+
+# Explicit state transitions retain an immutable diagnostic trail. Recovery
+# holds a canonical conversation until uncertain work has been reconciled.
+define discord_background_transition with journal as Int and run as Str and expected as Str and next_state as Str and worker as Str and process as Int and detail as Str returning Str:
+    if not ((expected equals "reserved" and (next_state equals "running" or else next_state equals "released" or else next_state equals "recovery")) or else (expected equals "running" and (next_state equals "released" or else next_state equals "recovery")) or else (expected equals "recovery" and next_state equals "released")):
+        return "invalid-transition"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "busy"
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and expected)
+    set added to append_list(values and next_state)
+    set added to append_list(values and worker)
+    set process_text to int_to_string(process)
+    set added to append_list(values and process_text)
+    set now to int_to_string(ep_time_now_ms())
+    set added to append_list(values and now)
+    set run_values to create_list()
+    set added to append_list(run_values and run)
+    set current to history_collect_one(checkpoint_prepare(journal and "SELECT state,worker,process FROM discord_background_runs WHERE run=?1;" and run_values))
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 1) equals expected):
+        return migration_fail(journal and "state-changed")
+    if not (expected equals "reserved") and not (archive_list_text(current and 2) equals worker):
+        return migration_fail(journal and "worker-changed")
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_background_runs SET state=?3,worker=?4,process=CAST(?5 AS INTEGER),updated_ms=CAST(?6 AS INTEGER) WHERE run=?1 AND state=?2;" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "write-failed")
+    set added to append_list(values and detail)
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_background_events(run,inbox,state,detail,observed_ms) SELECT run,inbox,state,?7,CAST(?6 AS INTEGER) FROM discord_background_runs WHERE run=?1;" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "commit-failed")
+    return "recorded"
