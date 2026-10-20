@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-20T09:30:01.177446+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-20T09:52:30.199639+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -1559,6 +1559,40 @@ Definitions:
 4: define main returning Int:
 ```
 
+## `tests/discord/test_gateway_connection.ep`
+
+[tests/discord/test_gateway_connection.ep](../../tests/discord/test_gateway_connection.ep) · 41 lines · 2256 bytes
+
+SHA-256: `9dd4f8f8ebf39033adaedf1def5c94efc00079ad5e5e34866aed4f8ddc004936`
+
+Source annotations: Live qualification of the real heartbeat owner. The external harness requests stop only after observing multiple persisted server ACKs. Reusing the database in a second invocation exercises durable session resumption. No chat message is sent and no inference is invoked.
+
+Imports: [../../app/discord/gateway_connection](../../app/discord/gateway_connection.ep), `string` (toolchain/library).
+
+Native `main` present. Argument indices read: 1, 2, 3, 4, 5, 6. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+8: define main returning Int:
+```
+
+## `tests/discord/test_gateway_discovery.ep`
+
+[tests/discord/test_gateway_discovery.ep](../../tests/discord/test_gateway_discovery.ep) · 35 lines · 2171 bytes
+
+SHA-256: `31f47ab999bc3bc536fe7306d30a4ec0a5034e5b8146eaddb88e0edb962546be`
+
+Imports: [../../app/discord/gateway_discovery](../../app/discord/gateway_discovery.ep), `fs` (toolchain/library).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+4: define main returning Int:
+```
+
 ## `tests/discord/test_gateway_hello.ep`
 
 [tests/discord/test_gateway_hello.ep](../../tests/discord/test_gateway_hello.ep) · 43 lines · 2231 bytes
@@ -1577,6 +1611,23 @@ Definitions:
 6: define main returning Int:
 ```
 
+## `tests/discord/test_gateway_intake.ep`
+
+[tests/discord/test_gateway_intake.ep](../../tests/discord/test_gateway_intake.ep) · 52 lines · 4125 bytes
+
+SHA-256: `9a866d13f0082cbd26078d7c18f2e7bbc2030f5f37d0a6b16727cd9cb6e7b5f1`
+
+Imports: [../../app/discord/gateway_intake](../../app/discord/gateway_intake.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define gateway_fixture with sequence as Int and id as Str and author as Str and extra as Str and content as Str returning Str:
+9: define main returning Int:
+```
+
 ## `tests/discord/test_gateway_journal.ep`
 
 [tests/discord/test_gateway_journal.ep](../../tests/discord/test_gateway_journal.ep) · 40 lines · 2797 bytes
@@ -1586,6 +1637,22 @@ SHA-256: `a80a922cc4246161a6725dcf5689aa678899a3ccd6a68d4092cddbbd911b416e`
 Imports: [../../app/discord/gateway_journal](../../app/discord/gateway_journal.ep).
 
 Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
+## `tests/discord/test_gateway_protocol.ep`
+
+[tests/discord/test_gateway_protocol.ep](../../tests/discord/test_gateway_protocol.ep) · 49 lines · 3090 bytes
+
+SHA-256: `8b45c5af203c68805d9e0d33e8a45cbbaf82b598e76834b30bb448b8c841ba78`
+
+Imports: [../../app/discord/gateway_protocol](../../app/discord/gateway_protocol.ep).
+
+Native `main` present. Argument indices read: none. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
 
 Definitions:
 
