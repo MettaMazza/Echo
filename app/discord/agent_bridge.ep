@@ -122,6 +122,8 @@ define discord_agent_submit_media with journal as Int and database as Int and in
         set server to concat("dm:" and bot)
     set run to concat("discord-message:" and archive_list_text(route and 4))
     set attachments to create_list()
+    set media_session to ""
+    set media_revision to ""
     if has_files:
         if web_attachment_schema(database) is not equal to 0:
             return history_status("attachment-store-unavailable")
@@ -132,9 +134,11 @@ define discord_agent_submit_media with journal as Int and database as Int and in
         set created to group_create(database and device and group_id and "discord" and server and room and origin)
         if not (created equals "created" or else created equals "already-created"):
             return history_status(created)
-        set selected to group_route(database and device and group_id and "discord" and server and room)
+        set selected to discord_media_session(database and device and group_id and server and room and run)
         if not (archive_list_text(selected and 0) equals "routed"):
             return selected
+        set media_session to archive_list_text(selected and 1)
+        set media_revision to archive_list_text(selected and 2)
         set fresh_tokens to provider_json_tokens(fresh_message)
         for each item in provider_items(fresh_tokens and provider_member(fresh_tokens and 0 and "attachments")):
             set imported to discord_attachment_import(database and device and archive_list_text(selected and 1) and room and archive_list_text(route and 4) and fresh_tokens and item and directory_path)
@@ -146,12 +150,29 @@ define discord_agent_submit_media with journal as Int and database as Int and in
                 return decoded
             if not (archive_list_text(decoded and 1) equals archive_list_text(imported and 1)):
                 set added to append_list(attachments and archive_list_text(decoded and 1))
-    set submitted to channel_silo_submit(database and device and "discord" and server and room and run and archive_list_text(route and 5) and attachments)
+    set submitted to create_list()
+    if has_files:
+        # Keep the selection made before I/O. /new during the download must
+        # not silently redirect these already imported sources on submission.
+        set status to group_run_submit_attachments(database and device and run and media_session and "discord" and server and room and archive_list_text(route and 5) and attachments)
+        set submitted to [status,media_session,media_revision]
+    else:
+        set submitted to channel_silo_submit(database and device and "discord" and server and room and run and archive_list_text(route and 5) and attachments)
     if archive_list_text(submitted and 0) equals "accepted" or else archive_list_text(submitted and 0) equals "already-accepted":
         if discord_agent_sender_record(database and run and original) is not equal to 0:
             return ["sender-record-unavailable"]
         set added to append_list(submitted and run)
     return submitted
+
+# Existing accepted runs are pinned before import, not only at final submit.
+# Scope and current membership are still checked by import and submission.
+define discord_media_session with database as Int and device as Str and group_id as Str and server as Str and room as Str and run as Str returning List:
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT s.session,CAST(s.revision AS TEXT) FROM echo_group_run_origins g JOIN echo_group_sessions s ON s.session=g.session WHERE g.run=?1 AND s.group_id=?2 AND g.device=?3;" and [run,group_id,device]))
+    if archive_list_text(old and 0) equals "found":
+        return ["routed",archive_list_text(old and 1),archive_list_text(old and 2)]
+    if not (archive_list_text(old and 0) equals "end"):
+        return history_status("route-read-failed")
+    return group_route(database and device and group_id and "discord" and server and room)
 
 # Capture account labels from the authenticated Gateway envelope at admission.
 # Names are descriptive untrusted strings, never identity/permission keys.

@@ -49,6 +49,20 @@ define discord_attachment_url with url as Str and room as Str and identity as St
         return history_status("attachment-path-denied")
     return parsed
 
+# Preserve legacy identifiers in their original session. If an interrupted
+# import is later retried in a different selected session, use a deterministic
+# new identity and fetch again; never borrow the old session's file or authority.
+define discord_attachment_identity with database as Int and session as Str and message as Str and file_id as Str returning Str:
+    set identity to concat("discord-file:" and concat(message and concat(":" and file_id)))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_attachments WHERE attachment=?1;" and [identity]))
+    if archive_list_text(row and 0) equals "end":
+        return identity
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    if archive_list_text(row and 1) equals session:
+        return identity
+    return concat(identity and concat(":session:" and ep_sha256(session)))
+
 # Host-only fetch of one authenticated attachment. No bot credential is sent
 # to the CDN. No redirects; DNS is public-address pinned and TLS is verified.
 # A partial file is retained privately but never registered as an attachment.
@@ -59,7 +73,9 @@ define discord_attachment_import with database as Int and device as Str and sess
     if media equals "null" or else string_length(media) equals 0:
         set media to "application/octet-stream"
     set size to provider_value(tokens and provider_member(tokens and item and "size"))
-    set attachment to concat("discord-file:" and concat(message and concat(":" and identity)))
+    set attachment to discord_attachment_identity(database and session and message and identity)
+    if string_length(attachment) equals 0:
+        return history_status("attachment-store-unavailable")
     set old to web_attachment_owned(database and device and attachment)
     if archive_list_text(old and 0) equals "found":
         set digest to file_digest(archive_list_text(old and 1) and 65536)
