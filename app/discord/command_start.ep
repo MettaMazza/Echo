@@ -1,0 +1,41 @@
+import "command_admission"
+import "background_store"
+
+# Called only after current Discord access and public original confirmation.
+# Reserve before touching the canonical session. A replay of finished work
+# verifies its receipt without re-acquiring a conversation or re-enabling auto.
+define discord_command_start_apply with journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List returning Str:
+    if discord_command_acknowledged(journal and identity and body) equals 0:
+        return "command-not-acknowledged"
+    set command to discord_command_resolve(journal and body and bot and guilds and admins)
+    if not (archive_list_text(command and 0) equals "command-bound-needs-live-access"):
+        return archive_list_text(command and 0)
+    if not (archive_list_text(command and 1) equals "auto"):
+        return "not-auto-command"
+    set run to concat("discord-command:" and identity)
+    set state to history_collect_one(checkpoint_prepare(database and "SELECT state FROM echo_runs WHERE run=?1;" and [run]))
+    set reserve to 1
+    if archive_list_text(state and 0) equals "found":
+        if not (archive_list_text(state and 1) equals "ready" or else archive_list_text(state and 1) equals "generating" or else archive_list_text(state and 1) equals "tools"):
+            set reserve to 0
+    else if not (archive_list_text(state and 0) equals "end"):
+        return "command-admission-recovery-required"
+    if reserve equals 1:
+        set held to discord_background_reserve(journal and run and identity and 1)
+        if not (held equals "reserved" or else held equals "already-reserved"):
+            return concat("command-reservation:" and held)
+    set admitted to discord_command_auto_admit(journal and database and identity and bot and guilds and admins)
+    set result to archive_list_text(admitted and 0)
+    if result equals "accepted":
+        return "autonomy-admitted"
+    if result equals "already-accepted":
+        return "autonomy-already-admitted"
+    # Only release when the archive conclusively proves no run was created.
+    # An uncertain/partial admission stays held for reconciliation, not replay.
+    set exists to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_runs WHERE run=?1;" and [run]))
+    if reserve equals 1 and archive_list_text(exists and 0) equals "found" and archive_list_text(exists and 1) equals "0":
+        set released to discord_background_transition(journal and run and "reserved" and "released" and "" and 0 and "admission rejected before run creation")
+        if not (released equals "recorded" or else released equals "state-changed"):
+            return "command-admission-recovery-required"
+        return result
+    return "command-admission-recovery-required"
