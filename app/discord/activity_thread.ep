@@ -1,4 +1,5 @@
 import "store"
+import "intake_source"
 
 # A source message is the permanent identity of its activity thread. Never
 # attach to whichever bot reply is newest or discard the binding at completion.
@@ -7,19 +8,20 @@ define discord_activity_schema with journal as Int returning Int:
     return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_activity_threads(inbox TEXT PRIMARY KEY REFERENCES discord_inbox(identity),source TEXT NOT NULL UNIQUE,channel TEXT NOT NULL,guild TEXT NOT NULL,thread TEXT NOT NULL DEFAULT '',state TEXT NOT NULL CHECK(state IN ('planned','creating','uncertain','ready','blocked')),created_ms INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_activity_thread_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,inbox TEXT NOT NULL REFERENCES discord_activity_threads(inbox),state TEXT NOT NULL,detail TEXT NOT NULL,observed_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_activity_binding_immutable BEFORE UPDATE OF inbox,source,channel,guild,created_ms ON discord_activity_threads BEGIN SELECT RAISE(ABORT,'Activity source binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_binding_no_delete BEFORE DELETE ON discord_activity_threads BEGIN SELECT RAISE(ABORT,'Activity threads persist'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_events_no_update BEFORE UPDATE ON discord_activity_thread_events BEGIN SELECT RAISE(ABORT,'Activity receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_events_no_delete BEFORE DELETE ON discord_activity_thread_events BEGIN SELECT RAISE(ABORT,'Activity receipts are immutable'); END;")
 
 define discord_activity_plan with journal as Int and inbox as Str returning Str:
-    if discord_activity_schema(journal) is not equal to 0 or else not (string_index_of(inbox and "message:create:") equals 0):
+    if discord_activity_schema(journal) is not equal to 0:
+        return "invalid-source"
+    set source to discord_intake_source(journal and inbox)
+    if not (archive_list_text(source and 0) equals "found"):
+        return "source-unavailable"
+    set message to archive_list_text(source and 6)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    if discord_snowflake(message) equals 0 or else discord_snowflake(room) equals 0:
+        return "invalid-source"
+    if archive_list_text(source and 1) equals "MESSAGE_CREATE" and not (inbox equals concat("message:create:" and message)):
         return "invalid-source"
     set values to create_list()
     set added to append_list(values and inbox)
-    set row to history_collect_one(checkpoint_prepare(journal and "SELECT payload FROM discord_inbox WHERE identity=? AND kind='MESSAGE_CREATE';" and values))
-    if not (archive_list_text(row and 0) equals "found"):
-        return "source-unavailable"
-    set tokens to provider_json_tokens(archive_list_text(row and 1))
-    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
-    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
-    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
-    if discord_snowflake(message) equals 0 or else discord_snowflake(room) equals 0 or else not (inbox equals concat("message:create:" and message)):
-        return "invalid-source"
     if discord_snowflake(guild) equals 0:
         return "native-thread-unavailable"
     set added to append_list(values and message)
