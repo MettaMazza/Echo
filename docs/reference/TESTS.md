@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-20T08:55:31.433503+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-20T09:30:01.177446+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -1557,6 +1557,111 @@ Definitions:
 
 ```text
 4: define main returning Int:
+```
+
+## `tests/discord/test_gateway_hello.ep`
+
+[tests/discord/test_gateway_hello.ep](../../tests/discord/test_gateway_hello.ep) · 43 lines · 2231 bytes
+
+SHA-256: `94c3afa24a06aba6718c66ed8b2ebb04c3e48819e793cb703ed8ec31ea4ff701`
+
+Source annotations: Live unauthenticated protocol qualification: no bot token, IDENTIFY, messages, member data or server mutation. Exercises actual TLS and WebSocket framing.
+
+Imports: [../../app/discord/socket](../../app/discord/socket.ep), [../../app/discord/routing](../../app/discord/routing.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+6: define main returning Int:
+```
+
+## `tests/discord/test_gateway_journal.ep`
+
+[tests/discord/test_gateway_journal.ep](../../tests/discord/test_gateway_journal.ep) · 40 lines · 2797 bytes
+
+SHA-256: `a80a922cc4246161a6725dcf5689aa678899a3ccd6a68d4092cddbbd911b416e`
+
+Imports: [../../app/discord/gateway_journal](../../app/discord/gateway_journal.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
+## `tests/discord/test_gateway_ready.ep`
+
+[tests/discord/test_gateway_ready.ep](../../tests/discord/test_gateway_ready.ep) · 127 lines · 6899 bytes
+
+SHA-256: `658ead1802680043d21d84fb79610a75000daf368b85471f66cccb570b9e74d9`
+
+Source annotations: Explicit live setup qualification. Token comes from a private host file and is never printed or retained. No user message is sent or passed to inference. A production connector must persist sequence/session and implement resume. Restrict token syntax before embedding into JSON, avoiding logging it.
+
+Imports: [../../app/discord/socket](../../app/discord/socket.ep), [../../app/discord/routing](../../app/discord/routing.ep), `fs` (toolchain/library), `string` (toolchain/library).
+
+Native `main` present. Argument indices read: 1, 2, 3. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+9: define main returning Int:
+```
+
+## `tests/discord/test_rest_identity.ep`
+
+[tests/discord/test_rest_identity.ep](../../tests/discord/test_rest_identity.ep) · 38 lines · 2233 bytes
+
+SHA-256: `6131a261032fec3c3f26c881a8fc3020dfbcadf74cc959beb1d0e483e02eb467`
+
+Source annotations: Read-only live REST qualification. Use a fresh private directory. Never print the credential or response body; record only identity equality and HTTP facts.
+
+Imports: [../../app/discord/rest](../../app/discord/rest.ep), `fs` (toolchain/library), `string` (toolchain/library).
+
+Native `main` present. Argument indices read: 1, 2, 3, 4. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+7: define main returning Int:
+```
+
+## `tests/discord/test_routing.ep`
+
+[tests/discord/test_routing.ep](../../tests/discord/test_routing.ep) · 45 lines · 3499 bytes
+
+SHA-256: `9304ace7d6cadb0d15702b1ef3f464ade1c733b329289fdbcb6b8d0576e0cff2`
+
+Source annotations: Raw mention spelling in content does not establish an authenticated mention.
+
+Imports: [../../app/discord/routing](../../app/discord/routing.ep).
+
+Native `main` present. Argument indices read: none. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define discord_test_message with author as Str and guild as Str and mentions as Str and extra as Str returning Str:
+6: define main returning Int:
+```
+
+## `tests/discord/test_store.ep`
+
+[tests/discord/test_store.ep](../../tests/discord/test_store.ep) · 43 lines · 3320 bytes
+
+SHA-256: `edaf418d42f851eb855b8a4b238eb894cf3509fa3eecefa0026f187565f9d9fc`
+
+Imports: [../../app/discord/store](../../app/discord/store.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
 ```
 
 ## `tests/fixtures/delegation_fixture.ep`
