@@ -1,0 +1,51 @@
+import "worker_store"
+import "intake_source"
+
+# Queue reservation is serialized with ordinary dequeue in the same journal.
+# No tick or guidance is produced here. The controller must subsequently verify
+# live access, commit idempotent guidance in the agent archive and reconcile its
+# receipt before confirming acceptance. A crash leaves the reservation visible.
+define discord_steering_schema with journal as Int returning Int:
+    if discord_worker_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_steering_intents(source TEXT PRIMARY KEY REFERENCES discord_inbox(identity),target TEXT NOT NULL REFERENCES discord_inbox(identity),actor TEXT NOT NULL,source_digest TEXT NOT NULL,identity TEXT NOT NULL UNIQUE,created_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_steering_intents_no_update BEFORE UPDATE ON discord_steering_intents BEGIN SELECT RAISE(ABORT,'Steering intent is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_steering_intents_no_delete BEFORE DELETE ON discord_steering_intents BEGIN SELECT RAISE(ABORT,'Steering intent is immutable'); END;")
+
+define discord_steering_reserve with journal as Int and source as Str and target as Str and actor as Str returning Str:
+    if source equals target or else discord_snowflake(actor) equals 0:
+        return "invalid-steering"
+    if discord_steering_schema(journal) is not equal to 0 or else sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set values to create_list()
+    set added to append_list(values and source)
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT target,actor FROM discord_steering_intents WHERE source=?1;" and values))
+    if archive_list_text(prior and 0) equals "found":
+        if archive_list_text(prior and 1) equals target and archive_list_text(prior and 2) equals actor:
+            return migration_fail(journal and "already-reserved")
+        return migration_fail(journal and "intent-conflict")
+    if not (archive_list_text(prior and 0) equals "end"):
+        return migration_fail(journal and "read-failed")
+    set added to append_list(values and target)
+    set added to append_list(values and actor)
+    # Bind to the exact original author and conversation. An admin label alone
+    # never grants control over another principal's queued message.
+    set projection to discord_intake_source(journal and target)
+    if not (archive_list_text(projection and 0) equals "found") or else not (archive_list_text(projection and 3) equals actor):
+        return migration_fail(journal and "queue-or-target-unavailable")
+    set query to "SELECT s.digest FROM discord_inbox s JOIN discord_inbox t ON t.identity=?2 WHERE s.identity=?1 AND s.kind='MESSAGE_CREATE' AND json_extract(s.payload,'$.author.id')=?3 AND json_extract(s.payload,'$.channel_id')=json_extract(t.payload,'$.channel_id') AND COALESCE(json_extract(s.payload,'$.guild_id'),'')=COALESCE(json_extract(t.payload,'$.guild_id'),'') AND NOT EXISTS(SELECT 1 FROM discord_agent_jobs used WHERE used.inbox=s.identity) AND (EXISTS(SELECT 1 FROM discord_agent_jobs j WHERE j.inbox=t.identity AND j.state='claimed') OR EXISTS(SELECT 1 FROM discord_background_runs b WHERE b.inbox=t.identity AND b.exclusive=1 AND b.state IN ('reserved','running')));"
+    set row to history_collect_one(checkpoint_prepare(journal and query and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return migration_fail(journal and "queue-or-target-unavailable")
+    set identity to concat("discord-steering:" and ep_sha256(source))
+    set now to int_to_string(ep_time_now_ms())
+    set added to append_list(values and archive_list_text(row and 1))
+    set added to append_list(values and identity)
+    set added to append_list(values and now)
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_steering_intents VALUES(?1,?2,?3,?4,?5,CAST(?6 AS INTEGER));" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "intent-write-failed")
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_jobs(inbox,state,detail,updated_ms,cursor) VALUES(?1,'steering-reserved',?5,CAST(?6 AS INTEGER),(SELECT COALESCE(MAX(rowid),0) FROM discord_inbox));" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "reservation-failed")
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'steering-reserved',?5,CAST(?6 AS INTEGER));" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "receipt-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "commit-failed")
+    return "reserved"
