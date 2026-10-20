@@ -1,0 +1,163 @@
+import "job_origin"
+import "turn_guard"
+import "../web/worker"
+import "../agent/runner"
+
+# Background work retains both ordinary node/cancel controls and the original
+# Discord source barrier. All monitor connections are read-only. A transient
+# SQLite writer lock is retried, not misreported as cancellation.
+define discord_job_monitor with journal_path as Str and database_path as Str and run as Str and inbox as Str and cursor as Int and message as Str and room as Str and guild_id as Str and stop_file as Str and stop_reader as Int and cancellation_writer as Int and completed as Int returning Int:
+    set journal to sql_open(journal_path)
+    set database to sql_open(database_path)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set status to 0
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    if journal equals 0 or else database equals 0 or else library equals 0:
+        set status to 1
+    else:
+        if sql_execute(journal and "PRAGMA busy_timeout=5000; PRAGMA query_only=ON;") is not equal to 0 or else sql_execute(database and "PRAGMA busy_timeout=5000; PRAGMA query_only=ON;") is not equal to 0:
+            set status to 1
+        repeat while status equals 0:
+            if agent_cancellation_pending(library and stop_reader) is not equal to 0 or else file_exists(stop_file):
+                break
+            set barrier to discord_turn_barrier(journal and cursor and message and room and guild_id)
+            if barrier < 0:
+                set code to sqlite3_extended_errcode(journal) modulo 256
+                if code equals 5 or else code equals 6:
+                    set waited to select(waits and 100)
+                    continue
+                set status to 1
+                break
+            if barrier > 0:
+                break
+            set origin to discord_job_origin(journal and database and run)
+            if not (origin equals inbox):
+                set code to sqlite3_extended_errcode(database) modulo 256
+                set journal_code to sqlite3_extended_errcode(journal) modulo 256
+                if code equals 5 or else code equals 6 or else journal_code equals 5 or else journal_code equals 6:
+                    set waited to select(waits and 100)
+                    continue
+                break
+            set node to node_run_status(database and run)
+            if node < 0:
+                set code to sqlite3_extended_errcode(database) modulo 256
+                if code equals 5 or else code equals 6:
+                    set waited to select(waits and 100)
+                    continue
+                set status to 1
+                break
+            if node equals 0:
+                break
+            set values to create_list()
+            set added to append_list(values and run)
+            set cancel to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run=?1;" and values))
+            if archive_list_text(cancel and 0) equals "found":
+                break
+            if not (archive_list_text(cancel and 0) equals "end"):
+                set code to sqlite3_extended_errcode(database) modulo 256
+                if code equals 5 or else code equals 6:
+                    set waited to select(waits and 100)
+                    continue
+                set status to 1
+                break
+            set waited to select(waits and 100)
+    if journal is not equal to 0:
+        set closed to sql_close(journal)
+    if database is not equal to 0:
+        set closed to sql_close(database)
+    if library is not equal to 0:
+        set closed to ep_dlclose(library)
+    set closed to net_close(stop_reader)
+    set closed to net_close(cancellation_writer)
+    send status to completed
+    return status
+
+# Invoked only by the host's --job executable role after a durable worker claim.
+# The original source receives fresh permission and content checks before any
+# inference. Results stay in the archive for parent collection or scoped output.
+define discord_job_execute with journal as Int and database as Int and token as Str and bot as Str and admins as List and profile as Str and run as Str and worker as Str returning Str:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "ownership-unavailable"
+    set owner to compaction_lock_acquire(database and concat("web-worker:" and run) and library)
+    if owner < 0:
+        set closed to ep_dlclose(library)
+        return "worker-already-running"
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and worker)
+    set claim to history_collect_one(checkpoint_prepare(database and "SELECT w.run FROM echo_web_workers w JOIN echo_worker_lock_protocol p ON p.worker=w.worker AND p.run=w.run JOIN echo_runs r ON r.run=w.run WHERE w.run=?1 AND w.worker=?2 AND w.status='running' AND r.state='ready';" and values))
+    set outcome to "worker-claim-invalid"
+    if archive_list_text(claim and 0) equals "found":
+        set outcome to discord_job_execute_owned(journal and database and token and bot and admins and profile and run and library)
+        set status_values to create_list()
+        set added to append_list(status_values and outcome)
+        set added to append_list(status_values and run)
+        set added to append_list(status_values and worker)
+        if tool_ledger_change(database and "UPDATE echo_web_workers SET status=?1 WHERE run=?2 AND worker=?3 AND status='running' RETURNING run;" and status_values) is not equal to 0:
+            set outcome to "worker-receipt-failed"
+    set closed to net_close(owner)
+    set closed to ep_dlclose(library)
+    return outcome
+
+define discord_job_execute_owned with journal as Int and database as Int and token as Str and bot as Str and admins as List and profile as Str and run as Str and system as Int returning Str:
+    set inbox to discord_job_origin(journal and database and run)
+    if string_length(inbox) equals 0:
+        return "job-origin-unavailable"
+    set values to create_list()
+    set added to append_list(values and inbox)
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT i.payload,j.cursor FROM discord_inbox i JOIN discord_agent_jobs j ON j.inbox=i.identity WHERE i.identity=?1 AND i.kind='MESSAGE_CREATE';" and values))
+    if not (archive_list_text(source and 0) equals "found"):
+        return "source-claim-unavailable"
+    set original to archive_list_text(source and 1)
+    set cursor to http_decimal(archive_list_text(source and 2))
+    set parsed to provider_json_tokens(original)
+    set room to provider_value(parsed and provider_member(parsed and 0 and "channel_id"))
+    set message to provider_value(parsed and provider_member(parsed and 0 and "id"))
+    set user to provider_value(parsed and provider_member(parsed and provider_member(parsed and 0 and "author") and "id"))
+    set guild_id to provider_value(parsed and provider_member(parsed and 0 and "guild_id"))
+    if guild_id equals "null":
+        set guild_id to ""
+    set access to discord_access_check(get_argument(1) and token and journal and get_argument(5) and bot and guild_id and room and user and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return concat("access:" and archive_list_text(access and 0))
+    set fresh to discord_source_check(get_argument(1) and token and journal and get_argument(5) and original)
+    if not (fresh equals "current"):
+        return fresh
+    if file_exists(get_argument(6)) or else discord_turn_barrier(journal and cursor and message and room and guild_id) is not equal to 0:
+        set cancelled to agent_cancel_run(database and run)
+        return "invalidated-before-job"
+    set run_values to create_list()
+    set added to append_list(run_values and run)
+    set pending_cancel to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run=?1;" and run_values))
+    if archive_list_text(pending_cancel and 0) equals "found":
+        set cancelled to agent_cancel_run(database and run)
+        return "cancelled"
+    if not (archive_list_text(pending_cancel and 0) equals "end"):
+        return "cancel-check-unavailable"
+    set cancellation to socket_cancellation_create(system)
+    set stop to socket_cancellation_create(system)
+    if cancellation equals 0 or else stop equals 0:
+        if cancellation is not equal to 0:
+            set closed to socket_cancellation_close(cancellation)
+        if stop is not equal to 0:
+            set closed to socket_cancellation_close(stop)
+        return "cancellation-unavailable"
+    set selected to agent_provider_read(database and run)
+    if string_length(selected) equals 0:
+        set selected to profile
+    set completed to channel
+    set journal_path to concat(get_argument(3) and "")
+    set database_path to concat(get_argument(4) and "")
+    set stop_file to concat(get_argument(6) and "")
+    set monitor_run to concat(run and "")
+    spawn discord_job_monitor(journal_path and database_path and monitor_run and inbox and cursor and message and room and guild_id and stop_file and get_list(stop and 0) and get_list(cancellation and 1) and completed)
+    set outcome to agent_loop_provider(database and run and selected and 8192 and get_list(cancellation and 0) and 65536)
+    set closed to net_close(get_list(stop and 1))
+    set monitored to receive from completed
+    set closed to net_close(get_list(cancellation and 0))
+    if monitored is not equal to 0:
+        return "job-monitor-failed"
+    return outcome

@@ -1,0 +1,46 @@
+import "job_origin"
+import "process"
+import "../web/worker"
+
+# The connector, not the generic web scheduler, owns this launch. Reuse the
+# durable worker claim protocol but spawn through Discord's environment
+# allowlist and explicit --job role. A launch error remains durably retryable.
+define discord_job_dispatch with journal as Int and database as Int and run as Str and arguments as List returning List:
+    if string_length(discord_job_origin(journal and database and run)) equals 0:
+        return history_status("job-origin-unavailable")
+    set values to create_list()
+    set added to append_list(values and run)
+    set owner to history_collect_one(checkpoint_prepare(database and "SELECT a.device,r.state FROM echo_runs r JOIN echo_run_authority a ON a.run=r.run WHERE r.run=?1;" and values))
+    if not (archive_list_text(owner and 0) equals "found") or else not (archive_list_text(owner and 2) equals "ready"):
+        return history_status("job-not-ready")
+    if length_list(arguments) is not equal to 12:
+        return history_status("job-launch-configuration-invalid")
+    set worker to agent_identity()
+    set claimed to web_worker_ensure_claim(database and archive_list_text(owner and 1) and run and worker)
+    if claimed equals 2:
+        set previous to history_collect_one(checkpoint_prepare(database and "SELECT worker,status FROM echo_web_workers WHERE run=?1;" and values))
+        set current to agent_run_read(database and run)
+        set head to archive_read_event(database and archive_list_text(current and 3))
+        if not (archive_list_text(previous and 0) equals "found") or else not (archive_list_text(previous and 2) equals "launch-failed" or else (archive_list_text(previous and 2) equals "completed" and head is not equal to 0 and archive_list_text(head and 2) equals "delegation_results")):
+            return history_status("worker-already-recorded")
+        set claimed to web_worker_retry_claim(database and archive_list_text(owner and 1) and run and archive_list_text(previous and 1) and worker)
+    if claimed is not equal to 0:
+        return history_status("worker-claim-deferred")
+    set command to create_list()
+    for each argument in arguments:
+        set added to append_list(command and ptr_to_str(argument))
+    set added to append_list(command and "--job")
+    set added to append_list(command and run)
+    set added to append_list(command and worker)
+    set process to discord_process_start(command and -1)
+    if process < 0:
+        set failed_values to create_list()
+        set added to append_list(failed_values and run)
+        set added to append_list(failed_values and worker)
+        set recorded to tool_ledger_change(database and "UPDATE echo_web_workers SET status='launch-failed' WHERE run=?1 AND worker=?2 AND status='running' RETURNING run;" and failed_values)
+        return history_status("worker-launch-failed")
+    set result to history_status("worker-started")
+    set added to append_list(result and process)
+    set added to append_list(result and run)
+    set added to append_list(result and worker)
+    return result
