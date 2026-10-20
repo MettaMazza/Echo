@@ -45,6 +45,20 @@ define discord_agent_output with journal as Int and database as Int and inbox as
     set content to provider_value(payload and content_index)
     if provider_valid_utf8(content) equals 0 or else string_length(content) equals 0:
         return "final-content-unavailable"
+    # A delegated result may resume the same parent run and produce another
+    # accepted final. Preserve existing first-reply identities, but bind later
+    # replies to their immutable final event so they cannot collide with the
+    # earlier outbox body or be duplicated on recovery.
+    set final_values to create_list()
+    set added to append_list(final_values and run)
+    set added to append_list(final_values and archive_list_text(bound and 3))
+    set earlier to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='assistant_final' AND json_extract(payload,'$.run_id')=?1 AND sequence<(SELECT sequence FROM echo_events WHERE event=?2);" and final_values))
+    if not (archive_list_text(earlier and 0) equals "found"):
+        return "final-lineage-unavailable"
+    set output_prefix to concat(run and ":final:")
+    if not (archive_list_text(earlier and 1) equals "0"):
+        set final_hash to ep_sha256(archive_list_text(bound and 3))
+        set output_prefix to concat(run and concat(":final-event:" and concat(final_hash and ":")))
     # Byte-bounded chunks also fit Discord's character limit, including emoji.
     # Back off continuation bytes rather than corrupting a Unicode codepoint.
     set offset to 0
@@ -60,7 +74,7 @@ define discord_agent_output with journal as Int and database as Int and inbox as
         set body to concat("{\"content\":" and provider_quote(substring(content and offset and count)))
         set body to concat(body and ",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false}")
         set body to concat(body and concat(",\"message_reference\":{\"message_id\":" and concat(provider_quote(message) and ",\"fail_if_not_exists\":false}}")))
-        set identity to concat(run and concat(":final:" and int_to_string(part)))
+        set identity to concat(output_prefix and int_to_string(part))
         set queued to discord_outbox_enqueue(journal and identity and inbox and room and body)
         if not (queued equals "enqueued" or else queued equals "already-enqueued"):
             return queued
