@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-20T10:31:30.497087+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-20T12:14:17.710799+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -1559,11 +1559,29 @@ Definitions:
 4: define main returning Int:
 ```
 
+## `tests/discord/benchmark_archive_latency.ep`
+
+[tests/discord/benchmark_archive_latency.ep](../../tests/discord/benchmark_archive_latency.ep) · 29 lines · 1386 bytes
+
+SHA-256: `4058f7a89c9f12fe8cc15fcb3431997423866d74602e87dc7bac28c835721682`
+
+Source annotations: Measure the actual durable append/readback/hash path, not SQLite alone. The same payload/count is used on both storage targets. No sync weakening.
+
+Imports: [../../app/archive/history](../../app/archive/history.ep), `fs` (toolchain/library), `os` (toolchain/library).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+7: define main returning Int:
+```
+
 ## `tests/discord/test_agent_bridge.ep`
 
-[tests/discord/test_agent_bridge.ep](../../tests/discord/test_agent_bridge.ep) · 36 lines · 2712 bytes
+[tests/discord/test_agent_bridge.ep](../../tests/discord/test_agent_bridge.ep) · 46 lines · 3697 bytes
 
-SHA-256: `289591d85f93f6497604e49f080d5a7b59043400fedc69725a7bc67ba7cfa24e`
+SHA-256: `77f3ed8e555466c63c30b634e682f39fc6fcada37f25893994411249acf8439f`
 
 Imports: [../../app/discord/agent_bridge](../../app/discord/agent_bridge.ep), [../../app/security/host_scope](../../app/security/host_scope.ep).
 
@@ -1586,6 +1604,22 @@ Source annotations: Explicit fixture provenance; no claim these events came from
 Imports: [../../app/discord/agent_output](../../app/discord/agent_output.ep).
 
 Native `main` present. Argument indices read: 1, 2. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
+## `tests/discord/test_concurrent_open.ep`
+
+[tests/discord/test_concurrent_open.ep](../../tests/discord/test_concurrent_open.ep) · 13 lines · 389 bytes
+
+SHA-256: `cb5d292ba9755bcf7bc0b6e802ff44195cb0e800252db090f8b8e4cbfc258461`
+
+Imports: [../../app/discord/store](../../app/discord/store.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
 
 Definitions:
 
@@ -1763,6 +1797,42 @@ Definitions:
 6: define main returning Int:
 ```
 
+## `tests/discord/test_live_access.ep`
+
+[tests/discord/test_live_access.ep](../../tests/discord/test_live_access.ep) · 23 lines · 1551 bytes
+
+SHA-256: `5d05e401af46e9e58d31dc3070db72c439b30765fbbe400d9f4bf533f6ed6c79`
+
+Source annotations: Read-only authenticated transport qualification; no conversation or send.
+
+Imports: [../../app/discord/access](../../app/discord/access.ep).
+
+Native `main` present. Argument indices read: 1, 2, 3, 4, 5, 6, 7, 8. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+4: define main returning Int:
+```
+
+## `tests/discord/test_live_access_endurance.ep`
+
+[tests/discord/test_live_access_endurance.ep](../../tests/discord/test_live_access_endurance.ep) · 29 lines · 1704 bytes
+
+SHA-256: `4113a8585183703ea6f283be537b566ee194e14467031787bde0ccc099542aa1`
+
+Source annotations: Read-only authenticated transport qualification; no conversation or send.
+
+Imports: [../../app/discord/access](../../app/discord/access.ep).
+
+Native `main` present. Argument indices read: 1, 2, 3, 4, 5, 6, 7, 8. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+4: define main returning Int:
+```
+
 ## `tests/discord/test_live_agent_bridge.ep`
 
 [tests/discord/test_live_agent_bridge.ep](../../tests/discord/test_live_agent_bridge.ep) · 49 lines · 3698 bytes
@@ -1781,6 +1851,25 @@ Definitions:
 6: define main returning Int:
 ```
 
+## `tests/discord/test_live_agent_monitor.ep`
+
+[tests/discord/test_live_agent_monitor.ep](../../tests/discord/test_live_agent_monitor.ep) · 73 lines · 5490 bytes
+
+SHA-256: `0e2a1e90f54842b0257849a12075ad5901e24ac72274cc0d4f1840d4471316b3`
+
+Source annotations: Real primary-model/runner qualification with synthetic transport envelopes. This is not a real Discord mention/reply acceptance test.
+
+Imports: [../../app/discord/agent_output](../../app/discord/agent_output.ep), [../../app/agent/runner](../../app/agent/runner.ep), [../../app/discord/turn_guard](../../app/discord/turn_guard.ep).
+
+Native `main` present. Argument indices read: 1, 2, 3, 4, 5. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+7: define main returning Int:
+61: define test_monitored_loop with database as Int and journal_path as Str and message as Str and run as Str and profile as Str returning Str:
+```
+
 ## `tests/discord/test_live_delivery.ep`
 
 [tests/discord/test_live_delivery.ep](../../tests/discord/test_live_delivery.ep) · 32 lines · 2106 bytes
@@ -1797,6 +1886,41 @@ Definitions:
 
 ```text
 5: define main returning Int:
+```
+
+## `tests/discord/test_permissions.ep`
+
+[tests/discord/test_permissions.ep](../../tests/discord/test_permissions.ep) · 30 lines · 2794 bytes
+
+SHA-256: `9b2bf099663b9707b87d8494ffb48e508f815a5e51a836ef47faf73315265461`
+
+Source annotations: Greater than uint64; low bits remain exact, without float conversion.
+
+Imports: [../../app/discord/permissions](../../app/discord/permissions.ep).
+
+Native `main` present. Argument indices read: none. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
+## `tests/discord/test_process.ep`
+
+[tests/discord/test_process.ep](../../tests/discord/test_process.ep) · 34 lines · 1220 bytes
+
+SHA-256: `c1ae7a643579235462b0da5d81ab5e7cc1edf042b11fa118fbcbdd36b15d6f6e`
+
+Imports: [../../app/discord/process](../../app/discord/process.ep), `select` (toolchain/library).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+4: define main returning Int:
+25: define test_discord_wait with process as Int returning Int:
 ```
 
 ## `tests/discord/test_rest_identity.ep`
@@ -1843,6 +1967,54 @@ Definitions:
 SHA-256: `edaf418d42f851eb855b8a4b238eb894cf3509fa3eecefa0026f187565f9d9fc`
 
 Imports: [../../app/discord/store](../../app/discord/store.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
+## `tests/discord/test_turn_guard.ep`
+
+[tests/discord/test_turn_guard.ep](../../tests/discord/test_turn_guard.ep) · 26 lines · 2010 bytes
+
+SHA-256: `cd522a1d5ad03ae671869215abcde31eaaa1f85dcda8cd01c03e448d349f171c`
+
+Imports: [../../app/discord/turn_guard](../../app/discord/turn_guard.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
+## `tests/discord/test_turn_monitor.ep`
+
+[tests/discord/test_turn_monitor.ep](../../tests/discord/test_turn_monitor.ep) · 25 lines · 1412 bytes
+
+SHA-256: `5d32d21493ed5cac2b8ca63326bbfeffe06a22d3052e13146d311fb449b80ac1`
+
+Imports: [../../app/discord/agent_turn](../../app/discord/agent_turn.ep).
+
+Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+3: define main returning Int:
+```
+
+## `tests/discord/test_worker_store.ep`
+
+[tests/discord/test_worker_store.ep](../../tests/discord/test_worker_store.ep) · 44 lines · 3286 bytes
+
+SHA-256: `d9965daff4b439998bc2c522106a081a4649a06533d65d33b1073831afd78c6c`
+
+Imports: [../../app/discord/worker_delivery](../../app/discord/worker_delivery.ep).
 
 Native `main` present. Argument indices read: 1. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
 
