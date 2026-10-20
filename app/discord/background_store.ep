@@ -1,4 +1,5 @@
 import "worker_store"
+import "command_anchor"
 
 # Reserve a canonical conversation before materialising a scheduled turn or
 # resuming a parent. Independent delegated contexts do not lock conversation.
@@ -17,8 +18,14 @@ define discord_background_reserve with journal as Int and run as Str and inbox a
     set added to append_list(source_values and inbox)
     set run_values to create_list()
     set added to append_list(run_values and run)
-    set source to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_inbox WHERE identity=?1 AND kind='MESSAGE_CREATE' AND identity LIKE 'message:create:%';" and source_values))
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT kind FROM discord_inbox WHERE identity=?1;" and source_values))
     if not (archive_list_text(source and 0) equals "found"):
+        return migration_fail(journal and "source-unavailable")
+    if archive_list_text(source and 1) equals "INTERACTION_CREATE":
+        set anchor to discord_command_anchor_read(journal and inbox)
+        if not (archive_list_text(anchor and 0) equals "found"):
+            return migration_fail(journal and "source-unavailable")
+    else if not (archive_list_text(source and 1) equals "MESSAGE_CREATE") or else not (string_index_of(inbox and "message:create:") equals 0):
         return migration_fail(journal and "source-unavailable")
     set old to history_collect_one(checkpoint_prepare(journal and "SELECT inbox,exclusive,state FROM discord_background_runs WHERE run=?1;" and run_values))
     if archive_list_text(old and 0) equals "found":
@@ -29,7 +36,7 @@ define discord_background_reserve with journal as Int and run as Str and inbox a
     else if not (archive_list_text(old and 0) equals "end"):
         return migration_fail(journal and "database-error")
     if exclusive equals 1:
-        set busy to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_inbox source WHERE source.identity=?2 AND (EXISTS(SELECT 1 FROM discord_agent_jobs j JOIN discord_inbox i ON i.identity=j.inbox WHERE j.state='claimed' AND json_extract(i.payload,'$.channel_id')=json_extract(source.payload,'$.channel_id') AND json_extract(i.payload,'$.author.id')=json_extract(source.payload,'$.author.id')) OR EXISTS(SELECT 1 FROM discord_background_runs b JOIN discord_inbox i ON i.identity=b.inbox WHERE b.run<>?1 AND b.exclusive=1 AND b.state IN ('reserved','running','recovery') AND json_extract(i.payload,'$.channel_id')=json_extract(source.payload,'$.channel_id') AND json_extract(i.payload,'$.author.id')=json_extract(source.payload,'$.author.id')));" and values))
+        set busy to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_inbox source WHERE source.identity=?2 AND (EXISTS(SELECT 1 FROM discord_agent_jobs j JOIN discord_inbox i ON i.identity=j.inbox WHERE j.state='claimed' AND json_extract(i.payload,'$.channel_id')=json_extract(source.payload,'$.channel_id') AND (CASE WHEN i.kind='INTERACTION_CREATE' THEN json_extract(i.payload,'$.member.user.id') ELSE json_extract(i.payload,'$.author.id') END)=(CASE WHEN source.kind='INTERACTION_CREATE' THEN json_extract(source.payload,'$.member.user.id') ELSE json_extract(source.payload,'$.author.id') END)) OR EXISTS(SELECT 1 FROM discord_background_runs b JOIN discord_inbox i ON i.identity=b.inbox WHERE b.run<>?1 AND b.exclusive=1 AND b.state IN ('reserved','running','recovery') AND json_extract(i.payload,'$.channel_id')=json_extract(source.payload,'$.channel_id') AND (CASE WHEN i.kind='INTERACTION_CREATE' THEN json_extract(i.payload,'$.member.user.id') ELSE json_extract(i.payload,'$.author.id') END)=(CASE WHEN source.kind='INTERACTION_CREATE' THEN json_extract(source.payload,'$.member.user.id') ELSE json_extract(source.payload,'$.author.id') END)));" and values))
         if not (archive_list_text(busy and 0) equals "found"):
             return migration_fail(journal and "database-error")
         if not (archive_list_text(busy and 1) equals "0"):
