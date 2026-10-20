@@ -1,6 +1,6 @@
 # Tests source reference — Echo 1.75
 
-Observed 2026-10-19T23:01:42.588121+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
+Observed 2026-10-20T08:20:56.387573+00:00. Every listed file was read in full for this lexical inventory. A test file is not a test pass. Line links identify this source snapshot; hashes are authoritative.
 
 [Release overview](../releases/1.75/README.md) · [Machine-readable manifest](../forensics/source-manifest.json)
 
@@ -902,9 +902,9 @@ Definitions:
 
 ## `tests/context/test_cancelled_context.ep`
 
-[tests/context/test_cancelled_context.ep](../../tests/context/test_cancelled_context.ep) · 25 lines · 2072 bytes
+[tests/context/test_cancelled_context.ep](../../tests/context/test_cancelled_context.ep) · 36 lines · 2899 bytes
 
-SHA-256: `73d0e5a714db13d37a2e43a918f184e6595c2b72cf5b5d35d990fe555bd7a524`
+SHA-256: `c2096d9f3c4157fba93a8b1679421a0ffafac7d4cc751f0398808addfaa32232`
 
 Imports: [../../app/context/session_messages](../../app/context/session_messages.ep).
 
@@ -2855,9 +2855,11 @@ Definitions:
 
 ## `tests/memory/test_corrected_recall.ep`
 
-[tests/memory/test_corrected_recall.ep](../../tests/memory/test_corrected_recall.ep) · 49 lines · 4242 bytes
+[tests/memory/test_corrected_recall.ep](../../tests/memory/test_corrected_recall.ep) · 52 lines · 4504 bytes
 
-SHA-256: `0fb2a8e04eea996b7a15ffdae35e56e4d86288840c69f5889f6edac678009cfc`
+SHA-256: `06e7279dd6dcef3291c3f66d1fbcaf2591e6af38ba99ab8b605552bf4f73d14d`
+
+Source annotations: Check canonical recall candidates, whose IDs/dates are preserved. The compact prompt intentionally factors IDs out and retains correction history separately; it is no longer the old full-claim JSON interface.
 
 Imports: [../../app/web/run_store](../../app/web/run_store.ep), [../../app/memory/automatic_context](../../app/memory/automatic_context.ep), [../../app/memory/knowledge_lifecycle](../../app/memory/knowledge_lifecycle.ep).
 
@@ -3844,9 +3846,9 @@ Definitions:
 
 ## `tests/providers/test_llama_modalities.ep`
 
-[tests/providers/test_llama_modalities.ep](../../tests/providers/test_llama_modalities.ep) · 84 lines · 7809 bytes
+[tests/providers/test_llama_modalities.ep](../../tests/providers/test_llama_modalities.ep) · 117 lines · 11007 bytes
 
-SHA-256: `150997052cf9ab555ce60e342eb13a021b9e2a6a6a09681a769f28028eb2fc38`
+SHA-256: `e5121cfd68c88b06f1d1a8e2a3292e2120d1f35c972e96a33f7d0276e7b1733e`
 
 Imports: [../../app/providers/llama_modalities](../../app/providers/llama_modalities.ep).
 
@@ -4146,6 +4148,24 @@ Definitions:
 
 ```text
 3: define main returning Int:
+```
+
+## `tests/security/benchmark_recall_existing.ep`
+
+[tests/security/benchmark_recall_existing.ep](../../tests/security/benchmark_recall_existing.ep) · 40 lines · 2175 bytes
+
+SHA-256: `d5cd5406dd9d815c41fe743e1d7da235ffe6bb468bdfef7bebf18ab29de73569`
+
+Source annotations: Run only against a disposable archive copy. Outputs aggregate timing and selected records to a caller-controlled private evidence directory.
+
+Imports: [../../app/web/attachments](../../app/web/attachments.ep), [../../app/memory/context_snapshot](../../app/memory/context_snapshot.ep), `fs` (toolchain/library).
+
+Native `main` present. Argument indices read: 1, 2, 3. Read its guards before invocation; diagnostic programs may mutate the selected archive, execute commands or call a real model.
+
+Definitions:
+
+```text
+7: define main returning Int:
 ```
 
 ## `tests/security/diagnose_execution_authority.ep`
@@ -5530,9 +5550,11 @@ Definitions:
 
 ## `tests/security/test_selected_recall.ep`
 
-[tests/security/test_selected_recall.ep](../../tests/security/test_selected_recall.ep) · 40 lines · 3415 bytes
+[tests/security/test_selected_recall.ep](../../tests/security/test_selected_recall.ep) · 49 lines · 4069 bytes
 
-SHA-256: `74b58e250553f73e833adc8c99b80bc223384d9192acaaea233e5b75997ffb1d`
+SHA-256: `5abb60bc1fe61b95a625df2de82fbc89f5a6d4b2808296062dee82c66471ce59`
+
+Source annotations: A warm indexing pass must preserve exactly the same selected source text.
 
 Imports: [../../app/web/attachments](../../app/web/attachments.ep), [../../app/memory/context_snapshot](../../app/memory/context_snapshot.ep), [../../app/memory/knowledge_lifecycle](../../app/memory/knowledge_lifecycle.ep).
 

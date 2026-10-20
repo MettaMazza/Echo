@@ -1,5 +1,7 @@
 # Echo 1.75
 
+**20 October update:** r33 preserves reasoning, memory and native audio while reducing avoidable processing. Consistent conversational latency is still unresolved; a local Thinking Q8 weight candidate is not yet qualified. See [measurements and limits](docs/releases/1.75/latency-oct20.md). Earlier deployment statements below are historical.
+
 **Latest r29 deployment / r27 session replay:** see [r27 session replay](docs/releases/1.75/session-replay-r27.md). The owner-history replay exposed an audio-capability denial and high end-to-end latency after the earlier r24 checks. r27 preserves native reasoning and Warm, corrects capability/presence context, and separates interactive/background model work. Measured replies still take tens of seconds; the earlier first-output figures are not complete-turn latency.
 
 **Installed and validated on the configured host; relaunched idle.** Echo uses Qwen3-Omni Thinking with the selected Warm voice. Source and acceptance records distinguish tested scope from retained failures and remaining Phase Two work.

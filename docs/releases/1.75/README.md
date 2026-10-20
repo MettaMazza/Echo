@@ -1,5 +1,7 @@
 # Echo 1.75 release record
 
+**20 October update:** r33 preserves reasoning, memory and native audio while reducing avoidable processing. Consistent conversational latency is still unresolved; a local Thinking Q8 weight candidate is not yet qualified. See [measurements and limits](latency-oct20.md). Earlier deployment statements below are historical.
+
 **Latest r29 deployment / r27 session replay:** see [r27 session replay](session-replay-r27.md). The owner-history replay exposed an audio-capability denial and high end-to-end latency after the earlier r24 checks. r27 preserves native reasoning and Warm, corrects capability/presence context, and separates interactive/background model work. Measured replies still take tens of seconds; the earlier first-output figures are not complete-turn latency.
 
 Release source is based on the isolated fec6ab7 runtime and a5ca473 browser overlay, plus the committed changes in this release. Publication preserves GitHub main ancestry; local experimental development has a separate history. The release does not deploy the known-crashing newer guardian.
