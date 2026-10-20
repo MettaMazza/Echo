@@ -1,0 +1,46 @@
+import "background_store"
+import "agent_output"
+
+# A worker exit is not proof of a successful model turn. Reconcile the exact
+# durable worker receipt and accepted run state before releasing conversation
+# ownership. Enqueue output first; its immutable event identity makes a crash
+# between enqueue and release safe to revisit.
+define discord_background_settle with journal as Int and database as Int returning Int:
+    set records to history_collect_one(archive_prepare(journal and "SELECT COALESCE(json_group_array(json_object('run',run,'inbox',inbox,'state',state,'worker',worker)),'[]') FROM discord_background_runs WHERE state IN ('running','recovery');"))
+    if not (archive_list_text(records and 0) equals "found"):
+        return 1
+    set tokens to provider_json_tokens(archive_list_text(records and 1))
+    set items to provider_items(tokens and 0)
+    set index to 0
+    repeat while index < length_list(items):
+        set item to get_list(items and index)
+        set index to index + 1
+        set run to provider_value(tokens and provider_member(tokens and item and "run"))
+        set inbox to provider_value(tokens and provider_member(tokens and item and "inbox"))
+        set state to provider_value(tokens and provider_member(tokens and item and "state"))
+        set worker to provider_value(tokens and provider_member(tokens and item and "worker"))
+        set values to create_list()
+        set added to append_list(values and run)
+        set added to append_list(values and worker)
+        set receipt to history_collect_one(checkpoint_prepare(database and "SELECT r.state,w.status,EXISTS(SELECT 1 FROM echo_delegations d WHERE d.child=r.run) FROM echo_runs r JOIN echo_web_workers w ON w.run=r.run WHERE r.run=?1 AND w.worker=?2;" and values))
+        if archive_list_text(receipt and 0) equals "end":
+            continue
+        if not (archive_list_text(receipt and 0) equals "found"):
+            return 1
+        set run_state to archive_list_text(receipt and 1)
+        set worker_state to archive_list_text(receipt and 2)
+        if worker_state equals "running":
+            continue
+        if not (run_state equals "completed" or else run_state equals "cancelled" or else run_state equals "failed" or else run_state equals "waiting"):
+            continue
+        set outcome to concat("archived background state: " and run_state)
+        if run_state equals "completed" and not (archive_list_text(receipt and 3) equals "1"):
+            set outcome to discord_agent_output_run(journal and database and inbox and run)
+            # Revocation permanently withholds this frozen-authority output.
+            # Every other unexpected result remains held for reconciliation.
+            if not (outcome equals "enqueued" or else outcome equals "authority-revoked"):
+                continue
+        set released to discord_background_transition(journal and run and state and "released" and worker and 0 and outcome)
+        if not (released equals "recorded" or else released equals "state-changed"):
+            return 1
+    return 0
