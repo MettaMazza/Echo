@@ -1,0 +1,167 @@
+import "gateway_connection"
+import "gateway_discovery"
+import "rest"
+import "../archive/runtime_lock"
+
+external define ep_uuid_v4
+
+# Persistent retry deadlines survive a process restart. Clock movement may
+# delay recovery, but must not silently bypass a server retry deadline.
+define discord_owner_schema with database as Int returning Int:
+    if discord_gateway_runtime_schema(database) is not equal to 0 or else discord_gateway_budget_schema(database) is not equal to 0:
+        return 1
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_gateway_owner(singleton INTEGER PRIMARY KEY CHECK(singleton=1),retry_at INTEGER NOT NULL,cause TEXT NOT NULL);")
+
+define discord_owner_retry with database as Int and deadline as Int and cause as Str returning Int:
+    return archive_finish(checkpoint_prepare(database and "INSERT INTO discord_gateway_owner(singleton,retry_at,cause) VALUES(1,CAST(? AS INTEGER),?) ON CONFLICT(singleton) DO UPDATE SET retry_at=excluded.retry_at,cause=excluded.cause;" and [int_to_string(deadline),cause]) and 101)
+
+define discord_owner_wait with system as Int and stop_path as Str and deadline as Int returning Int:
+    repeat while ep_time_now_ms() < deadline:
+        if file_exists(stop_path):
+            return 1
+        set waited to ep_dlcall1(ep_dlsym(system and "usleep") and 100000)
+    return file_exists(stop_path)
+
+# Discord's JSON retry_after is seconds and may contain a decimal fraction.
+# Round upward, never retry early. Invalid values require operator attention.
+define discord_retry_seconds with value as Str returning Int:
+    set parts to string_split(value and ".")
+    if length_list(parts) < 1 or else length_list(parts) > 2:
+        return -1
+    set whole to archive_list_text(parts and 0)
+    if string_length(whole) equals 0 or else string_length(whole) > 9:
+        return -1
+    for each part in parts:
+        set text to ptr_to_str(part)
+        if string_length(text) equals 0:
+            return -1
+        set index to 0
+        repeat while index < string_length(text):
+            if provider_digit(text and index) equals 0:
+                return -1
+            set index to index + 1
+    return string_to_int(whole) + 1
+
+# Responses remain in an explicitly private host directory. The generated
+# filenames contain no credential, user message or model-controlled path.
+define discord_owner_discover with library_path as Str and token as Str and directory_path as Str returning List:
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(system and directory_path)
+    if directory < 0:
+        set closed to ep_dlclose(system)
+        return ["fatal","discovery-directory-unavailable"]
+    set identity to ptr_to_str(ep_uuid_v4())
+    set filename to concat(identity and ".json")
+    set output to workspace_file_open(system and directory and filename and 1)
+    set headers to workspace_file_open(system and directory and concat(identity and ".headers") and 1)
+    if output < 0 or else headers < 0:
+        if output >= 0:
+            set closed to net_close(output)
+        if headers >= 0:
+            set closed to net_close(headers)
+        set closed to net_close(directory)
+        set closed to ep_dlclose(system)
+        return ["fatal","discovery-files-unavailable"]
+    set result to discord_rest_transfer(library_path and token and "GET" and "/gateway/bot" and "" and output and headers)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(system)
+    if not (archive_list_text(result and 0) equals "complete"):
+        return ["retry","discovery-transfer-failed","60000"]
+    set status to archive_list_text(result and 1)
+    if status equals "401" or else status equals "403":
+        return ["fatal","discovery-authentication-denied"]
+    set response to read_file(concat(directory_path and concat("/" and filename)))
+    if response equals 0:
+        return ["fatal","discovery-response-unavailable"]
+    if status equals "429":
+        set tokens to provider_json_tokens(ptr_to_str(response))
+        if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+            return ["fatal","invalid-discovery-rate-limit"]
+        set seconds to discord_retry_seconds(provider_value(tokens and provider_member(tokens and 0 and "retry_after")))
+        if seconds < 0:
+            return ["fatal","invalid-discovery-rate-limit"]
+        return ["retry","discovery-rate-limited",int_to_string(seconds * 1000)]
+    if not (status equals "200"):
+        return ["retry",concat("discovery-http-" and status),"60000"]
+    set discovery to discord_gateway_discovery(ptr_to_str(response) and ep_time_now_ms())
+    if not (archive_list_text(discovery and 0) equals "discovered"):
+        return ["fatal","invalid-discovery"]
+    return discovery
+
+# This owns only the Gateway journal. The model and delivery workers are
+# separate processes, so slow inference cannot starve heartbeats.
+# Caller retains the host credential and trusted scope configuration.
+define discord_gateway_owner with library_path as Str and token as Str and database as Int and bot as Str and guilds as List and admins as List and directory_path as Str and stop_path as Str returning List:
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set lock to archive_runtime_lock(database and system)
+    if lock < 0:
+        set closed to ep_dlclose(system)
+        return ["fatal","owner-already-running-or-lock-unavailable"]
+    set outcome to ["fatal","owner-schema-failed"]
+    if discord_owner_schema(database) is not equal to 0:
+        set closed to net_close(lock)
+        set closed to ep_dlclose(system)
+        return outcome
+    set backoff to 1000
+    set gateway to "wss://gateway.discord.gg"
+    repeat while 1 equals 1:
+        set retry to history_collect_one(archive_prepare(database and "SELECT retry_at FROM discord_gateway_owner WHERE singleton=1;"))
+        if not (archive_list_text(retry and 0) equals "found" or else archive_list_text(retry and 0) equals "end"):
+            set outcome to ["fatal","retry-state-unavailable"]
+            break
+        if discord_owner_wait(system and stop_path and string_to_int(archive_list_text(retry and 1))) equals 1:
+            set outcome to ["stopped","host-stop-request"]
+            break
+        set resume to discord_gateway_resume_read(database)
+        if not (archive_list_text(resume and 0) equals "found"):
+            if not (archive_list_text(resume and 0) equals "end"):
+                set outcome to ["fatal","resume-state-unavailable"]
+                break
+            set discovery to discord_owner_discover(library_path and token and directory_path)
+            if archive_list_text(discovery and 0) equals "fatal":
+                set outcome to discovery
+                break
+            if archive_list_text(discovery and 0) equals "retry":
+                if discord_owner_retry(database and ep_time_now_ms() + string_to_int(archive_list_text(discovery and 2)) and archive_list_text(discovery and 1)) is not equal to 0:
+                    set outcome to ["fatal","retry-write-failed"]
+                    break
+                continue
+            set gateway to archive_list_text(discovery and 1)
+            if discord_gateway_budget_record(database and discovery and ep_time_now_ms()) is not equal to 0:
+                set outcome to ["fatal","discovery-budget-write-failed"]
+                break
+            set reserved to discord_gateway_identify_reserve(database and ep_time_now_ms())
+            if not (reserved equals "reserved"):
+                set budget to history_collect_one(archive_prepare(database and "SELECT reset_at,next_at FROM discord_identify_budget WHERE singleton=1;"))
+                set deadline to string_to_int(archive_list_text(budget and 1))
+                if reserved equals "identify-rate-limited":
+                    set deadline to string_to_int(archive_list_text(budget and 2))
+                else if not (reserved equals "budget-exhausted" or else reserved equals "discovery-expired"):
+                    set outcome to ["fatal",reserved]
+                    break
+                if not (archive_list_text(budget and 0) equals "found") or else discord_owner_retry(database and deadline and reserved) is not equal to 0:
+                    set outcome to ["fatal","budget-retry-write-failed"]
+                    break
+                continue
+        set generation to ptr_to_str(ep_uuid_v4())
+        set outcome to discord_gateway_connection(library_path and token and database and bot and guilds and admins and generation and gateway and stop_path)
+        set action to archive_list_text(outcome and 0)
+        if action equals "stopped" or else action equals "fatal":
+            break
+        if action equals "identify":
+            if sql_execute(database and "UPDATE discord_resume SET enabled=0 WHERE singleton=1;") is not equal to 0:
+                set outcome to ["fatal","session-invalidation-write-failed"]
+                break
+        set health to history_collect_one(archive_prepare(database and "SELECT ack_count FROM discord_gateway_health WHERE singleton=1;"))
+        if string_to_int(archive_list_text(health and 1)) >= 2:
+            set backoff to 1000
+        set delay to backoff + ep_dlcall1(ep_dlsym(system and "arc4random_uniform") and 4000)
+        if discord_owner_retry(database and ep_time_now_ms() + delay and archive_list_text(outcome and 1)) is not equal to 0:
+            set outcome to ["fatal","retry-write-failed"]
+            break
+        set backoff to backoff * 2
+        if backoff > 60000:
+            set backoff to 60000
+    set closed to net_close(lock)
+    set closed to ep_dlclose(system)
+    return outcome
