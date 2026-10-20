@@ -2,6 +2,22 @@ import "activity_stream"
 import "activity_delivery"
 import "worker_delivery"
 
+# The Gateway can confirm the nonce while the HTTP sender is still returning.
+# In that race the sender reports stale-attempt, but the durable sent receipt
+# is authoritative. Advance from it rather than delaying or sending again.
+define discord_activity_after_delivery with journal as Int and stream as Str and identity as Str and delivered as Str returning Str:
+    set committed to discord_activity_stream_commit(journal and stream)
+    if committed equals "advanced":
+        return committed
+    set values to create_list()
+    set added to append_list(values and identity)
+    set receipt to history_collect_one(checkpoint_prepare(journal and "SELECT state,message FROM discord_outbox WHERE identity=?;" and values))
+    if archive_list_text(receipt and 1) equals "sent" and string_length(archive_list_text(receipt and 2)) > 0:
+        return "part-sent"
+    if delivered equals "recorded":
+        return concat("delivery:" and archive_list_text(receipt and 1))
+    return concat("delivery:" and delivered)
+
 # One source-bound activity worker tick. This never submits a model prompt,
 # invokes speech, or handles ordinary conversation output.
 define discord_activity_worker_tick with library as Str and token as Str and journal as Int and database as Int and inbox as Str and run as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
@@ -9,6 +25,8 @@ define discord_activity_worker_tick with library as Str and token as Str and jou
         return "stopped"
     if discord_worker_schema(journal) is not equal to 0 or else discord_delivery_schema(journal) is not equal to 0:
         return "worker-store-unavailable"
+    if agent_run_read(database and run) equals 0:
+        return "awaiting-admission"
     if not (discord_job_origin(journal and database and run) equals inbox):
         return "scope-denied"
     set planned to discord_activity_plan(journal and inbox)
@@ -24,6 +42,13 @@ define discord_activity_worker_tick with library as Str and token as Str and jou
     set stream to discord_activity_stream_open(journal and inbox and run and archive_list_text(binding and 1) and 0)
     if string_length(stream) equals 0:
         return "stream-unavailable"
+    return discord_activity_stream_deliver_tick(library and token and journal and database and stream and bot and admins and directory_path and stop_file)
+
+# Both public thread and explicitly requested restricted streams use the same
+# receipt-driven transport path. Delivery rechecks the stream audience.
+define discord_activity_stream_deliver_tick with library as Str and token as Str and journal as Int and database as Int and stream as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
     if discord_worker_reconcile(journal) is not equal to 0:
         return "reconcile-held"
     set stepped to discord_activity_stream_step(journal and database and stream)
@@ -41,16 +66,4 @@ define discord_activity_worker_tick with library as Str and token as Str and jou
     if not (archive_list_text(pending and 0) equals "found"):
         return "delivery-read-failed"
     set delivered to discord_activity_deliver(library and token and journal and database and archive_list_text(pending and 1) and bot and admins and directory_path and stop_file)
-    if delivered equals "recorded":
-        set committed to discord_activity_stream_commit(journal and stream)
-        if committed equals "advanced":
-            return committed
-        # "recorded" can also record rejection or uncertainty. Only a fresh
-        # sent receipt permits another part without a recovery pause.
-        set check_values to create_list()
-        set added to append_list(check_values and archive_list_text(pending and 1))
-        set receipt to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_outbox WHERE identity=?;" and check_values))
-        if archive_list_text(receipt and 1) equals "sent":
-            return "part-sent"
-        return concat("delivery:" and archive_list_text(receipt and 1))
-    return concat("delivery:" and delivered)
+    return discord_activity_after_delivery(journal and stream and archive_list_text(pending and 1) and delivered)

@@ -10,9 +10,9 @@ acceptance matrix, not a completion claim. The source inventory is
 | Send and reply | Native mention and reply-to-message | Prior live text acceptance exists |
 | User/account/source labels | Native account plus authenticated source in context/HUD | Name propagation tested; full HUD presentation pending |
 | New session and session selection | `/new`, session selector/history controls | Pending; preserve same user/channel silo and eligible long-term memory |
-| Thinking and tool activity | Persistent thread attached to the exact originating user message; private equivalent where threads cannot preserve access | Scoped projection and cursor-recovery native passes; one real source-thread public status stream delivered and restart reconciled without duplication. Automatic discovery/lifecycle, restricted full-trace UI and full multi-turn acceptance remain pending |
+| Thinking and tool activity | Persistent thread attached to the exact originating user message; private equivalent where threads cannot preserve access | Scoped projection and cursor-recovery native passes; automatic public activity discovery delivered across consecutive channel turns, restart retained existing posts without duplication. HAS_THREAD metadata cancellation regression fixed and two further live turns passed. Restricted full-trace UI and wider permission/fault acceptance remain pending |
 | Interim and subsequent replies | Separate durable replies bound to immutable final events | Live delegation source produced two sent replies; broader UI parity pending |
-| Speak | Button on bot response, actual Warm synthesis of that response | Pending; never substitute the audition WAV |
+| Speak | Button on bot response, actual Warm synthesis of that response | Live two-turn synthesis/playback, repeat-click cache, connector restart and client reload passed. Isolated-child missing-button regression corrected. One acknowledgement timeout retained; read-only recovery of an accepted response passed against Discord using a private cloned journal. Additional multi-user/revocation checks remain open; never substitute the audition WAV |
 | Queue, steer and cancel | Queue reactions plus labelled controls, steering confirmation, cancel | Native reservation/intake foundations; live controls pending |
 | Questions | Buttons, selects and Other modal; up to three questions and three suggestions each | Pending |
 | Free autonomy | Admin-only `/auto` | Pending |
@@ -56,6 +56,12 @@ Placement acceptance must check the original channel message ID, the thread's
 source binding, and each conversational reply's channel. Creating a thread
 alone does not pass automatic activity delivery. Never repost the user's prompt
 inside the thread or redirect subsequent ordinary conversation into it.
+
+20 October live placement check: source `1562189561566732461` remained in
+channel `1562137652680204358`; conversational reply `1562189611852369961`
+was confirmed in that channel. The attached activity thread retained the source
+message identity and received two activity pages. This proves placement for
+that turn, not complete UI parity or restricted trace acceptance.
 
 API references: [threads](https://docs.discord.com/developers/resources/channel),
 [interactions](https://docs.discord.com/developers/interactions/receiving-and-responding).

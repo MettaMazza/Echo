@@ -1,0 +1,88 @@
+import "speech_delivery"
+import "interaction_ack"
+import "interaction_recovery"
+
+define discord_action_worker_schema with journal as Int returning Int:
+    if discord_interaction_schema(journal) is not equal to 0 or else discord_message_actions_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_action_retry(identity TEXT PRIMARY KEY REFERENCES discord_interaction_jobs(identity),next_ms INTEGER NOT NULL);")
+
+# PATCH the same ephemeral original response: retries cannot create duplicate
+# public messages. Never put trace text or source data in this status response.
+define discord_action_status with library as Str and token as Str and journal as Int and identity as Str and bot as Str and directory_path as Str and content as Str returning Str:
+    set keys to create_list()
+    set added to append_list(keys and identity)
+    set added to append_list(keys and int_to_string(ep_time_now_ms()))
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT c.credential,json_extract(i.payload,'$.application_id') FROM discord_interaction_credentials c JOIN discord_inbox i ON i.identity=c.identity WHERE c.identity=?1 AND c.expires_ms>CAST(?2 AS INTEGER);" and keys))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "response-expired"
+    if not (archive_list_text(row and 2) equals bot) or else discord_interaction_credential_valid(archive_list_text(row and 1)) equals 0:
+        return "response-binding-denied"
+    set route to concat("/webhooks/" and concat(bot and concat("/" and concat(archive_list_text(row and 1) and "/messages/@original"))))
+    set body to concat("{\"content\":" and concat(provider_quote(content) and ",\"allowed_mentions\":{\"parse\":[]}}"))
+    set result to discord_access_body(library and token and journal and directory_path and "PATCH" and route and "PATCH:interaction-original" and identity and body)
+    return archive_list_text(result and 0)
+
+define discord_action_worker_tick with library as Str and token as Str and journal as Int and database as Int and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    if discord_action_worker_schema(journal) is not equal to 0:
+        return "store-failed"
+    set clock to create_list()
+    set added to append_list(clock and int_to_string(ep_time_now_ms()))
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT j.identity,i.payload,j.state FROM discord_interaction_jobs j JOIN discord_inbox i ON i.identity=j.identity LEFT JOIN discord_action_retry r ON r.identity=j.identity WHERE j.state IN ('acknowledged','uncertain') AND COALESCE(r.next_ms,0)<=CAST(?1 AS INTEGER) ORDER BY COALESCE(r.next_ms,0),j.received_ms LIMIT 1;" and clock))
+    if archive_list_text(row and 0) equals "end":
+        return "idle"
+    if not (archive_list_text(row and 0) equals "found"):
+        return "store-failed"
+    set identity to archive_list_text(row and 1)
+    set body to archive_list_text(row and 2)
+    if archive_list_text(row and 3) equals "uncertain":
+        set recovered to discord_interaction_recover(library and token and journal and identity and bot and directory_path)
+        if recovered equals "ack-recovered" or else recovered equals "ack-expired" or else recovered equals "store-failed":
+            return recovered
+        set retry to create_list()
+        set added to append_list(retry and identity)
+        set added to append_list(retry and int_to_string(ep_time_now_ms() + 30000))
+        if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_action_retry VALUES(?1,CAST(?2 AS INTEGER)) ON CONFLICT(identity) DO UPDATE SET next_ms=excluded.next_ms;" and retry) and 101) is not equal to 0:
+            return "store-failed"
+        return recovered
+    set resolved to discord_message_action_resolve(journal and body and bot and admins)
+    set result to archive_list_text(resolved and 0)
+    if result equals "bound-needs-live-access":
+        if archive_list_text(resolved and 1) equals "speak":
+            set result to discord_speech_deliver(library and token and journal and database and identity and body and bot and admins and directory_path and stop_file)
+        else:
+            set result to discord_trace_action_tick(library and token and journal and database and body and bot and admins and directory_path and stop_file)
+    set terminal to ""
+    set message to ""
+    set delay to 1000
+    if result equals "speech-delivered":
+        set terminal to "completed"
+    else if result equals "caught-up":
+        set terminal to "completed"
+        set message to "The available reasoning and tool activity for this reply has been delivered to your private messages."
+    else if result equals "admin-required" or else result equals "action-binding-denied" or else result equals "run-source-denied" or else result equals "run-authority-revoked" or else result equals "source-access-denied" or else result equals "source-changed" or else result equals "not-trace-action" or else result equals "foreign-application" or else result equals "invalid-component" or else result equals "not-button" or else result equals "invalid-actor-or-message" or else result equals "invalid-guild" or else result equals "final-unavailable" or else result equals "source-unavailable" or else result equals "speech-response-expired" or else result equals "speech-access-changed" or else result equals "attachment-too-large-or-empty" or else result equals "speech:not-configured" or else result equals "speech:invalid-speech-profile" or else result equals "speech:not-authorized" or else result equals "speech-attachment-denied":
+        set terminal to "denied"
+        set message to "This control is not available for your account or the original message is no longer accessible."
+    else if not (result equals "advanced" or else result equals "part-sent" or else result equals "waiting"):
+        set delay to 30000
+    if string_length(terminal) > 0 and not file_exists(stop_file):
+        set delivered to "observed"
+        if not (result equals "speech-delivered"):
+            set delivered to discord_action_status(library and token and journal and identity and bot and directory_path and message)
+        if delivered equals "observed" or else delivered equals "response-expired":
+            set values to create_list()
+            set added to append_list(values and identity)
+            set added to append_list(values and terminal)
+            set added to append_list(values and result)
+            if archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET state=?2,detail=?3 WHERE identity=?1 AND state='acknowledged';" and values) and 101) is not equal to 0:
+                return "store-failed"
+            return terminal
+        set delay to 30000
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and int_to_string(ep_time_now_ms() + delay))
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_action_retry VALUES(?1,CAST(?2 AS INTEGER)) ON CONFLICT(identity) DO UPDATE SET next_ms=excluded.next_ms;" and values) and 101) is not equal to 0:
+        return "store-failed"
+    return result

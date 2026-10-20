@@ -1,0 +1,53 @@
+import "discord/interaction_ack"
+import "archive/runtime_lock"
+import "string"
+
+# Dedicated acknowledgement process. Arguments: curl library, bot token file,
+# journal, private response spool, stop file, bot ID. Speech, traces and model
+# execution never run here and cannot occupy the callback deadline loop.
+define main returning Int:
+    if get_argument_count() is not equal to 7:
+        return 1
+    set transport to ep_dlopen(get_argument(1))
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if transport equals 0 or else system equals 0:
+        return 2
+    set credential to read_file(get_argument(2))
+    if credential equals 0 or else discord_snowflake(get_argument(6)) equals 0:
+        return 3
+    set token to string_trim(ptr_to_str(credential))
+    set journal to discord_store_open(get_argument(3) and get_argument(6))
+    if journal equals 0:
+        return 4
+    set anchor to archive_runtime_anchor(journal and system)
+    if string_length(anchor) equals 0:
+        return 5
+    set descriptor to native_open_mode(system and concat(anchor and ".interaction-ack") and 16777986 and 384)
+    set lock_function to ep_dlsym(system and "flock")
+    if descriptor < 0 or else lock_function equals 0 or else socket_signed_result(ep_dlcall2(lock_function and descriptor and 6)) is not equal to 0:
+        return 5
+    if discord_interaction_schema(journal) is not equal to 0:
+        return 6
+    # A previous owner may have sent the callback before interruption. Retain
+    # uncertainty for reconciliation, never issue that callback a second time.
+    if sql_execute(journal and "UPDATE discord_interaction_jobs SET state='uncertain',detail='ack-owner-interrupted' WHERE state='acknowledging';") is not equal to 0:
+        return 6
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    set previous to ""
+    set status to 0
+    repeat while not file_exists(get_argument(5)):
+        set result to discord_interaction_ack_tick(get_argument(1) and token and journal and get_argument(4))
+        if not (result equals previous):
+            display concat("interaction-ack: " and result)
+            set previous to result
+        if result equals "store-failed":
+            set status to 7
+            break
+        set waited to select(waits and 100)
+    set closed to net_close(descriptor)
+    set closed to sql_close(journal)
+    set closed to ep_dlclose(transport)
+    set closed to ep_dlclose(system)
+    return status

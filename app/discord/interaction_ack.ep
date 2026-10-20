@@ -17,6 +17,9 @@ define discord_interaction_claim with journal as Int and now as Int returning Li
     set row to history_collect_one(checkpoint_prepare(journal and "SELECT j.identity,c.credential,i.payload,j.received_ms FROM discord_interaction_jobs j JOIN discord_interaction_credentials c ON c.identity=j.identity JOIN discord_inbox i ON i.identity=j.identity WHERE j.state='pending' AND j.received_ms<=CAST(?1 AS INTEGER) AND j.received_ms+2500>CAST(?1 AS INTEGER) AND c.expires_ms>CAST(?1 AS INTEGER) ORDER BY j.received_ms,j.rowid LIMIT 1;" and clock))
     if archive_list_text(row and 0) equals "end":
         set committed to sql_execute(journal and "COMMIT;")
+        if committed is not equal to 0:
+            set rolled to sql_execute(journal and "ROLLBACK;")
+            return history_status("store-failed")
         return history_status("idle")
     if not (archive_list_text(row and 0) equals "found"):
         set rolled to sql_execute(journal and "ROLLBACK;")
@@ -78,4 +81,13 @@ define discord_interaction_ack_tick with library as Str and bot_token as Str and
     set confirmed to 0
     if archive_list_text(response and 0) equals "complete" and archive_list_text(response and 1) equals "204":
         set confirmed to 1
-    return discord_interaction_ack_record(journal and identity and confirmed)
+    set recorded to discord_interaction_ack_record(journal and identity and confirmed)
+    if recorded equals "uncertain":
+        # Retain bounded transport diagnostics, never the token-bearing route.
+        set values to create_list()
+        set added to append_list(values and identity)
+        set detail to concat("ack-unconfirmed:" and concat(archive_list_text(response and 0) and concat(":http=" and concat(archive_list_text(response and 1) and concat(":curl=" and archive_list_text(response and 2))))))
+        set added to append_list(values and detail)
+        if archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET detail=?2 WHERE identity=?1 AND state='uncertain';" and values) and 101) is not equal to 0:
+            return "store-failed"
+    return recorded

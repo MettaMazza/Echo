@@ -1,0 +1,56 @@
+import "action_speech"
+import "interaction_ack"
+import "multipart_audio"
+
+# Replace the same private interaction response. A lost PATCH response may be
+# retried without creating another channel message or another model turn.
+# The public conversational reply and its attached activity thread stay put.
+define discord_speech_deliver with library as Str and token as Str and journal as Int and database as Int and interaction as Str and body as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set keys to create_list()
+    set added to append_list(keys and interaction)
+    set added to append_list(keys and int_to_string(ep_time_now_ms()))
+    set credential to history_collect_one(checkpoint_prepare(journal and "SELECT c.credential FROM discord_interaction_credentials c JOIN discord_interaction_jobs j ON j.identity=c.identity WHERE c.identity=?1 AND c.expires_ms>CAST(?2 AS INTEGER) AND j.state='acknowledged';" and keys))
+    if not (archive_list_text(credential and 0) equals "found") or else discord_interaction_credential_valid(archive_list_text(credential and 1)) equals 0:
+        return "speech-response-expired"
+    set prepared to discord_speech_action_prepare(library and token and journal and database and body and bot and admins and directory_path and stop_file)
+    if not (archive_list_text(prepared and 0) equals "speech-prepared"):
+        return archive_list_text(prepared and 0)
+    # The click's server-provided ceiling is data, not permission. Use the
+    # documented default when absent; never truncate an oversized recording.
+    set tokens to provider_json_tokens(body)
+    set maximum to 10485760
+    set reported to provider_value(tokens and provider_member(tokens and 0 and "attachment_size_limit"))
+    if string_length(reported) > 0 and not (reported equals "null"):
+        set parsed to http_decimal(reported)
+        if parsed > 0 and parsed <= 4294967295:
+            set maximum to parsed
+    set payload to "{\"content\":\"Spoken reply\",\"attachments\":[{\"id\":0,\"filename\":\"Echo-reply.wav\"}],\"allowed_mentions\":{\"parse\":[]}}"
+    set multipart to discord_audio_multipart(archive_list_text(prepared and 2) and archive_list_text(prepared and 3) and string_to_int(archive_list_text(prepared and 4)) and maximum and payload)
+    if not (archive_list_text(multipart and 0) equals "multipart-ready"):
+        return archive_list_text(multipart and 0)
+    # Refresh the original source after slow synthesis, immediately before
+    # exposing audio. This also rechecks the authenticated channel audience.
+    set current to discord_speech_action_prepare(library and token and journal and database and body and bot and admins and directory_path and stop_file)
+    if not (archive_list_text(current and 0) equals "speech-prepared") or else not (archive_list_text(current and 3) equals archive_list_text(prepared and 3)) or else file_exists(stop_file):
+        set released to discord_audio_multipart_release(multipart)
+        return "speech-access-changed"
+    set keys to create_list()
+    set added to append_list(keys and interaction)
+    set added to append_list(keys and int_to_string(ep_time_now_ms()))
+    set fresh to history_collect_one(checkpoint_prepare(journal and "SELECT c.credential FROM discord_interaction_credentials c JOIN discord_interaction_jobs j ON j.identity=c.identity WHERE c.identity=?1 AND c.expires_ms>CAST(?2 AS INTEGER) AND j.state='acknowledged';" and keys))
+    if not (archive_list_text(fresh and 1) equals archive_list_text(credential and 1)):
+        set released to discord_audio_multipart_release(multipart)
+        return "speech-response-expired"
+    set route to concat("/webhooks/" and concat(bot and concat("/" and concat(archive_list_text(credential and 1) and "/messages/@original"))))
+    set result to discord_access_bytes(library and token and journal and directory_path and "PATCH" and route and "PATCH:interaction-original" and interaction and get_list(multipart and 1) and get_list(multipart and 2) and archive_list_text(multipart and 3))
+    set released to discord_audio_multipart_release(multipart)
+    if not (archive_list_text(result and 0) equals "observed"):
+        return archive_list_text(result and 0)
+    set saved to provider_json_tokens(archive_list_text(result and 1))
+    set attachments to provider_items(saved and provider_member(saved and 0 and "attachments"))
+    if length_list(attachments) is not equal to 1:
+        return "speech-upload-unconfirmed"
+    set item to get_list(attachments and 0)
+    if not (provider_value(saved and provider_member(saved and item and "filename")) equals "Echo-reply.wav") or else not (provider_value(saved and provider_member(saved and item and "size")) equals archive_list_text(prepared and 4)):
+        return "speech-upload-unconfirmed"
+    return "speech-delivered"

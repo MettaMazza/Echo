@@ -1,0 +1,70 @@
+import "action_execution"
+import "../web/message_speech"
+
+# The click selects an immutable assistant final, never supplied speech text
+# or a path. Shared-group and private-session authority remain enforced by the
+# same speech ledger used by the web Speak control.
+define discord_speech_action_context with journal as Int and database as Int and body as Str and bot as Str and admins as List returning List:
+    set action to discord_action_context(journal and database and body and bot and admins)
+    if not (archive_list_text(action and 0) equals "bound-needs-live-access"):
+        return action
+    if not (archive_list_text(action and 1) equals "speak"):
+        return history_status("not-speech-action")
+    set run to archive_list_text(action and 5)
+    if run_authority_allows(database and run and "user") equals 0:
+        return history_status("run-authority-revoked")
+    return action
+
+# Returns private retained attachment metadata only to the host delivery
+# controller. It must refresh Discord access again immediately before upload.
+define discord_speech_action_prepare with library as Str and token as Str and journal as Int and database as Int and body as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning List:
+    if file_exists(stop_file):
+        return history_status("stopped")
+    set action to discord_speech_action_context(journal and database and body and bot and admins)
+    if not (archive_list_text(action and 0) equals "bound-needs-live-access"):
+        return action
+    set keys to create_list()
+    set added to append_list(keys and archive_list_text(action and 3))
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT payload FROM discord_inbox WHERE identity=?1 AND kind='MESSAGE_CREATE';" and keys))
+    if not (archive_list_text(source and 0) equals "found"):
+        return history_status("source-unavailable")
+    set original to archive_list_text(source and 1)
+    set tokens to provider_json_tokens(original)
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    if guild equals "null":
+        set guild to ""
+    set actor to archive_list_text(action and 4)
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and actor and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return history_status("source-access-denied")
+    if not (discord_source_check(library and token and journal and directory_path and original) equals "current"):
+        return history_status("source-changed")
+    if file_exists(stop_file):
+        return history_status("stopped")
+    set device to concat("discord:" and actor)
+    set generated to web_message_speak(database and device and archive_list_text(action and 2))
+    set result to provider_json_tokens(generated)
+    set status to provider_value(result and provider_member(result and 0 and "status"))
+    if not (status equals "complete"):
+        return history_status(concat("speech:" and status))
+    if file_exists(stop_file):
+        return history_status("stopped")
+    # Do not return a cached attachment if authority changed during synthesis.
+    set current to discord_speech_action_context(journal and database and body and bot and admins)
+    if not (archive_list_text(current and 0) equals "bound-needs-live-access"):
+        return current
+    set identity to provider_value(result and provider_member(result and 0 and "attachment"))
+    set attachment to web_attachment_owned(database and device and identity)
+    set final to archive_read_event(database and archive_list_text(action and 2))
+    if not (archive_list_text(attachment and 0) equals "found") or else not (archive_list_text(attachment and 3) equals "audio/wav") or else not (archive_list_text(attachment and 6) equals archive_list_text(final and 0)):
+        return history_status("speech-attachment-denied")
+    set digest to file_digest(archive_list_text(attachment and 1) and 65536)
+    if not (archive_list_text(digest and 0) equals "verified") or else not (archive_list_text(digest and 1) equals archive_list_text(attachment and 4)) or else not (int_to_string(get_list(digest and 2)) equals archive_list_text(attachment and 5)):
+        return history_status("speech-integrity-failed")
+    set ready to history_status("speech-prepared")
+    set added to append_list(ready and identity)
+    set added to append_list(ready and archive_list_text(attachment and 1))
+    set added to append_list(ready and archive_list_text(attachment and 4))
+    set added to append_list(ready and archive_list_text(attachment and 5))
+    return ready

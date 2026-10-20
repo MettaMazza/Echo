@@ -1,9 +1,18 @@
 import "worker_store"
 import "dm_redirect"
 
+# Activity uses its own audience checks and worker. It must not occupy the
+# conversation sender's oldest-pending slot or acquire its retry clock.
+define discord_reply_due with journal as Int and now as Int returning List:
+    set values to create_list()
+    set added to append_list(values and int_to_string(now))
+    return history_collect_one(checkpoint_prepare(journal and "SELECT o.identity FROM discord_outbox o LEFT JOIN discord_delivery_retry_clock c ON c.identity=o.identity WHERE o.state='pending' AND substr(o.identity,1,14)<>'activity-page:' AND COALESCE(c.next_ms,0)<=CAST(? AS INTEGER) ORDER BY o.rowid LIMIT 1;" and values))
+
 # A durable pending intent is not an evergreen permission grant. Every actual
 # POST rechecks the original request and both users' current channel access.
 define discord_worker_deliver with library as Str and token as Str and journal as Int and identity as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if string_index_of(identity and "activity-page:") equals 0:
+        return "separate-activity-worker"
     set rooted_literal_1 to create_list()
     set retained_value_added to append_list(rooted_literal_1 and identity)
     set row to history_collect_one(checkpoint_prepare(journal and "SELECT i.payload,o.channel,j.cursor,i.identity FROM discord_outbox o JOIN discord_inbox i ON i.identity=o.inbox JOIN discord_agent_jobs j ON j.inbox=i.identity WHERE o.identity=? AND o.state='pending' AND (i.identity LIKE 'message:create:%' OR i.identity LIKE 'message:redirect:%');" and rooted_literal_1))

@@ -1,0 +1,49 @@
+import "store"
+import "../archive/runtime_lock"
+
+# Discord's journal is not an Echo conversation archive. Verify its own
+# retained originals and transport receipts rather than querying echo_events.
+define discord_snapshot_verify with journal as Int returning Int:
+    set integrity to history_collect_one(archive_prepare(journal and "PRAGMA integrity_check;"))
+    if not (archive_list_text(integrity and 1) equals "ok"):
+        return 1
+    set foreign to history_collect_one(archive_prepare(journal and "PRAGMA foreign_key_check;"))
+    if not (archive_list_text(foreign and 0) equals "end"):
+        return 1
+    set identity to history_collect_one(archive_prepare(journal and "SELECT bot FROM discord_identity WHERE singleton=1;"))
+    if discord_snowflake(archive_list_text(identity and 1)) equals 0:
+        return 1
+    set statement to archive_prepare(journal and "SELECT payload,digest FROM discord_inbox;")
+    if statement equals 0:
+        return 1
+    set result to ep_sqlite3_step(statement)
+    repeat while result equals 100:
+        set payload to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set digest to ptr_to_str(ep_sqlite3_column_text(statement and 1))
+        if not (ep_sha256(payload) equals digest):
+            set closed to ep_sqlite3_finalize(statement)
+            return 1
+        set result to ep_sqlite3_step(statement)
+    set closed to ep_sqlite3_finalize(statement)
+    if result is not equal to 101 or else closed is not equal to 0:
+        return 1
+    return 0
+
+define discord_journal_snapshot with journal as Int and destination as Str returning Int:
+    if string_length(destination) equals 0 or else file_exists(destination):
+        return 1
+    set values to create_list()
+    set added to append_list(values and destination)
+    if archive_finish(checkpoint_prepare(journal and "VACUUM INTO ?;" and values) and 101) is not equal to 0:
+        return 1
+    set snapshot to sql_open(destination)
+    if snapshot equals 0:
+        return 1
+    if discord_snapshot_verify(snapshot) is not equal to 0:
+        set closed to sql_close(snapshot)
+        return 1
+    set receipt to "PRAGMA synchronous=FULL; BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS discord_snapshot_receipt(singleton INTEGER PRIMARY KEY CHECK(singleton=1),inbox_count INTEGER NOT NULL,outbox_count INTEGER NOT NULL,delivery_count INTEGER NOT NULL); INSERT OR REPLACE INTO discord_snapshot_receipt SELECT 1,(SELECT COUNT(*) FROM discord_inbox),(SELECT COUNT(*) FROM discord_outbox),(SELECT COUNT(*) FROM discord_delivery_events); COMMIT;"
+    if sql_execute(snapshot and receipt) is not equal to 0:
+        set closed to sql_close(snapshot)
+        return 1
+    return sql_close(snapshot)
