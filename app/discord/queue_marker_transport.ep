@@ -1,0 +1,72 @@
+import "queue_markers"
+import "steering_reconcile"
+
+# Decide eligibility from current journal/archive state before adding a marker.
+# A stored desired glyph alone is never proof that guidance was accepted.
+define discord_queue_marker_eligible with journal as Int and database as Int and source as Str and slot as Str and marker as Str returning Int:
+    if slot equals "queue":
+        set position to discord_queue_position(journal and source)
+        return position > 0 and also discord_queue_position_glyph(position) equals marker
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT target,actor FROM discord_queue_offers WHERE source=?1;" and [source]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return 0
+    set target to discord_intake_source(journal and archive_list_text(row and 1))
+    if not (archive_list_text(target and 0) equals "found"):
+        return 0
+    set run to concat("discord-message:" and archive_list_text(target and 6))
+    if archive_list_text(target and 1) equals "INTERACTION_CREATE":
+        set run to concat("discord-command:" and archive_list_text(row and 1))
+    if slot equals "confirm" and also marker equals "✅":
+        set confirmed to discord_steering_reconcile_accepted(journal and database and source and run)
+        return confirmed equals "steered" or else confirmed equals "already-steered"
+    if not (slot equals "steer" and also marker equals "↪️") or else not (discord_job_origin(journal and database and run) equals archive_list_text(row and 1)):
+        return 0
+    set state to agent_run_read(database and run)
+    set status to archive_list_text(state and 2)
+    if not (status equals "ready" or else status equals "generating" or else status equals "tools"):
+        return 0
+    set origin to discord_intake_source(journal and source)
+    if not (discord_attachment_manifest(archive_list_text(origin and 2)) equals "[]"):
+        return 0
+    set claim to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_agent_jobs WHERE inbox=?1;" and [source]))
+    return archive_list_text(claim and 0) equals "end" or else archive_list_text(claim and 1) equals "steering-reserved"
+
+# Discord Create/Delete Own Reaction APIs, URL-encoded Unicode and @me only.
+# PUT/DELETE are idempotent; an uncertain response leaves the operation pending.
+# Per-channel rate deadlines and private HTTP evidence use the common transport.
+define discord_queue_marker_tick with library as Str and token as Str and journal as Int and database as Int and source as Str and slot as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    set operation to discord_queue_marker_next(journal and source and slot)
+    set method to archive_list_text(operation and 0)
+    if not (method equals "PUT" or else method equals "DELETE"):
+        return method
+    set marker to archive_list_text(operation and 1)
+    set encoded to discord_queue_marker_encoded(marker)
+    if string_length(encoded) equals 0:
+        return "invalid-marker"
+    set origin to discord_intake_source(journal and source)
+    if not (archive_list_text(origin and 0) equals "found") or else not (archive_list_text(origin and 1) equals "MESSAGE_CREATE"):
+        return "invalid-source"
+    set actor to archive_list_text(origin and 3)
+    set room to archive_list_text(origin and 4)
+    set guild to archive_list_text(origin and 5)
+    set message to archive_list_text(origin and 6)
+    if (string_length(guild) > 0 and also discord_contains(guilds and guild) equals 0) or else (string_length(guild) equals 0 and also discord_contains(admins and actor) equals 0):
+        return "marker-scope-denied"
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and actor and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return concat("marker-access:" and archive_list_text(access and 0))
+    if method equals "PUT":
+        set fresh to discord_run_source_check(library and token and journal and directory_path and source and origin)
+        if not (fresh equals "current"):
+            return concat("marker-source:" and fresh)
+        if discord_queue_marker_eligible(journal and database and source and slot and marker) equals 0:
+            return "marker-no-longer-eligible"
+    if file_exists(stop_file):
+        return "stopped"
+    set route to concat("/channels/" and concat(room and concat("/messages/" and concat(message and concat("/reactions/" and concat(encoded and "/@me"))))))
+    set result to discord_access_request(library and token and journal and directory_path and method and route and concat(method and ":channel/message/reaction/@me") and room)
+    if not (archive_list_text(result and 0) equals "observed") and also not (method equals "DELETE" and also archive_list_text(result and 0) equals "http-404"):
+        return archive_list_text(result and 0)
+    return discord_queue_marker_observed(journal and source and slot and method and marker and archive_list_text(operation and 2))

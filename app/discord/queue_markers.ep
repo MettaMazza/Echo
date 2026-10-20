@@ -1,0 +1,89 @@
+import "queue_offer"
+
+# Host-owned UI glyphs only. Routes never interpolate arbitrary emoji names.
+define discord_queue_marker_encoded with marker as Str returning Str:
+    if marker equals "↪️":
+        return "%E2%86%AA%EF%B8%8F"
+    if marker equals "✅":
+        return "%E2%9C%85"
+    if marker equals "🔢":
+        return "%F0%9F%94%A2"
+    if marker equals "🔟":
+        return "%F0%9F%94%9F"
+    set number to 1
+    repeat while number <= 9:
+        if marker equals concat(int_to_string(number) and "️⃣"):
+            return concat(int_to_string(number) and "%EF%B8%8F%E2%83%A3")
+        set number to number + 1
+    return ""
+
+define discord_queue_position with journal as Int and source as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_inbox i JOIN discord_inbox s ON s.identity=?1 WHERE s.kind='MESSAGE_CREATE' AND i.kind='MESSAGE_CREATE' AND i.rowid<=s.rowid AND json_extract(i.payload,'$.channel_id')=json_extract(s.payload,'$.channel_id') AND COALESCE(json_extract(i.payload,'$.guild_id'),'')=COALESCE(json_extract(s.payload,'$.guild_id'),'') AND json_extract(i.payload,'$.author.id')=json_extract(s.payload,'$.author.id') AND NOT EXISTS(SELECT 1 FROM discord_agent_jobs j WHERE j.inbox=i.identity) AND NOT EXISTS(SELECT 1 FROM discord_agent_jobs j WHERE j.inbox=s.identity);" and [source]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return -1
+    return string_to_int(archive_list_text(row and 1))
+
+# No queue cap: positions beyond Unicode's single-number glyphs retain their
+# exact integer for the accompanying status control and use the number symbol.
+define discord_queue_position_glyph with position as Int returning Str:
+    if position <= 0:
+        return ""
+    if position < 10:
+        return concat(int_to_string(position) and "️⃣")
+    if position equals 10:
+        return "🔟"
+    return "🔢"
+
+define discord_queue_marker_schema with journal as Int returning Int:
+    if discord_queue_offer_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_queue_markers(source TEXT NOT NULL REFERENCES discord_inbox(identity),slot TEXT NOT NULL,desired TEXT NOT NULL,applied TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(source,slot)); CREATE TABLE IF NOT EXISTS discord_queue_marker_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,source TEXT NOT NULL,slot TEXT NOT NULL,revision INTEGER NOT NULL,marker TEXT NOT NULL,present INTEGER NOT NULL,observed_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_queue_marker_events_no_update BEFORE UPDATE ON discord_queue_marker_events BEGIN SELECT RAISE(ABORT,'Marker receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_queue_marker_events_no_delete BEFORE DELETE ON discord_queue_marker_events BEGIN SELECT RAISE(ABORT,'Marker receipts are immutable'); END;")
+
+define discord_queue_marker_desire with journal as Int and source as Str and slot as Str and marker as Str returning Str:
+    if not (slot equals "queue" or else slot equals "steer" or else slot equals "confirm") or else (string_length(marker) > 0 and string_length(discord_queue_marker_encoded(marker)) equals 0):
+        return "invalid-marker"
+    if (slot equals "steer" and not (marker equals "" or else marker equals "↪️")) or else (slot equals "confirm" and not (marker equals "" or else marker equals "✅")) or else (slot equals "queue" and (marker equals "✅" or else marker equals "↪️")):
+        return "invalid-marker"
+    set source_row to discord_intake_source(journal and source)
+    if not (archive_list_text(source_row and 0) equals "found") or else not (archive_list_text(source_row and 1) equals "MESSAGE_CREATE"):
+        return "invalid-source"
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_queue_markers VALUES(?1,?2,?3,'',1) ON CONFLICT(source,slot) DO UPDATE SET desired=excluded.desired,revision=discord_queue_markers.revision+1 WHERE discord_queue_markers.desired<>excluded.desired;" and [source,slot,marker]) and 101) is not equal to 0:
+        return "marker-store-failed"
+    return "desired"
+
+# Remove our old glyph before adding the replacement. These are idempotent
+# own-reaction operations; never delete another user's reaction.
+define discord_queue_marker_next with journal as Int and source as Str and slot as Str returning List:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT desired,applied,revision FROM discord_queue_markers WHERE source=?1 AND slot=?2;" and [source,slot]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("marker-unavailable")
+    if archive_list_text(row and 1) equals archive_list_text(row and 2):
+        return history_status("settled")
+    if string_length(archive_list_text(row and 2)) > 0:
+        return ["DELETE",archive_list_text(row and 2),archive_list_text(row and 3)]
+    return ["PUT",archive_list_text(row and 1),archive_list_text(row and 3)]
+
+# Invoke only after authenticated HTTP confirms success. A newer desired state
+# is preserved while recording the operation that actually reached Discord.
+define discord_queue_marker_observed with journal as Int and source as Str and slot as Str and method as Str and marker as Str and revision as Str returning Str:
+    if not (method equals "PUT" or else method equals "DELETE") or else string_length(discord_queue_marker_encoded(marker)) equals 0:
+        return "invalid-marker-operation"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "marker-busy"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT applied,revision FROM discord_queue_markers WHERE source=?1 AND slot=?2;" and [source,slot]))
+    if not (archive_list_text(row and 0) equals "found") or else string_to_int(revision) <= 0 or else string_to_int(revision) > string_to_int(archive_list_text(row and 2)):
+        return migration_fail(journal and "marker-binding-denied")
+    set present to "1"
+    set applied to marker
+    if method equals "DELETE":
+        if not (archive_list_text(row and 1) equals marker or else archive_list_text(row and 1) equals ""):
+            return migration_fail(journal and "marker-state-conflict")
+        set present to "0"
+        set applied to ""
+    else if string_length(archive_list_text(row and 1)) > 0 and not (archive_list_text(row and 1) equals marker):
+        return migration_fail(journal and "marker-state-conflict")
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_queue_markers SET applied=?3 WHERE source=?1 AND slot=?2;" and [source,slot,applied]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_queue_marker_events(source,slot,revision,marker,present,observed_ms) VALUES(?1,?2,CAST(?3 AS INTEGER),?4,CAST(?5 AS INTEGER),CAST(?6 AS INTEGER));" and [source,slot,revision,marker,present,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return migration_fail(journal and "marker-store-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return "marker-commit-failed"
+    return "observed"
