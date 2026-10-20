@@ -1,0 +1,32 @@
+import "steering_apply"
+
+# Release only an unconsumed reservation whose target is conclusively terminal.
+# Keep the immutable intent and append the recovery receipt before removing the
+# queue claim. Ordinary intake will repeat all current access/source checks.
+# Both this path and apply acquire the journal writer lock before archive reads.
+define discord_steering_release_terminal with journal as Int and database as Int and source as Str and run as Str returning Str:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "recovery-busy"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT s.target,s.identity,j.state FROM discord_steering_intents s JOIN discord_agent_jobs j ON j.inbox=s.source WHERE s.source=?1;" and [source]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return migration_fail(journal and "no-reservation")
+    if not (archive_list_text(row and 3) equals "steering-reserved") or else not (discord_job_origin(journal and database and run) equals archive_list_text(row and 1)):
+        return migration_fail(journal and "recovery-binding-denied")
+    set event to concat(run and concat(":guidance:" and archive_list_text(row and 2)))
+    set receipt to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE event=?1;" and [event]))
+    if not (archive_list_text(receipt and 0) equals "found"):
+        return migration_fail(journal and "archive-read-failed")
+    if not (archive_list_text(receipt and 1) equals "0"):
+        return migration_fail(journal and "guidance-reconciliation-required")
+    set state to agent_run_read(database and run)
+    if state equals 0:
+        return migration_fail(journal and "target-unavailable")
+    set status to archive_list_text(state and 2)
+    if not (status equals "completed" or else status equals "cancelled" or else status equals "failed"):
+        return migration_fail(journal and "target-not-terminal")
+    set now to int_to_string(ep_time_now_ms())
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'steering-returned-to-queue',?2,CAST(?3 AS INTEGER));" and [source,event,now]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "DELETE FROM discord_agent_jobs WHERE inbox=?1 AND state='steering-reserved';" and [source]) and 101) is not equal to 0:
+        return migration_fail(journal and "requeue-write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return "requeue-commit-failed"
+    return "returned-to-queue"

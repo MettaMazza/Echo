@@ -7,29 +7,33 @@ import "../web/cancellation"
 # archives confirm the exact guidance event. Replay repairs the journal after
 # an archive commit; it never duplicates guidance or ordinary dequeue.
 define discord_steering_apply with journal as Int and database as Int and source as Str and run as Str and actor as Str returning Str:
+    # Serialize recovery and application across the two databases. The journal
+    # lock is acquired first by both paths; a released source cannot gain late guidance.
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "journal-reconciliation-required"
     set intent to history_collect_one(checkpoint_prepare(journal and "SELECT s.target,s.actor,s.source_digest,s.identity,i.payload,j.state FROM discord_steering_intents s JOIN discord_inbox i ON i.identity=s.source JOIN discord_agent_jobs j ON j.inbox=s.source WHERE s.source=?1;" and [source]))
     if not (archive_list_text(intent and 0) equals "found") or else not (archive_list_text(intent and 2) equals actor) or else not (discord_job_origin(journal and database and run) equals archive_list_text(intent and 1)):
-        return "steering-binding-denied"
+        return migration_fail(journal and "steering-binding-denied")
+    if not (archive_list_text(intent and 6) equals "steering-reserved" or else archive_list_text(intent and 6) equals "steered"):
+        return migration_fail(journal and "steering-binding-denied")
     set body to archive_list_text(intent and 5)
     if not (ep_sha256(body) equals archive_list_text(intent and 3)):
-        return "source-digest-mismatch"
+        return migration_fail(journal and "source-digest-mismatch")
     set tokens to provider_json_tokens(body)
     set message to provider_value(tokens and provider_member(tokens and 0 and "content"))
     set attachments to provider_member(tokens and 0 and "attachments")
     if attachments >= 0 and length_list(provider_items(tokens and attachments)) > 0:
-        return "steering-media-import-required"
+        return migration_fail(journal and "steering-media-import-required")
     if string_length(message) equals 0:
-        return "empty-steering"
+        return migration_fail(journal and "empty-steering")
     set device to concat("discord:" and actor)
     set identity to archive_list_text(intent and 4)
     set event to concat(run and concat(":guidance:" and identity))
     if web_guidance_request(database and device and run and identity and message) is not equal to 0:
-        return "guidance-not-accepted"
+        return migration_fail(journal and "guidance-not-accepted")
     set saved to archive_read_event(database and event)
     if saved equals 0 or else not (archive_list_text(saved and 2) equals "guidance_received"):
-        return "guidance-receipt-unavailable"
-    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
-        return "journal-reconciliation-required"
+        return migration_fail(journal and "guidance-receipt-unavailable")
     set current to history_collect_one(checkpoint_prepare(journal and "SELECT state,detail FROM discord_agent_jobs WHERE inbox=?1;" and [source]))
     if archive_list_text(current and 1) equals "steered" and archive_list_text(current and 2) equals event:
         return migration_fail(journal and "already-steered")
