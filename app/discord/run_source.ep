@@ -1,0 +1,66 @@
+import "job_origin"
+import "turn_guard"
+import "interaction_recovery"
+
+# A typed source keeps the genuine interaction separate from its bot-authored
+# public anchor. Never manufacture a MESSAGE_CREATE or borrow the bot's actor.
+# Result: status, kind, original payload, actor, channel, guild, anchor, cursor.
+define discord_run_source with journal as Int and database as Int and run as Str returning List:
+    set inbox to discord_job_origin(journal and database and run)
+    if string_length(inbox) equals 0:
+        return history_status("job-origin-unavailable")
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT kind,payload,rowid FROM discord_inbox WHERE identity=?1;" and [inbox]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("source-claim-unavailable")
+    set kind to archive_list_text(row and 1)
+    set original to archive_list_text(row and 2)
+    if kind equals "INTERACTION_CREATE":
+        set anchor to discord_command_anchor_read(journal and inbox)
+        if not (archive_list_text(anchor and 0) equals "found"):
+            return history_status("source-anchor-unavailable")
+        return ["found",kind,original,archive_list_text(anchor and 1),archive_list_text(anchor and 2),archive_list_text(anchor and 3),archive_list_text(anchor and 4),archive_list_text(row and 3)]
+    if not (kind equals "MESSAGE_CREATE"):
+        return history_status("unsupported-source-kind")
+    set claimed to history_collect_one(checkpoint_prepare(journal and "SELECT cursor FROM discord_agent_jobs WHERE inbox=?1;" and [inbox]))
+    if not (archive_list_text(claimed and 0) equals "found"):
+        return history_status("source-claim-unavailable")
+    set parsed to provider_json_tokens(original)
+    set actor to provider_value(parsed and provider_member(parsed and provider_member(parsed and 0 and "author") and "id"))
+    set room to provider_value(parsed and provider_member(parsed and 0 and "channel_id"))
+    set guild_id to provider_value(parsed and provider_member(parsed and 0 and "guild_id"))
+    if guild_id equals "null":
+        set guild_id to ""
+    set message to provider_value(parsed and provider_member(parsed and 0 and "id"))
+    return ["found",kind,original,actor,room,guild_id,message,archive_list_text(claimed and 1)]
+
+# Public anchor checks remain usable after the interaction webhook expires.
+# Authority comes from the admitted run, not from the response's bot author.
+define discord_run_source_matches with journal as Int and inbox as Str and source as List and fetched as Str returning Int:
+    if not (archive_list_text(source and 0) equals "found"):
+        return 0
+    if archive_list_text(source and 1) equals "MESSAGE_CREATE":
+        return discord_source_matches(archive_list_text(source and 2) and fetched)
+    if not (archive_list_text(source and 1) equals "INTERACTION_CREATE"):
+        return 0
+    set anchor to discord_command_anchor_read(journal and inbox)
+    if not (archive_list_text(anchor and 0) equals "found") or else discord_interaction_public_original_matches(fetched and archive_list_text(source and 2) and archive_list_text(anchor and 7)) equals 0:
+        return 0
+    set parsed to provider_json_tokens(fetched)
+    if not (provider_value(parsed and provider_member(parsed and 0 and "id")) equals archive_list_text(source and 6)) or else not (provider_value(parsed and provider_member(parsed and 0 and "content")) equals archive_list_text(anchor and 8)) or else discord_permission_bit(provider_value(parsed and provider_member(parsed and 0 and "flags")) and 7) equals 1:
+        return 0
+    return 1
+
+define discord_run_source_check with library as Str and token as Str and journal as Int and directory_path as Str and inbox as Str and source as List returning Str:
+    if not (archive_list_text(source and 0) equals "found"):
+        return "invalid-source"
+    set room to archive_list_text(source and 4)
+    set message to archive_list_text(source and 6)
+    if discord_snowflake(room) equals 0 or else discord_snowflake(message) equals 0:
+        return "invalid-source"
+    set route to concat("/channels/" and concat(room and concat("/messages/" and message)))
+    set fetched to discord_access_get(library and token and journal and directory_path and route and "GET/channel/message" and room)
+    if not (archive_list_text(fetched and 0) equals "observed"):
+        return archive_list_text(fetched and 0)
+    if discord_run_source_matches(journal and inbox and source and archive_list_text(fetched and 1)) equals 0:
+        return "source-changed"
+    return "current"
