@@ -1,0 +1,128 @@
+import "routing"
+import "../lifecycle/migrations"
+import "os"
+
+# The connector journal is separate from every model/conversation archive.
+# Refuse an Echo chat archive rather than adding public delivery state to it.
+# A copied or misconfigured journal cannot silently become another bot's state.
+define discord_store_open with path as Str and bot as Str returning Int:
+    if discord_snowflake(bot) equals 0:
+        return 0
+    set database to sql_open(path)
+    if database equals 0:
+        return 0
+    set old to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE name='echo_events';"))
+    if not (archive_list_text(old and 0) equals "end"):
+        set closed to sql_close(database)
+        return 0
+    set schema to "PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS discord_identity(singleton INTEGER PRIMARY KEY CHECK(singleton=1),bot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS discord_inbox(identity TEXT PRIMARY KEY,kind TEXT NOT NULL,payload TEXT NOT NULL,digest TEXT NOT NULL,received_ms INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_outbox(identity TEXT PRIMARY KEY,inbox TEXT NOT NULL REFERENCES discord_inbox(identity),channel TEXT NOT NULL,body TEXT NOT NULL,nonce TEXT NOT NULL UNIQUE,state TEXT NOT NULL CHECK(state IN ('pending','sending','sent','uncertain','rejected')),attempt TEXT NOT NULL DEFAULT '',message TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS discord_delivery_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,identity TEXT NOT NULL REFERENCES discord_outbox(identity),attempt TEXT NOT NULL,state TEXT NOT NULL,detail TEXT NOT NULL,observed_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_inbox_no_update BEFORE UPDATE ON discord_inbox BEGIN SELECT RAISE(ABORT,'Inbound originals are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_inbox_no_delete BEFORE DELETE ON discord_inbox BEGIN SELECT RAISE(ABORT,'Inbound originals are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_delivery_no_update BEFORE UPDATE ON discord_delivery_events BEGIN SELECT RAISE(ABORT,'Delivery receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_delivery_no_delete BEFORE DELETE ON discord_delivery_events BEGIN SELECT RAISE(ABORT,'Delivery receipts are immutable'); END;"
+    if sql_execute(database and schema) is not equal to 0:
+        set closed to sql_close(database)
+        return 0
+    if archive_finish(checkpoint_prepare(database and "INSERT OR IGNORE INTO discord_identity(singleton,bot) VALUES(1,?);" and [bot]) and 101) is not equal to 0:
+        set closed to sql_close(database)
+        return 0
+    set bound to history_collect_one(archive_prepare(database and "SELECT bot FROM discord_identity WHERE singleton=1;"))
+    if not (archive_list_text(bound and 0) equals "found") or else not (archive_list_text(bound and 1) equals bot):
+        set closed to sql_close(database)
+        return 0
+    return database
+
+# Identity is transport-derived (event type/message/revision), never the text.
+# A duplicate with different original bytes is a conflict, not an overwrite.
+define discord_inbox_record with database as Int and identity as Str and kind as Str and payload as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(kind) equals 0:
+        return "invalid-identity"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set digest to ep_sha256(payload)
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT kind,digest FROM discord_inbox WHERE identity=?;" and [identity]))
+    if archive_list_text(old and 0) equals "found":
+        set rolled to sql_execute(database and "ROLLBACK;")
+        if rolled is not equal to 0:
+            return "rollback-failed"
+        if archive_list_text(old and 1) equals kind and archive_list_text(old and 2) equals digest:
+            return "already-recorded"
+        return "identity-conflict"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "read-failed")
+    set statement to checkpoint_prepare(database and "INSERT INTO discord_inbox(identity,kind,payload,digest,received_ms) VALUES(?,?,?,?,CAST(? AS INTEGER));" and [identity,kind,payload,digest,int_to_string(ep_time_now_ms())])
+    if archive_finish(statement and 101) is not equal to 0:
+        return migration_fail(database and "write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+# Only a scoped, authorised delivery controller may enqueue. User/model text
+# cannot choose a destination through this function's caller-facing tool schema.
+define discord_outbox_enqueue with database as Int and identity as Str and inbox as Str and room as Str and body as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    if string_length(identity) equals 0 or else discord_snowflake(room) equals 0 or else tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "invalid-delivery"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT inbox,channel,body FROM discord_outbox WHERE identity=?;" and [identity]))
+    if archive_list_text(old and 0) equals "found":
+        set rolled to sql_execute(database and "ROLLBACK;")
+        if rolled is not equal to 0:
+            return "rollback-failed"
+        if archive_list_text(old and 1) equals inbox and archive_list_text(old and 2) equals room and archive_list_text(old and 3) equals body:
+            return "already-enqueued"
+        return "identity-conflict"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "read-failed")
+    set nonce to substring(ep_sha256(identity) and 0 and 24)
+    set statement to checkpoint_prepare(database and "INSERT INTO discord_outbox(identity,inbox,channel,body,nonce,state) VALUES(?,?,?,?,?,'pending');" and [identity,inbox,room,body,nonce])
+    if archive_finish(statement and 101) is not equal to 0:
+        return migration_fail(database and "write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "enqueued"
+
+# Claims are committed before any HTTP side effect. After process death a
+# sending row is uncertain: do not reset it to pending or blindly resend it.
+define discord_outbox_claim with database as Int and identity as Str and attempt as Str returning List:
+    if string_length(attempt) equals 0:
+        return ["invalid-attempt"]
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return ["writer-unavailable"]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT channel,body,nonce,state FROM discord_outbox WHERE identity=?;" and [identity]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 4) equals "pending"):
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return ["not-pending"]
+    if archive_finish(checkpoint_prepare(database and "UPDATE discord_outbox SET state='sending',attempt=?2 WHERE identity=?1 AND state='pending';" and [identity,attempt]) and 101) is not equal to 0:
+        set failed to migration_fail(database and "claim-failed")
+        return [failed]
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_delivery_events(identity,attempt,state,detail,observed_ms) VALUES(?,?,'sending','intent committed before HTTP',CAST(? AS INTEGER));" and [identity,attempt,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        set failed to migration_fail(database and "receipt-failed")
+        return [failed]
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(database and "commit-failed")
+        return [failed]
+    return ["claimed",archive_list_text(row and 1),archive_list_text(row and 2),archive_list_text(row and 3)]
+
+define discord_outbox_finish with database as Int and identity as Str and attempt as Str and state as Str and message as Str and detail as Str returning Str:
+    if not (state equals "sent" or else state equals "uncertain" or else state equals "rejected") or else (state equals "sent" and discord_snowflake(message) equals 0):
+        return "invalid-result"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT state,attempt FROM discord_outbox WHERE identity=?;" and [identity]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 1) equals "sending") or else not (archive_list_text(row and 2) equals attempt):
+        return migration_fail(database and "stale-attempt")
+    if archive_finish(checkpoint_prepare(database and "UPDATE discord_outbox SET state=?2,message=?3 WHERE identity=?1;" and [identity,state,message]) and 101) is not equal to 0:
+        return migration_fail(database and "result-write-failed")
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_delivery_events(identity,attempt,state,detail,observed_ms) VALUES(?,?,?,?,CAST(? AS INTEGER));" and [identity,attempt,state,detail,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return migration_fail(database and "receipt-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"
+
+# A reply is recognised only for a message actually sent by this bot, in the
+# exact channel. A forged embedded reference or cross-channel ID is insufficient.
+define discord_reply_channel with database as Int and message as Str and room as Str returning Str:
+    if discord_snowflake(message) equals 0 or else discord_snowflake(room) equals 0:
+        return ""
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT channel FROM discord_outbox WHERE message=?1 AND channel=?2 AND state='sent';" and [message,room]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)

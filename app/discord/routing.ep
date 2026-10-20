@@ -1,0 +1,62 @@
+import "../providers/json_access"
+
+# Trusted adapter inputs are obtained from the authenticated bot connection and
+# current host configuration. Message text, display names and role labels never
+# supply these values. A reply target must be resolved in the durable outbox,
+# not trusted merely because referenced_message claims to be written by Echo.
+define discord_snowflake with value as Str returning Int:
+    set size to string_length(value)
+    if size < 1 or else size > 20:
+        return 0
+    set index to 0
+    repeat while index < size:
+        if provider_digit(value and index) equals 0:
+            return 0
+        set index to index + 1
+    return not (substring(value and 0 and 1) equals "0")
+
+define discord_contains with values as List and value as Str returning Int:
+    for each entry in values:
+        if ptr_to_str(entry) equals value:
+            return 1
+    return 0
+
+# Fields: disposition, guild, channel, author, message, content, visibility.
+# No conversation is created by this classifier. Admission must still check
+# live channel access and persist the authenticated original before inference.
+define discord_message_route with body as Str and bot as Str and guilds as List and admins as List and known_reply_channel as Str returning List:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{") or else discord_snowflake(bot) equals 0:
+        return ["invalid-message"]
+    set author_object to provider_member(tokens and 0 and "author")
+    set author to provider_value(tokens and provider_member(tokens and author_object and "id"))
+    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    if discord_snowflake(author) equals 0 or else discord_snowflake(message) equals 0 or else discord_snowflake(room) equals 0:
+        return ["invalid-message"]
+    set webhook to provider_member(tokens and 0 and "webhook_id")
+    if author equals bot or else provider_value(tokens and provider_member(tokens and author_object and "bot")) equals "true" or else (webhook >= 0 and not (provider_kind(tokens and webhook) equals "null")):
+        return ["ignored-automation"]
+    set kind to provider_value(tokens and provider_member(tokens and 0 and "type"))
+    if not (kind equals "0" or else kind equals "19"):
+        return ["ignored-message-type"]
+    set content_index to provider_member(tokens and 0 and "content")
+    if not (provider_kind(tokens and content_index) equals "string"):
+        return ["message-content-unavailable"]
+    set content to provider_value(tokens and content_index)
+    set guild_index to provider_member(tokens and 0 and "guild_id")
+    set guild to provider_value(tokens and guild_index)
+    if guild_index < 0 or else provider_kind(tokens and guild_index) equals "null":
+        if discord_contains(admins and author) equals 0:
+            return ["redirect-dm","",room,author,message,"","private"]
+        return ["accepted","",room,author,message,content,"private"]
+    if discord_snowflake(guild) equals 0 or else discord_contains(guilds and guild) equals 0:
+        return ["ignored-guild"]
+    set mentioned to 0
+    set mentions to provider_items(tokens and provider_member(tokens and 0 and "mentions"))
+    for each member in mentions:
+        if provider_value(tokens and provider_member(tokens and member and "id")) equals bot:
+            set mentioned to 1
+    if mentioned equals 0 and not (known_reply_channel equals room):
+        return ["ignored-unaddressed"]
+    return ["accepted",guild,room,author,message,content,"public"]

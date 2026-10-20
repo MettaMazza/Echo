@@ -553,3 +553,8 @@ Step 08 workbook editing: workspace_edit_workbook publishes explicit existing-XM
 ### Step 08 — delegated execution deployed, 16 October 2026
 
 Delegation now creates separate private/group task contexts, retains exact initiating authority and provider selection, launches via the ordinary scheduler/worker path, returns complete terminal result provenance, and supports scoped cancellation. Native admission/control/migration checks and actual local-model private/shared child runs pass; the full model-facing delegate/status/scheduler loop passes. Schema 26 and release `phase2-delegation-20261016-222245` are deployed, with pre-migration backup and model process retained. Documentation: DELEGATION.md; evidence: delegation-20261016/. This advances delegation within original step 08, not the remaining tool families or later steps.
+
+
+## 20 October 2026 — resumed Discord integration
+
+Maria resumed the original Phase Two and Discord/server work. See [Discord checkpoint](DISCORD-2026-10-20.md): approved installation and Message Content access verified, native authenticated Gateway READY/heartbeat passed, routing/durable delivery/session-journal foundations tested. Continuous connector, isolated agent integration and actual multi-user conversational acceptance remain pending; installation is not community readiness. Existing local r35/Thinking/Warm unchanged.

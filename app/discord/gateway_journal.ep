@@ -1,0 +1,66 @@
+import "store"
+
+# A generation fences old socket workers after reconnect. Sequence advances
+# only in the transaction which records the dispatch receipt and admitted work.
+# Ignored messages retain only an envelope digest, never their message content.
+define discord_gateway_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_gateway(singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation TEXT NOT NULL,session TEXT NOT NULL,sequence INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_dispatch(session TEXT NOT NULL,sequence INTEGER NOT NULL,kind TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(session,sequence)); CREATE TRIGGER IF NOT EXISTS discord_dispatch_no_update BEFORE UPDATE ON discord_dispatch BEGIN SELECT RAISE(ABORT,'Dispatch receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_dispatch_no_delete BEFORE DELETE ON discord_dispatch BEGIN SELECT RAISE(ABORT,'Dispatch receipts are immutable'); END;")
+
+define discord_gateway_bind with database as Int and generation as Str and session as Str returning Str:
+    if string_length(generation) equals 0 or else string_length(session) equals 0:
+        return "invalid-session"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set old to history_collect_one(archive_prepare(database and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    set sequence to "-1"
+    if archive_list_text(old and 0) equals "found":
+        if archive_list_text(old and 1) equals generation:
+            return migration_fail(database and "generation-reused")
+        if archive_list_text(old and 2) equals session:
+            set sequence to archive_list_text(old and 3)
+    else if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "read-failed")
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_gateway(singleton,generation,session,sequence) VALUES(1,?,?,CAST(? AS INTEGER)) ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation,session=excluded.session,sequence=excluded.sequence;" and [generation,session,sequence]) and 101) is not equal to 0:
+        return migration_fail(database and "bind-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "bound"
+
+# Input identity/payload are supplied only after trusted routing/access checks.
+# Empty identity is a deliberately ignored dispatch; payload must then be empty.
+define discord_gateway_dispatch with database as Int and generation as Str and session as Str and sequence as Int and kind as Str and original_digest as Str and identity as Str and payload as Str returning Str:
+    if sequence < 0 or else string_length(kind) equals 0 or else string_length(original_digest) is not equal to 64:
+        return "invalid-dispatch"
+    if string_length(identity) equals 0 and string_length(payload) > 0:
+        return "unadmitted-payload"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set live to history_collect_one(archive_prepare(database and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(live and 0) equals "found") or else not (archive_list_text(live and 1) equals generation) or else not (archive_list_text(live and 2) equals session):
+        return migration_fail(database and "stale-connection")
+    set previous to history_collect_one(checkpoint_prepare(database and "SELECT kind,digest FROM discord_dispatch WHERE session=? AND sequence=CAST(? AS INTEGER);" and [session,int_to_string(sequence)]))
+    if archive_list_text(previous and 0) equals "found":
+        if archive_list_text(previous and 1) equals kind and archive_list_text(previous and 2) equals original_digest:
+            return migration_fail(database and "already-recorded")
+        return migration_fail(database and "sequence-conflict")
+    if not (archive_list_text(previous and 0) equals "end"):
+        return migration_fail(database and "read-failed")
+    if sequence <= string_to_int(archive_list_text(live and 3)):
+        return migration_fail(database and "sequence-regressed")
+    if string_length(identity) > 0:
+        set prior to history_collect_one(checkpoint_prepare(database and "SELECT kind,digest FROM discord_inbox WHERE identity=?;" and [identity]))
+        if archive_list_text(prior and 0) equals "found":
+            if not (archive_list_text(prior and 1) equals kind) or else not (archive_list_text(prior and 2) equals ep_sha256(payload)):
+                return migration_fail(database and "identity-conflict")
+        else if archive_list_text(prior and 0) equals "end":
+            if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_inbox(identity,kind,payload,digest,received_ms) VALUES(?,?,?,?,CAST(? AS INTEGER));" and [identity,kind,payload,ep_sha256(payload),int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+                return migration_fail(database and "intake-failed")
+        else:
+            return migration_fail(database and "read-failed")
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_dispatch(session,sequence,kind,digest) VALUES(?,CAST(? AS INTEGER),?,?);" and [session,int_to_string(sequence),kind,original_digest]) and 101) is not equal to 0:
+        return migration_fail(database and "receipt-failed")
+    if archive_finish(checkpoint_prepare(database and "UPDATE discord_gateway SET sequence=CAST(? AS INTEGER) WHERE singleton=1;" and [int_to_string(sequence)]) and 101) is not equal to 0:
+        return migration_fail(database and "sequence-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"

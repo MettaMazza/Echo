@@ -1,0 +1,93 @@
+import "../../app/discord/socket"
+import "../../app/discord/routing"
+import "fs"
+import "string"
+
+# Explicit live setup qualification. Token comes from a private host file and
+# is never printed or retained. No user message is sent or passed to inference.
+# A production connector must persist sequence/session and implement resume.
+define main returning Int:
+    if get_argument_count() is not equal to 4:
+        return 1
+    set secret to read_file(get_argument(2))
+    if secret equals 0:
+        return 2
+    set token to string_trim(ptr_to_str(secret))
+    # Restrict token syntax before embedding into JSON, avoiding logging it.
+    set index to 0
+    repeat while index < string_length(token):
+        set character to peek_byte(str_to_ptr(token) and index)
+        set valid to 0
+        if character >= 97:
+            if character <= 122:
+                set valid to 1
+        if character >= 65:
+            if character <= 90:
+                set valid to 1
+        if character >= 48:
+            if character <= 57:
+                set valid to 1
+        if character equals 46 or else character equals 95 or else character equals 45:
+            set valid to 1
+        if valid equals 0:
+            return 3
+        set index to index + 1
+    if index < 20:
+        return 4
+    set socket to discord_socket_open(get_argument(1))
+    if not (archive_list_text(socket and 0) equals "connected"):
+        return 5
+    set started to ep_time_now_ms()
+    set text to ""
+    set identified to 0
+    set ready to 0
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    repeat while ep_time_now_ms() - started < 30000:
+        set row to discord_socket_read(socket)
+        if archive_list_text(row and 0) equals "again":
+            set waited to ep_dlcall1(ep_dlsym(system and "usleep") and 50000)
+        else if archive_list_text(row and 0) equals "chunk":
+            if not (archive_list_text(row and 2) equals "1"):
+                set closed to discord_socket_close(socket)
+                return 6
+            set text to concat(text and archive_list_text(row and 1))
+            if archive_list_text(row and 4) equals "0":
+                set tokens to provider_json_tokens(text)
+                set text to ""
+                if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+                    set closed to discord_socket_close(socket)
+                    return 7
+                set opcode to provider_index(tokens and provider_member(tokens and 0 and "op"))
+                if opcode equals "10":
+                    # GUILDS, GUILD_MESSAGES, DIRECT_MESSAGES, MESSAGE_CONTENT.
+                    set body to concat("{\"op\":2,\"d\":{\"token\":\"" and concat(token and "\",\"intents\":37377,\"properties\":{\"os\":\"macOS\",\"browser\":\"Echo\",\"device\":\"Echo\"}}}"))
+                    if discord_socket_send(socket and body) equals 0:
+                        set closed to discord_socket_close(socket)
+                        return 8
+                    set identified to 1
+                else if provider_value(tokens and provider_member(tokens and 0 and "t")) equals "READY":
+                    set data to provider_member(tokens and 0 and "d")
+                    set user to provider_member(tokens and data and "user")
+                    if not (provider_value(tokens and provider_member(tokens and user and "id")) equals get_argument(3)):
+                        set closed to discord_socket_close(socket)
+                        return 9
+                    set ready to 1
+                    set sequence to provider_index(tokens and provider_member(tokens and 0 and "s"))
+                    if string_length(sequence) equals 0 or else discord_socket_send(socket and concat("{\"op\":1,\"d\":" and concat(sequence and "}"))) equals 0:
+                        set closed to discord_socket_close(socket)
+                        return 10
+                else if opcode equals "11":
+                    if ready equals 0:
+                        return 14
+                    set closed to discord_socket_close(socket)
+                    set closed to ep_dlclose(system)
+                    display "PASS: authenticated Discord READY identity and heartbeat ACK with Message Content intent. No conversational message sent."
+                    return 0
+                else if opcode equals "9" or else opcode equals "7":
+                    set closed to discord_socket_close(socket)
+                    return 11
+        else:
+            set closed to discord_socket_close(socket)
+            return 12
+    set closed to discord_socket_close(socket)
+    return 13

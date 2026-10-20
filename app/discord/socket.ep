@@ -1,0 +1,84 @@
+import "../network/curl_native"
+
+# The library path is pinned host configuration, never a model argument.
+# This transport is Discord-only. Resume endpoints are validated separately
+# before use; the initial Gateway has a fixed origin and mandatory TLS checks.
+define discord_socket_open with library_path as Str returning List:
+    set library to ep_dlopen(library_path)
+    if library equals 0:
+        return ["library-unavailable"]
+    set easy to ep_dlcall0(ep_dlsym(library and "curl_easy_init"))
+    if easy equals 0:
+        set closed to ep_dlclose(library)
+        return ["allocation-failed"]
+    set failed to 0
+    for each pair in [["10002","wss://gateway.discord.gg/?v=10&encoding=json"],["10004",""],["10177","*"],["10318","wss"],["10018","Echo Discord connector"]]:
+        if network_curl_call(library and "curl_easy_setopt" and easy and string_to_int(archive_list_text(pair and 0)) and str_to_ptr(archive_list_text(pair and 1)) and 1) is not equal to 0:
+            set failed to 1
+    for each pair in [[141,2],[64,1],[81,2],[99,1],[156,20000],[52,0]]:
+        if network_curl_call(library and "curl_easy_setopt" and easy and get_list(pair and 0) and get_list(pair and 1) and 0) is not equal to 0:
+            set failed to 1
+    set status to -1
+    if failed equals 0:
+        set status to ep_dlcall1(ep_dlsym(library and "curl_easy_perform") and easy)
+    if status is not equal to 0:
+        set cleaned to ep_dlcall1(ep_dlsym(library and "curl_easy_cleanup") and easy)
+        set closed to ep_dlclose(library)
+        return ["connect-failed",int_to_string(status)]
+    return ["connected",library,easy]
+
+define discord_socket_close with socket as List returning Int:
+    if not (archive_list_text(socket and 0) equals "connected"):
+        return 1
+    set library to get_list(socket and 1)
+    set cleaned to ep_dlcall1(ep_dlsym(library and "curl_easy_cleanup") and get_list(socket and 2))
+    return ep_dlclose(library)
+
+# Sends one complete small Gateway control payload. An incomplete transmission
+# is ambiguous and requires reconnect/resume, never a blind resend.
+define discord_socket_send with socket as List and body as Str returning Int:
+    if not (archive_list_text(socket and 0) equals "connected"):
+        return 0
+    set size to string_length(body)
+    if size < 1 or else size > 4096:
+        return 0
+    set sent to [0]
+    set library to get_list(socket and 1)
+    set status to ep_dlcall6(ep_dlsym(library and "curl_ws_send") and get_list(socket and 2) and str_to_ptr(body) and size and get_list_data_ptr(sent) and 0 and 1)
+    if status is not equal to 0:
+        return 0
+    return get_list(sent and 0) equals size
+
+# A fixed I/O buffer is not a message limit. Caller accumulates successive
+# chunks using offset/bytesleft and fragmentation flags before JSON parsing.
+# libcurl handles WebSocket masking and automatic ping/pong.
+define discord_socket_read with socket as List returning List:
+    if not (archive_list_text(socket and 0) equals "connected"):
+        return ["not-connected"]
+    set library to get_list(socket and 1)
+    set buffer to alloc_bytes(65537)
+    if buffer equals 0:
+        return ["allocation-failed"]
+    set received to [0]
+    set metadata to [0]
+    set status to ep_dlcall5(ep_dlsym(library and "curl_ws_recv") and get_list(socket and 2) and buffer and 65536 and get_list_data_ptr(received) and get_list_data_ptr(metadata))
+    if status equals 81:
+        free_bytes(buffer)
+        return ["again"]
+    if status is not equal to 0 or else get_list(metadata and 0) equals 0:
+        free_bytes(buffer)
+        return ["receive-failed",int_to_string(status)]
+    set count to get_list(received and 0)
+    if count < 0 or else count > 65536:
+        free_bytes(buffer)
+        return ["invalid-receive-size"]
+    set terminated to poke_byte(buffer and count and 0)
+    set value to concat(ptr_to_str(buffer) and "")
+    set meta to get_list(metadata and 0)
+    set flags to peek_byte(meta and 4)
+    set offset to research_native_word(meta + 8)
+    set remaining to research_native_word(meta + 16)
+    free_bytes(buffer)
+    if string_length(value) is not equal to count:
+        return ["binary-or-invalid-text"]
+    return ["chunk",value,int_to_string(flags),int_to_string(offset),int_to_string(remaining)]
