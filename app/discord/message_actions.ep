@@ -1,0 +1,77 @@
+import "store"
+import "../providers/archived_stream"
+
+# Host-owned action bindings. Custom IDs name records, never paths, prompts,
+# destinations or authority. This module does not grant live Discord access.
+# The executor must refresh source/audience/authority before any side effect.
+define discord_message_actions_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_message_actions(identity TEXT PRIMARY KEY,outbox TEXT NOT NULL REFERENCES discord_outbox(identity),action TEXT NOT NULL CHECK(action IN ('speak','trace')),final_event TEXT NOT NULL,UNIQUE(outbox,action)); CREATE TRIGGER IF NOT EXISTS discord_message_actions_no_update BEFORE UPDATE ON discord_message_actions BEGIN SELECT RAISE(ABORT,'Message action binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_message_actions_no_delete BEFORE DELETE ON discord_message_actions BEGIN SELECT RAISE(ABORT,'Message action binding persists'); END;")
+
+# Invoke only after the accepted run/final has passed the ordinary output guard.
+define discord_message_action_bind with journal as Int and outbox as Str and action as Str and final_event as Str returning Str:
+    if not (action equals "speak" or else action equals "trace") or else string_length(final_event) equals 0:
+        return ""
+    if discord_message_actions_schema(journal) is not equal to 0:
+        return ""
+    set values to create_list()
+    set added to append_list(values and outbox)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT o.channel,json_extract(i.payload,'$.channel_id') FROM discord_outbox o JOIN discord_inbox i ON i.identity=o.inbox WHERE o.identity=? AND i.kind='MESSAGE_CREATE';" and values))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 1) equals archive_list_text(row and 2)):
+        return ""
+    set identity to concat("echo:" and ep_sha256(concat(provider_quote(outbox) and concat(":" and provider_quote(action)))))
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and outbox)
+    set added to append_list(values and action)
+    set added to append_list(values and final_event)
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_message_actions VALUES(?1,?2,?3,?4);" and values) and 101) is not equal to 0:
+        return ""
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_message_actions WHERE identity=?1 AND outbox=?2 AND action=?3 AND final_event=?4;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return identity
+
+# Input must come from authenticated Gateway INTERACTION_CREATE dispatch.
+# No interaction bearer token is retained here or accepted as authority.
+define discord_message_action_resolve with journal as Int and body as Str and bot as Str and admins as List returning List:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "3"):
+        return history_status("invalid-component")
+    if not (provider_value(tokens and provider_member(tokens and 0 and "application_id")) equals bot):
+        return history_status("foreign-application")
+    set data to provider_member(tokens and 0 and "data")
+    if not (provider_value(tokens and provider_member(tokens and data and "component_type")) equals "2"):
+        return history_status("not-button")
+    set identity to provider_value(tokens and provider_member(tokens and data and "custom_id"))
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "user") and "id"))
+    if discord_snowflake(guild) equals 1:
+        set member to provider_member(tokens and 0 and "member")
+        set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and member and "user") and "id"))
+    else if not (guild equals "null" or else string_length(guild) equals 0):
+        return history_status("invalid-guild")
+    else:
+        set guild to ""
+    set message_index to provider_member(tokens and 0 and "message")
+    set message to provider_value(tokens and provider_member(tokens and message_index and "id"))
+    set author to provider_value(tokens and provider_member(tokens and provider_member(tokens and message_index and "author") and "id"))
+    if discord_snowflake(actor) equals 0 or else discord_snowflake(room) equals 0 or else discord_snowflake(message) equals 0 or else not (author equals bot):
+        return history_status("invalid-actor-or-message")
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and message)
+    set added to append_list(values and room)
+    set added to append_list(values and guild)
+    set added to append_list(values and actor)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT a.action,a.final_event,o.inbox,o.identity FROM discord_message_actions a JOIN discord_outbox o ON o.identity=a.outbox JOIN discord_inbox i ON i.identity=o.inbox WHERE a.identity=?1 AND o.state='sent' AND o.message=?2 AND o.channel=?3 AND json_extract(i.payload,'$.channel_id')=?3 AND COALESCE(json_extract(i.payload,'$.guild_id'),'')=?4 AND json_extract(i.payload,'$.author.id')=?5;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("action-binding-denied")
+    if archive_list_text(row and 1) equals "trace" and also discord_contains(admins and actor) equals 0:
+        return history_status("admin-required")
+    set result to history_status("bound-needs-live-access")
+    set added to append_list(result and archive_list_text(row and 1))
+    set added to append_list(result and archive_list_text(row and 2))
+    set added to append_list(result and archive_list_text(row and 3))
+    set added to append_list(result and actor)
+    return result
