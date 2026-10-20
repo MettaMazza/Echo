@@ -1,0 +1,52 @@
+import "worker_store"
+import "dm_redirect"
+
+# A durable pending intent is not an evergreen permission grant. Every actual
+# POST rechecks the original request and both users' current channel access.
+define discord_worker_deliver with library as Str and token as Str and journal as Int and identity as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set rooted_literal_1 to create_list()
+    set retained_value_added to append_list(rooted_literal_1 and identity)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT i.payload,o.channel,j.cursor,i.identity FROM discord_outbox o JOIN discord_inbox i ON i.identity=o.inbox JOIN discord_agent_jobs j ON j.inbox=i.identity WHERE o.identity=? AND o.state='pending' AND (i.identity LIKE 'message:create:%' OR i.identity LIKE 'message:redirect:%');" and rooted_literal_1))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "not-pending"
+    set original to archive_list_text(row and 1)
+    set parsed to provider_json_tokens(original)
+    set room to provider_value(parsed and provider_member(parsed and 0 and "channel_id"))
+    if string_index_of(archive_list_text(row and 4) and "message:redirect:") equals 0:
+        set recipient to provider_value(parsed and provider_member(parsed and 0 and "author_id"))
+        set allowed to discord_redirect_check(library and token and journal and directory_path and bot and room and recipient and admins)
+        if not (allowed equals "allowed") or else file_exists(stop_file):
+            return concat("redirect:" and allowed)
+        return discord_delivery_send(library and token and journal and identity and directory_path)
+    set user to provider_value(parsed and provider_member(parsed and provider_member(parsed and 0 and "author") and "id"))
+    set guild_id to provider_value(parsed and provider_member(parsed and 0 and "guild_id"))
+    if guild_id equals "null":
+        set guild_id to ""
+    set cursor to http_decimal(archive_list_text(row and 3))
+    set message to provider_value(parsed and provider_member(parsed and 0 and "id"))
+    if discord_turn_barrier(journal and cursor and message and room and guild_id) is not equal to 0:
+        return "delivery-invalidated"
+    if not (room equals archive_list_text(row and 2)) or else file_exists(stop_file):
+        return "delivery-stopped"
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild_id and room and user and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return concat("access:" and archive_list_text(access and 0))
+    set fresh to discord_source_check(library and token and journal and directory_path and original)
+    if not (fresh equals "current"):
+        return fresh
+    if file_exists(stop_file) or else discord_turn_barrier(journal and cursor and message and room and guild_id) is not equal to 0:
+        return "delivery-stopped"
+    return discord_delivery_send(library and token and journal and identity and directory_path)
+
+# Gateway observations are authenticated by the connection owner. Reconcile
+# by bot/channel/nonce before considering another model turn or delivery.
+define discord_worker_reconcile with journal as Int returning Int:
+    set row to history_collect_one(archive_prepare(journal and "SELECT o.identity,i.payload FROM discord_outbox o JOIN discord_inbox i ON i.identity LIKE 'delivery:observed:%' AND json_extract(i.payload,'$.nonce')=o.nonce AND json_extract(i.payload,'$.channel_id')=o.channel WHERE o.state IN ('sending','uncertain') ORDER BY i.rowid LIMIT 1;"))
+    if archive_list_text(row and 0) equals "end":
+        return 0
+    if not (archive_list_text(row and 0) equals "found"):
+        return 1
+    set result to discord_delivery_reconcile(journal and archive_list_text(row and 1) and archive_list_text(row and 2))
+    if not (result equals "reconciled" or else result equals "already-reconciled"):
+        return 1
+    return 0

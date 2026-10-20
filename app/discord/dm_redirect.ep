@@ -1,0 +1,44 @@
+import "access"
+
+# Guest DM intake contains no message content. Only a fixed redirect is sent;
+# there is no model invocation, conversation memory or guest DM transcript.
+define discord_redirect_check with library as Str and token as Str and journal as Int and directory_path as Str and bot as Str and room as Str and user as Str and admins as List returning Str:
+    if discord_snowflake(room) equals 0 or else discord_snowflake(user) equals 0 or else discord_contains(admins and user) equals 1:
+        return "redirect-not-applicable"
+    set fetched to discord_access_get(library and token and journal and directory_path and concat("/channels/" and room) and "GET/channel" and room)
+    if not (archive_list_text(fetched and 0) equals "observed"):
+        return archive_list_text(fetched and 0)
+    set parsed to provider_json_tokens(archive_list_text(fetched and 1))
+    if not (provider_value(parsed and provider_member(parsed and 0 and "id")) equals room) or else not (provider_index(parsed and provider_member(parsed and 0 and "type")) equals "1"):
+        return "not-private-dm"
+    set recipients to provider_items(parsed and provider_member(parsed and 0 and "recipients"))
+    set found to 0
+    for each person in recipients:
+        set identity to provider_value(parsed and provider_member(parsed and person and "id"))
+        if identity equals user:
+            set found to 1
+        else if not (identity equals bot):
+            return "recipient-mismatch"
+    if found equals 0:
+        return "recipient-mismatch"
+    return "allowed"
+
+define discord_redirect_enqueue with journal as Int and inbox as Str returning Str:
+    set rooted_literal_1 to create_list()
+    set retained_value_added to append_list(rooted_literal_1 and inbox)
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT payload FROM discord_inbox WHERE identity=? AND identity LIKE 'message:redirect:%';" and rooted_literal_1))
+    if not (archive_list_text(source and 0) equals "found"):
+        return "source-unavailable"
+    set parsed to provider_json_tokens(archive_list_text(source and 1))
+    set room to provider_value(parsed and provider_member(parsed and 0 and "channel_id"))
+    # Suppress repeat redirects for a minute; no guest speech is retained.
+    set cutoff to int_to_string(ep_time_now_ms() - 60000)
+    set rooted_literal_2 to create_list()
+    set retained_value_added to append_list(rooted_literal_2 and room)
+    set retained_value_added to append_list(rooted_literal_2 and cutoff)
+    set recent to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_outbox o JOIN discord_inbox i ON i.identity=o.inbox WHERE o.channel=?1 AND i.identity LIKE 'message:redirect:%' AND i.received_ms>CAST(?2 AS INTEGER);" and rooted_literal_2))
+    if not (archive_list_text(recent and 0) equals "found"):
+        return "journal-unavailable"
+    if not (archive_list_text(recent and 1) equals "0"):
+        return "redirect-suppressed"
+    return discord_outbox_enqueue(journal and concat(inbox and ":redirect") and inbox and room and "{\"content\":\"Direct messages are available to admins. Please mention me or reply to one of my messages in the server channels instead.\",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false}}")

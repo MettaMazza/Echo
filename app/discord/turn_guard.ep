@@ -1,0 +1,93 @@
+import "agent_bridge"
+import "access"
+import "../web/cancellation"
+
+# Source freshness is checked before inference and again before delivery.
+define discord_source_matches with original as Str and fetched as Str returning Int:
+    set before to provider_json_tokens(original)
+    set after to provider_json_tokens(fetched)
+    if before equals 0 or else after equals 0 or else provider_unique_objects(after) equals 0:
+        return 0
+    set rooted_literal_1 to create_list()
+    set retained_value_added to append_list(rooted_literal_1 and "id")
+    set retained_value_added to append_list(rooted_literal_1 and "channel_id")
+    set retained_value_added to append_list(rooted_literal_1 and "content")
+    for each key in rooted_literal_1:
+        set left to provider_member(before and 0 and ptr_to_str(key))
+        set right to provider_member(after and 0 and ptr_to_str(key))
+        if left < 0 or else right < 0 or else not (provider_value(before and left) equals provider_value(after and right)):
+            return 0
+    set left_author to provider_member(before and provider_member(before and 0 and "author") and "id")
+    set right_author to provider_member(after and provider_member(after and 0 and "author") and "id")
+    if left_author < 0 or else right_author < 0 or else not (provider_value(before and left_author) equals provider_value(after and right_author)):
+        return 0
+    if length_list(provider_items(before and provider_member(before and 0 and "attachments"))) > 0 or else length_list(provider_items(after and provider_member(after and 0 and "attachments"))) > 0:
+        return 0
+    return 1
+
+# Use monotonic journal rowids, not potentially identical wall-clock times.
+# Revisions and authority changes invalidate the active inference.
+# Keep temporary lists named/rooted before any allocating call: inline list
+# construction with int_to_string can cross a GC safepoint before it is rooted.
+define discord_turn_barrier with journal as Int and cursor as Int and message as Str and room as Str and guild_id as Str returning Int:
+    set cursor_text to int_to_string(cursor)
+    set rooted_literal_2 to create_list()
+    set retained_value_added to append_list(rooted_literal_2 and cursor_text)
+    set retained_value_added to append_list(rooted_literal_2 and message)
+    set retained_value_added to append_list(rooted_literal_2 and room)
+    set retained_value_added to append_list(rooted_literal_2 and guild_id)
+    set values to rooted_literal_2
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_inbox WHERE rowid>CAST(?1 AS INTEGER) AND ((kind IN ('MESSAGE_UPDATE','MESSAGE_DELETE') AND json_extract(payload,'$.id')=?2 AND json_extract(payload,'$.channel_id')=?3) OR (kind='MESSAGE_DELETE_BULK' AND json_extract(payload,'$.channel_id')=?3 AND EXISTS(SELECT 1 FROM json_each(discord_inbox.payload,'$.ids') WHERE value=?2)) OR (identity LIKE 'audience:%' AND ?4<>'' AND json_extract(payload,'$.guild_id')=?4));" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return -1
+    if not (archive_list_text(row and 1) equals "0"):
+        return 1
+    return 0
+
+define discord_source_check with library as Str and token as Str and journal as Int and directory_path as Str and original as Str returning Str:
+    set parsed to provider_json_tokens(original)
+    set room to provider_value(parsed and provider_member(parsed and 0 and "channel_id"))
+    set message to provider_value(parsed and provider_member(parsed and 0 and "id"))
+    if discord_snowflake(room) equals 0 or else discord_snowflake(message) equals 0:
+        return "invalid-source"
+    set route to concat("/channels/" and concat(room and concat("/messages/" and message)))
+    set fetched to discord_access_get(library and token and journal and directory_path and route and "GET/channel/message" and room)
+    if not (archive_list_text(fetched and 0) equals "observed"):
+        return archive_list_text(fetched and 0)
+    if discord_source_matches(original and archive_list_text(fetched and 1)) equals 0:
+        return "source-changed"
+    return "current"
+
+# Separate from the Gateway owner: inference never blocks its heartbeats.
+define discord_turn_monitor with journal_path as Str and bot as Str and cursor as Int and message as Str and room as Str and guild_id as Str and stop_file as Str and stop_reader as Int and cancellation_writer as Int and completed as Int returning Int:
+    set journal to sql_open(journal_path)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set status to 0
+    set idle to channel
+    set rooted_literal_3 to create_list()
+    set retained_value_added to append_list(rooted_literal_3 and idle)
+    set waits to rooted_literal_3
+    if journal equals 0 or else library equals 0:
+        set status to 1
+    else:
+        # The monitor is a reader, not a second schema writer. Set the busy
+        # handler before its first read to tolerate a simultaneous intake commit.
+        if sql_execute(journal and "PRAGMA busy_timeout=5000; PRAGMA query_only=ON;") is not equal to 0:
+            set status to 1
+        set binding to history_collect_one(archive_prepare(journal and "SELECT bot FROM discord_identity WHERE singleton=1;"))
+        if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals bot):
+            set status to 1
+        repeat while status equals 0:
+            if agent_cancellation_pending(library and stop_reader) is not equal to 0:
+                break
+            if file_exists(stop_file) or else discord_turn_barrier(journal and cursor and message and room and guild_id) is not equal to 0:
+                break
+            set waited to select(waits and 100)
+    if journal is not equal to 0:
+        set closed to sql_close(journal)
+    if library is not equal to 0:
+        set closed to ep_dlclose(library)
+    set closed to net_close(stop_reader)
+    set closed to net_close(cancellation_writer)
+    send status to completed
+    return status

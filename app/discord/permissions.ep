@@ -1,0 +1,131 @@
+import "routing"
+
+# Read one supported permission bit from a decimal string without converting
+# the whole variable-length Discord integer to a machine integer.
+define discord_permission_bit with value as Str and bit as Int returning Int:
+    if string_length(value) equals 0 or else bit < 0 or else bit > 52:
+        return -1
+    set weight to 1
+    set index to 0
+    repeat while index < bit:
+        set weight to weight * 2
+        set index to index + 1
+    set modulus to weight * 2
+    set residue to 0
+    set index to 0
+    repeat while index < string_length(value):
+        if provider_digit(value and index) equals 0:
+            return -1
+        set residue to (residue * 10 + peek_byte(str_to_ptr(value) and index) - 48) modulo modulus
+        set index to index + 1
+    return residue / weight
+
+# Complete authenticated REST snapshots only. This computes the documented
+# guild/role/channel overwrite precedence for one bit, not Echo admin status.
+# Threads must supply the verified parent channel; membership, archived/locked
+# state, timeout and permission dependencies are checked by the caller.
+# Returns -1 for malformed/incomplete identity data, 0 denied, 1 granted.
+define discord_channel_permission with guild_body as Str and roles_body as Str and member_body as Str and channel_body as Str and guild_id as Str and user as Str and room as Str and bit as Int returning Int:
+    set guild to provider_json_tokens(guild_body)
+    set roles to provider_json_tokens(roles_body)
+    set member to provider_json_tokens(member_body)
+    set channel_data to provider_json_tokens(channel_body)
+    set rooted_literal_1 to create_list()
+    set retained_value_added to append_list(rooted_literal_1 and guild)
+    set retained_value_added to append_list(rooted_literal_1 and roles)
+    set retained_value_added to append_list(rooted_literal_1 and member)
+    set retained_value_added to append_list(rooted_literal_1 and channel_data)
+    for each tokens in rooted_literal_1:
+        if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+            return -1
+    if discord_snowflake(guild_id) equals 0 or else discord_snowflake(user) equals 0 or else discord_snowflake(room) equals 0 or else bit < 0 or else bit > 52:
+        return -1
+    if not (provider_value(guild and provider_member(guild and 0 and "id")) equals guild_id) or else not (provider_value(channel_data and provider_member(channel_data and 0 and "guild_id")) equals guild_id) or else not (provider_value(channel_data and provider_member(channel_data and 0 and "id")) equals room):
+        return -1
+    if not (provider_value(member and provider_member(member and provider_member(member and 0 and "user") and "id")) equals user):
+        return -1
+    set member_roles_index to provider_member(member and 0 and "roles")
+    set overwrites_index to provider_member(channel_data and 0 and "permission_overwrites")
+    if not (provider_kind(roles and 0) equals "[") or else not (provider_kind(member and member_roles_index) equals "[") or else not (provider_kind(channel_data and overwrites_index) equals "["):
+        return -1
+    set rooted_literal_2 to create_list()
+    set retained_value_added to append_list(rooted_literal_2 and guild_id)
+    set selected to rooted_literal_2
+    for each item in provider_items(member and member_roles_index):
+        set identity to provider_value(member and item)
+        if discord_snowflake(identity) equals 0 or else discord_contains(selected and identity) equals 1:
+            return -1
+        set added to append_list(selected and identity)
+    set seen to create_list()
+    set base to 0
+    set administrator to 0
+    for each item in provider_items(roles and 0):
+        set identity to provider_value(roles and provider_member(roles and item and "id"))
+        if discord_snowflake(identity) equals 0 or else discord_contains(seen and identity) equals 1:
+            return -1
+        set added to append_list(seen and identity)
+        set mask to provider_value(roles and provider_member(roles and item and "permissions"))
+        set allowed to discord_permission_bit(mask and bit)
+        set admin to discord_permission_bit(mask and 3)
+        if allowed < 0 or else admin < 0:
+            return -1
+        if discord_contains(selected and identity) equals 1:
+            if allowed equals 1:
+                set base to 1
+            if admin equals 1:
+                set administrator to 1
+    for each identity in selected:
+        if discord_contains(seen and ptr_to_str(identity)) equals 0:
+            return -1
+    set everyone_allow to 0
+    set everyone_deny to 0
+    set roles_allow to 0
+    set roles_deny to 0
+    set member_allow to 0
+    set member_deny to 0
+    set overwritten to create_list()
+    for each item in provider_items(channel_data and overwrites_index):
+        set identity to provider_value(channel_data and provider_member(channel_data and item and "id"))
+        set kind to provider_value(channel_data and provider_member(channel_data and item and "type"))
+        set key to concat(kind and concat(":" and identity))
+        if discord_snowflake(identity) equals 0 or else not (kind equals "0" or else kind equals "1") or else discord_contains(overwritten and key) equals 1:
+            return -1
+        set added to append_list(overwritten and key)
+        set allow to discord_permission_bit(provider_value(channel_data and provider_member(channel_data and item and "allow")) and bit)
+        set deny to discord_permission_bit(provider_value(channel_data and provider_member(channel_data and item and "deny")) and bit)
+        if allow < 0 or else deny < 0:
+            return -1
+        if kind equals "0" and identity equals guild_id:
+            set everyone_allow to allow
+            set everyone_deny to deny
+        else if kind equals "0" and discord_contains(selected and identity) equals 1:
+            if allow equals 1:
+                set roles_allow to 1
+            if deny equals 1:
+                set roles_deny to 1
+        else if kind equals "1" and identity equals user:
+            set member_allow to allow
+            set member_deny to deny
+    # Discord owner/Administrator bypass overwrites but never become an Echo
+    # admin: that separate decision still uses the explicit host ID allowlist.
+    if administrator equals 1 or else provider_value(guild and provider_member(guild and 0 and "owner_id")) equals user:
+        return 1
+    set retained_values_1 to create_list()
+    set retained_values_2 to create_list()
+    set retained_value_added to append_list(retained_values_2 and everyone_deny)
+    set retained_value_added to append_list(retained_values_2 and everyone_allow)
+    set retained_value_added to append_list(retained_values_1 and retained_values_2)
+    set retained_values_3 to create_list()
+    set retained_value_added to append_list(retained_values_3 and roles_deny)
+    set retained_value_added to append_list(retained_values_3 and roles_allow)
+    set retained_value_added to append_list(retained_values_1 and retained_values_3)
+    set retained_values_4 to create_list()
+    set retained_value_added to append_list(retained_values_4 and member_deny)
+    set retained_value_added to append_list(retained_values_4 and member_allow)
+    set retained_value_added to append_list(retained_values_1 and retained_values_4)
+    for each pair in retained_values_1:
+        if get_list(pair and 0) equals 1:
+            set base to 0
+        if get_list(pair and 1) equals 1:
+            set base to 1
+    return base

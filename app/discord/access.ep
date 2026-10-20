@@ -1,0 +1,231 @@
+import "permissions"
+import "delivery"
+
+# Host-only authenticated GET with private retained evidence and shared rate
+# deadlines. The model never supplies routes or receives credentials.
+define discord_access_get with library as Str and token as Str and journal as Int and directory_path as Str and route as Str and bucket as Str and major as Str returning List:
+    if discord_delivery_schema(journal) is not equal to 0:
+        set rooted_literal_1 to create_list()
+        set retained_value_added to append_list(rooted_literal_1 and "rate-store-unavailable")
+        return rooted_literal_1
+    set deadline to discord_rate_deadline(journal and bucket and major)
+    if deadline < 0:
+        set rooted_literal_2 to create_list()
+        set retained_value_added to append_list(rooted_literal_2 and "rate-store-unavailable")
+        return rooted_literal_2
+    if deadline > ep_time_now_ms():
+        set deadline_text to int_to_string(deadline)
+        set rooted_literal_3 to create_list()
+        set retained_value_added to append_list(rooted_literal_3 and "rate-limited")
+        set retained_value_added to append_list(rooted_literal_3 and deadline_text)
+        return rooted_literal_3
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(system and directory_path)
+    if directory < 0:
+        set closed to ep_dlclose(system)
+        set rooted_literal_4 to create_list()
+        set retained_value_added to append_list(rooted_literal_4 and "private-output-unavailable")
+        return rooted_literal_4
+    set identity to ptr_to_str(ep_uuid_v4())
+    set filename to concat(identity and ".json")
+    set headerfile to concat(identity and ".headers")
+    set output to workspace_file_open(system and directory and filename and 1)
+    set headers to workspace_file_open(system and directory and headerfile and 1)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(system)
+    if output < 0 or else headers < 0:
+        if output >= 0:
+            set closed to net_close(output)
+        if headers >= 0:
+            set closed to net_close(headers)
+        set rooted_literal_5 to create_list()
+        set retained_value_added to append_list(rooted_literal_5 and "private-output-unavailable")
+        return rooted_literal_5
+    set result to discord_rest_transfer(library and token and "GET" and route and "" and output and headers)
+    if not (archive_list_text(result and 0) equals "complete"):
+        set rooted_literal_6 to create_list()
+        set diagnostic to concat("transfer-unresolved:" and concat(archive_list_text(result and 0) and concat(":curl=" and concat(archive_list_text(result and 2) and concat(":http=" and archive_list_text(result and 1))))))
+        set retained_value_added to append_list(rooted_literal_6 and diagnostic)
+        set retained_value_added to append_list(rooted_literal_6 and filename)
+        return rooted_literal_6
+    set body_file to read_file(concat(directory_path and concat("/" and filename)))
+    set headers_file to read_file(concat(directory_path and concat("/" and headerfile)))
+    if body_file equals 0 or else headers_file equals 0:
+        set rooted_literal_7 to create_list()
+        set retained_value_added to append_list(rooted_literal_7 and "response-unavailable")
+        set retained_value_added to append_list(rooted_literal_7 and filename)
+        return rooted_literal_7
+    set body to ptr_to_str(body_file)
+    set status to archive_list_text(result and 1)
+    if not (discord_rate_observe(journal and bucket and major and status and ptr_to_str(headers_file) and body and ep_time_now_ms()) equals "recorded"):
+        set rooted_literal_8 to create_list()
+        set retained_value_added to append_list(rooted_literal_8 and "rate-response-unresolved")
+        set retained_value_added to append_list(rooted_literal_8 and filename)
+        return rooted_literal_8
+    if not (status equals "200"):
+        set http_status to concat("http-" and status)
+        set rooted_literal_9 to create_list()
+        set retained_value_added to append_list(rooted_literal_9 and http_status)
+        set retained_value_added to append_list(rooted_literal_9 and filename)
+        return rooted_literal_9
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        set rooted_literal_10 to create_list()
+        set retained_value_added to append_list(rooted_literal_10 and "invalid-response")
+        set retained_value_added to append_list(rooted_literal_10 and filename)
+        return rooted_literal_10
+    set retained_values_1 to create_list()
+    set retained_value_added to append_list(retained_values_1 and "observed")
+    set retained_value_added to append_list(retained_values_1 and body)
+    set retained_value_added to append_list(retained_values_1 and ep_sha256(body))
+    set retained_value_added to append_list(retained_values_1 and filename)
+    return retained_values_1
+
+# A timeout affects send permissions even when role overwrites permit sending.
+# SQLite parses Discord's ISO timestamp; malformed values never grant access.
+define discord_member_timeout with journal as Int and body as Str and now as Int returning Int:
+    set tokens to provider_json_tokens(body)
+    set index to provider_member(tokens and 0 and "communication_disabled_until")
+    if index < 0 or else provider_kind(tokens and index) equals "null":
+        return 0
+    set timestamp to provider_value(tokens and index)
+    set now_text to int_to_string(now)
+    set rooted_literal_11 to create_list()
+    set retained_value_added to append_list(rooted_literal_11 and timestamp)
+    set retained_value_added to append_list(rooted_literal_11 and now_text)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT CASE WHEN unixepoch(?1) IS NULL THEN -1 WHEN unixepoch(?1)*1000>CAST(?2 AS INTEGER) THEN 1 ELSE 0 END;" and rooted_literal_11))
+    if not (archive_list_text(row and 0) equals "found"):
+        return -1
+    return string_to_int(archive_list_text(row and 1))
+
+# Fetch current transport state before inference and again before delivery.
+# This does not claim the channel's spectators are all privileged recipients.
+# Return only a status and evidence digest to callers; full snapshots stay in
+# the private spool. Guild allowlisting remains a separate intake requirement.
+define discord_access_check with library as Str and token as Str and journal as Int and directory_path as Str and bot as Str and guild_id as Str and room as Str and user as Str and admins as List returning List:
+    if discord_snowflake(bot) equals 0 or else discord_snowflake(room) equals 0 or else discord_snowflake(user) equals 0:
+        set rooted_literal_12 to create_list()
+        set retained_value_added to append_list(rooted_literal_12 and "invalid-identity")
+        return rooted_literal_12
+    if string_length(guild_id) equals 0 and discord_contains(admins and user) equals 0:
+        set rooted_literal_13 to create_list()
+        set retained_value_added to append_list(rooted_literal_13 and "guest-dm")
+        return rooted_literal_13
+    set observed to discord_access_get(library and token and journal and directory_path and concat("/channels/" and room) and "GET:channel" and room)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return observed
+    set room_body to archive_list_text(observed and 1)
+    set evidence to archive_list_text(observed and 2)
+    set room_tokens to provider_json_tokens(room_body)
+    if not (provider_value(room_tokens and provider_member(room_tokens and 0 and "id")) equals room):
+        set rooted_literal_14 to create_list()
+        set retained_value_added to append_list(rooted_literal_14 and "channel-identity-mismatch")
+        return rooted_literal_14
+    set kind to provider_value(room_tokens and provider_member(room_tokens and 0 and "type"))
+    if string_length(guild_id) equals 0:
+        if not (kind equals "1"):
+            set rooted_literal_15 to create_list()
+            set retained_value_added to append_list(rooted_literal_15 and "not-one-to-one-dm")
+            return rooted_literal_15
+        set recipients to provider_member(room_tokens and 0 and "recipients")
+        if not (provider_kind(room_tokens and recipients) equals "["):
+            set rooted_literal_16 to create_list()
+            set retained_value_added to append_list(rooted_literal_16 and "dm-recipients-unavailable")
+            return rooted_literal_16
+        set found to 0
+        for each recipient in provider_items(room_tokens and recipients):
+            set identity to provider_value(room_tokens and provider_member(room_tokens and recipient and "id"))
+            if identity equals user:
+                set found to 1
+            else if not (identity equals bot):
+                set rooted_literal_17 to create_list()
+                set retained_value_added to append_list(rooted_literal_17 and "dm-recipient-mismatch")
+                return rooted_literal_17
+        if found equals 0:
+            set rooted_literal_18 to create_list()
+            set retained_value_added to append_list(rooted_literal_18 and "dm-recipient-mismatch")
+            return rooted_literal_18
+        set rooted_literal_19 to create_list()
+        set retained_value_added to append_list(rooted_literal_19 and "allowed")
+        set retained_value_added to append_list(rooted_literal_19 and "private")
+        set retained_value_added to append_list(rooted_literal_19 and evidence)
+        return rooted_literal_19
+    if discord_snowflake(guild_id) equals 0 or else not (provider_value(room_tokens and provider_member(room_tokens and 0 and "guild_id")) equals guild_id):
+        set rooted_literal_20 to create_list()
+        set retained_value_added to append_list(rooted_literal_20 and "guild-identity-mismatch")
+        return rooted_literal_20
+    set permission_room to room
+    set permission_body to room_body
+    set send_bit to 11
+    if kind equals "10" or else kind equals "11" or else kind equals "12":
+        set metadata to provider_member(room_tokens and 0 and "thread_metadata")
+        if not (provider_value(room_tokens and provider_member(room_tokens and metadata and "archived")) equals "false") or else not (provider_value(room_tokens and provider_member(room_tokens and metadata and "locked")) equals "false"):
+            set rooted_literal_21 to create_list()
+            set retained_value_added to append_list(rooted_literal_21 and "thread-not-writable")
+            return rooted_literal_21
+        set permission_room to provider_value(room_tokens and provider_member(room_tokens and 0 and "parent_id"))
+        if discord_snowflake(permission_room) equals 0:
+            set rooted_literal_22 to create_list()
+            set retained_value_added to append_list(rooted_literal_22 and "thread-parent-unavailable")
+            return rooted_literal_22
+        set parent to discord_access_get(library and token and journal and directory_path and concat("/channels/" and permission_room) and "GET:channel" and permission_room)
+        if not (archive_list_text(parent and 0) equals "observed"):
+            return parent
+        set permission_body to archive_list_text(parent and 1)
+        set evidence to concat(evidence and archive_list_text(parent and 2))
+        set send_bit to 38
+        if kind equals "12":
+            set rooted_literal_23 to create_list()
+            set retained_value_added to append_list(rooted_literal_23 and bot)
+            set retained_value_added to append_list(rooted_literal_23 and user)
+            for each recipient in rooted_literal_23:
+                set membership to discord_access_get(library and token and journal and directory_path and concat("/channels/" and concat(room and concat("/thread-members/" and ptr_to_str(recipient)))) and "GET:thread-member" and room)
+                if not (archive_list_text(membership and 0) equals "observed"):
+                    return membership
+                set membership_tokens to provider_json_tokens(archive_list_text(membership and 1))
+                if not (provider_value(membership_tokens and provider_member(membership_tokens and 0 and "id")) equals room) or else not (provider_value(membership_tokens and provider_member(membership_tokens and 0 and "user_id")) equals ptr_to_str(recipient)):
+                    set rooted_literal_24 to create_list()
+                    set retained_value_added to append_list(rooted_literal_24 and "thread-member-mismatch")
+                    return rooted_literal_24
+                set evidence to concat(evidence and archive_list_text(membership and 2))
+    else if not (kind equals "0" or else kind equals "5"):
+        set rooted_literal_25 to create_list()
+        set retained_value_added to append_list(rooted_literal_25 and "channel-type-not-writable")
+        return rooted_literal_25
+    set guild to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and guild_id) and "GET:guild" and guild_id)
+    if not (archive_list_text(guild and 0) equals "observed"):
+        return guild
+    set roles to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild_id and "/roles")) and "GET:roles" and guild_id)
+    if not (archive_list_text(roles and 0) equals "observed"):
+        return roles
+    set evidence to concat(evidence and concat(archive_list_text(guild and 2) and archive_list_text(roles and 2)))
+    set rooted_literal_26 to create_list()
+    set retained_value_added to append_list(rooted_literal_26 and bot)
+    set retained_value_added to append_list(rooted_literal_26 and user)
+    for each recipient in rooted_literal_26:
+        set person to ptr_to_str(recipient)
+        set member to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild_id and concat("/members/" and person))) and "GET:member" and guild_id)
+        if not (archive_list_text(member and 0) equals "observed"):
+            return member
+        set evidence to concat(evidence and archive_list_text(member and 2))
+        if discord_channel_permission(archive_list_text(guild and 1) and archive_list_text(roles and 1) and archive_list_text(member and 1) and permission_body and guild_id and person and permission_room and 10) is not equal to 1:
+            set rooted_literal_27 to create_list()
+            set retained_value_added to append_list(rooted_literal_27 and "view-permission-denied")
+            return rooted_literal_27
+        if discord_member_timeout(journal and archive_list_text(member and 1) and ep_time_now_ms()) is not equal to 0:
+            set rooted_literal_28 to create_list()
+            set retained_value_added to append_list(rooted_literal_28 and "member-timeout-or-invalid")
+            return rooted_literal_28
+        if discord_channel_permission(archive_list_text(guild and 1) and archive_list_text(roles and 1) and archive_list_text(member and 1) and permission_body and guild_id and person and permission_room and send_bit) is not equal to 1:
+            set rooted_literal_29 to create_list()
+            set retained_value_added to append_list(rooted_literal_29 and "send-permission-denied")
+            return rooted_literal_29
+        if person equals bot and discord_channel_permission(archive_list_text(guild and 1) and archive_list_text(roles and 1) and archive_list_text(member and 1) and permission_body and guild_id and person and permission_room and 16) is not equal to 1:
+            set rooted_literal_30 to create_list()
+            set retained_value_added to append_list(rooted_literal_30 and "history-permission-denied")
+            return rooted_literal_30
+    set retained_values_2 to create_list()
+    set retained_value_added to append_list(retained_values_2 and "allowed")
+    set retained_value_added to append_list(retained_values_2 and "public")
+    set retained_value_added to append_list(retained_values_2 and ep_sha256(evidence))
+    return retained_values_2

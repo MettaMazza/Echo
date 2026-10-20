@@ -1,0 +1,66 @@
+import "agent_turn"
+
+# Worker claims persist independently of the immutable intake. A crash never
+# silently replays a possibly executed model/tool turn.
+define discord_worker_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_delivery_retry_clock(identity TEXT PRIMARY KEY REFERENCES discord_outbox(identity),next_ms INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_agent_jobs(inbox TEXT PRIMARY KEY REFERENCES discord_inbox(identity),state TEXT NOT NULL,detail TEXT NOT NULL,updated_ms INTEGER NOT NULL,cursor INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_agent_job_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,inbox TEXT NOT NULL REFERENCES discord_inbox(identity),state TEXT NOT NULL,detail TEXT NOT NULL,observed_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_agent_jobs_events_no_update BEFORE UPDATE ON discord_agent_job_events BEGIN SELECT RAISE(ABORT,'Worker receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_agent_jobs_events_no_delete BEFORE DELETE ON discord_agent_job_events BEGIN SELECT RAISE(ABORT,'Worker receipts are immutable'); END;")
+
+define discord_worker_claim with journal as Int returning List:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        set rooted_literal_1 to create_list()
+        set retained_value_added to append_list(rooted_literal_1 and "busy")
+        return rooted_literal_1
+    set row to history_collect_one(archive_prepare(journal and "SELECT identity,payload FROM discord_inbox i WHERE (identity LIKE 'message:create:%' OR identity LIKE 'message:redirect:%') AND NOT EXISTS(SELECT 1 FROM discord_agent_jobs j WHERE j.inbox=i.identity) AND NOT EXISTS(SELECT 1 FROM discord_agent_jobs active JOIN discord_inbox prior ON prior.identity=active.inbox WHERE active.state='claimed' AND COALESCE(json_extract(prior.payload,'$.channel_id'),'')=COALESCE(json_extract(i.payload,'$.channel_id'),'') AND COALESCE(json_extract(prior.payload,'$.author.id'),json_extract(prior.payload,'$.author_id'),'')=COALESCE(json_extract(i.payload,'$.author.id'),json_extract(i.payload,'$.author_id'),'')) ORDER BY rowid LIMIT 1;"))
+    if not (archive_list_text(row and 0) equals "found"):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        set row_status to archive_list_text(row and 0)
+        set rooted_literal_2 to create_list()
+        set retained_value_added to append_list(rooted_literal_2 and row_status)
+        return rooted_literal_2
+    set identity to archive_list_text(row and 1)
+    set now to int_to_string(ep_time_now_ms())
+    set rooted_literal_3 to create_list()
+    set retained_value_added to append_list(rooted_literal_3 and identity)
+    set retained_value_added to append_list(rooted_literal_3 and now)
+    set rooted_literal_4 to create_list()
+    set retained_value_added to append_list(rooted_literal_4 and identity)
+    set retained_value_added to append_list(rooted_literal_4 and now)
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_jobs VALUES(?1,'claimed','durable claim before inference',CAST(?2 AS INTEGER),(SELECT COALESCE(MAX(rowid),0) FROM discord_inbox));" and rooted_literal_3) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'claimed','durable claim before inference',CAST(?2 AS INTEGER));" and rooted_literal_4) and 101) is not equal to 0:
+        set failed to migration_fail(journal and "claim-failed")
+        set rooted_literal_5 to create_list()
+        set retained_value_added to append_list(rooted_literal_5 and failed)
+        return rooted_literal_5
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(journal and "commit-failed")
+        set rooted_literal_6 to create_list()
+        set retained_value_added to append_list(rooted_literal_6 and failed)
+        return rooted_literal_6
+    set payload to archive_list_text(row and 2)
+    set rooted_literal_7 to create_list()
+    set retained_value_added to append_list(rooted_literal_7 and "claimed")
+    set retained_value_added to append_list(rooted_literal_7 and identity)
+    set retained_value_added to append_list(rooted_literal_7 and payload)
+    return rooted_literal_7
+
+define discord_worker_finish with journal as Int and inbox as Str and state as Str returning Str:
+    if string_length(state) equals 0 or else sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "write-unavailable"
+    set now to int_to_string(ep_time_now_ms())
+    set rooted_literal_8 to create_list()
+    set retained_value_added to append_list(rooted_literal_8 and inbox)
+    set old to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_agent_jobs WHERE inbox=?;" and rooted_literal_8))
+    if not (archive_list_text(old and 0) equals "found") or else not (archive_list_text(old and 1) equals "claimed"):
+        return migration_fail(journal and "not-claimed")
+    set rooted_literal_9 to create_list()
+    set retained_value_added to append_list(rooted_literal_9 and inbox)
+    set retained_value_added to append_list(rooted_literal_9 and state)
+    set retained_value_added to append_list(rooted_literal_9 and now)
+    set rooted_literal_10 to create_list()
+    set retained_value_added to append_list(rooted_literal_10 and inbox)
+    set retained_value_added to append_list(rooted_literal_10 and state)
+    set retained_value_added to append_list(rooted_literal_10 and now)
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_agent_jobs SET state=?2,detail='host controller result',updated_ms=CAST(?3 AS INTEGER) WHERE inbox=?1;" and rooted_literal_9) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,?2,'host controller result',CAST(?3 AS INTEGER));" and rooted_literal_10) and 101) is not equal to 0:
+        return migration_fail(journal and "finish-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "commit-failed")
+    return "recorded"
