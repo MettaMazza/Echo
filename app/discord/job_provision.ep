@@ -1,0 +1,50 @@
+import "../jobs/delegation_schema"
+import "../archive/snapshot"
+import "../web/worker"
+
+# Provision only an already-bound Discord archive, under its exclusive runtime
+# lock. This prepares durable job storage; it does not start or claim a worker.
+# Keep the verified pre-migration snapshot even when a later migration fails.
+define discord_job_provision with database as Int and bot as Str and backup as Str returning Str:
+    set binding_table to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_discord_binding';"))
+    if not (archive_list_text(binding_table and 0) equals "found"):
+        return "discord-binding-required"
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals bot):
+        return "discord-binding-mismatch"
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "lock-unavailable"
+    set owner to archive_runtime_lock(database and library)
+    if owner < 0:
+        set closed to ep_dlclose(library)
+        return "runtime-active"
+    set result to discord_job_provision_locked(database and backup)
+    set closed to net_close(owner)
+    set closed to ep_dlclose(library)
+    return result
+
+define discord_job_provision_locked with database as Int and backup as Str returning Str:
+    set active to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_runs WHERE state NOT IN ('completed','cancelled','failed');"))
+    if not (archive_list_text(active and 0) equals "found") or else not (archive_list_text(active and 1) equals "0"):
+        return "runs-unresolved"
+    set tools to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls WHERE state<>'observed';"))
+    if not (archive_list_text(tools and 0) equals "found") or else not (archive_list_text(tools and 1) equals "0"):
+        return "tools-unresolved"
+    set workers to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_web_workers';"))
+    if archive_list_text(workers and 0) equals "found":
+        set running to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_web_workers WHERE status='running';"))
+        if not (archive_list_text(running and 0) equals "found") or else not (archive_list_text(running and 1) equals "0"):
+            return "workers-unresolved"
+    else if not (archive_list_text(workers and 0) equals "end"):
+        return "database-error"
+    if archive_snapshot(database and backup) is not equal to 0:
+        return "backup-failed"
+    set migrated to delegation_schema(database)
+    if not (migrated equals "applied" or else migrated equals "already-applied"):
+        return migrated
+    if web_worker_schema(database) is not equal to 0:
+        return "worker-schema-failed"
+    if archive_verify_all(database) is not equal to 0:
+        return "verification-failed"
+    return "provisioned"
