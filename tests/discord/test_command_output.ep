@@ -1,0 +1,75 @@
+import "../../app/discord/final_stream"
+import "../../app/discord/action_speech"
+
+# Synthetic accepted finals test transport binding; no model or HTTP claim.
+define auto_admit_fixture with journal as Int and identity as Str and room as Str and prompt as Str returning Int:
+    set body to concat("{\"id\":" and concat(provider_quote(identity) and concat(",\"type\":2,\"application_id\":\"900\",\"guild_id\":\"200\",\"channel_id\":" and concat(provider_quote(room) and concat(",\"member\":{\"user\":{\"id\":\"400\"}},\"data\":{\"type\":1,\"id\":\"802\",\"name\":\"auto\",\"options\":[{\"name\":\"prompt\",\"type\":3,\"value\":" and concat(provider_quote(prompt) and "}]}}"))))))
+    set inbox to concat("interaction:" and identity)
+    set saved to discord_inbox_record(journal and inbox and "INTERACTION_CREATE" and body)
+    if discord_interaction_queue(journal and inbox) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET state='acknowledged' WHERE identity=?1;" and [inbox]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_interaction_credentials VALUES(?1,'synthetic_admission_credential_1234','fixture',0,CAST(?2 AS INTEGER)+900000);" and [inbox,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return 1
+    set response to concat("{\"id\":" and concat(provider_quote(concat("1" and identity)) and concat(",\"channel_id\":" and concat(provider_quote(room) and concat(",\"author\":{\"id\":\"900\"},\"flags\":0,\"content\":\"Autonomy request received.\",\"interaction_metadata\":{\"id\":" and concat(provider_quote(identity) and ",\"type\":2,\"user\":{\"id\":\"400\"}}}"))))))
+    if not (discord_command_anchor_observe(journal and inbox and response and "900" and ["200"] and ["400"]) equals "anchored"):
+        return 1
+    return 0
+
+define autonomy_final_fixture with database as Int and run as Str and identity as Str and text as Str returning Int:
+    set row to agent_run_read(database and run)
+    set session to archive_list_text(row and 0)
+    set parent to archive_list_text(row and 3)
+    set request to concat(identity and ":request")
+    set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"parent_event\":" and concat(provider_quote(parent) and ",\"fixture\":true}"))))
+    if archive_append(database and session and request and "model_request" and payload and "fixture") is not equal to 0 or else agent_run_transition(database and run and "ready" and parent and "generating" and request) is not equal to 0:
+        return 1
+    set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"parent_event\":" and concat(provider_quote(request) and concat(",\"fixture\":true,\"content\":" and concat(provider_quote(text) and "}"))))))
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if archive_append_pending(database and session and identity and "assistant_final" and payload and "fixture") is not equal to 0 or else agent_run_transition(database and run and "generating" and request and "completed" and identity) is not equal to 0 or else autonomy_continue_pending(database and run and identity) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return archive_rollback(database)
+    return 0
+
+define action_test_body with identity as Str and actor as Str and room as Str and message as Str returning Str:
+    set body to concat("{\"type\":3,\"application_id\":\"900\",\"guild_id\":\"200\",\"channel_id\":" and provider_quote(room))
+    set body to concat(body and concat(",\"member\":{\"user\":{\"id\":" and concat(provider_quote(actor) and "}},\"message\":{\"author\":{\"id\":\"900\"},\"id\":")))
+    set body to concat(body and concat(provider_quote(message) and "},\"data\":{\"component_type\":2,\"custom_id\":"))
+    return concat(body and concat(provider_quote(identity) and "}}"))
+
+define main returning Int:
+    if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    set database to discord_agent_open(get_argument(2) and "900")
+    if discord_worker_schema(journal) is not equal to 0 or else discord_interaction_schema(journal) is not equal to 0 or else not (delegation_schema(database) equals "applied"):
+        return 2
+    if not (discord_command_observe(journal and "{\"id\":\"802\",\"type\":1,\"application_id\":\"900\",\"guild_id\":\"200\",\"name\":\"auto\"}" and "900" and "200") equals "registered") or else auto_admit_fixture(journal and "701" and "300" and "Report progress.") is not equal to 0:
+        return 3
+    set admitted to discord_command_auto_admit(journal and database and "interaction:701" and "900" and ["200"] and ["400"])
+    set run to "discord-command:interaction:701"
+    if not (archive_list_text(admitted and 0) equals "accepted") or else autonomy_final_fixture(database and run and "command:first" and "First command result.") is not equal to 0 or else not (discord_final_stream_step(journal and database and "interaction:701" and run) equals "final-enqueued"):
+        return 4
+    if autonomy_final_fixture(database and run and "command:second" and "Second command result.") is not equal to 0 or else not (discord_final_stream_step(journal and database and "interaction:701" and run) equals "final-enqueued") or else not (discord_final_stream_step(journal and database and "interaction:701" and run) equals "finals-caught-up"):
+        return 5
+    set outputs to history_collect_one(archive_prepare(journal and "SELECT COUNT(*),COUNT(DISTINCT nonce),MIN(channel),MIN(json_extract(body,'$.message_reference.message_id')),COUNT(DISTINCT inbox) FROM discord_outbox;"))
+    if not (archive_list_text(outputs and 1) equals "2") or else not (archive_list_text(outputs and 2) equals "2") or else not (archive_list_text(outputs and 3) equals "300") or else not (archive_list_text(outputs and 4) equals "1701") or else not (archive_list_text(outputs and 5) equals "1"):
+        return 6
+    set outbox to concat(run and ":final:0")
+    # Missing current admin is rejected before attempting any network request.
+    if not (discord_worker_deliver("" and "" and journal and outbox and "900" and create_list() and "" and concat(get_argument(1) and ".absent-stop")) equals "admin-required"):
+        return 7
+    set speak to discord_message_action_identity(outbox and "speak")
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_outbox SET state='sent',message='2001' WHERE identity=?1;" and [outbox]) and 101) is not equal to 0:
+        return 8
+    set clicked to action_test_body(speak and "400" and "300" and "2001")
+    if not (archive_list_text(discord_speech_action_context(journal and database and clicked and "900" and ["400"]) and 0) equals "bound-needs-live-access"):
+        return 9
+    for each actor in ["900","401"]:
+        if not (archive_list_text(discord_message_action_resolve(journal and action_test_body(speak and ptr_to_str(actor) and "300" and "2001") and "900" and ["400"]) and 0) equals "action-binding-denied"):
+            return 10
+    set closed to sql_close(journal)
+    set journal to discord_store_open(get_argument(1) and "900")
+    if not (discord_final_stream_step(journal and database and "interaction:701" and run) equals "finals-caught-up") or else not (archive_list_text(discord_speech_action_context(journal and database and clicked and "900" and ["400"]) and 0) equals "bound-needs-live-access"):
+        return 11
+    if sql_execute(database and "UPDATE echo_devices SET revoked=1 WHERE device='discord:400';") is not equal to 0 or else not (archive_list_text(discord_speech_action_context(journal and database and clicked and "900" and ["400"]) and 0) equals "run-source-denied") or else not (discord_final_stream_step(journal and database and "interaction:701" and run) equals "scope-denied"):
+        return 12
+    display "PASS: two command finals retain public anchor and unique delivery, original human controls not bot authority, pre-network admin denial, reopen and revocation; model/HTTP delivery remain live acceptance"
+    return 0

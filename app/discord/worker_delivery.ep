@@ -1,4 +1,5 @@
 import "worker_store"
+import "run_barrier"
 import "dm_redirect"
 
 # Activity uses its own audience checks and worker. It must not occupy the
@@ -15,7 +16,7 @@ define discord_worker_deliver with library as Str and token as Str and journal a
         return "separate-activity-worker"
     set rooted_literal_1 to create_list()
     set retained_value_added to append_list(rooted_literal_1 and identity)
-    set row to history_collect_one(checkpoint_prepare(journal and "SELECT i.payload,o.channel,j.cursor,i.identity FROM discord_outbox o JOIN discord_inbox i ON i.identity=o.inbox JOIN discord_agent_jobs j ON j.inbox=i.identity WHERE o.identity=? AND o.state='pending' AND (i.identity LIKE 'message:create:%' OR i.identity LIKE 'message:redirect:%');" and rooted_literal_1))
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT i.payload,o.channel,COALESCE(j.cursor,i.rowid),i.identity FROM discord_outbox o JOIN discord_inbox i ON i.identity=o.inbox LEFT JOIN discord_agent_jobs j ON j.inbox=i.identity WHERE o.identity=? AND o.state='pending' AND (((i.identity LIKE 'message:create:%' OR i.identity LIKE 'message:redirect:%') AND j.inbox IS NOT NULL) OR i.kind='INTERACTION_CREATE');" and rooted_literal_1))
     if not (archive_list_text(row and 0) equals "found"):
         return "not-pending"
     set original to archive_list_text(row and 1)
@@ -27,23 +28,28 @@ define discord_worker_deliver with library as Str and token as Str and journal a
         if not (allowed equals "allowed") or else file_exists(stop_file):
             return concat("redirect:" and allowed)
         return discord_delivery_send(library and token and journal and identity and directory_path)
-    set user to provider_value(parsed and provider_member(parsed and provider_member(parsed and 0 and "author") and "id"))
-    set guild_id to provider_value(parsed and provider_member(parsed and 0 and "guild_id"))
-    if guild_id equals "null":
-        set guild_id to ""
+    set inbox to archive_list_text(row and 4)
+    set source to discord_intake_source(journal and inbox)
+    if not (archive_list_text(source and 0) equals "found"):
+        return "source-unavailable"
+    set user to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild_id to archive_list_text(source and 5)
+    set message to archive_list_text(source and 6)
     set cursor to http_decimal(archive_list_text(row and 3))
-    set message to provider_value(parsed and provider_member(parsed and 0 and "id"))
-    if discord_turn_barrier(journal and cursor and message and room and guild_id) is not equal to 0:
+    if archive_list_text(source and 1) equals "INTERACTION_CREATE" and discord_contains(admins and user) equals 0:
+        return "admin-required"
+    if discord_run_barrier(journal and inbox and cursor and message and room and guild_id) is not equal to 0:
         return "delivery-invalidated"
     if not (room equals archive_list_text(row and 2)) or else file_exists(stop_file):
         return "delivery-stopped"
     set access to discord_access_check(library and token and journal and directory_path and bot and guild_id and room and user and admins)
     if not (archive_list_text(access and 0) equals "allowed"):
         return concat("access:" and archive_list_text(access and 0))
-    set fresh to discord_source_check(library and token and journal and directory_path and original)
+    set fresh to discord_run_source_check(library and token and journal and directory_path and inbox and source)
     if not (fresh equals "current"):
         return fresh
-    if file_exists(stop_file) or else discord_turn_barrier(journal and cursor and message and room and guild_id) is not equal to 0:
+    if file_exists(stop_file) or else discord_run_barrier(journal and inbox and cursor and message and room and guild_id) is not equal to 0:
         return "delivery-stopped"
     return discord_delivery_send(library and token and journal and identity and directory_path)
 
