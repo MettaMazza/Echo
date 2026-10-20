@@ -1,0 +1,78 @@
+import "../../app/discord/job_origin"
+import "../fixtures/delegation_fixture"
+import "../../app/agent/control"
+import "../../app/discord/agent_output"
+
+define main returning Int:
+    if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    set database to discord_agent_open(get_argument(2) and "900")
+    if journal equals 0 or else database equals 0 or else not (delegation_schema(database) equals "applied"):
+        return 2
+    set source to "{\"id\":\"100\",\"channel_id\":\"300\",\"guild_id\":\"200\",\"type\":0,\"author\":{\"id\":\"400\"},\"mentions\":[{\"id\":\"900\"}],\"content\":\"Delegate the public task.\"}"
+    if not (discord_inbox_record(journal and "message:create:100" and "MESSAGE_CREATE" and source) equals "recorded"):
+        return 3
+    set guilds to create_list()
+    set added to append_list(guilds and "200")
+    set admins to create_list()
+    set added to append_list(admins and "400")
+    set submitted to discord_agent_submit(journal and database and "message:create:100" and "900" and guilds and admins)
+    if not (archive_list_text(submitted and 0) equals "accepted"):
+        return 4
+    set current to "discord-message:100"
+    set index to 0
+    repeat while index < 3:
+        if not (discord_job_origin(journal and database and current) equals "message:create:100"):
+            return 5
+        set row to agent_run_read(database and current)
+        if delegation_fixture_request(database and current and archive_list_text(row and 0) and "child" and "{\"instruction\":\"Use only this public task context.\"}") is not equal to 0 or else not (delegation_materialize(database and current and "child") equals "materialized"):
+            return 6
+        set current to concat(current and ":delegate:child")
+        set index to index + 1
+    if not (discord_job_origin(journal and database and current) equals "message:create:100") or else string_length(discord_job_origin(journal and database and "discord-message:999")) > 0:
+        return 7
+    set closed to sql_close(database)
+    set database to discord_agent_open(get_argument(2) and "900")
+    if database equals 0 or else not (discord_job_origin(journal and database and current) equals "message:create:100"):
+        return 8
+    set scheduled_source to "{\"id\":\"101\",\"channel_id\":\"301\",\"guild_id\":\"200\",\"type\":0,\"author\":{\"id\":\"400\"},\"mentions\":[{\"id\":\"900\"}],\"content\":\"Schedule a public reminder.\"}"
+    if not (discord_inbox_record(journal and "message:create:101" and "MESSAGE_CREATE" and scheduled_source) equals "recorded"):
+        return 10
+    set scheduled to discord_agent_submit(journal and database and "message:create:101" and "900" and guilds and admins)
+    if not (archive_list_text(scheduled and 0) equals "accepted"):
+        return 11
+    if delegation_fixture_call(database and "discord-message:101" and archive_list_text(scheduled and 1) and "schedule" and "schedule_fixture" and "{}") is not equal to 0 or else not (schedule_create(database and "discord-message:101" and "schedule" and "Public reminder" and 1000 and 0 and "catch-up") equals "created"):
+        return 12
+    # Ending an originating conversational turn does not erase a separately
+    # persisted schedule. Schedule cancellation has its own durable operation.
+    if agent_cancel_run(database and "discord-message:101") is not equal to 0:
+        return 13
+    set due to schedule_take_due(database and "discord-message:101:schedule:schedule" and 1000)
+    if not (schedule_materialize(database and due) equals "materialized") or else not (discord_job_origin(journal and database and due) equals "message:create:101"):
+        return 14
+    set due_run to agent_run_read(database and due)
+    set request to concat("{\"run_id\":" and concat(provider_quote(due) and concat(",\"parent_event\":" and concat(provider_quote(archive_list_text(due_run and 3)) and ",\"fixture\":true}"))))
+    if archive_append(database and archive_list_text(due_run and 0) and "schedule-fixture-request" and "model_request" and request and "fixture") is not equal to 0 or else agent_run_transition(database and due and "ready" and archive_list_text(due_run and 3) and "generating" and "schedule-fixture-request") is not equal to 0:
+        return 16
+    set response to concat("{\"run_id\":" and concat(provider_quote(due) and ",\"parent_event\":\"schedule-fixture-request\",\"content\":\"The public reminder is due.\",\"fixture\":true}"))
+    if archive_append(database and archive_list_text(due_run and 0) and "schedule-fixture-final" and "assistant_final" and response and "fixture") is not equal to 0 or else agent_run_transition(database and due and "generating" and "schedule-fixture-request" and "completed" and "schedule-fixture-final") is not equal to 0:
+        return 17
+    if not (discord_agent_output_run(journal and database and "message:create:101" and due) equals "enqueued") or else not (discord_agent_output_run(journal and database and "message:create:101" and due) equals "enqueued"):
+        return 18
+    if not (discord_agent_output_run(journal and database and "message:create:100" and due) equals "not-bound-scheduled-output") or else not (discord_agent_output_run(journal and database and "message:create:100" and current) equals "not-bound-scheduled-output"):
+        return 19
+    set output to history_collect_one(archive_prepare(journal and "SELECT COUNT(*),MIN(channel),MIN(json_extract(body,'$.message_reference.message_id')) FROM discord_outbox;"))
+    if not (archive_list_text(output and 1) equals "1") or else not (archive_list_text(output and 2) equals "301") or else not (archive_list_text(output and 3) equals "101"):
+        return 20
+    set foreign_path to concat(get_argument(1) and ".foreign")
+    set foreign_journal to discord_store_open(foreign_path and "901")
+    if foreign_journal equals 0 or else not (discord_inbox_record(foreign_journal and "message:create:100" and "MESSAGE_CREATE" and source) equals "recorded") or else string_length(discord_job_origin(foreign_journal and database and current)) > 0:
+        return 21
+    set closed to sql_close(foreign_journal)
+    if sql_execute(database and "UPDATE echo_devices SET revoked=1 WHERE device='discord:400';") is not equal to 0 or else string_length(discord_job_origin(journal and database and current)) > 0:
+        return 9
+    if string_length(discord_job_origin(journal and database and due)) > 0:
+        return 15
+    display "PASS: recursive delegation and schedule preserve their distinct Discord audiences, reopen and reject unknown or revoked origins."
+    return sql_close(database)

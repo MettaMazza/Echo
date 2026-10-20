@@ -1,0 +1,82 @@
+import "agent_bridge"
+import "../jobs/delegation_run"
+import "../jobs/schedule_run"
+
+# Resolve admitted lineage, never a model-supplied reply destination or a
+# guessed message ID from a child run's name. Every hop must retain the exact
+# authority and audience snapshot. Cycles fail without an arbitrary depth cap.
+define discord_job_origin with journal as Int and database as Int and run as Str returning Str:
+    set archive_binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set journal_binding to history_collect_one(archive_prepare(journal and "SELECT bot FROM discord_identity WHERE singleton=1;"))
+    if not (archive_list_text(archive_binding and 0) equals "found") or else not (archive_list_text(journal_binding and 0) equals "found") or else not (archive_list_text(archive_binding and 1) equals archive_list_text(journal_binding and 1)):
+        return ""
+    set current to run
+    set visited to create_list()
+    repeat while string_length(current) > 0:
+        for each prior in visited:
+            if ptr_to_str(prior) equals current:
+                return ""
+        set added to append_list(visited and current)
+        if run_authority_allows(database and current and "user") equals 0:
+            return ""
+        set state to agent_run_read(database and current)
+        if state equals 0:
+            return ""
+        set values to create_list()
+        set added to append_list(values and current)
+        set parents to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*),COALESCE(MIN(parent),'') FROM (SELECT parent FROM echo_delegations WHERE child=?1 UNION ALL SELECT s.origin_run AS parent FROM echo_schedule_occurrences o JOIN echo_schedules s ON s.identity=o.schedule WHERE o.identity=?1);" and values))
+        if not (archive_list_text(parents and 0) equals "found"):
+            return ""
+        if archive_list_text(parents and 1) equals "0":
+            return discord_job_source(journal and database and current)
+        if not (archive_list_text(parents and 1) equals "1"):
+            return ""
+        set parent to archive_list_text(parents and 2)
+        set added to append_list(values and parent)
+        set same to history_collect_one(checkpoint_prepare(database and "SELECT c.run FROM echo_run_authority c JOIN echo_run_authority p ON p.run=?2 JOIN echo_runs cr ON cr.run=c.run JOIN echo_runs pr ON pr.run=p.run JOIN echo_group_sessions cs ON cs.session=cr.session JOIN echo_group_sessions ps ON ps.session=pr.session WHERE c.run=?1 AND c.device=p.device AND c.principal=p.principal AND c.role=p.role AND c.role_revision=p.role_revision AND c.revocation_revision=p.revocation_revision AND c.link_revision=p.link_revision AND cs.group_id=ps.group_id AND cs.revision=ps.revision;" and values))
+        if not (archive_list_text(same and 0) equals "found"):
+            return ""
+        set current to parent
+    return ""
+
+# Root runs must actually have an admitted Gateway source and its exact
+# transport-owned group binding. Arbitrary local/private runs cannot become
+# Discord jobs merely by choosing a similar run name.
+define discord_job_source with journal as Int and database as Int and run as Str returning Str:
+    if not (string_index_of(run and "discord-message:") equals 0):
+        return ""
+    set message to substring(run and 16 and string_length(run) - 16)
+    if discord_snowflake(message) equals 0:
+        return ""
+    set inbox to concat("message:create:" and message)
+    set values to create_list()
+    set added to append_list(values and inbox)
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT payload FROM discord_inbox WHERE identity=?1 AND kind='MESSAGE_CREATE';" and values))
+    if not (archive_list_text(source and 0) equals "found"):
+        return ""
+    set tokens to provider_json_tokens(archive_list_text(source and 1))
+    if not (provider_value(tokens and provider_member(tokens and 0 and "id")) equals message):
+        return ""
+    set user to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id"))
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    set server to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    if discord_snowflake(user) equals 0 or else discord_snowflake(room) equals 0:
+        return ""
+    if server equals "null" or else string_length(server) equals 0:
+        set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+        if not (archive_list_text(binding and 0) equals "found"):
+            return ""
+        set server to concat("dm:" and archive_list_text(binding and 1))
+    set device to concat("discord:" and user)
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return ""
+    set group to channel_silo_identity("discord" and server and room and principal)
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and group)
+    set added to append_list(values and device)
+    set match to history_collect_one(checkpoint_prepare(database and "SELECT r.session FROM echo_runs r JOIN echo_group_run_origins o ON o.run=r.run AND o.session=r.session JOIN echo_group_sessions s ON s.session=r.session JOIN echo_run_authority a ON a.run=r.run WHERE r.run=?1 AND s.group_id=?2 AND a.device=?3;" and values))
+    if not (archive_list_text(match and 0) equals "found") or else group_run_session_allows(database and run and archive_list_text(match and 1)) equals 0:
+        return ""
+    return inbox
