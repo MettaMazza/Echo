@@ -1,0 +1,104 @@
+import "../../app/discord/background_supervisor"
+import "../../app/discord/job_worker"
+
+# Isolated acceptance harness. The source is an actual retained labelled public
+# Discord delegation test message. Its unchanged text is the actual request.
+# No synthetic tool calls/results and no Discord POST: real model output is
+# queued by the production settlement code, then inspected by the operator.
+# Arguments 1..12 match discord_agent; argument 13 is the retained source file.
+# Spawned --job children use the same production worker entry point.
+define main returning Int:
+    if get_argument_count() is not equal to 14 and get_argument_count() is not equal to 16:
+        return 1
+    set transport to ep_dlopen(get_argument(1))
+    if transport equals 0:
+        return 2
+    set credential to read_file(get_argument(2))
+    if credential equals 0:
+        return 2
+    set token to string_trim(ptr_to_str(credential))
+    set bot to get_argument(7)
+    set guilds to string_split(get_argument(8) and ",")
+    set admins to string_split(get_argument(9) and ",")
+    set profile to provider_llama_profile(get_argument(10) and http_decimal(get_argument(11)))
+    if get_argument_count() equals 16:
+        if not (get_argument(13) equals "--job"):
+            return 3
+        set journal to discord_store_open(get_argument(3) and bot)
+        set database to discord_agent_open(get_argument(4) and bot)
+        set outcome to discord_job_execute(journal and database and token and bot and admins and profile and get_argument(14) and get_argument(15))
+        display outcome
+        if outcome equals "completed":
+            return 0
+        return 4
+    if file_exists(get_argument(3)) or else file_exists(get_argument(4)):
+        return 5
+    set raw to read_file(get_argument(13))
+    if raw equals 0:
+        return 6
+    set source to ptr_to_str(raw)
+    set tokens to provider_json_tokens(source)
+    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set inbox to concat("message:create:" and message)
+    set run to concat("discord-message:" and message)
+    set journal to discord_store_open(get_argument(3) and bot)
+    set database to discord_agent_open(get_argument(4) and bot)
+    if journal equals 0 or else database equals 0 or else discord_worker_schema(journal) is not equal to 0 or else web_worker_schema(database) is not equal to 0 or else not (delegation_schema(database) equals "applied"):
+        return 7
+    if not (discord_inbox_record(journal and inbox and "MESSAGE_CREATE" and source) equals "recorded"):
+        return 8
+    set claimed to discord_worker_claim(journal)
+    set submitted to discord_agent_submit(journal and database and inbox and bot and guilds and admins)
+    if not (archive_list_text(claimed and 0) equals "claimed") or else not (archive_list_text(submitted and 0) equals "accepted"):
+        return 9
+    if web_worker_claim(database and run and "acceptance-parent-worker") is not equal to 0:
+        return 10
+    set outcome to discord_job_execute(journal and database and token and bot and admins and profile and run and "acceptance-parent-worker")
+    display concat("initial-parent: " and outcome)
+    if not (outcome equals "completed") or else not (discord_agent_output(journal and database and inbox) equals "enqueued") or else not (discord_worker_finish(journal and inbox and "enqueued") equals "recorded"):
+        return 11
+    set arguments to create_list()
+    set index to 1
+    repeat while index <= 12:
+        set added to append_list(arguments and get_argument(index))
+        set index to index + 1
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    set deadline to ep_time_now_ms() + 300000
+    repeat while ep_time_now_ms() < deadline and not file_exists(get_argument(6)):
+        if discord_background_settle(journal and database) is not equal to 0 or else discord_background_prepare(journal and database and ep_time_now_ms()) is not equal to 0:
+            return 12
+        set launched to discord_background_launch_one(journal and database and arguments)
+        if archive_list_text(launched and 0) equals "worker-started":
+            set status to 0
+            repeat while status equals 0 and ep_time_now_ms() < deadline:
+                set status to discord_process_poll(get_list(launched and 1))
+                set waited to select(waits and 100)
+            if status is not equal to 1:
+                return 13
+        set evidence to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='assistant_final' AND instr(json_extract(payload,'$.content'),'Delegation acceptance: received child-cobalt-84.')=1;"))
+        if archive_list_text(evidence and 1) equals "1":
+            if discord_background_settle(journal and database) is not equal to 0 or else discord_parent_acceptance_evidence(journal and database and run) is not equal to 0:
+                return 14
+            display "PASS: actual parent model delegated, actual child completed, parent resumed and final output queued. No Discord POST performed."
+            return 0
+        set waited to select(waits and 100)
+    display "FAIL: no verified parent result before acceptance deadline."
+    return 15
+
+# A matching sentence is insufficient: require actual tool provenance, one
+# completed child, collection, both distinct parent finals and queued delivery.
+define discord_parent_acceptance_evidence with journal as Int and database as Int and run as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and run)
+    set calls to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run=?1 AND t.state='observed' AND json_extract(e.payload,'$.name')='delegate_task';" and values))
+    set children to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_delegations d JOIN echo_runs r ON r.run=d.child JOIN echo_web_workers w ON w.run=r.run JOIN echo_events e ON e.event=r.last_event WHERE d.parent=?1 AND r.state='completed' AND w.status='completed' AND e.kind='assistant_final' AND json_extract(e.payload,'$.content')='child-cobalt-84';" and values))
+    set returned to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='delegation_results' AND json_extract(payload,'$.run_id')=?1 AND instr(payload,'child-cobalt-84')>0;" and values))
+    set finals to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(DISTINCT CASE WHEN instr(json_extract(payload,'$.content'),'Delegation acceptance: child queued; result not yet received.')=1 THEN 'queued' WHEN instr(json_extract(payload,'$.content'),'Delegation acceptance: received child-cobalt-84.')=1 THEN 'received' END) FROM echo_events WHERE kind='assistant_final' AND json_extract(payload,'$.run_id')=?1;" and values))
+    if not (archive_list_text(calls and 1) equals "1") or else not (archive_list_text(children and 1) equals "1") or else not (archive_list_text(returned and 1) equals "1") or else not (archive_list_text(finals and 1) equals "2"):
+        return 1
+    set output to history_collect_one(archive_prepare(journal and "SELECT COUNT(DISTINCT CASE WHEN instr(json_extract(body,'$.content'),'Delegation acceptance: child queued; result not yet received.')=1 THEN 'queued' WHEN instr(json_extract(body,'$.content'),'Delegation acceptance: received child-cobalt-84.')=1 THEN 'received' END),COUNT(*) FROM discord_outbox WHERE state='pending';"))
+    if not (archive_list_text(output and 1) equals "2") or else not (archive_list_text(output and 2) equals "2"):
+        return 2
+    return 0
