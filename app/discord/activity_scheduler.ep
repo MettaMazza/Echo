@@ -1,0 +1,58 @@
+import "activity_worker"
+
+# Activation records a durable intake watermark. Old finished conversations
+# are not backfilled; work active at activation and subsequent turns qualify.
+define discord_activity_scheduler_schema with journal as Int returning Int:
+    if discord_worker_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_activity_activation(singleton INTEGER PRIMARY KEY CHECK(singleton=1),inbox_floor INTEGER NOT NULL); INSERT OR IGNORE INTO discord_activity_activation SELECT 1,COALESCE(MAX(rowid),0) FROM discord_inbox; CREATE TABLE IF NOT EXISTS discord_activity_targets(run TEXT PRIMARY KEY,inbox TEXT NOT NULL REFERENCES discord_inbox(identity),seen_ms INTEGER NOT NULL,next_ms INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),last_status TEXT NOT NULL DEFAULT 'discovered'); CREATE TRIGGER IF NOT EXISTS discord_activity_target_binding BEFORE UPDATE OF run,inbox ON discord_activity_targets BEGIN SELECT RAISE(ABORT,'Activity target binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_target_no_delete BEFORE DELETE ON discord_activity_targets BEGIN SELECT RAISE(ABORT,'Activity targets persist'); END;")
+
+define discord_activity_discover with journal as Int returning Int:
+    set query to "INSERT INTO discord_activity_targets(run,inbox,seen_ms) SELECT a.run,a.inbox,MAX(a.updated_ms) FROM (SELECT 'discord-message:'||substr(j.inbox,16) AS run,j.inbox,j.updated_ms,j.state='claimed' AS running FROM discord_agent_jobs j WHERE j.inbox LIKE 'message:create:%' UNION ALL SELECT b.run,b.inbox,b.updated_ms,b.state IN ('reserved','running') AS running FROM discord_background_runs b) a JOIN discord_inbox i ON i.identity=a.inbox WHERE (i.rowid>(SELECT inbox_floor FROM discord_activity_activation WHERE singleton=1) OR a.running OR EXISTS(SELECT 1 FROM discord_activity_targets t WHERE t.run=a.run AND t.inbox=a.inbox)) GROUP BY a.run,a.inbox HAVING 1 ON CONFLICT(run) DO UPDATE SET seen_ms=excluded.seen_ms,next_ms=0,active=1 WHERE discord_activity_targets.inbox=excluded.inbox AND excluded.seen_ms>discord_activity_targets.seen_ms;"
+    return sql_execute(journal and query)
+
+define discord_activity_due with journal as Int and now as Int returning List:
+    set values to create_list()
+    set added to append_list(values and int_to_string(now))
+    return history_collect_one(checkpoint_prepare(journal and "SELECT run,inbox,seen_ms FROM discord_activity_targets WHERE active=1 AND next_ms<=CAST(? AS INTEGER) ORDER BY next_ms,rowid LIMIT 1;" and values))
+
+# Updating only the revision observed at selection prevents a finishing tick
+# from putting a newly resumed parent back to sleep.
+define discord_activity_settle with journal as Int and run as Str and revision as Str and result as Str and terminal as Int and now as Int returning Int:
+    set active to "1"
+    set delay to 500
+    if result equals "caught-up":
+        set delay to 1500
+        if terminal equals 1:
+            set active to "0"
+    else if not (result equals "advanced" or else result equals "part-sent" or else result equals "awaiting-admission"):
+        set delay to 30000
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and revision)
+    set added to append_list(values and int_to_string(now + delay))
+    set added to append_list(values and active)
+    set added to append_list(values and result)
+    return archive_finish(checkpoint_prepare(journal and "UPDATE discord_activity_targets SET next_ms=CAST(?3 AS INTEGER),active=CAST(?4 AS INTEGER),last_status=?5 WHERE run=?1 AND seen_ms=CAST(?2 AS INTEGER);" and values) and 101)
+
+define discord_activity_scheduler_tick with library as Str and token as Str and journal as Int and database as Int and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    if discord_activity_discover(journal) is not equal to 0:
+        return "discovery-failed"
+    set target to discord_activity_due(journal and ep_time_now_ms())
+    if archive_list_text(target and 0) equals "end":
+        return "idle"
+    if not (archive_list_text(target and 0) equals "found"):
+        return "target-read-failed"
+    set run to archive_list_text(target and 1)
+    set result to discord_activity_worker_tick(library and token and journal and database and archive_list_text(target and 2) and run and bot and admins and directory_path and stop_file)
+    set state to agent_run_read(database and run)
+    set terminal to 0
+    if state is not equal to 0:
+        set status to archive_list_text(state and 2)
+        if status equals "completed" or else status equals "cancelled" or else status equals "failed" or else status equals "waiting":
+            set terminal to 1
+    if discord_activity_settle(journal and run and archive_list_text(target and 3) and result and terminal and ep_time_now_ms()) is not equal to 0:
+        return "schedule-write-failed"
+    return result

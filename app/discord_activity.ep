@@ -1,0 +1,62 @@
+import "discord/activity_scheduler"
+import "archive/runtime_lock"
+import "discord/snapshot"
+import "string"
+
+# Independent host UI worker: curl, secret file, journal, agent database,
+# private HTTP spool, stop file, bot, admins CSV, canonical snapshot directory.
+# It never calls a model or moves ordinary replies into the activity thread.
+define main returning Int:
+    if get_argument_count() is not equal to 10:
+        return 1
+    set transport to ep_dlopen(get_argument(1))
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if transport equals 0 or else system equals 0:
+        return 2
+    set credential to read_file(get_argument(2))
+    if credential equals 0 or else discord_snowflake(get_argument(7)) equals 0:
+        return 3
+    set token to string_trim(ptr_to_str(credential))
+    set admins to string_split(get_argument(8) and ",")
+    for each admin in admins:
+        if discord_snowflake(ptr_to_str(admin)) equals 0:
+            return 3
+    set journal to discord_store_open(get_argument(3) and get_argument(7))
+    set database to discord_agent_open(get_argument(4) and get_argument(7))
+    if journal equals 0 or else database equals 0:
+        return 4
+    # Keep the Gateway and model-controller ownership locks independent.
+    # Reuse the journal's persistent anchor so copied stores cannot double-send.
+    set anchor to archive_runtime_anchor(journal and system)
+    if string_length(anchor) equals 0:
+        return 5
+    set descriptor to native_open_mode(system and concat(anchor and ".activity") and 16777986 and 384)
+    set lock_function to ep_dlsym(system and "flock")
+    if descriptor < 0 or else lock_function equals 0 or else socket_signed_result(ep_dlcall2(lock_function and descriptor and 6)) is not equal to 0:
+        return 5
+    if discord_activity_scheduler_schema(journal) is not equal to 0:
+        return 6
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    set previous to ""
+    set status to 0
+    repeat while not file_exists(get_argument(6)):
+        set result to discord_activity_scheduler_tick(get_argument(1) and token and journal and database and get_argument(7) and admins and get_argument(5) and get_argument(6))
+        if not (result equals previous):
+            display concat("activity: " and result)
+            set previous to result
+        if result equals "discovery-failed" or else result equals "target-read-failed" or else result equals "schedule-write-failed":
+            set status to 7
+            break
+        set waited to select(waits and 500)
+    set snapshot to concat(get_argument(9) and concat("/activity-journal-" and concat(ptr_to_str(ep_uuid_v4()) and ".sqlite")))
+    if discord_journal_snapshot(journal and snapshot) is not equal to 0:
+        display "Canonical activity snapshot failed."
+        set status to 8
+    set closed to net_close(descriptor)
+    set closed to sql_close(database)
+    set closed to sql_close(journal)
+    set closed to ep_dlclose(system)
+    set closed to ep_dlclose(transport)
+    return status
