@@ -1,0 +1,87 @@
+import "activity_pages"
+
+# A stream advances only across confirmed transport receipts. Pending pages
+# survive restart unchanged, even if more model events arrive meanwhile.
+define discord_activity_stream_schema with journal as Int returning Int:
+    if discord_activity_pages_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_activity_streams(identity TEXT PRIMARY KEY,inbox TEXT NOT NULL REFERENCES discord_inbox(identity),run TEXT NOT NULL,destination TEXT NOT NULL,full_trace INTEGER NOT NULL CHECK(full_trace IN (0,1)),cursor INTEGER NOT NULL DEFAULT 0 CHECK(cursor>=0)); CREATE TRIGGER IF NOT EXISTS discord_activity_stream_binding BEFORE UPDATE OF identity,inbox,run,destination,full_trace ON discord_activity_streams BEGIN SELECT RAISE(ABORT,'Activity stream binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_stream_monotonic BEFORE UPDATE OF cursor ON discord_activity_streams WHEN NEW.cursor<OLD.cursor BEGIN SELECT RAISE(ABORT,'Activity cursor cannot rewind'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_stream_no_delete BEFORE DELETE ON discord_activity_streams BEGIN SELECT RAISE(ABORT,'Activity streams persist'); END;")
+
+define discord_activity_stream_open with journal as Int and inbox as Str and run as Str and destination as Str and full_trace as Int returning Str:
+    if discord_activity_stream_schema(journal) is not equal to 0 or else discord_snowflake(destination) equals 0 or else string_length(run) equals 0 or else (full_trace is not equal to 0 and full_trace is not equal to 1):
+        return ""
+    set seed to concat(archive_hash_field(run) and concat(archive_hash_field(destination) and archive_hash_field(int_to_string(full_trace))))
+    set identity to concat("activity-stream:" and ep_sha256(seed))
+    set values to create_list()
+    set added to append_list(values and identity)
+    set added to append_list(values and inbox)
+    set added to append_list(values and run)
+    set added to append_list(values and destination)
+    set added to append_list(values and int_to_string(full_trace))
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_activity_streams(identity,inbox,run,destination,full_trace) VALUES(?1,?2,?3,?4,CAST(?5 AS INTEGER));" and values) and 101) is not equal to 0:
+        return ""
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_activity_streams WHERE identity=?1 AND inbox=?2 AND run=?3 AND destination=?4 AND full_trace=CAST(?5 AS INTEGER);" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return identity
+
+define discord_activity_stream_read with journal as Int and identity as Str returning List:
+    set values to create_list()
+    set added to append_list(values and identity)
+    return history_collect_one(checkpoint_prepare(journal and "SELECT inbox,run,destination,full_trace,cursor FROM discord_activity_streams WHERE identity=?;" and values))
+
+# Find the frozen page at the current cursor before asking the model archive
+# for anything newer. A sent page may safely be committed after a crash.
+define discord_activity_stream_pending with journal as Int and identity as Str returning List:
+    set values to create_list()
+    set added to append_list(values and identity)
+    return history_collect_one(checkpoint_prepare(journal and "SELECT p.identity,p.next_cursor,p.parts,p.state FROM discord_activity_streams s JOIN discord_activity_pages p ON p.inbox=s.inbox AND p.run=s.run AND p.destination=s.destination AND p.full_trace=s.full_trace AND p.after_cursor=s.cursor WHERE s.identity=?;" and values))
+
+define discord_activity_stream_commit with journal as Int and identity as Str returning Str:
+    set values to create_list()
+    set added to append_list(values and identity)
+    # This single statement checks and advances under SQLite's write lock.
+    # Require exactly all expected parts, confirmed sent, in the same audience.
+    set query to "UPDATE discord_activity_streams AS s SET cursor=(SELECT p.next_cursor FROM discord_activity_pages p WHERE p.inbox=s.inbox AND p.run=s.run AND p.destination=s.destination AND p.full_trace=s.full_trace AND p.after_cursor=s.cursor) WHERE s.identity=? AND EXISTS(SELECT 1 FROM discord_activity_pages p WHERE p.inbox=s.inbox AND p.run=s.run AND p.destination=s.destination AND p.full_trace=s.full_trace AND p.after_cursor=s.cursor AND p.next_cursor>s.cursor AND p.state='queued' AND p.parts=(SELECT COUNT(*) FROM discord_outbox o WHERE substr(o.identity,1,length(p.identity)+1)=p.identity||':' AND o.inbox=p.inbox AND o.channel=p.destination) AND NOT EXISTS(SELECT 1 FROM discord_outbox o WHERE substr(o.identity,1,length(p.identity)+1)=p.identity||':' AND (o.state<>'sent' OR o.message='' OR o.inbox<>p.inbox OR o.channel<>p.destination)));"
+    if archive_finish(checkpoint_prepare(journal and query and values) and 101) is not equal to 0:
+        return "cursor-write-failed"
+    set changed to history_collect_one(archive_prepare(journal and "SELECT changes();"))
+    if archive_list_text(changed and 1) equals "1":
+        return "advanced"
+    return "waiting"
+
+# One bounded, network-free worker step. Transport workers deliver the frozen
+# intents independently; neither their latency nor speech blocks model turns.
+define discord_activity_stream_step with journal as Int and database as Int and identity as Str returning Str:
+    set stream to discord_activity_stream_read(journal and identity)
+    if not (archive_list_text(stream and 0) equals "found"):
+        return "stream-unavailable"
+    set inbox to archive_list_text(stream and 1)
+    set run to archive_list_text(stream and 2)
+    if not (discord_job_origin(journal and database and run) equals inbox):
+        return "scope-denied"
+    set pending to discord_activity_stream_pending(journal and identity)
+    if archive_list_text(pending and 0) equals "found":
+        set queued to discord_activity_page_enqueue(journal and archive_list_text(pending and 1))
+        if not (queued equals "queued"):
+            return queued
+        return discord_activity_stream_commit(journal and identity)
+    if not (archive_list_text(pending and 0) equals "end"):
+        return "page-read-failed"
+    set cursor to http_decimal(archive_list_text(stream and 5))
+    set page to discord_run_trace(journal and database and inbox and run and cursor and 32)
+    set tokens to provider_json_tokens(page)
+    if tokens equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "status")) equals "found"):
+        return "trace-unavailable"
+    set next_cursor to http_decimal(provider_value(tokens and provider_member(tokens and 0 and "after")))
+    if next_cursor equals cursor:
+        return "caught-up"
+    if next_cursor < cursor:
+        return "invalid-cursor"
+    set planned to discord_activity_page_plan(journal and inbox and run and archive_list_text(stream and 3) and cursor and page and http_decimal(archive_list_text(stream and 4)))
+    if string_index_of(planned and "activity-page:") is not equal to 0:
+        return planned
+    set queued to discord_activity_page_enqueue(journal and planned)
+    if not (queued equals "queued"):
+        return queued
+    return discord_activity_stream_commit(journal and identity)

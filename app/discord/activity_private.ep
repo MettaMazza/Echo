@@ -1,0 +1,83 @@
+import "access"
+
+# Detailed privileged activity belongs only to the original configured admin.
+# This is a transport view, not a memory bridge or a new model conversation.
+define discord_activity_private_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_activity_private(inbox TEXT PRIMARY KEY REFERENCES discord_inbox(identity),recipient TEXT NOT NULL,channel TEXT NOT NULL,evidence TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_activity_private_no_update BEFORE UPDATE ON discord_activity_private BEGIN SELECT RAISE(ABORT,'Private activity binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_private_no_delete BEFORE DELETE ON discord_activity_private BEGIN SELECT RAISE(ABORT,'Private activity binding persists'); END;")
+
+define discord_activity_recipient with journal as Int and inbox as Str and admins as List returning Str:
+    set values to create_list()
+    set added to append_list(values and inbox)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT payload FROM discord_inbox WHERE identity=? AND kind='MESSAGE_CREATE';" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    set tokens to provider_json_tokens(archive_list_text(row and 1))
+    set user to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id"))
+    if discord_snowflake(user) equals 0 or else discord_contains(admins and user) equals 0:
+        return ""
+    return user
+
+define discord_activity_private_observe with journal as Int and inbox as Str and bot as Str and admins as List and body as Str returning Str:
+    if discord_activity_private_schema(journal) is not equal to 0:
+        return "store-unavailable"
+    set user to discord_activity_recipient(journal and inbox and admins)
+    if string_length(user) equals 0:
+        return "not-admin-source"
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "1"):
+        return "not-private-dm"
+    set room to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    if discord_snowflake(room) equals 0:
+        return "invalid-destination"
+    set recipients_index to provider_member(tokens and 0 and "recipients")
+    if not (provider_kind(tokens and recipients_index) equals "["):
+        return "recipients-unavailable"
+    set found to 0
+    for each item in provider_items(tokens and recipients_index):
+        set recipient to provider_value(tokens and provider_member(tokens and item and "id"))
+        if recipient equals user:
+            set found to found + 1
+        else if not (recipient equals bot):
+            return "foreign-recipient"
+    if found is not equal to 1:
+        return "recipient-mismatch"
+    set values to create_list()
+    set added to append_list(values and inbox)
+    set added to append_list(values and user)
+    set added to append_list(values and room)
+    set added to append_list(values and ep_sha256(body))
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_activity_private VALUES(?1,?2,?3,?4);" and values) and 101) is not equal to 0:
+        return "binding-write-failed"
+    set keys to create_list()
+    set added to append_list(keys and inbox)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT recipient,channel FROM discord_activity_private WHERE inbox=?;" and keys))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 1) equals user) or else not (archive_list_text(row and 2) equals room):
+        return "binding-conflict"
+    return room
+
+# Caller invokes after current source access has passed. Discord's Create DM
+# endpoint returns the existing one-to-one DM when one already exists.
+define discord_activity_private_ensure with library as Str and token as Str and journal as Int and inbox as Str and bot as Str and admins as List and directory_path as Str returning Str:
+    if discord_activity_private_schema(journal) is not equal to 0:
+        return ""
+    set user to discord_activity_recipient(journal and inbox and admins)
+    if string_length(user) equals 0:
+        return ""
+    set keys to create_list()
+    set added to append_list(keys and inbox)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT channel FROM discord_activity_private WHERE inbox=?;" and keys))
+    set observed to create_list()
+    if archive_list_text(row and 0) equals "found":
+        set room to archive_list_text(row and 1)
+        set observed to discord_access_get(library and token and journal and directory_path and concat("/channels/" and room) and "GET:channel" and room)
+    else if archive_list_text(row and 0) equals "end":
+        set body to concat("{\"recipient_id\":" and concat(provider_quote(user) and "}"))
+        set observed to discord_access_body(library and token and journal and directory_path and "POST" and "/users/@me/channels" and "POST:private-activity-dm" and user and body)
+    else:
+        return ""
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return ""
+    set result to discord_activity_private_observe(journal and inbox and bot and admins and archive_list_text(observed and 1))
+    if discord_snowflake(result) equals 0:
+        return ""
+    return result

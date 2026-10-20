@@ -1,0 +1,56 @@
+import "activity_stream"
+import "activity_delivery"
+import "worker_delivery"
+
+# One source-bound activity worker tick. This never submits a model prompt,
+# invokes speech, or handles ordinary conversation output.
+define discord_activity_worker_tick with library as Str and token as Str and journal as Int and database as Int and inbox as Str and run as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    if discord_worker_schema(journal) is not equal to 0 or else discord_delivery_schema(journal) is not equal to 0:
+        return "worker-store-unavailable"
+    if not (discord_job_origin(journal and database and run) equals inbox):
+        return "scope-denied"
+    set planned to discord_activity_plan(journal and inbox)
+    if not (planned equals "ready"):
+        set ready to discord_activity_ensure(library and token and journal and inbox and bot and admins and directory_path and stop_file)
+        if not (ready equals "ready"):
+            return ready
+    set values to create_list()
+    set added to append_list(values and inbox)
+    set binding to history_collect_one(checkpoint_prepare(journal and "SELECT thread FROM discord_activity_threads WHERE inbox=? AND state='ready';" and values))
+    if not (archive_list_text(binding and 0) equals "found"):
+        return "thread-unavailable"
+    set stream to discord_activity_stream_open(journal and inbox and run and archive_list_text(binding and 1) and 0)
+    if string_length(stream) equals 0:
+        return "stream-unavailable"
+    if discord_worker_reconcile(journal) is not equal to 0:
+        return "reconcile-held"
+    set stepped to discord_activity_stream_step(journal and database and stream)
+    if not (stepped equals "waiting"):
+        return stepped
+    set page to discord_activity_stream_pending(journal and stream)
+    if not (archive_list_text(page and 0) equals "found"):
+        return "page-unavailable"
+    set keys to create_list()
+    set added to append_list(keys and archive_list_text(page and 1))
+    set added to append_list(keys and int_to_string(ep_time_now_ms()))
+    set pending to history_collect_one(checkpoint_prepare(journal and "SELECT o.identity FROM discord_outbox o LEFT JOIN discord_delivery_retry_clock c ON c.identity=o.identity WHERE substr(o.identity,1,length(?1)+1)=?1||':' AND o.state='pending' AND COALESCE(c.next_ms,0)<=CAST(?2 AS INTEGER) ORDER BY o.rowid LIMIT 1;" and keys))
+    if archive_list_text(pending and 0) equals "end":
+        return "waiting"
+    if not (archive_list_text(pending and 0) equals "found"):
+        return "delivery-read-failed"
+    set delivered to discord_activity_deliver(library and token and journal and database and archive_list_text(pending and 1) and bot and admins and directory_path and stop_file)
+    if delivered equals "recorded":
+        set committed to discord_activity_stream_commit(journal and stream)
+        if committed equals "advanced":
+            return committed
+        # "recorded" can also record rejection or uncertainty. Only a fresh
+        # sent receipt permits another part without a recovery pause.
+        set check_values to create_list()
+        set added to append_list(check_values and archive_list_text(pending and 1))
+        set receipt to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_outbox WHERE identity=?;" and check_values))
+        if archive_list_text(receipt and 1) equals "sent":
+            return "part-sent"
+        return concat("delivery:" and archive_list_text(receipt and 1))
+    return concat("delivery:" and delivered)

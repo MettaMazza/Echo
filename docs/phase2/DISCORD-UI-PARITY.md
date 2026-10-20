@@ -10,7 +10,7 @@ acceptance matrix, not a completion claim. The source inventory is
 | Send and reply | Native mention and reply-to-message | Prior live text acceptance exists |
 | User/account/source labels | Native account plus authenticated source in context/HUD | Name propagation tested; full HUD presentation pending |
 | New session and session selection | `/new`, session selector/history controls | Pending; preserve same user/channel silo and eligible long-term memory |
-| Thinking and tool activity | Persistent thread attached to the exact originating user message; private equivalent where threads cannot preserve access | Scoped projection native pass; actual empty source-attached thread creation and process-restart reconciliation pass; event delivery/controller and full UI pending |
+| Thinking and tool activity | Persistent thread attached to the exact originating user message; private equivalent where threads cannot preserve access | Scoped projection and cursor-recovery native passes; one real source-thread public status stream delivered and restart reconciled without duplication. Automatic discovery/lifecycle, restricted full-trace UI and full multi-turn acceptance remain pending |
 | Interim and subsequent replies | Separate durable replies bound to immutable final events | Live delegation source produced two sent replies; broader UI parity pending |
 | Speak | Button on bot response, actual Warm synthesis of that response | Pending; never substitute the audition WAV |
 | Queue, steer and cancel | Queue reactions plus labelled controls, steering confirmation, cancel | Native reservation/intake foundations; live controls pending |
@@ -51,6 +51,11 @@ Echo's conversational replies stay there too. Only reasoning, tool activity
 and progress belong in the attached thread. Completion must not delete it.
 Discord auto-archiving is not deletion; reopening must retain the original
 thread identity and history. A new user turn gets its own source binding.
+
+Placement acceptance must check the original channel message ID, the thread's
+source binding, and each conversational reply's channel. Creating a thread
+alone does not pass automatic activity delivery. Never repost the user's prompt
+inside the thread or redirect subsequent ordinary conversation into it.
 
 API references: [threads](https://docs.discord.com/developers/resources/channel),
 [interactions](https://docs.discord.com/developers/interactions/receiving-and-responding).
