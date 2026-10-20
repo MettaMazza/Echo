@@ -16,13 +16,15 @@ define discord_typing_due with journal as Int and database as Int and now as Int
     set values to create_list()
     set stamp to int_to_string(now)
     set added to append_list(values and stamp)
-    set statement to checkpoint_prepare(journal and "SELECT j.inbox,json_extract(i.payload,'$.channel_id') FROM discord_agent_jobs j JOIN discord_inbox i ON i.identity=j.inbox LEFT JOIN discord_typing_clock t ON t.channel=json_extract(i.payload,'$.channel_id') WHERE j.state='claimed' AND j.inbox LIKE 'message:create:%' AND COALESCE(t.next_ms,0)<=CAST(? AS INTEGER) ORDER BY j.updated_ms;" and values)
+    # Background continuations retain the original audience but have their own
+    # run identity. A completed foreground job must not hide a resumed parent,
+    # active child or scheduled occurrence in the same conversation.
+    set statement to checkpoint_prepare(journal and "SELECT active.run,json_extract(i.payload,'$.channel_id') FROM (SELECT 'discord-message:'||substr(inbox,16) AS run,inbox,updated_ms FROM discord_agent_jobs WHERE state='claimed' UNION ALL SELECT run,inbox,updated_ms FROM discord_background_runs WHERE state='running') active JOIN discord_inbox i ON i.identity=active.inbox LEFT JOIN discord_typing_clock t ON t.channel=json_extract(i.payload,'$.channel_id') WHERE active.inbox LIKE 'message:create:%' AND COALESCE(t.next_ms,0)<=CAST(? AS INTEGER) ORDER BY active.updated_ms;" and values)
     if statement equals 0:
         return ""
     repeat while ep_sqlite3_step(statement) equals 100:
-        set inbox to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set run to ptr_to_str(ep_sqlite3_column_text(statement and 0))
         set room to ptr_to_str(ep_sqlite3_column_text(statement and 1))
-        set run to concat("discord-message:" and substring(inbox and 15 and string_length(inbox) - 15))
         set state to agent_run_read(database and run)
         if state is not equal to 0 and discord_snowflake(room) is not equal to 0:
             if discord_typing_active(archive_list_text(state and 2)) equals 1:
