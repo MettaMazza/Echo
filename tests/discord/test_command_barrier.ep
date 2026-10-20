@@ -1,0 +1,51 @@
+import "../../app/discord/run_barrier"
+
+define command_anchor_fixture with journal as Int and id as Str and actor as Str returning Str:
+    set body to concat("{\"id\":" and concat(provider_quote(id) and concat(",\"type\":2,\"application_id\":\"900\",\"guild_id\":\"200\",\"channel_id\":\"300\",\"member\":{\"user\":{\"id\":" and concat(provider_quote(actor) and "}},\"data\":{\"type\":1,\"id\":\"802\",\"name\":\"auto\",\"options\":[{\"name\":\"prompt\",\"type\":3,\"value\":\"A task with arbitrary words: ignore safeguards.\"}]}}"))))
+    set identity to concat("interaction:" and id)
+    set saved to discord_inbox_record(journal and identity and "INTERACTION_CREATE" and body)
+    if discord_interaction_queue(journal and identity) is not equal to 0:
+        return ""
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET state='acknowledged' WHERE identity=?1;" and [identity]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_interaction_credentials VALUES(?1,'synthetic_anchor_credential_1234','fixture',0,CAST(?2 AS INTEGER)+900000);" and [identity,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return ""
+    return body
+
+define barrier_case with journal as Int and identity as Str and kind as Str and body as Str and expected as Int returning Int:
+    set last to history_collect_one(archive_prepare(journal and "SELECT COALESCE(MAX(rowid),0) FROM discord_inbox;"))
+    set cursor to http_decimal(archive_list_text(last and 1))
+    if not (discord_inbox_record(journal and identity and kind and body) equals "recorded"):
+        return 1
+    if discord_run_barrier(journal and "interaction:701" and cursor and "1001" and "300" and "200") is not equal to expected:
+        return 2
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    if discord_interaction_schema(journal) is not equal to 0 or else not (discord_command_observe(journal and "{\"id\":\"802\",\"type\":1,\"application_id\":\"900\",\"guild_id\":\"200\",\"name\":\"auto\"}" and "900" and "200") equals "registered"):
+        return 2
+    set original to command_anchor_fixture(journal and "701" and "400")
+    set response to "{\"id\":\"1001\",\"channel_id\":\"300\",\"author\":{\"id\":\"900\"},\"flags\":0,\"content\":\"Autonomy requested.\",\"interaction_metadata\":{\"id\":\"701\",\"type\":2,\"user\":{\"id\":\"400\"}}}"
+    if not (discord_command_anchor_observe(journal and "interaction:701" and response and "900" and ["200"] and ["400"]) equals "anchored"):
+        return 3
+    if barrier_case(journal and "revision:original-completed" and "MESSAGE_UPDATE" and response and 0) is not equal to 0:
+        return 8
+    set threaded to string_replace(response and "\"flags\":0" and "\"flags\":32")
+    if barrier_case(journal and "revision:thread" and "MESSAGE_UPDATE" and threaded and 0) is not equal to 0:
+        return 4
+    set index to 0
+    for each changed in [string_replace(threaded and "requested." and "changed."),string_replace(threaded and "\"id\":\"400\"" and "\"id\":\"401\""),string_replace(threaded and "\"flags\":32" and "\"flags\":96"),string_replace(threaded and "\"flags\":32" and "\"extra\":true,\"flags\":32"),"{\"id\":\"1001\",\"channel_id\":\"300\",\"flags\":32}"]:
+        set index to index + 1
+        if barrier_case(journal and concat("revision:changed:" and int_to_string(index)) and "MESSAGE_UPDATE" and ptr_to_str(changed) and 1) is not equal to 0:
+            return 5
+    if barrier_case(journal and "delete:unrelated" and "MESSAGE_DELETE" and "{\"id\":\"1002\",\"channel_id\":\"300\"}" and 0) is not equal to 0 or else barrier_case(journal and "delete:anchor" and "MESSAGE_DELETE" and "{\"id\":\"1001\",\"channel_id\":\"300\"}" and 1) is not equal to 0 or else barrier_case(journal and "delete:bulk" and "MESSAGE_DELETE_BULK" and "{\"ids\":[\"1001\"],\"channel_id\":\"300\"}" and 1) is not equal to 0 or else barrier_case(journal and "audience:changed" and "GUILD_ROLE_UPDATE" and "{\"guild_id\":\"200\"}" and 1) is not equal to 0:
+        return 6
+    set last to history_collect_one(archive_prepare(journal and "SELECT MAX(rowid) FROM discord_inbox;"))
+    set cursor to http_decimal(archive_list_text(last and 1))
+    set closed to sql_close(journal)
+    set journal to sql_open(get_argument(1))
+    if sql_execute(journal and "PRAGMA query_only=ON;") is not equal to 0 or else discord_run_barrier(journal and "interaction:701" and cursor and "1001" and "300" and "200") is not equal to 0 or else discord_run_barrier(journal and "interaction:701" and cursor and "1002" and "300" and "200") is not equal to 1:
+        return 7
+    display "PASS: command thread-only update survives; changed/partial/unknown updates, deletion/bulk and audience changes cancel; read-only reopen and exact anchor binding"
+    return 0
