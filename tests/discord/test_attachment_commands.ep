@@ -1,0 +1,88 @@
+import "../../app/discord/attachment_delivery"
+import "../../app/discord/command_registration"
+import "../../app/security/group_session_selection"
+import "../../app/web/uploads"
+
+# Native authenticated intake fixture; no network or live account is involved.
+define attachment_command_fixture with journal as Int and identity as Str and arguments as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT json_group_array(json_object('type',3,'name',key,'value',value)) FROM json_each(?1);" and [arguments]))
+    set options to archive_list_text(row and 1)
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT json_object('id',?1,'type',2,'application_id','900','guild_id','200','channel_id','300','member',json('{\"user\":{\"id\":\"400\"}}'),'data',json_object('type',1,'id','805','name','attachments','options',json(?2)));" and [identity,options]))
+    set body to archive_list_text(source and 1)
+    set inbox to concat("interaction:" and identity)
+    if not (discord_inbox_record(journal and inbox and "INTERACTION_CREATE" and body) equals "recorded"):
+        return ""
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_interaction_jobs VALUES(?1,'acknowledged',CAST(?2 AS INTEGER),'fixture');" and [inbox,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return ""
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_interaction_credentials VALUES(?1,'synthetic_attachment_credential_1234','fixture',CAST(?2 AS INTEGER),CAST(?2 AS INTEGER)+900000);" and [inbox,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return ""
+    return body
+
+define attachment_command_run with journal as Int and database as Int and identity as Str and arguments as Str returning Str:
+    set body to attachment_command_fixture(journal and identity and arguments)
+    set result to discord_attachment_prepare(journal and database and concat("interaction:" and identity) and body and "900" and ["200"] and create_list())
+    if archive_list_text(result and 0) equals "found":
+        return archive_list_text(result and 1)
+    return concat("{\"status\":" and concat(provider_quote(archive_list_text(result and 0)) and "}"))
+
+define attachment_command_field with result as Str and name as Str returning Str:
+    set tokens to provider_json_tokens(result)
+    return provider_value(tokens and provider_member(tokens and 0 and name))
+
+define attachment_command_args with database as Int and action as Str and session as Str and attachment as Str and revision as Str and extra as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_patch(json_object('action',?1,'session',?2,'attachment',?3,'revision',?4),json(?5));" and [action,session,attachment,revision,extra]))
+    return archive_list_text(row and 1)
+
+define main returning Int:
+    if get_argument_count() is not equal to 4 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)) or else file_exists(get_argument(3)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    set database to discord_agent_open(get_argument(2) and "900")
+    if journal equals 0 or else database equals 0 or else discord_interaction_schema(journal) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 2
+    if discord_control_command_matches(discord_control_command_definition("attachments") and "attachments") is not equal to 1 or else discord_control_command_matches(string_replace(discord_control_command_definition("attachments") and "\"type\":3" and "\"type\":4") and "attachments") is not equal to 0:
+        return 3
+    if not (discord_command_observe(journal and "{\"id\":\"805\",\"type\":1,\"application_id\":\"900\",\"guild_id\":\"200\",\"name\":\"attachments\"}" and "900" and "200") equals "registered"):
+        return 4
+    set device to discord_agent_principal(database and "400" and create_list())
+    set first to channel_silo_submit(database and device and "discord" and "200" and "300" and "attachment-first" and "Attachment test" and create_list())
+    set session to archive_list_text(first and 1)
+    if write_file(get_argument(3) and "Attachment café original") is not equal to 1 or else web_attachment_register(database and device and session and "source" and get_argument(3) and "café.txt" and "text/plain") is not equal to 0:
+        return 5
+    set listing to attachment_command_run(journal and database and "701" and attachment_command_args(database and "list" and session and "" and "" and "{}"))
+    if string_contains(listing and "café.txt") equals 0:
+        display listing
+        return 6
+    set previous to ""
+    set counter to 702
+    for each action in ["trash","restore-selection","exclude-context","restore-context"]:
+        set result to attachment_command_run(journal and database and int_to_string(counter) and attachment_command_args(database and action and session and "source" and previous and "{}"))
+        if not (attachment_command_field(result and "status") equals "recorded"):
+            display result
+            return 7
+        set previous to attachment_command_field(result and "revision")
+        if action equals "restore-selection":
+            set previous to ""
+        set counter to counter + 1
+    set old to history_collect_one(archive_prepare(journal and "SELECT payload FROM discord_inbox WHERE identity='interaction:702';"))
+    set retry to discord_attachment_prepare(journal and database and "interaction:702" and archive_list_text(old and 1) and "900" and ["200"] and create_list())
+    if not (archive_list_text(retry and 0) equals "found") or else not (attachment_command_field(archive_list_text(retry and 1) and "revision") equals "attachment-lifecycle:discord:400:discord-attachment:interaction:702"):
+        return 8
+    set stale to attachment_command_run(journal and database and "706" and attachment_command_args(database and "trash" and session and "source" and "" and "{}"))
+    if not (attachment_command_field(stale and "status") equals "attachment-rejected:revision-conflict"):
+        display stale
+        return 9
+    set forged to string_replace(archive_list_text(old and 1) and "400" and "401")
+    if not (archive_list_text(discord_attachment_prepare(journal and database and "interaction:702" and forged and "900" and ["200"] and create_list()) and 0) equals "attachment-not-authorized"):
+        return 10
+    set closed to sql_close(database)
+    set database to discord_agent_open(get_argument(2) and "900")
+    set listing to attachment_command_run(journal and database and "707" and attachment_command_args(database and "list" and session and "" and "" and "{}"))
+    if string_contains(listing and "café.txt") equals 0 or else attachment_selectable(database and "source") is not equal to 1 or else attachment_context_included(database and "source") is not equal to 1 or else not (ptr_to_str(read_file(get_argument(3))) equals "Attachment café original"):
+        return 11
+    if web_device_revoke(database and device) is not equal to 0 or else not (archive_list_text(discord_attachment_prepare(journal and database and "interaction:702" and archive_list_text(old and 1) and "900" and ["200"] and create_list()) and 0) equals "attachment-not-authorized"):
+        return 12
+    display "PASS: attachment command registration, exact interaction binding, all four actions, frozen retry, stale denial, spoof denial, restart state and revoked cached-response denial."
+    set closed to sql_close(database)
+    return sql_close(journal)
+
