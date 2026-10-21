@@ -44,9 +44,8 @@ access check. The message ID resolves to a delivered final in the exact channel;
 the group writer checks current audience rights and records a separate selected
 conversation. Confirmation stays in the command response; the next ordinary
 channel message continues the branch. The original conversation is preserved.
-This is not installed or registered in the live connector yet. Native command
-qualification, production builds and actual multi-turn UI acceptance remain
-required before deployment. Edit/regenerate commands and uncertain-work retry
+The command is registered and the corrected candidate is deployed. Native and
+multi-turn live acceptance, including an idle restart, passed as recorded below. Edit/regenerate commands and uncertain-work retry
 are still separate unfinished controls.
 The live memory-cache repair is separate and remains unchanged.
 
@@ -77,8 +76,7 @@ Speak placement and revoked output authority. Native qualification passed in 10.
 SHA-256 `c69a6181cad4d941e9ebdca36da252d1e926a7533b292171f77d5010abc05757`.
 The earlier 9.840 s pass is retained; the final rebuild uses explicit rooted
 argument/result lists. These are synthetic transport tests, not live Discord
-branch acceptance. No command is registered
-and this delivery change is not deployed yet.
+branch acceptance. This delivery change is now deployed with the corrected branch candidate.
 
 ## Command qualification
 
@@ -124,7 +122,7 @@ parent turn used 1.273 s (578 new tokens). The branched turn also ran a separate
 answering request. These are observed component timings, not whole-message
 latency or proof that the morning baseline has been restored.
 
-### Boundary repair qualification (not redeployed)
+### Boundary repair qualification
 
 Automatic source selection, extraction reads and recalled claims now use the
 verified recursive branch ancestry boundary, including omitted edit/regenerate
@@ -136,5 +134,24 @@ The cross-conversation regression also passes: `cross-memory-1792601287980217000
 7.805 s, SHA-256 `53d4a1f7310cedb89324994b83ffa80d95cc7f422fe83ace07ad7e534fcd191b`.
 Earlier r2 stopped on an invalid test evidence-category argument; r3 passed the
 negative checks before the positive cases were added. All evidence is retained.
-Actual model/Discord requalification is still pending; production remains the
-qualified rollback, not this repaired candidate.
+The repaired agent was subsequently idle-deployed and tested with fresh markers;
+see the following acceptance record.
+
+## Corrected live boundary acceptance — 21 October
+
+The corrected native agent (`6972eb09d08ed8f4fd58aa50ed17d20ea3eb5211fa47a57cb712a51ff63751b8`)
+was idle-deployed with the qualified command workers. A fresh seed, later parent
+message, actual `/branch message:` interaction and ordinary follow-up exercised
+a nested branch. The visible answer repeated the correct seed. Both actual
+model requests—background extraction and final answering—contained the seed
+and excluded the later-parent marker. The completed run and inspected requests
+are recorded in `group-branches-20261021/live-corrected-boundary.json`.
+
+An idle connector restart preserved the same binary hashes and resident voice
+profile. Discord reload preserved the earlier answers, Thinking threads and
+Speak controls. The post-restart follow-up used the same selected branch, correctly recalled
+the seed and answered an unrelated arithmetic question. Every actual request
+excluded the later-parent marker. Its completed reply, Thinking thread and Speak
+control were verified in the reloaded Discord UI.
+The first failed live attempt remains recorded above. This does not establish
+edit/regenerate, old-message backfill or complete Discord UI parity.
