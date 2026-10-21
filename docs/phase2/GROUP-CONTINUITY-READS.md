@@ -56,3 +56,24 @@ Echo's identity prompts. Revised native shared regression passed in 17.657 secon
 passed in 14.172 seconds. The agent build passed. Live interpretation qualification
 remains pending. Receipts are retained in `lineage-1792595291977088000` and
 `private-lineage-1792595324100290000` beneath the evidence directory.
+
+## Deployed live retest
+
+The revised agent was deployed at idle, retaining all other Discord workers,
+databases and the resident Warm profile. A real Discord retest returned the exact
+source run and event, but Echo continued to misdescribe that run's original reply.
+This remains a model-interpretation failure. A subsequent real turn called
+`memory_read` on both the original user message and original assistant response;
+Echo then correctly retracted its arithmetic claim and explained the actual
+source relationship. Both responses were observed in Discord. This proves
+source retrieval and correction through originals, not reliable unaided
+interpretation on the first attempt. Private receipts: `lineage-live-retest.json`
+and `lineage-live-two-turns.json`.
+
+The post-restart retest took 74.580 seconds to saved final, including two model
+calls. Its first prefill processed 38,816 uncached tokens in 55.982 seconds, with
+7,168 cached tokens. The warm follow-up took 27.476 seconds across two calls;
+prefills were 1.691 and 1.810 seconds, while generation was 6.215 and 15.072
+seconds. Decode throughput remained about 32.4–32.8 tokens/second. These are
+different prompts and outputs, not a controlled speedup claim or a comparison
+against the morning baseline. Cold-cache latency remains unresolved.
