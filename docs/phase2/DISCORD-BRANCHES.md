@@ -38,10 +38,16 @@ required the original prompt to become unreadable. Neither is counted as a pass.
 An older private-browser fixture also failed on its legacy database layout;
 the same failure reproduced on the previously qualified baseline, so this is not a new branch-change regression. The failure remains retained.
 
-This backend is not yet exposed as a Discord command or button and is not
-installed in the live connector. Command binding, response placement, execution,
-current authority checks, actual multi-turn UI acceptance and retry recovery must
-be completed before marking Discord branch/regenerate/edit parity delivered.
+The candidate now exposes `/branch message:` through immutable registration,
+authenticated command binding, acknowledgement and the executor's fresh Discord
+access check. The message ID resolves to a delivered final in the exact channel;
+the group writer checks current audience rights and records a separate selected
+conversation. Confirmation stays in the command response; the next ordinary
+channel message continues the branch. The original conversation is preserved.
+This is not installed or registered in the live connector yet. Native command
+qualification, production builds and actual multi-turn UI acceptance remain
+required before deployment. Edit/regenerate commands and uncertain-work retry
+are still separate unfinished controls.
 The live memory-cache repair is separate and remains unchanged.
 
 The expanded current-schema fixture passed in 11.908 s, including positive private
@@ -73,3 +79,22 @@ The earlier 9.840 s pass is retained; the final rebuild uses explicit rooted
 argument/result lists. These are synthetic transport tests, not live Discord
 branch acceptance. No command is registered
 and this delivery change is not deployed yet.
+
+## Command qualification
+
+`tests/discord/test_command_branch.ep` passed the corrected command fixture in
+12.561 s, receipt `group-branches-20261021/command-r2-1792600371464660000`,
+binary SHA-256 `e6aa3bac29d5cd9a1111cc8e613514ab4f9e48796b2a1ea706b975cb29156fd0`.
+It checks an authenticated registered command, required options, a genuine
+pending acknowledgement, unsent versus confirmed delivery, wrong channel,
+another account's denial, branch selection for the next normal message, and
+replay after both databases reopen. Both original and branch archives verify.
+The first run passed but used an invalid pending-state fixture; it is retained
+and does not establish the acknowledgement case. These tests do not exercise
+Discord's live HTTP permissions or the visible slash-command interface.
+
+The extended definition matcher also passed (0.153 s), receipt
+`group-branches-20261021/registration-1792600428025184000`, binary SHA-256
+`f3626b731bd9ce0c7afdcdd2d622e4f45ac8f08089e9b86a065be8bfae6cf21b`.
+This checks fixed definition compatibility and rejects altered option types;
+it is not proof of live registration.
