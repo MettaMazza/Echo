@@ -35,10 +35,12 @@ visibility alone is not authorization. Ordinary users cannot start, stop or
 transfer autonomy; they retain permitted conversation functionality. Native
 attachments remain native rather than being replaced with a slash-only flow.
 
-Public threads inherit their parent audience. Privileged traces cannot be
-posted there merely because the requesting author is an admin. Resolve a
-permitted restricted destination before exporting privileged records. Do not
-expose private Host memory, credentials, raw voice references or embeddings.
+Public threads inherit their parent audience. Discord-run reasoning and tool
+activity belong in the thread attached to the prompting message, for everyone
+with channel access. There is no private-activity button or alternate DM trace
+stream. Host memory, credentials, raw voice references and embeddings remain
+isolated at source; admin status does not import them into Discord. Historical
+private delivery receipts are preserved as audit history, not executable routes.
 
 Delivery must retain intended and confirmed state, reconcile uncertain network
 outcomes and avoid duplicate messages after restart. Native tests are required

@@ -1,17 +1,13 @@
 import "activity_archive"
 import "activity_pages"
 import "activity_transport"
-import "activity_private"
 
 # Final activity delivery is separate from answer delivery: answers remain in
 # the original channel. Full Discord-run activity is visible to its source
-# audience in the exact attached thread. An optional private admin view still
-# requires its bound recipient. Detail level is not a destination or authority.
+# audience in the exact attached thread. No alternate private delivery exists.
 define discord_activity_deliver with library as Str and token as Str and journal as Int and database as Int and identity as Str and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
     if not (string_index_of(identity and "activity-page:") equals 0):
         return "not-activity"
-    if discord_activity_private_schema(journal) is not equal to 0:
-        return "activity-store-unavailable"
     set values to create_list()
     set added to append_list(values and identity)
     set row to history_collect_one(checkpoint_prepare(journal and "SELECT p.inbox,p.run,p.destination,p.full_trace,i.payload,json_extract(i.payload,'$.id'),json_extract(i.payload,'$.channel_id'),COALESCE(json_extract(i.payload,'$.guild_id'),'') FROM discord_outbox o JOIN discord_activity_pages p ON o.identity LIKE p.identity||':%' AND o.inbox=p.inbox AND o.channel=p.destination JOIN discord_inbox i ON i.identity=p.inbox WHERE o.identity=? AND o.state='pending';" and values))
@@ -20,18 +16,12 @@ define discord_activity_deliver with library as Str and token as Str and journal
     set inbox to archive_list_text(row and 1)
     set run to archive_list_text(row and 2)
     set destination to archive_list_text(row and 3)
-    set private_view to 0
     set binding_values to create_list()
     set added to append_list(binding_values and inbox)
     set added to append_list(binding_values and destination)
     set thread_binding to history_collect_one(checkpoint_prepare(journal and "SELECT thread FROM discord_activity_threads WHERE inbox=?1 AND thread=?2 AND state='ready';" and binding_values))
     if not (archive_list_text(thread_binding and 0) equals "found"):
-        set private_view to 1
-        set binding to history_collect_one(checkpoint_prepare(journal and "SELECT recipient FROM discord_activity_private WHERE inbox=?1 AND channel=?2;" and binding_values))
-        if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals discord_activity_recipient(journal and inbox and admins)):
-            return "restricted-trace-requires-private-destination"
-        if run_authority_allows(database and run and "admin") equals 0:
-            return "activity-authority-revoked"
+        return "activity-requires-attached-thread"
     if not (discord_job_origin(journal and database and run) equals inbox):
         return "activity-authority-revoked"
     if file_exists(stop_file):
@@ -50,21 +40,16 @@ define discord_activity_deliver with library as Str and token as Str and journal
     set fresh to discord_run_source_check(library and token and journal and directory_path and inbox and intake)
     if not (fresh equals "current"):
         return fresh
-    set target_guild to guild
-    if private_view:
-        set target_guild to ""
-    else:
-        set observed to discord_access_get(library and token and journal and directory_path and concat("/channels/" and destination) and "GET:channel" and destination)
-        if not (archive_list_text(observed and 0) equals "observed") or else not (discord_activity_observe(journal and inbox and archive_list_text(observed and 1)) equals "ready"):
-            return "thread-revalidation-failed"
-    if private_view equals 0:
-        set thread_tokens to provider_json_tokens(archive_list_text(observed and 1))
-        set metadata to provider_member(thread_tokens and 0 and "thread_metadata")
-        if provider_value(thread_tokens and provider_member(thread_tokens and metadata and "archived")) equals "true":
-            set reopened to discord_activity_archive_set(library and token and journal and inbox and 0 and bot and admins and directory_path and stop_file)
-            if not (reopened equals "archive-state-confirmed"):
-                return reopened
-    set target_access to discord_access_check(library and token and journal and directory_path and bot and target_guild and destination and user and admins)
+    set observed to discord_access_get(library and token and journal and directory_path and concat("/channels/" and destination) and "GET:channel" and destination)
+    if not (archive_list_text(observed and 0) equals "observed") or else not (discord_activity_observe(journal and inbox and archive_list_text(observed and 1)) equals "ready"):
+        return "thread-revalidation-failed"
+    set thread_tokens to provider_json_tokens(archive_list_text(observed and 1))
+    set metadata to provider_member(thread_tokens and 0 and "thread_metadata")
+    if provider_value(thread_tokens and provider_member(thread_tokens and metadata and "archived")) equals "true":
+        set reopened to discord_activity_archive_set(library and token and journal and inbox and 0 and bot and admins and directory_path and stop_file)
+        if not (reopened equals "archive-state-confirmed"):
+            return reopened
+    set target_access to discord_access_check(library and token and journal and directory_path and bot and guild and destination and user and admins)
     if not (archive_list_text(target_access and 0) equals "allowed"):
         return concat("thread-access:" and archive_list_text(target_access and 0))
     if file_exists(stop_file) or else not (discord_job_origin(journal and database and run) equals inbox):
