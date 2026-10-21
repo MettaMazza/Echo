@@ -26,6 +26,16 @@ cancellation, request replay, reopen, interrupted journal recovery and rejection
 of an old request against a newer worker. Private receipt:
 `manual-retry-20261021/1792608006613281000/result.json`.
 
-Command binding, final combined fixture, deployed registration and actual Discord
-acceptance remain pending. This document does not claim that `/retry` is already
-available in the live connector or that Phase Two is complete.
+Final combined native acceptance passed in 14.442 s, binary
+`d84bfb26ea21245d532138bbf7b2412acb18790b8f5b3f255860eb0fc7dbdfd8`.
+It adds registered command binding, source-message resolution, first-use anchor
+schema, foreground requests with no prior background reservation, conversation
+ownership conflict and revoked-account denial. Receipt:
+`manual-retry-20261021/qualified-1792608688338756000/result.json`.
+The earlier fixture failed at its expected-success assertion because its prior
+cancelled run still held a reservation. That rejection is now asserted before
+explicitly releasing the fixture reservation; production ownership checks were
+not relaxed. Both receipts are retained.
+
+Deployed registration and actual Discord acceptance remain pending. Native
+acceptance alone does not establish live recovery or Phase Two completion.
