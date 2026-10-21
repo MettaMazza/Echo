@@ -98,3 +98,28 @@ The extended definition matcher also passed (0.153 s), receipt
 `f3626b731bd9ce0c7afdcdd2d622e4f45ac8f08089e9b86a065be8bfae6cf21b`.
 This checks fixed definition compatibility and rejects altered option types;
 it is not proof of live registration.
+
+## Live attempt and rollback — 21 October
+
+The native-qualified command was built, idle-deployed and registered. An actual
+Discord `/branch` interaction completed and selected a distinct session; a normal
+follow-up correctly repeated the seed answer. However, inspection of **every**
+model request found the automatic background memory-extraction request included
+a later parent message outside the saved boundary. The final answering request
+excluded it. This is a failed branch acceptance, not a pass based on the correct
+visible answer. Evidence: `group-branches-20261021/live-branch-boundary-failure.json`.
+
+The connector was idle-rolled back to the qualified rooted-memory build
+`3f21215f2e562cf211ed148db512ca32bac8d46679cb0ab757738dd2252d5784`.
+The registered command may remain visible but is not handled by that older
+executor. Its failed test branch and original history remain preserved. No Host
+or other-user data was involved. The pending repair bounds automatic memory
+extraction and source-backed recall by the branch ancestor endpoint, while
+keeping explicit authorized original-history retrieval separate. It must pass
+native and actual model/Discord checks before redeployment.
+
+The seed turn used 38.778 s prompt processing (25,302 new tokens); the next warm
+parent turn used 1.273 s (578 new tokens). The branched turn also ran a separate
+10.234 s prefill / 27.580 s decode extraction request, then a 0.994 s prefill
+answering request. These are observed component timings, not whole-message
+latency or proof that the morning baseline has been restored.
