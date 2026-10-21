@@ -23,10 +23,44 @@ conversation within the same audience makes its current manifest available to
 the next model request. Tasks are authored planning state, not proof that work
 has run.
 
-This is not yet a deployed Discord project interface. Native command/form
-bindings, private response rendering, project/task/file editing controls and
-actual multi-turn Discord acceptance remain required. No project command is
-registered before its complete handler is qualified. The live connector and
-Host service remain unchanged by this source addition.
+The native `/project` interface is registered and deployed. Actual private Discord
+list, create, read, use and clear interactions passed on 21 October 2026. A downloaded
+read response matched its recorded SHA-256 and retained the Unicode name exactly.
+Native tests additionally cover task/file edits, stale revisions, frozen retries,
+actor substitution, retained originals and archive integrity. Live task/file editing
+and concurrent transport fault acceptance are not claimed by these checks.
 
-Native tests passed create/read/list/update/select, retry and stale-revision behavior, next-run project context, account/channel/guild/private isolation, explicitly joined shared groups, removed-member and obsolete-audience denial, archive reopen and revocation. The receipt is `../releases/1.75/discord-project-control-2026-10-21.json`. No live Discord interface acceptance is claimed.
+Controller evidence: `../releases/1.75/discord-project-control-2026-10-21.json`.
+Command evidence: `../releases/1.75/discord-project-commands-2026-10-21.json`.
+
+## Native Discord command
+
+The `/project` handler is implemented with these native string fields. Registration and the live actions listed above passed. The conversation ID is supplied as `session`
+from `/history`; no model turn is needed to operate the editor.
+
+| Action | Fields and effect |
+| --- | --- |
+| `list` | Lists projects and the selected project for this audience. |
+| `read` | `project`: returns the current complete manifest and revision. |
+| `create` | `name`, optional `instructions`: creates an empty task/file plan. |
+| `edit` | `project`, `revision`, and `name` and/or `instructions`: edits project details. |
+| `use` | `project`: selects it for the conversation. |
+| `clear` | Clears this conversation's selection; retains the project. |
+| `task` | `project`, `revision`, `task`, `title`, `status`: adds or replaces one task. Status is todo, doing, done or blocked. |
+| `remove-task` | `project`, `revision`, `task`: removes that task from a new revision. |
+| `files` | Lists retained file IDs, names and hashes in this exact audience. |
+| `file` | `project`, `revision`, `attachment`, optional `label`: adds or replaces a file reference. The controller obtains its actual hash. |
+| `remove-file` | `project`, `revision`, `attachment`: removes a reference, preserving the uploaded original. |
+
+Edits use an observed revision from `read`, preventing a stale editor from replacing
+newer work. The full response is a private JSON attachment on the original command
+response, with immutable response bytes and SHA-256. It is not posted to the public
+channel. Uncertain uploads are inspected before retry. Over-limit responses are
+explicitly rejected without truncation; any already saved edit remains retained.
+The authenticated interaction supplies the operation identity, account and channel.
+No raw manifest JSON is required to create projects, edit details, or manage tasks
+and files.
+
+Known display limitation: Discord’s native JSON attachment preview currently shows
+non-ASCII text incorrectly despite an explicit UTF-8 content type. Stored and
+downloaded bytes were verified correct. This preview issue remains open.

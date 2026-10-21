@@ -1,0 +1,116 @@
+import "project_control"
+
+# Native command fields map to the same full project manifest used by the web
+# editor. Human text is data; no user-supplied SQL path, scope or actor is used.
+define discord_project_editor with database as Int and device as Str and guild as Str and room as Str and identity as Str and arguments as Str returning Str:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else project_object_keys(tokens and 0 and ["action","session","project","revision","name","instructions","task","title","status","attachment","label"]) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    for each key in ["action","session"]:
+        if not (provider_kind(tokens and provider_member(tokens and 0 and key)) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+    for each key in ["project","revision","name","instructions","task","title","status","attachment","label"]:
+        set field to provider_member(tokens and 0 and key)
+        if field >= 0 and not (provider_kind(tokens and field) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+    set action to provider_value(tokens and provider_member(tokens and 0 and "action"))
+    set session to provider_value(tokens and provider_member(tokens and 0 and "session"))
+    set project to provider_value(tokens and provider_member(tokens and 0 and "project"))
+    set expected to provider_value(tokens and provider_member(tokens and 0 and "revision"))
+    if not (action equals "list" or else action equals "files" or else action equals "create" or else action equals "clear") and string_length(project) equals 0:
+        return "{\"status\":\"project-required\"}"
+    if action equals "edit" and provider_member(tokens and 0 and "name") < 0 and provider_member(tokens and 0 and "instructions") < 0:
+        return "{\"status\":\"edit-fields-required\"}"
+    set base to history_collect_one(checkpoint_prepare(database and "SELECT json_object('operation','list','session',?1,'identity',?2,'project',?3,'expected_revision',?4);" and [session,identity,project,expected]))
+    if not (archive_list_text(base and 0) equals "found"):
+        return "{\"status\":\"database-error\"}"
+    set request to archive_list_text(base and 1)
+    set allowed to discord_project_request(database and device and guild and room and request)
+    set fields to provider_json_tokens(allowed)
+    if not (provider_value(fields and provider_member(fields and 0 and "status")) equals "found"):
+        return allowed
+    if action equals "list":
+        return allowed
+    if action equals "files":
+        # Repeat the audience check under this read snapshot. The session's
+        # audience, not a linked Host device, determines the selectable files.
+        if sql_execute(database and "BEGIN;") is not equal to 0:
+            return "{\"status\":\"database-busy\"}"
+        if group_session_allows(database and device and session and "discord" and guild and room and 1) equals 0:
+            set closed to archive_rollback(database)
+            return "{\"status\":\"not-authorized\"}"
+        set files to history_collect_one(checkpoint_prepare(database and "SELECT json_object('status','found','files',json(COALESCE(json_group_array(json_object('attachment',a.attachment,'name',a.name,'sha256',a.digest)),'[]'))) FROM echo_group_sessions current JOIN echo_group_sessions s ON s.group_id=current.group_id AND s.revision=current.revision JOIN echo_attachments a ON a.session=s.session WHERE current.session=?1;" and [session]))
+        set closed to sql_execute(database and "COMMIT;")
+        if closed is not equal to 0 or else not (archive_list_text(files and 0) equals "found"):
+            set closed to archive_rollback(database)
+            return "{\"status\":\"database-error\"}"
+        return archive_list_text(files and 1)
+    set operation to action
+    if action equals "use" or else action equals "clear":
+        set operation to "select"
+        if action equals "clear":
+            set project to ""
+    set manifest to "{}"
+    if action equals "create":
+        set name to provider_value(tokens and provider_member(tokens and 0 and "name"))
+        set instructions to provider_value(tokens and provider_member(tokens and 0 and "instructions"))
+        set built to history_collect_one(checkpoint_prepare(database and "SELECT json_object('name',?1,'instructions',?2,'tasks',json('[]'),'files',json('[]'));" and [name,instructions]))
+        set manifest to archive_list_text(built and 1)
+    else if action equals "edit" or else action equals "task" or else action equals "remove-task" or else action equals "file" or else action equals "remove-file":
+        set operation to "update"
+        if string_length(expected) equals 0:
+            return "{\"status\":\"revision-required\"}"
+        set scope to memory_share_session_scope(database and session)
+        set latest to project_latest_scope(database and scope and project)
+        if not (archive_list_text(latest and 0) equals "found"):
+            return "{\"status\":\"not-authorized\"}"
+        # Build from the explicitly observed revision, even on retry. The
+        # writer checks current revision and exact idempotent event identity.
+        set prior to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.manifest') FROM echo_events WHERE event=?1 AND kind='project_revision' AND json_extract(payload,'$.project')=?2;" and [expected,project]))
+        if not (archive_list_text(prior and 0) equals "found"):
+            return "{\"status\":\"revision-conflict\"}"
+        set manifest to archive_list_text(prior and 1)
+        if project_manifest_valid_scope(database and scope and manifest) equals 0:
+            return "{\"status\":\"project-source-unavailable\"}"
+        if action equals "edit":
+            for each key in ["name","instructions"]:
+                set field to provider_member(tokens and 0 and key)
+                if field >= 0:
+                    set path to concat("$." and ptr_to_str(key))
+                    set changed to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,?2,?3);" and [manifest,path,provider_value(tokens and field)]))
+                    set manifest to archive_list_text(changed and 1)
+        else:
+            set collection to "tasks"
+            set key to "id"
+            set item_identity to provider_value(tokens and provider_member(tokens and 0 and "task"))
+            set item to ""
+            if action equals "file" or else action equals "remove-file":
+                set collection to "files"
+                set key to "attachment"
+                set item_identity to provider_value(tokens and provider_member(tokens and 0 and "attachment"))
+                if action equals "file":
+                    set source to history_collect_one(checkpoint_prepare(database and "SELECT digest,name FROM echo_attachments WHERE attachment=?1;" and [item_identity]))
+                    if not (archive_list_text(source and 0) equals "found") or else project_file_allowed_scope(database and scope and item_identity and archive_list_text(source and 1)) equals 0:
+                        return "{\"status\":\"attachment-not-authorized\"}"
+                    set label to provider_value(tokens and provider_member(tokens and 0 and "label"))
+                    if string_length(label) equals 0:
+                        set label to archive_list_text(source and 2)
+                    set built to history_collect_one(checkpoint_prepare(database and "SELECT json_object('attachment',?1,'sha256',?2,'label',?3);" and [item_identity,archive_list_text(source and 1),label]))
+                    set item to archive_list_text(built and 1)
+            else if action equals "task":
+                set built to history_collect_one(checkpoint_prepare(database and "SELECT json_object('id',?1,'title',?2,'status',?3);" and [item_identity,provider_value(tokens and provider_member(tokens and 0 and "title")),provider_value(tokens and provider_member(tokens and 0 and "status"))]))
+                set item to archive_list_text(built and 1)
+            if string_length(item_identity) equals 0:
+                return "{\"status\":\"item-required\"}"
+            set collection_path to concat("$." and collection)
+            set key_path to concat("$." and key)
+            set changed to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,?2,json(COALESCE((SELECT json_group_array(json(value)) FROM (SELECT CASE WHEN json_extract(value,?3)=?4 THEN ?5 ELSE value END AS value FROM json_each(?1,?2) WHERE json_extract(value,?3)<>?4 OR length(?5)>0 UNION ALL SELECT ?5 WHERE length(?5)>0 AND NOT EXISTS(SELECT 1 FROM json_each(?1,?2) WHERE json_extract(value,?3)=?4))),'[]')));" and [manifest,collection_path,key_path,item_identity,item]))
+            if not (archive_list_text(changed and 0) equals "found"):
+                return "{\"status\":\"database-error\"}"
+            set manifest to archive_list_text(changed and 1)
+    else if not (action equals "read" or else action equals "use" or else action equals "clear"):
+        return "{\"status\":\"invalid-operation\"}"
+    set built to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,'$.operation',?2,'$.project',?3,'$.manifest',json(?4));" and [request,operation,project,manifest]))
+    if not (archive_list_text(built and 0) equals "found"):
+        return "{\"status\":\"invalid-manifest\"}"
+    return discord_project_request(database and device and guild and room and archive_list_text(built and 1))
