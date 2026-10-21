@@ -1,0 +1,162 @@
+import "../security/group_route"
+import "../security/channel_silo"
+
+# The Discord adapter supplies authenticated device, guild and channel values.
+# These records select an audience; they never copy a private conversation or
+# grant a role. Live Discord channel access is checked by the transport too.
+define discord_joined_schema with database as Int returning Int:
+    set prior to group_run_schema(database)
+    if not (prior equals "applied" or else prior equals "already-applied"):
+        return 1
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_discord_group_choices(operation TEXT PRIMARY KEY,principal TEXT NOT NULL REFERENCES echo_principals(identity),guild TEXT NOT NULL,channel TEXT NOT NULL,group_id TEXT NOT NULL); CREATE INDEX IF NOT EXISTS echo_discord_group_choices_actor ON echo_discord_group_choices(principal,guild,channel); CREATE TRIGGER IF NOT EXISTS echo_discord_group_choices_no_update BEFORE UPDATE ON echo_discord_group_choices BEGIN SELECT RAISE(ABORT,'Group choices are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_discord_group_choices_no_delete BEFORE DELETE ON echo_discord_group_choices BEGIN SELECT RAISE(ABORT,'Group choice provenance persists'); END;")
+
+define discord_joined_namespace with database as Int and group_id as Str and guild as Str and room as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and group_id)
+    set added to append_list(values and guild)
+    set added to append_list(values and room)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT identity FROM echo_groups WHERE identity=?1 AND platform='discord' AND server=?2 AND channel=?3 AND origin LIKE 'discord:joined:%';" and values))
+    return archive_list_text(row and 0) equals "found"
+
+define discord_joined_create with database as Int and device as Str and guild as Str and room as Str and operation as Str returning List:
+    if string_length(guild) equals 0 or else string_index_of(guild and "dm:") equals 0 or else string_length(room) equals 0 or else string_length(operation) equals 0 or else group_text_valid(operation) equals 0:
+        return history_status("invalid-group-request")
+    set binding to archive_hash_field(guild)
+    set binding to concat(binding and archive_hash_field(room))
+    set binding to concat(binding and archive_hash_field(operation))
+    set group_id to concat("discord-joined:" and ep_sha256(binding))
+    set origin to concat("discord:joined:" and operation)
+    set result to group_create(database and device and group_id and "discord" and guild and room and origin)
+    set output to history_status(result)
+    if result equals "created" or else result equals "already-created":
+        set added to append_list(output and group_id)
+    return output
+
+define discord_joined_change with database as Int and device as Str and guild as Str and room as Str and operation as Str and group_id as Str and principal as Str and state as Str and revision as Int returning Str:
+    if discord_joined_namespace(database and group_id and guild and room) equals 0:
+        return "group-not-authorized"
+    return group_change(database and device and operation and group_id and principal and state and revision)
+
+# An empty group explicitly restores personal routing. A removed membership
+# never silently falls back to a different conversation after message intake.
+define discord_joined_select with database as Int and device as Str and guild as Str and room as Str and operation as Str and group_id as Str returning Str:
+    if string_length(operation) equals 0 or else string_length(guild) equals 0 or else string_length(room) equals 0 or else group_text_valid(operation) equals 0 or else group_text_valid(group_id) equals 0:
+        return "invalid-selection"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return migration_fail(database and "not-authorized")
+    if string_length(group_id) > 0:
+        if discord_joined_namespace(database and group_id and guild and room) equals 0 or else not (group_member_state(database and group_id and principal) equals "joined"):
+            return migration_fail(database and "audience-not-authorized")
+    set identity_values to create_list()
+    set added to append_list(identity_values and operation)
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT principal,guild,channel,group_id FROM echo_discord_group_choices WHERE operation=?1;" and identity_values))
+    if archive_list_text(prior and 0) equals "found":
+        if not (archive_list_text(prior and 1) equals principal) or else not (archive_list_text(prior and 2) equals guild) or else not (archive_list_text(prior and 3) equals room) or else not (archive_list_text(prior and 4) equals group_id):
+            return migration_fail(database and "selection-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return "commit-failed"
+        return "already-selected"
+    if not (archive_list_text(prior and 0) equals "end"):
+        return migration_fail(database and "selection-read-failed")
+    set values to create_list()
+    set added to append_list(values and operation)
+    set added to append_list(values and principal)
+    set added to append_list(values and guild)
+    set added to append_list(values and room)
+    set added to append_list(values and group_id)
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_discord_group_choices VALUES(?1,?2,?3,?4,?5);" and values) and 101) is not equal to 0:
+        return migration_fail(database and "selection-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return "commit-failed"
+    return "selected"
+
+define discord_joined_selected with database as Int and device as Str and guild as Str and room as Str returning List:
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    set values to create_list()
+    set added to append_list(values and principal)
+    set added to append_list(values and guild)
+    set added to append_list(values and room)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT group_id FROM echo_discord_group_choices WHERE principal=?1 AND guild=?2 AND channel=?3 ORDER BY rowid DESC LIMIT 1;" and values))
+    if archive_list_text(row and 0) equals "end":
+        return history_status("personal")
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("selection-read-failed")
+    set group_id to archive_list_text(row and 1)
+    if string_length(group_id) equals 0:
+        return history_status("personal")
+    if discord_joined_namespace(database and group_id and guild and room) equals 0 or else not (group_member_state(database and group_id and principal) equals "joined"):
+        return history_status("audience-not-authorized")
+    set output to history_status("selected")
+    set added to append_list(output and group_id)
+    return output
+
+# Read the immutable admitted audience without creating or selecting a group.
+define discord_joined_bound with database as Int and device as Str and guild as Str and room as Str and run as Str returning List:
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    set personal to channel_silo_identity("discord" and guild and room and principal)
+    if string_length(run) > 0:
+        set values to create_list()
+        set added to append_list(values and run)
+        set old to history_collect_one(checkpoint_prepare(database and "SELECT s.group_id,o.device,g.platform,g.server,g.channel FROM echo_group_run_origins o JOIN echo_group_sessions s ON s.session=o.session JOIN echo_groups g ON g.identity=s.group_id WHERE o.run=?1;" and values))
+        if archive_list_text(old and 0) equals "found":
+            set prior_group to archive_list_text(old and 1)
+            if not (archive_list_text(old and 2) equals device) or else not (archive_list_text(old and 3) equals "discord") or else not (archive_list_text(old and 4) equals guild) or else not (archive_list_text(old and 5) equals room):
+                return history_status("run-audience-conflict")
+            if not (prior_group equals personal) and discord_joined_namespace(database and prior_group and guild and room) equals 0:
+                return history_status("run-audience-conflict")
+            if not (group_member_state(database and prior_group and principal) equals "joined"):
+                return history_status("audience-not-authorized")
+            set output to history_status("selected")
+            set added to append_list(output and prior_group)
+            return output
+        if not (archive_list_text(old and 0) equals "end"):
+            return history_status("run-audience-read-failed")
+    return history_status("end")
+
+# New intake may select a group; replay must retain the original audience.
+define discord_joined_target with database as Int and device as Str and guild as Str and room as Str and run as Str returning List:
+    set bound to discord_joined_bound(database and device and guild and room and run)
+    if not (archive_list_text(bound and 0) equals "end"):
+        return bound
+    set principal to principal_for_device(database and device)
+    set personal to channel_silo_identity("discord" and guild and room and principal)
+    set choice to discord_joined_selected(database and device and guild and room)
+    if archive_list_text(choice and 0) equals "selected":
+        return choice
+    if not (archive_list_text(choice and 0) equals "personal"):
+        return choice
+    set origin to concat("silo:user-in-channel:" and ep_sha256(personal))
+    set created to group_create(database and device and personal and "discord" and guild and room and origin)
+    if not (created equals "created" or else created equals "already-created"):
+        return history_status(created)
+    set output to history_status("selected")
+    set added to append_list(output and personal)
+    return output
+
+# An explicit session ID may name either this actor's personal silo or a joined
+# group in this exact channel. Selection does not grant access; membership does.
+define discord_joined_session with database as Int and device as Str and guild as Str and room as Str and session as Str returning List:
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    set values to create_list()
+    set added to append_list(values and session)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT group_id FROM echo_group_sessions WHERE session=?1;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("session-not-authorized")
+    set group_id to archive_list_text(row and 1)
+    set personal to channel_silo_identity("discord" and guild and room and principal)
+    if not (group_id equals personal) and discord_joined_namespace(database and group_id and guild and room) equals 0:
+        return history_status("session-not-authorized")
+    if group_session_allows(database and device and session and "discord" and guild and room and 1) equals 0:
+        return history_status("session-not-authorized")
+    set output to history_status("selected")
+    set added to append_list(output and group_id)
+    return output

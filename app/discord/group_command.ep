@@ -1,0 +1,61 @@
+import "group_control"
+import "command_authority"
+import "agent_bridge"
+
+# Invoked only after the command executor's fresh channel-access check.
+# A member option identifies an invitation target, not an authenticated actor.
+define discord_group_command_apply with journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List returning Str:
+    if discord_command_acknowledged(journal and identity and body) equals 0:
+        return "command-not-acknowledged"
+    set command to discord_command_resolve(journal and body and bot and guilds and admins)
+    if not (archive_list_text(command and 0) equals "command-bound-needs-live-access") or else not (archive_list_text(command and 1) equals "group"):
+        return "command-binding-denied"
+    set device to discord_agent_principal(database and archive_list_text(command and 2) and admins)
+    if string_length(device) equals 0:
+        return "principal-unavailable"
+    set arguments to archive_list_text(command and 5)
+    set fields to provider_json_tokens(arguments)
+    set member to ""
+    set target to provider_member(fields and 0 and "member")
+    if target >= 0:
+        set target_device to discord_agent_principal(database and provider_value(fields and target) and admins)
+        set member to principal_for_device(database and target_device)
+        if string_length(member) equals 0:
+            return "principal-unavailable"
+    set result to discord_group_request(database and device and archive_list_text(command and 4) and archive_list_text(command and 3) and concat("discord-group:" and identity) and arguments and member)
+    set parsed to provider_json_tokens(result)
+    set status to provider_value(parsed and provider_member(parsed and 0 and "status"))
+    if status equals "writer-lock-unavailable" or else status equals "commit-failed" or else status equals "group-read-failed" or else status equals "selection-read-failed" or else status equals "selection-write-failed":
+        return "store-failed"
+    # The existing response writer suppresses mentions and edits the same
+    # private command response. No new public message is posted on retries.
+    return concat("group-control:" and discord_group_caption(result))
+
+define discord_group_caption with result as Str returning Str:
+    set fields to provider_json_tokens(result)
+    set status to provider_value(fields and provider_member(fields and 0 and "status"))
+    set group_id to provider_value(fields and provider_member(fields and 0 and "group"))
+    if status equals "found" and provider_member(fields and 0 and "groups") >= 0:
+        set message to "Your joined conversations and invitations in this channel:"
+        set items to provider_items(fields and provider_member(fields and 0 and "groups"))
+        set last to ""
+        for each item in items:
+            set last to provider_value(fields and provider_member(fields and item and "group"))
+            set membership to provider_value(fields and provider_member(fields and item and "membership"))
+            set revision to provider_value(fields and provider_member(fields and item and "revision"))
+            set message to concat(message and concat("\n" and concat(last and concat(" — " and concat(membership and concat(", revision " and revision))))))
+        if length_list(items) equals 0:
+            return "No joined conversations or invitations in this channel. Use /group create to start one."
+        return concat(message and concat("\nNext page: /group list after:" and last))
+    if status equals "found":
+        set message to concat(group_id and concat("\nMembership: " and provider_value(fields and provider_member(fields and 0 and "membership"))))
+        return concat(message and concat("\nRevision: " and provider_value(fields and provider_member(fields and 0 and "revision"))))
+    if status equals "created" or else status equals "already-created":
+        return concat("Shared conversation created and selected: " and concat(group_id and "\nUse /group invite to invite an account. It must choose /group join before participating."))
+    if status equals "selected" or else status equals "already-selected":
+        if string_length(group_id) equals 0:
+            return "Your personal conversation is selected. Existing group history is preserved."
+        return concat("Shared conversation selected: " and group_id)
+    if status equals "recorded" or else status equals "already-recorded":
+        return concat("Membership change saved for " and concat(group_id and ". Use /group inspect for its current revision. An invitation does not force anyone to join."))
+    return concat("Group action was not accepted: " and concat(status and ". Check your membership, channel and the latest revision with /group inspect."))

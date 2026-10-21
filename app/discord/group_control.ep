@@ -1,0 +1,88 @@
+import "joined_groups"
+import "group_options"
+
+# Transport supplies the authenticated actor and already validated options.
+# The member value is a principal resolved from a native Discord user option.
+# Invitation never grants membership, role, private ancestry or Host access.
+define discord_group_result with status as Str and group_id as Str returning Str:
+    return concat("{\"status\":" and concat(provider_quote(status) and concat(",\"group\":" and concat(provider_quote(group_id) and "}"))))
+
+define discord_group_request with database as Int and device as Str and guild as Str and room as Str and operation as Str and arguments as Str and member_principal as Str returning Str:
+    if string_length(operation) equals 0 or else string_length(guild) equals 0 or else string_index_of(guild and "dm:") equals 0 or else string_length(room) equals 0:
+        return discord_group_result("invalid-group-request" and "")
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return discord_group_result("not-authorized" and "")
+    set fields to provider_json_tokens(arguments)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0:
+        return discord_group_result("invalid-arguments" and "")
+    set action to provider_value(fields and provider_member(fields and 0 and "action"))
+    set group_id to provider_value(fields and provider_member(fields and 0 and "group"))
+    if action equals "create":
+        set created to discord_joined_create(database and device and guild and room and operation)
+        if not (archive_list_text(created and 0) equals "created" or else archive_list_text(created and 0) equals "already-created"):
+            return discord_group_result(archive_list_text(created and 0) and "")
+        set group_id to archive_list_text(created and 1)
+        set selected to discord_joined_select(database and device and guild and room and concat(operation and ":selection") and group_id)
+        if not (selected equals "selected" or else selected equals "already-selected"):
+            return discord_group_result(selected and group_id)
+        return discord_group_result(archive_list_text(created and 0) and group_id)
+    if action equals "personal":
+        return discord_group_result(discord_joined_select(database and device and guild and room and operation and "") and "")
+    if action equals "list":
+        set cursor to ""
+        if provider_member(fields and 0 and "after") >= 0:
+            set cursor to provider_value(fields and provider_member(fields and 0 and "after"))
+        set values to create_list()
+        set added to append_list(values and guild)
+        set added to append_list(values and room)
+        set added to append_list(values and principal)
+        set added to append_list(values and cursor)
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_group_array(json_object('group',identity,'membership',state,'revision',revision)),'[]') FROM (SELECT g.identity,m.state,(SELECT MAX(n.revision) FROM echo_group_membership n WHERE n.group_id=g.identity) AS revision FROM echo_groups g JOIN echo_group_membership m ON m.group_id=g.identity AND m.principal=?3 AND m.revision=(SELECT MAX(n.revision) FROM echo_group_membership n WHERE n.group_id=g.identity AND n.principal=?3) WHERE g.platform='discord' AND g.server=?1 AND g.channel=?2 AND g.origin LIKE 'discord:joined:%' AND m.state IN ('joined','invited') AND g.identity>?4 ORDER BY g.identity LIMIT 10);" and values))
+        if not (archive_list_text(row and 0) equals "found"):
+            return discord_group_result("group-read-failed" and "")
+        return concat("{\"status\":\"found\",\"groups\":" and concat(archive_list_text(row and 1) and "}"))
+    if discord_joined_namespace(database and group_id and guild and room) equals 0:
+        return discord_group_result("group-not-authorized" and "")
+    set membership to group_member_state(database and group_id and principal)
+    if action equals "inspect":
+        if not (membership equals "joined" or else membership equals "invited"):
+            return discord_group_result("group-not-authorized" and "")
+        set values to create_list()
+        set added to append_list(values and group_id)
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT CAST(MAX(revision) AS TEXT) FROM echo_group_membership WHERE group_id=?1;" and values))
+        if not (archive_list_text(row and 0) equals "found"):
+            return discord_group_result("group-read-failed" and "")
+        return concat("{\"status\":\"found\",\"group\":" and concat(provider_quote(group_id) and concat(",\"membership\":" and concat(provider_quote(membership) and concat(",\"revision\":" and concat(archive_list_text(row and 1) and "}"))))))
+    if action equals "open":
+        return discord_group_result(discord_joined_select(database and device and guild and room and operation and group_id) and group_id)
+    set revision to http_decimal(provider_value(fields and provider_member(fields and 0 and "revision")))
+    if revision < 1:
+        return discord_group_result("invalid-revision" and "")
+    set state to ""
+    set target to principal
+    if action equals "invite":
+        set state to "invited"
+        set target to member_principal
+    else if action equals "remove":
+        set state to "removed"
+        set target to member_principal
+    else if action equals "join":
+        set state to "joined"
+    else if action equals "leave":
+        set state to "left"
+    else:
+        return discord_group_result("invalid-action" and "")
+    if string_length(target) equals 0:
+        return discord_group_result("member-unavailable" and "")
+    set changed to discord_joined_change(database and device and guild and room and operation and group_id and target and state and revision)
+    if not (changed equals "recorded" or else changed equals "already-recorded"):
+        return discord_group_result(changed and group_id)
+    if action equals "join" or else action equals "leave":
+        set selected_group to group_id
+        if action equals "leave":
+            set selected_group to ""
+        set selected to discord_joined_select(database and device and guild and room and concat(operation and ":selection") and selected_group)
+        if not (selected equals "selected" or else selected equals "already-selected"):
+            return discord_group_result(selected and group_id)
+    return discord_group_result(changed and group_id)
