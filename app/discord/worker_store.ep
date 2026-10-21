@@ -8,11 +8,17 @@ define discord_worker_schema with journal as Int returning Int:
     return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_background_runs(run TEXT PRIMARY KEY,inbox TEXT NOT NULL REFERENCES discord_inbox(identity),exclusive INTEGER NOT NULL CHECK(exclusive IN (0,1)),state TEXT NOT NULL CHECK(state IN ('reserved','running','released','recovery')),worker TEXT NOT NULL,process INTEGER NOT NULL,updated_ms INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_background_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,run TEXT NOT NULL,inbox TEXT NOT NULL,state TEXT NOT NULL,detail TEXT NOT NULL,observed_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_background_events_no_update BEFORE UPDATE ON discord_background_events BEGIN SELECT RAISE(ABORT,'Background receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_background_events_no_delete BEFORE DELETE ON discord_background_events BEGIN SELECT RAISE(ABORT,'Background receipts are immutable'); END;")
 
 define discord_worker_claim with journal as Int returning List:
+    return discord_worker_claim_at(journal and ep_time_now_ms())
+
+# Only explicit HTTP throttling from the access preflight is retryable here.
+# That return precedes submission/inference. Keep its receipt and original
+# queue order; never turn a tool/model failure or permission denial into retry.
+define discord_worker_claim_at with journal as Int and now_ms as Int returning List:
     if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
         set rooted_literal_1 to create_list()
         set retained_value_added to append_list(rooted_literal_1 and "busy")
         return rooted_literal_1
-    set row to history_collect_one(archive_prepare(journal and "SELECT identity,payload FROM discord_inbox i WHERE (identity LIKE 'message:create:%' OR identity LIKE 'message:redirect:%') AND NOT EXISTS(SELECT 1 FROM discord_agent_jobs j WHERE j.inbox=i.identity) AND NOT EXISTS(SELECT 1 FROM discord_agent_jobs active JOIN discord_inbox prior ON prior.identity=active.inbox WHERE active.state='claimed' AND COALESCE(json_extract(prior.payload,'$.channel_id'),'')=COALESCE(json_extract(i.payload,'$.channel_id'),'') AND COALESCE(json_extract(prior.payload,'$.author.id'),json_extract(prior.payload,'$.author_id'),'')=COALESCE(json_extract(i.payload,'$.author.id'),json_extract(i.payload,'$.author_id'),'')) AND NOT EXISTS(SELECT 1 FROM discord_background_runs b JOIN discord_inbox prior ON prior.identity=b.inbox WHERE b.exclusive=1 AND b.state IN ('reserved','running','recovery') AND json_extract(prior.payload,'$.channel_id')=json_extract(i.payload,'$.channel_id') AND (CASE WHEN prior.kind='INTERACTION_CREATE' THEN json_extract(prior.payload,'$.member.user.id') ELSE json_extract(prior.payload,'$.author.id') END)=json_extract(i.payload,'$.author.id')) ORDER BY rowid LIMIT 1;"))
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT identity,payload FROM discord_inbox i WHERE (identity LIKE 'message:create:%' OR identity LIKE 'message:redirect:%') AND NOT EXISTS(SELECT 1 FROM discord_agent_jobs j WHERE j.inbox=i.identity AND (j.state NOT IN ('access:rate-limited','access:http-429') OR j.updated_ms>CAST(?1 AS INTEGER)-30000)) AND NOT EXISTS(SELECT 1 FROM discord_agent_jobs active JOIN discord_inbox prior ON prior.identity=active.inbox WHERE (active.state='claimed' OR (active.state IN ('access:rate-limited','access:http-429') AND prior.rowid<i.rowid)) AND COALESCE(json_extract(prior.payload,'$.channel_id'),'')=COALESCE(json_extract(i.payload,'$.channel_id'),'') AND COALESCE(json_extract(prior.payload,'$.author.id'),json_extract(prior.payload,'$.author_id'),'')=COALESCE(json_extract(i.payload,'$.author.id'),json_extract(i.payload,'$.author_id'),'')) AND NOT EXISTS(SELECT 1 FROM discord_background_runs b JOIN discord_inbox prior ON prior.identity=b.inbox WHERE b.exclusive=1 AND b.state IN ('reserved','running','recovery') AND json_extract(prior.payload,'$.channel_id')=json_extract(i.payload,'$.channel_id') AND (CASE WHEN prior.kind='INTERACTION_CREATE' THEN json_extract(prior.payload,'$.member.user.id') ELSE json_extract(prior.payload,'$.author.id') END)=json_extract(i.payload,'$.author.id')) ORDER BY rowid LIMIT 1;" and [int_to_string(now_ms)]))
     if not (archive_list_text(row and 0) equals "found"):
         set rolled to sql_execute(journal and "ROLLBACK;")
         set row_status to archive_list_text(row and 0)
@@ -20,14 +26,14 @@ define discord_worker_claim with journal as Int returning List:
         set retained_value_added to append_list(rooted_literal_2 and row_status)
         return rooted_literal_2
     set identity to archive_list_text(row and 1)
-    set now to int_to_string(ep_time_now_ms())
+    set now to int_to_string(now_ms)
     set rooted_literal_3 to create_list()
     set retained_value_added to append_list(rooted_literal_3 and identity)
     set retained_value_added to append_list(rooted_literal_3 and now)
     set rooted_literal_4 to create_list()
     set retained_value_added to append_list(rooted_literal_4 and identity)
     set retained_value_added to append_list(rooted_literal_4 and now)
-    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_jobs VALUES(?1,'claimed','durable claim before inference',CAST(?2 AS INTEGER),(SELECT COALESCE(MAX(rowid),0) FROM discord_inbox));" and rooted_literal_3) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'claimed','durable claim before inference',CAST(?2 AS INTEGER));" and rooted_literal_4) and 101) is not equal to 0:
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_jobs VALUES(?1,'claimed','durable claim before inference',CAST(?2 AS INTEGER),(SELECT COALESCE(MAX(rowid),0) FROM discord_inbox)) ON CONFLICT(inbox) DO UPDATE SET state='claimed',detail=excluded.detail,updated_ms=excluded.updated_ms,cursor=excluded.cursor WHERE discord_agent_jobs.state IN ('access:rate-limited','access:http-429');" and rooted_literal_3) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'claimed','durable claim before inference',CAST(?2 AS INTEGER));" and rooted_literal_4) and 101) is not equal to 0:
         set failed to migration_fail(journal and "claim-failed")
         set rooted_literal_5 to create_list()
         set retained_value_added to append_list(rooted_literal_5 and failed)

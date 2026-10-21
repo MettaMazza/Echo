@@ -1,0 +1,120 @@
+import "queue_marker_transport"
+import "delivery"
+
+# One durable status reply supplements Unicode's limited numeric reactions.
+# Original source and destination are fixed; model text cannot choose either.
+define discord_queue_status_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_queue_status(source TEXT PRIMARY KEY REFERENCES discord_inbox(identity),output TEXT NOT NULL UNIQUE REFERENCES discord_outbox(identity),applied INTEGER NOT NULL DEFAULT -1,failure TEXT NOT NULL DEFAULT ''); CREATE TRIGGER IF NOT EXISTS discord_queue_status_binding BEFORE UPDATE OF source,output ON discord_queue_status BEGIN SELECT RAISE(ABORT,'Queue status binding is immutable'); END;")
+
+# Known rejection or deletion ends only the status control, never the user's
+# queued work. Do not recreate a missing reply or repeatedly retry a 4xx send.
+define discord_queue_status_close with journal as Int and source as Str and reason as Str returning Str:
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_queue_status SET failure=?2 WHERE source=?1 AND failure='';" and [source,reason]) and 101) is not equal to 0:
+        return "queue-status-write-failed"
+    return "queue-status-closed"
+
+define discord_queue_status_text with position as Int returning Str:
+    if position <= 0:
+        return "This message has left the queue."
+    return concat("Queued: position " and concat(int_to_string(position) and " in your conversation. Use the steering reaction on your original message to add it to the active turn when available."))
+
+define discord_queue_status_plan with journal as Int and source as Str and position as Int returning Str:
+    set old to history_collect_one(checkpoint_prepare(journal and "SELECT output FROM discord_queue_status WHERE source=?1;" and [source]))
+    if archive_list_text(old and 0) equals "found":
+        return "tracked"
+    if not (archive_list_text(old and 0) equals "end"):
+        return "queue-status-read-failed"
+    set output to concat("queue-status:" and source)
+    if position <= 10:
+        # A crash can occur between durable outbox enqueue and status binding.
+        # Recover that existing intent even if the queue has since advanced.
+        set pending to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_outbox WHERE identity=?1;" and [output]))
+        if archive_list_text(pending and 0) equals "end":
+            return "not-needed"
+        if not (archive_list_text(pending and 0) equals "found"):
+            return "queue-status-read-failed"
+    set origin to discord_intake_source(journal and source)
+    if not (archive_list_text(origin and 0) equals "found") or else not (archive_list_text(origin and 1) equals "MESSAGE_CREATE"):
+        return "queue-status-source-invalid"
+    set body to concat("{\"content\":\"Queue position updating…\",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false},\"message_reference\":{\"message_id\":" and concat(provider_quote(archive_list_text(origin and 6)) and ",\"fail_if_not_exists\":true}}"))
+    set queued to discord_outbox_enqueue(journal and output and source and archive_list_text(origin and 4) and body)
+    if not (queued equals "enqueued" or else queued equals "already-enqueued"):
+        return queued
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_queue_status(source,output) VALUES(?1,?2);" and [source,output]) and 101) is not equal to 0:
+        return "queue-status-write-failed"
+    return "tracked"
+
+# Exact observed content, author and original reply binding must match before
+# recording success. A stale result records only what actually reached Discord.
+define discord_queue_status_observe with journal as Int and source as Str and bot as Str and position as Int and body as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT o.message,json_extract(i.payload,'$.id') FROM discord_queue_status q JOIN discord_outbox o ON o.identity=q.output JOIN discord_inbox i ON i.identity=q.source WHERE q.source=?1 AND o.state='sent';" and [source]))
+    set tokens to provider_json_tokens(body)
+    if not (archive_list_text(row and 0) equals "found") or else tokens equals 0:
+        return "queue-status-unconfirmed"
+    if not (provider_value(tokens and provider_member(tokens and 0 and "id")) equals archive_list_text(row and 1)) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id")) equals bot) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "message_reference") and "message_id")) equals archive_list_text(row and 2)) or else not (provider_value(tokens and provider_member(tokens and 0 and "content")) equals discord_queue_status_text(position)):
+        return "queue-status-unconfirmed"
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_queue_status SET applied=CAST(?2 AS INTEGER) WHERE source=?1;" and [source,int_to_string(position)]) and 101) is not equal to 0:
+        return "queue-status-write-failed"
+    return "observed"
+
+define discord_queue_status_tick with library as Str and token as Str and journal as Int and source as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT q.output,q.applied,o.state,o.message,q.failure FROM discord_queue_status q JOIN discord_outbox o ON o.identity=q.output WHERE q.source=?1;" and [source]))
+    if archive_list_text(row and 0) equals "end":
+        return "settled"
+    if not (archive_list_text(row and 0) equals "found"):
+        return "queue-status-read-failed"
+    if string_length(archive_list_text(row and 5)) > 0:
+        return "queue-status-closed"
+    if archive_list_text(row and 3) equals "rejected":
+        return discord_queue_status_close(journal and source and "delivery-rejected")
+    set position to discord_queue_position(journal and source)
+    if position < 0:
+        return "queue-status-read-failed"
+    if string_to_int(archive_list_text(row and 2)) equals position:
+        return "settled"
+    if file_exists(stop_file):
+        return "stopped"
+    set origin to discord_intake_source(journal and source)
+    if not (archive_list_text(origin and 0) equals "found"):
+        return "queue-status-source-invalid"
+    set actor to archive_list_text(origin and 3)
+    set room to archive_list_text(origin and 4)
+    set guild to archive_list_text(origin and 5)
+    if (string_length(guild) > 0 and discord_contains(guilds and guild) equals 0) or else (string_length(guild) equals 0 and discord_contains(admins and actor) equals 0):
+        return "queue-status-scope-denied"
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and actor and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return "queue-status-access-denied"
+    if not (discord_run_source_check(library and token and journal and directory_path and source and origin) equals "current") or else file_exists(stop_file):
+        return "queue-status-source-changed"
+    if archive_list_text(row and 3) equals "pending":
+        return discord_delivery_send(library and token and journal and archive_list_text(row and 1) and directory_path)
+    if not (archive_list_text(row and 3) equals "sent"):
+        return "queue-status-awaiting-reconciliation"
+    set message to archive_list_text(row and 4)
+    set route to concat("/channels/" and concat(room and concat("/messages/" and message)))
+    set prior to discord_access_get(library and token and journal and directory_path and route and "GET:queue-status" and room)
+    if archive_list_text(prior and 0) equals "http-404":
+        return discord_queue_status_close(journal and source and "status-message-missing")
+    if not (archive_list_text(prior and 0) equals "observed"):
+        return archive_list_text(prior and 0)
+    set tokens to provider_json_tokens(archive_list_text(prior and 1))
+    if not (provider_value(tokens and provider_member(tokens and 0 and "id")) equals message) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id")) equals bot) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "message_reference") and "message_id")) equals archive_list_text(origin and 6)):
+        return "queue-status-binding-denied"
+    set position to discord_queue_position(journal and source)
+    if position < 0 or else file_exists(stop_file):
+        return "stopped"
+    if provider_value(tokens and provider_member(tokens and 0 and "content")) equals discord_queue_status_text(position):
+        return discord_queue_status_observe(journal and source and bot and position and archive_list_text(prior and 1))
+    # Refresh authority/source after the GET, before publishing the edit.
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and actor and admins)
+    if not (archive_list_text(access and 0) equals "allowed") or else not (discord_run_source_check(library and token and journal and directory_path and source and origin) equals "current") or else file_exists(stop_file):
+        return "queue-status-access-changed"
+    set position to discord_queue_position(journal and source)
+    if position < 0:
+        return "queue-status-read-failed"
+    set body to concat("{\"content\":" and concat(provider_quote(discord_queue_status_text(position)) and ",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false}}"))
+    set changed to discord_access_body(library and token and journal and directory_path and "PATCH" and route and "PATCH:queue-status" and room and body)
+    if not (archive_list_text(changed and 0) equals "observed"):
+        return archive_list_text(changed and 0)
+    return discord_queue_status_observe(journal and source and bot and position and archive_list_text(changed and 1))
