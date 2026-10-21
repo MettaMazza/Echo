@@ -1,0 +1,100 @@
+import "media/resident_protocol"
+import "media/voice_request"
+import "fs"
+
+# A single native process owns the warm worker and serializes jobs. Existing
+# tool authority and private cache remain in the calling host/Discord runtime.
+define main returning Int:
+    if get_argument_count() is not equal to 2:
+        return 1
+    set raw to ptr_to_str(read_file(get_argument(1)))
+    set config to provider_json_tokens(raw)
+    set token to provider_value(config and provider_member(config and 0 and "token"))
+    set revision to provider_value(config and provider_member(config and 0 and "revision"))
+    set root_path to provider_value(config and provider_member(config and 0 and "root"))
+    set port to string_to_int(provider_value(config and provider_member(config and 0 and "port")))
+    set profile to provider_value(config and provider_member(config and 0 and "profile"))
+    set profile_text to ptr_to_str(read_file(profile))
+    if string_length(token) < 32 or else not (ep_sha256(profile_text) equals revision):
+        return 2
+    set model_config to provider_json_tokens(profile_text)
+    set executable to provider_value(model_config and provider_member(model_config and 0 and "executable"))
+    set arguments to voice_request_arguments(profile_text)
+    if arguments equals 0:
+        return 2
+    set added to append_list(arguments and root_path)
+    set allowed to create_list()
+    set array to provider_member(config and 0 and "allowed")
+    set index to array + 1
+    repeat while provider_kind(config and index) is not equal to "]" and provider_kind(config and index) is not equal to "":
+        if not (provider_kind(config and index) equals "string"):
+            return 2
+        set added to append_list(allowed and provider_value(config and index))
+        set index to provider_after(config and index)
+        if provider_kind(config and index) equals ",":
+            set index to index + 1
+    if length_list(allowed) equals 0:
+        return 2
+    set listener to local_socket_listen(port)
+    if listener equals 0:
+        return 3
+    set library to get_list(listener and 0)
+    set root to workspace_root_open(library and root_path)
+    if root < 0:
+        return 4
+    set worker to resident_start_worker(library and executable and arguments and root)
+    if length_list(worker) equals 0:
+        return 6
+    display "Resident speech service listening."
+    repeat while 1 equals 1:
+        set client to local_socket_accept(listener)
+        if client < 0:
+            return 5
+        set request to resident_read_line(library and client and -1)
+        set parsed to provider_json_tokens(request)
+        set job to ""
+        if provider_value(parsed and provider_member(parsed and 0 and "token")) equals token and provider_value(parsed and provider_member(parsed and 0 and "revision")) equals revision:
+            set job to resident_job_relative(root_path and allowed and provider_value(parsed and provider_member(parsed and 0 and "directory")))
+        set directory to -1
+        if string_length(job) > 0:
+            set directory to workspace_directory_open(library and root and job and 0)
+        set result to "rejected\n"
+        if directory >= 0:
+            set input to workspace_file_open(library and directory and "input.txt" and 0)
+            if input >= 0:
+                set closed to net_close(input)
+                if length_list(worker) equals 0:
+                    set worker to resident_start_worker(library and executable and arguments and root)
+                if length_list(worker) > 0:
+                    set worker_socket to get_list(worker and 1)
+                    set line to concat(job and "\n")
+                    set sent to socket_write_all(library and worker_socket and client and str_to_ptr(line) and string_length(line))
+                    if archive_list_text(sent and 0) equals "sent" and resident_wait_marker(library and worker_socket and client and "tts_job_status=0") equals 0:
+                        set result to "complete\n"
+                    else:
+                        set stopped to resident_stop_worker(get_list(worker and 0))
+                        set closed to net_close(worker_socket)
+                        set worker to create_list()
+                        set result to "cancelled-or-worker-failed\n"
+            set closed to net_close(directory)
+        set sent to socket_write_all(library and client and -1 and str_to_ptr(result) and string_length(result))
+        set closed to net_close(client)
+    return 0
+
+define resident_start_worker with library as Int and executable as Str and arguments as List and root as Int returning List:
+    set pair to resident_pair(library)
+    if pair equals 0:
+        return create_list()
+    set duplicate to ep_dlsym(library and "dup")
+    set errors to ep_dlcall1(duplicate and 2)
+    set handle to workspace_process_start_io(executable and arguments and ["LC_ALL=C", "PATH=/usr/bin:/bin"] and root and get_list(pair and 1) and errors and -1 and get_list(pair and 1))
+    set closed to net_close(errors)
+    set closed to net_close(get_list(pair and 1))
+    if handle equals 0:
+        set closed to net_close(get_list(pair and 0))
+        return create_list()
+    if resident_wait_marker(library and get_list(pair and 0) and -1 and "tts_resident_ready") is not equal to 0:
+        set stopped to resident_stop_worker(handle)
+        set closed to net_close(get_list(pair and 0))
+        return create_list()
+    return [handle, get_list(pair and 0)]

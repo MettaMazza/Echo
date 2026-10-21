@@ -2,12 +2,15 @@ import "providers/native_python"
 import "providers/json_access"
 import "providers/archived_stream"
 import "fs"
+import "workspace/directories"
+import "providers/python_scope"
 
 # Host-enrolled private conditioning is never supplied by generated text.
 # Only installed upstream dependency functions cross the C API bridge.
 define main returning Int:
-    if get_argument_count() is not equal to 7 or else not file_exists("input.txt"):
+    if (get_argument_count() is not equal to 7 and get_argument_count() is not equal to 8) or else (get_argument_count() equals 7 and not file_exists("input.txt")):
         return 1
+    set started_ms to ep_time_now_ms()
     # Helper launcher intentionally uses LC_ALL=C; dependencies contain UTF-8.
     set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
     set setenv to ep_dlsym(system and "setenv")
@@ -31,6 +34,7 @@ define main returning Int:
         set printer to ep_dlsym(library and "PyErr_Print")
         set ignored to ep_dlcall0(printer)
         return 3
+    display concat("tts_model_ready_ms=" and int_to_string(ep_time_now_ms() - started_ms))
     set load_vectors to native_python_attribute(library and mx and "load")
     set vector_path to native_python_string(library and get_argument(4))
     set vectors to native_python_call(library and load_vectors and [vector_path] and 0)
@@ -55,7 +59,51 @@ define main returning Int:
     set seed_value to native_python_json(library and "105")
     set seeded to native_python_call(library and seed and [seed_value] and 0)
     set synthesize to native_python_attribute(library and model and "generate")
-    set text to native_python_string(library and ptr_to_str(read_file("input.txt")))
+    display concat("tts_conditioning_ready_ms=" and int_to_string(ep_time_now_ms() - started_ms))
+    if get_argument_count() equals 7:
+        return speak_scoped_job(library and builtins and synthesize and seed and seed_value)
+    # Private inherited stdin is the only job transport. The caller fixes root
+    # and profile at launch; jobs cannot supply models, references or commands.
+    set root to workspace_root_open(system and get_argument(7))
+    if root < 0:
+        return 13
+    set change_directory to ep_dlsym(system and "fchdir")
+    set sys to native_python_import(library and "sys")
+    set stdin to native_python_attribute(library and sys and "stdin")
+    set readline to native_python_attribute(library and stdin and "readline")
+    set flush_output to ep_dlsym(system and "fflush")
+    display "tts_resident_ready"
+    set flushed to ep_dlcall1(flush_output and 0)
+    repeat while 1 equals 1:
+        set line to native_python_call(library and readline and create_list() and 0)
+        set job to string_trim(native_python_text(library and line))
+        set released to native_python_release(library and line)
+        if string_length(job) equals 0:
+            break
+        set directory to workspace_directory_open(system and root and job and 0)
+        if directory < 0:
+            display "tts_job_rejected"
+        else:
+            set changed to ep_dlcall1(change_directory and directory)
+            if changed is not equal to 0 or else not file_exists("input.txt"):
+                display "tts_job_rejected"
+            else:
+                set status to speak_scoped_job(library and builtins and synthesize and seed and seed_value)
+                display concat("tts_job_status=" and int_to_string(status))
+            set closed to net_close(directory)
+        set flushed to ep_dlcall1(flush_output and 0)
+    set closed to net_close(root)
+    return 0
+
+define speak_scoped_job with library as Int and builtins as Int and synthesize as Int and seed as Int and seed_value as Int returning Int:
+    set scope to create_list()
+    set status to speak_generate(scope and library and builtins and synthesize and seed and seed_value)
+    set released to python_scope_close(scope and library)
+    return status
+
+define speak_generate with scope as List and library as Int and builtins as Int and synthesize as Int and seed as Int and seed_value as Int returning Int:
+    set started_ms to ep_time_now_ms()
+    set text to python_scope_string(scope and library and ptr_to_str(read_file("input.txt")))
     set options to concat("{\"ref_audio\":" and provider_quote(get_argument(5)))
     set reference_text to "null"
     set transcript_path to concat(get_argument(5) and ".txt")
@@ -64,11 +112,11 @@ define main returning Int:
     set options to concat(options and ",\"ref_text\":")
     set options to concat(options and reference_text)
     set options to concat(options and ",\"lang_code\":\"English\",\"temperature\":0.3,\"max_tokens\":2400}")
-    set kwargs to native_python_json(library and options)
-    set regex to native_python_import(library and "re")
-    set split to native_python_attribute(library and regex and "split")
-    set pattern to native_python_string(library and "(?<=[.!?])\\s+")
-    set sentences to native_python_call(library and split and [pattern, text] and 0)
+    set kwargs to python_scope_json(scope and library and options)
+    set regex to python_scope_import(scope and library and "re")
+    set split to python_scope_attribute(scope and library and regex and "split")
+    set pattern to python_scope_string(scope and library and "(?<=[.!?])\\s+")
+    set sentences to python_scope_call(scope and library and split and [pattern, text] and 0)
     set size_fn to ep_dlsym(library and "PyList_Size")
     set item_fn to ep_dlsym(library and "PyList_GetItem")
     set sentence_count to ep_dlcall1(size_fn and sentences)
@@ -78,20 +126,22 @@ define main returning Int:
     set count to 0
     repeat while sentence_index is less than sentence_count:
         set sentence to ep_dlcall2(item_fn and sentences and sentence_index)
-        set seeded_chunk to native_python_call(library and seed and [seed_value] and 0)
-        set generator to native_python_call(library and synthesize and [sentence] and kwargs)
-        set to_list to native_python_attribute(library and builtins and "list")
-        set results to native_python_call(library and to_list and [generator] and 0)
+        set seeded_chunk to python_scope_call(scope and library and seed and [seed_value] and 0)
+        set generation_started_ms to ep_time_now_ms()
+        set generator to python_scope_call(scope and library and synthesize and [sentence] and kwargs)
+        set to_list to python_scope_attribute(scope and library and builtins and "list")
+        set results to python_scope_call(scope and library and to_list and [generator] and 0)
         if results equals 0:
             return 5
+        display concat("tts_sentence_generate_ms=" and int_to_string(ep_time_now_ms() - generation_started_ms))
         set result_count to ep_dlcall1(size_fn and results)
         if result_count is less than 1:
             return 6
         set result_index to 0
         repeat while result_index is less than result_count:
             set result to ep_dlcall2(item_fn and results and result_index)
-            set audio to native_python_attribute(library and result and "audio")
-            set rate to native_python_attribute(library and result and "sample_rate")
+            set audio to python_scope_attribute(scope and library and result and "audio")
+            set rate to python_scope_attribute(scope and library and result and "sample_rate")
             # Deterministic punctuation/phrase pacing; keep the selected voice and seed.
             set sentence_text to native_python_text(library and sentence)
             set tempo to "1.025"
@@ -111,7 +161,7 @@ define main returning Int:
                     set tempo to "0.96"
                     set gain to "1.12"
                     set pause to "0.16"
-            set saved_phrase to prosody_save(library and audio and "phrase-input.wav")
+            set saved_phrase to prosody_save(scope and library and audio and "phrase-input.wav")
             if saved_phrase is not equal to 0:
                 return 10
             set filter to concat("atempo=" and tempo)
@@ -123,18 +173,18 @@ define main returning Int:
             set phrase_command to concat(phrase_command and ",\"-nostdin\",\"-v\",\"error\",\"-y\",\"-i\",\"phrase-input.wav\",\"-af\",")
             set phrase_command to concat(phrase_command and provider_quote(filter))
             set phrase_command to concat(phrase_command and ",\"-c:a\",\"pcm_s16le\",\"phrase-output.wav\"]")
-            set phrase_subprocess to native_python_import(library and "subprocess")
-            set phrase_run to native_python_attribute(library and phrase_subprocess and "run")
-            set phrase_args to native_python_json(library and phrase_command)
-            set phrase_check to native_python_json(library and "{\"check\":true}")
-            set phrase_done to native_python_call(library and phrase_run and [phrase_args] and phrase_check)
+            set phrase_subprocess to python_scope_import(scope and library and "subprocess")
+            set phrase_run to python_scope_attribute(scope and library and phrase_subprocess and "run")
+            set phrase_args to python_scope_json(scope and library and phrase_command)
+            set phrase_check to python_scope_json(scope and library and "{\"check\":true}")
+            set phrase_done to python_scope_call(scope and library and phrase_run and [phrase_args] and phrase_check)
             if phrase_done equals 0:
                 return 11
-            set audio_utils to native_python_import(library and "mlx_audio.utils")
-            set read_audio to native_python_attribute(library and audio_utils and "load_audio")
-            set phrase_path to native_python_string(library and "phrase-output.wav")
-            set read_opts to native_python_json(library and "{\"sample_rate\":24000}")
-            set shaped to native_python_call(library and read_audio and [phrase_path] and read_opts)
+            set audio_utils to python_scope_import(scope and library and "mlx_audio.utils")
+            set read_audio to python_scope_attribute(scope and library and audio_utils and "load_audio")
+            set phrase_path to python_scope_string(scope and library and "phrase-output.wav")
+            set read_opts to python_scope_json(scope and library and "{\"sample_rate\":24000}")
+            set shaped to python_scope_call(scope and library and read_audio and [phrase_path] and read_opts)
             if shaped equals 0:
                 return 12
             set added to append_list(chunks and shaped)
@@ -146,39 +196,40 @@ define main returning Int:
     set tuple_set to ep_dlsym(library and "PyTuple_SetItem")
     set retain to ep_dlsym(library and "Py_IncRef")
     set arrays to ep_dlcall1(tuple_new and count)
+    set tracked to append_list(scope and arrays)
     set index to 0
     repeat while index is less than count:
         set audio to get_list(chunks and index)
         set held to ep_dlcall1(retain and audio)
         set stored to ep_dlcall3(tuple_set and arrays and index and audio)
         set index to index + 1
-    set numpy to native_python_import(library and "numpy")
-    set concatenate to native_python_attribute(library and numpy and "concatenate")
-    set samples to native_python_call(library and concatenate and [arrays] and 0)
+    set numpy to python_scope_import(scope and library and "numpy")
+    set concatenate to python_scope_attribute(scope and library and numpy and "concatenate")
+    set samples to python_scope_call(scope and library and concatenate and [arrays] and 0)
     if samples equals 0:
         set printer to ep_dlsym(library and "PyErr_Print")
         set ignored to ep_dlcall0(printer)
         return 9
-    set multiply to native_python_attribute(library and numpy and "multiply")
-    set scale to native_python_json(library and "32767")
-    set scaled to native_python_call(library and multiply and [samples, scale] and 0)
-    set astype to native_python_attribute(library and scaled and "astype")
-    set dtype to native_python_string(library and "<i2")
-    set pcm to native_python_call(library and astype and [dtype] and 0)
-    set tobytes to native_python_attribute(library and pcm and "tobytes")
-    set bytes to native_python_call(library and tobytes and create_list() and 0)
-    set wave to native_python_import(library and "wave")
-    set open_wave to native_python_attribute(library and wave and "open")
-    set raw to native_python_string(library and "unpitched.wav")
-    set mode to native_python_string(library and "wb")
-    set writer to native_python_call(library and open_wave and [raw, mode] and 0)
-    set parameters to native_python_json(library and "[1,2,24000,0,\"NONE\",\"not compressed\"]")
-    set configure to native_python_attribute(library and writer and "setparams")
-    set configured to native_python_call(library and configure and [parameters] and 0)
-    set write to native_python_attribute(library and writer and "writeframes")
-    set saved to native_python_call(library and write and [bytes] and 0)
-    set close to native_python_attribute(library and writer and "close")
-    set closed to native_python_call(library and close and create_list() and 0)
+    set multiply to python_scope_attribute(scope and library and numpy and "multiply")
+    set scale to python_scope_json(scope and library and "32767")
+    set scaled to python_scope_call(scope and library and multiply and [samples, scale] and 0)
+    set astype to python_scope_attribute(scope and library and scaled and "astype")
+    set dtype to python_scope_string(scope and library and "<i2")
+    set pcm to python_scope_call(scope and library and astype and [dtype] and 0)
+    set tobytes to python_scope_attribute(scope and library and pcm and "tobytes")
+    set bytes to python_scope_call(scope and library and tobytes and create_list() and 0)
+    set wave to python_scope_import(scope and library and "wave")
+    set open_wave to python_scope_attribute(scope and library and wave and "open")
+    set raw to python_scope_string(scope and library and "unpitched.wav")
+    set mode to python_scope_string(scope and library and "wb")
+    set writer to python_scope_call(scope and library and open_wave and [raw, mode] and 0)
+    set parameters to python_scope_json(scope and library and "[1,2,24000,0,\"NONE\",\"not compressed\"]")
+    set configure to python_scope_attribute(scope and library and writer and "setparams")
+    set configured to python_scope_call(scope and library and configure and [parameters] and 0)
+    set write to python_scope_attribute(scope and library and writer and "writeframes")
+    set saved to python_scope_call(scope and library and write and [bytes] and 0)
+    set close to python_scope_attribute(scope and library and writer and "close")
+    set closed to python_scope_call(scope and library and close and create_list() and 0)
     if saved equals 0 or else closed equals 0:
         set printer to ep_dlsym(library and "PyErr_Print")
         set ignored to ep_dlcall0(printer)
@@ -187,44 +238,45 @@ define main returning Int:
     # Keep timing compensated and preserve the earlier helper for rollback.
     set command to concat("[" and provider_quote(get_argument(6)))
     set command to concat(command and ",\"-nostdin\",\"-v\",\"error\",\"-y\",\"-i\",\"unpitched.wav\",\"-af\",\"asetrate=25797,aresample=24000,atempo=0.9303407372950343\",\"-c:a\",\"pcm_s16le\",\"spoken.wav\"]")
-    set arguments to native_python_json(library and command)
-    set subprocess to native_python_import(library and "subprocess")
-    set run to native_python_attribute(library and subprocess and "run")
-    set checked to native_python_json(library and "{\"check\":true}")
-    set converted to native_python_call(library and run and [arguments] and checked)
+    set arguments to python_scope_json(scope and library and command)
+    set subprocess to python_scope_import(scope and library and "subprocess")
+    set run to python_scope_attribute(scope and library and subprocess and "run")
+    set checked to python_scope_json(scope and library and "{\"check\":true}")
+    set converted to python_scope_call(scope and library and run and [arguments] and checked)
     if converted equals 0 or else not file_exists("spoken.wav"):
         return 8
+    display concat("tts_total_ms=" and int_to_string(ep_time_now_ms() - started_ms))
     display "Selected Echo voice saved."
     return 0
 
-define prosody_save with library as Int and audio as Int and destination as Str returning Int:
-    set numpy to native_python_import(library and "numpy")
-    set concatenate to native_python_attribute(library and numpy and "concatenate")
+define prosody_save with scope as List and library as Int and audio as Int and destination as Str returning Int:
+    set numpy to python_scope_import(scope and library and "numpy")
+    set concatenate to python_scope_attribute(scope and library and numpy and "concatenate")
     set samples to audio
     if samples equals 0:
         set printer to ep_dlsym(library and "PyErr_Print")
         set ignored to ep_dlcall0(printer)
         return 9
-    set multiply to native_python_attribute(library and numpy and "multiply")
-    set scale to native_python_json(library and "32767")
-    set scaled to native_python_call(library and multiply and [samples, scale] and 0)
-    set astype to native_python_attribute(library and scaled and "astype")
-    set dtype to native_python_string(library and "<i2")
-    set pcm to native_python_call(library and astype and [dtype] and 0)
-    set tobytes to native_python_attribute(library and pcm and "tobytes")
-    set bytes to native_python_call(library and tobytes and create_list() and 0)
-    set wave to native_python_import(library and "wave")
-    set open_wave to native_python_attribute(library and wave and "open")
-    set raw to native_python_string(library and destination)
-    set mode to native_python_string(library and "wb")
-    set writer to native_python_call(library and open_wave and [raw, mode] and 0)
-    set parameters to native_python_json(library and "[1,2,24000,0,\"NONE\",\"not compressed\"]")
-    set configure to native_python_attribute(library and writer and "setparams")
-    set configured to native_python_call(library and configure and [parameters] and 0)
-    set write to native_python_attribute(library and writer and "writeframes")
-    set saved to native_python_call(library and write and [bytes] and 0)
-    set close to native_python_attribute(library and writer and "close")
-    set closed to native_python_call(library and close and create_list() and 0)
+    set multiply to python_scope_attribute(scope and library and numpy and "multiply")
+    set scale to python_scope_json(scope and library and "32767")
+    set scaled to python_scope_call(scope and library and multiply and [samples, scale] and 0)
+    set astype to python_scope_attribute(scope and library and scaled and "astype")
+    set dtype to python_scope_string(scope and library and "<i2")
+    set pcm to python_scope_call(scope and library and astype and [dtype] and 0)
+    set tobytes to python_scope_attribute(scope and library and pcm and "tobytes")
+    set bytes to python_scope_call(scope and library and tobytes and create_list() and 0)
+    set wave to python_scope_import(scope and library and "wave")
+    set open_wave to python_scope_attribute(scope and library and wave and "open")
+    set raw to python_scope_string(scope and library and destination)
+    set mode to python_scope_string(scope and library and "wb")
+    set writer to python_scope_call(scope and library and open_wave and [raw, mode] and 0)
+    set parameters to python_scope_json(scope and library and "[1,2,24000,0,\"NONE\",\"not compressed\"]")
+    set configure to python_scope_attribute(scope and library and writer and "setparams")
+    set configured to python_scope_call(scope and library and configure and [parameters] and 0)
+    set write to python_scope_attribute(scope and library and writer and "writeframes")
+    set saved to python_scope_call(scope and library and write and [bytes] and 0)
+    set close to python_scope_attribute(scope and library and writer and "close")
+    set closed to python_scope_call(scope and library and close and create_list() and 0)
     if saved equals 0 or else closed equals 0:
         set printer to ep_dlsym(library and "PyErr_Print")
         set ignored to ep_dlcall0(printer)

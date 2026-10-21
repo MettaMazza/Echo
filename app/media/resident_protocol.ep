@@ -1,0 +1,100 @@
+import "../providers/json_access"
+import "../providers/archived_stream"
+import "../transport/socket_write"
+import "../workspace/native_process"
+import "../workspace/directories"
+
+# Only a local authenticated helper connection can name a pre-created job.
+# Text and model/reference paths never enter this control protocol.
+define resident_job_relative with root as Str and allowed as List and absolute as Str returning Str:
+    set character to 0
+    repeat while character < string_length(absolute):
+        if get_character(absolute and character) < 32 or else get_character(absolute and character) equals 127:
+            return ""
+        set character to character + 1
+    set prefix to concat(root and "/")
+    if string_length(absolute) <= string_length(prefix) or else not (substring(absolute and 0 and string_length(prefix)) equals prefix):
+        return ""
+    set relative to substring(absolute and string_length(prefix) and string_length(absolute) - string_length(prefix))
+    if workspace_path_parts(relative) equals 0:
+        return ""
+    for each entry in allowed:
+        set permitted to concat(ptr_to_str(entry) and "/")
+        if string_length(relative) > string_length(permitted) and substring(relative and 0 and string_length(permitted)) equals permitted:
+            set leaf to substring(relative and string_length(permitted) and string_length(relative) - string_length(permitted))
+            if length_list(string_split(leaf and "/")) equals 1:
+                return relative
+    return ""
+
+# Frames are newline-terminated. Extra bytes cannot become a second job.
+define resident_read_line with library as Int and socket as Int and cancelled as Int returning Str:
+    set text to ""
+    repeat while 1 equals 1:
+        set part to socket_read_chunk(library and socket and cancelled)
+        if not (archive_list_text(part and 0) equals "data"):
+            return ""
+        set bytes to resident_buffer_text(library and get_list(part and 1) and get_list(part and 2))
+        set text to concat(text and bytes)
+        set freed to socket_release_buffer(library and get_list(part and 1))
+        set index to 0
+        repeat while index < string_length(text):
+            if get_character(text and index) equals 10:
+                if index + 1 is not equal to string_length(text):
+                    return ""
+                return substring(text and 0 and index)
+            set index to index + 1
+
+# Socketpair keeps the worker's stdin private and lets cancellation wake waits.
+define resident_pair with library as Int returning List:
+    set function to ep_dlsym(library and "socketpair")
+    set packed to [0]
+    if function equals 0 or else ep_dlcall4(function and 1 and 1 and 0 and get_list_data_ptr(packed)) is not equal to 0:
+        return 0
+    return [get_list(packed and 0) modulo 4294967296, get_list(packed and 0) / 4294967296]
+
+# Inspect every output line without assuming dependency logging is silent.
+define resident_wait_marker with library as Int and socket as Int and cancelled as Int and marker as Str returning Int:
+    set pending to ""
+    repeat while 1 equals 1:
+        set part to socket_read_chunk(library and socket and cancelled)
+        if not (archive_list_text(part and 0) equals "data"):
+            return 1
+        set pending to concat(pending and resident_buffer_text(library and get_list(part and 1) and get_list(part and 2)))
+        set freed to socket_release_buffer(library and get_list(part and 1))
+        set index to 0
+        set start to 0
+        repeat while index < string_length(pending):
+            if get_character(pending and index) equals 10:
+                set line to substring(pending and start and index - start)
+                if line equals marker:
+                    return 0
+                if line equals "tts_job_rejected" or else (string_length(line) >= 15 and substring(line and 0 and 15) equals "tts_job_status="):
+                    return 1
+                set start to index + 1
+            set index to index + 1
+        set pending to substring(pending and start and string_length(pending) - start)
+
+# Never signal a PID once wait ownership is lost or the child has been reaped.
+define resident_stop_worker with handle as List returning Int:
+    if handle equals 0:
+        return 0
+    repeat while 1 equals 1:
+        set state to workspace_process_poll(handle)
+        if state equals 1:
+            return workspace_process_close(handle)
+        if state < 0:
+            return 1
+        set signalled to workspace_process_signal(handle and 9)
+        set slept to sleep_ms(10)
+
+define resident_buffer_text with library as Int and pointer as Int and count as Int returning Str:
+    set allocate to ep_dlsym(library and "calloc")
+    set copy to ep_dlsym(library and "memcpy")
+    set free to ep_dlsym(library and "free")
+    set buffer to ep_dlcall2(allocate and count + 1 and 1)
+    if buffer equals 0:
+        return ""
+    set copied to ep_dlcall3(copy and buffer and pointer and count)
+    set text to concat("" and ptr_to_str(buffer))
+    set freed to ep_dlcall1(free and buffer)
+    return text
