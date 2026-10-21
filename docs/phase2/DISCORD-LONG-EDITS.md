@@ -19,11 +19,17 @@ current rights and original integrity are checked again. Ordinary attached
 content remains source data. Only an authenticated, explicit replacement action
 may promote its text to the new user prompt.
 
-This foundation is not yet connected to a usable Discord control. The remaining
-work is a registered file-edit interaction, source selection/upload integration,
-public complete replacement preview, existing revision admission, cancellation,
-replay and real multi-turn Discord acceptance. No new command has been
-registered or advertised as ready. Production is unchanged.
+The `/editfile message: attachment:` implementation now resolves a retained text
+attachment ID from `/attachments list`, freezes its complete text and uses the
+existing public prompt publication, revision admission, queue and cancellation
+paths. The raw registered command remains bound to its authenticated interaction;
+normalising it internally to `edit` does not grant autonomy or admin authority.
+Current file access and integrity are rechecked before admission. This is a
+retained-upload selection, not a direct slash attachment option.
+
+Native pipeline acceptance passed; worker builds, registration and real Discord
+upload/multi-turn acceptance are still pending. Production is unchanged at this
+checkpoint. No completed live acceptance is claimed.
 
 Native final acceptance passed in 7.685 s, binary
 `eec7ddd21b9477c19dcc2b1054b7fe2c7a3aeca203b91b6d93a938ab4e0339f9`.
@@ -36,3 +42,20 @@ denial. Private receipt:
 An initial test syntax error was corrected before compilation; the earlier
 reader-only pass remains retained separately. These are native foundation tests,
 not actual slash-command or upload acceptance.
+
+## Integrated native acceptance — 21 October
+
+`test_revision_start.ep` passed in 26.153 s with binary
+`759f5924eb09a039aa2060e7d73b76b8c4eec584e959dc803c06fb8d3fd51b60`.
+A complete Unicode replacement larger than the slash text field is split into
+public message chunks; their concatenation and the admitted user event must
+both equal the original file. Registration/options, public callback visibility,
+ordinary-user provenance, restart/replay, cancellation, changed-source rejection,
+credential expiry and authority revocation are exercised. The existing revision
+fixture also passed separately in 17.915 s before the expanded test.
+
+The first integrated fixture failed at its run-origin assertion: full text had
+already arrived intact, but the origin allowlist omitted the new raw command
+name. The allowlist was corrected without weakening actor or audience checks;
+the failed receipt remains preserved. Final private receipt:
+`revision-file-20261021/pipeline-qualified-1792610563880643000/result.json`.
