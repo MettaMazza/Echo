@@ -1,0 +1,64 @@
+import "group_knowledge"
+import "corrections"
+
+# Private recall keeps its original ownership gate. Shared recall uses only the
+# initiating run's exact audience; model arguments cannot choose a scope.
+define memory_scoped_boundary with database as Int and run as Str returning List:
+    if string_length(memory_archive_principal(database and run)) > 0:
+        return memory_archive_boundary(database and run)
+    set scope to group_memory_scope(database and run)
+    if string_length(scope) equals 0:
+        return history_status("not-authorized")
+    set query to concat("SELECT COALESCE(MAX(e.sequence),0) FROM echo_events e WHERE e.kind IN ('user','assistant_final','source_import') AND " and concat(group_memory_session_sql(database and "(SELECT session FROM echo_runs WHERE run=?1)" and "e.session") and ";"))
+    set row to history_collect_one(checkpoint_prepare(database and query and [run]))
+    if not (group_memory_scope(database and run) equals scope):
+        return history_status("authorization-changed")
+    return row
+
+define memory_scoped_next with database as Int and run as Str and literal as Str and after_sequence as Int and through_sequence as Int returning List:
+    if string_length(memory_archive_principal(database and run)) > 0:
+        return memory_archive_next(database and run and literal and after_sequence and through_sequence)
+    if after_sequence < 0 or else through_sequence < after_sequence:
+        return history_status("invalid-range")
+    set scope to group_memory_scope(database and run)
+    if string_length(scope) equals 0:
+        return history_status("not-authorized")
+    set query to concat("SELECT e.event,e.session,e.sequence,e.kind,e.occurred,e.digest FROM echo_events e WHERE e.kind IN ('user','assistant_final','source_import') AND e.sequence>CAST(?3 AS INTEGER) AND e.sequence<=CAST(?4 AS INTEGER) AND instr(e.payload,?2)>0 AND " and concat(group_memory_session_sql(database and "(SELECT session FROM echo_runs WHERE run=?1)" and "e.session") and " ORDER BY e.sequence LIMIT 1;"))
+    set row to history_collect_one(checkpoint_prepare(database and query and [run,literal,int_to_string(after_sequence),int_to_string(through_sequence)]))
+    if archive_list_text(row and 0) equals "found" and group_memory_source_allowed(database and run and archive_list_text(row and 1) and archive_list_text(row and 6)) equals 0:
+        return history_status("not-authorized")
+    if not (group_memory_scope(database and run) equals scope):
+        return history_status("authorization-changed")
+    return row
+
+define memory_scoped_read with database as Int and run as Str and event as Str and offset as Int and characters as Int returning List:
+    if string_length(memory_archive_principal(database and run)) > 0:
+        return memory_archive_read(database and run and event and offset and characters)
+    if offset < 0 or else characters < 1:
+        return history_status("invalid-range")
+    set scope to group_memory_scope(database and run)
+    if string_length(scope) equals 0:
+        return history_status("not-authorized")
+    set source to archive_read_event(database and event)
+    if source equals 0 or else not (archive_list_text(source and 2) equals "user" or else archive_list_text(source and 2) equals "assistant_final" or else archive_list_text(source and 2) equals "source_import"):
+        return history_status("not-authorized")
+    if group_memory_source_allowed(database and run and event and archive_list_text(source and 6)) equals 0:
+        return history_status("not-authorized")
+    set row to history_read_piece(database and archive_list_text(source and 0) and event and offset and characters)
+    if not (group_memory_scope(database and run) equals scope):
+        return history_status("authorization-changed")
+    return row
+
+# Explicit reads preserve originals, including withdrawn history. Report claim
+# lifecycle alongside the quotation so archived material is not fresh evidence.
+define memory_scoped_wrap with database as Int and run as Str and source as Str and output as Str returning Str:
+    if string_length(memory_archive_principal(database and run)) > 0:
+        return memory_correction_wrap(database and run and source and output)
+    set scope to group_memory_scope(database and run)
+    if string_length(scope) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set query to "SELECT COALESCE(json_group_array(json_object('claim',c.event,'visibility',COALESCE((SELECT json_extract(v.payload,'$.state') FROM echo_events v WHERE v.kind='group_memory_visibility' AND json_extract(v.payload,'$.claim')=c.event ORDER BY v.sequence DESC LIMIT 1),'visible'),'superseded_by',COALESCE((SELECT n.event FROM echo_events n WHERE n.kind='group_memory_claim' AND json_extract(n.payload,'$.supersedes')=c.event),''),'valid_until',json_extract(c.payload,'$.valid_until'))),'[]') FROM echo_events c WHERE c.kind='group_memory_claim' AND json_extract(c.payload,'$.scope')=?1 AND json_extract(c.payload,'$.source_event')=?2;"
+    set row to history_collect_one(checkpoint_prepare(database and query and [scope,source]))
+    if not (archive_list_text(row and 0) equals "found") or else not (group_memory_scope(database and run) equals scope):
+        return "{\"status\":\"source-state-unavailable\"}"
+    return concat(substring(output and 0 and string_length(output) - 1) and concat(",\"historical_source\":true,\"claim_lifecycle\":" and concat(archive_list_text(row and 1) and "}")))
