@@ -13,6 +13,4 @@ as acceptance. The start and completion explanations state that original
 messages remain saved. Existing trace pagination and durable thread delivery
 carry these entries without replacing conversational replies.
 
-This is candidate source, not deployed or live accepted. Native web trace and Discord page regressions pass, including source/run
-isolation and persistent page retries. Deployment, an actual compaction session, and the remaining animated
-status parity must be recorded before closing the compaction UI requirement.
+The Discord activity worker is deployed in discord-parallel-20261021-133748; its binary SHA-256 is 3c5cce64c7d28661e96b2baa7bd869b03b5984a80c6ad0c2913ae61bcbc0e256. All six connector processes were observed running after deployment. The Host server remains staged. Native web trace and Discord page regressions pass, including source/run isolation and persistent page retries. An actual compaction session and remaining animated-status acceptance are still required; ordinary tool-thread delivery does not prove compaction acceptance.
