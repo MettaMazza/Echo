@@ -1,0 +1,37 @@
+import "run_state"
+import "../discord/message_read_options"
+
+# Caller holds the abandoned worker and execution-guardian locks and writer
+# transaction. Record interruption only: no network request or replay occurs.
+# This allowlist is deliberately the fixed, read-only Discord message tool.
+define agent_recover_interrupted_read with database as Int and run as Str and call_id as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT t.session,t.request_event,e.payload FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event AND e.session=t.session AND e.kind='tool_call' WHERE t.run=?1 AND t.call_id=?2 AND t.state IN ('running','uncertain') AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.call_id')=?2 AND json_extract(e.payload,'$.name')='discord_message_read';" and [run,call_id]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    set current to agent_run_read(database and run)
+    if current equals 0 or else not (archive_list_text(current and 2) equals "tools"):
+        return ""
+    set cancelled to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_cancel_requests WHERE run=?;" and [run]))
+    if not (archive_list_text(cancelled and 1) equals "0") or else tool_policy_allows(database and run and call_id and "discord_message_read") equals 0:
+        return ""
+    set body to archive_list_text(row and 3)
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set field to provider_member(tokens and 0 and "arguments")
+    set arguments to provider_value(tokens and field)
+    if not (provider_kind(tokens and field) equals "string"):
+        set arguments to agent_json_source(body and tokens and field)
+    set options to discord_message_read_options(arguments)
+    if not (archive_list_text(options and 0) equals "valid"):
+        return ""
+    set request to archive_list_text(row and 2)
+    set event to concat(request and ":result")
+    set payload to agent_event_envelope(run and archive_list_text(current and 3))
+    set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"request_event\":" and provider_quote(request)))
+    set result to "{\"status\":\"interrupted-read\",\"original_outcome\":\"unavailable\",\"replayed\":false,\"detail\":\"The worker exited before this read returned a retained result. No messages or successful observation are asserted. No remote mutation is part of this tool. A new read requires normal current authorization and source checks.\"}"
+    set payload to concat(payload and concat(",\"result\":" and concat(result and "}")))
+    if archive_append_pending(database and archive_list_text(row and 1) and event and "tool_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return ""
+    return event

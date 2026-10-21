@@ -1,0 +1,52 @@
+import "discord/worker_store"
+import "discord/job_origin"
+import "agent/tool_recovery"
+import "archive/runtime_lock"
+
+# Explicit host maintenance after confirming the foreground child exited.
+# Never called by a model. No inference, network, queued action or mutation is
+# executed here. Normal intake repeats current source and access checks.
+define main returning Int:
+    if get_argument_count() is not equal to 6 or else not (get_argument(5) equals "--confirmed-child-exited"):
+        return 1
+    set journal to discord_store_open(get_argument(1) and get_argument(3))
+    set database to discord_agent_open(get_argument(2) and get_argument(3))
+    if journal equals 0 or else database equals 0:
+        return 2
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set lock to archive_runtime_lock(database and system)
+    if lock < 0:
+        return 3
+    set run to get_argument(4)
+    set inbox to discord_job_origin(journal and database and run)
+    if string_length(inbox) equals 0:
+        return 4
+    set job to history_collect_one(checkpoint_prepare(journal and "SELECT inbox FROM discord_agent_jobs WHERE inbox=?1 AND state='claimed' AND NOT EXISTS(SELECT 1 FROM discord_background_runs WHERE run=?2 AND state<>'released');" and [inbox,run]))
+    if not (archive_list_text(job and 0) equals "found"):
+        return 5
+    set unsafe to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run=?1 AND t.state<>'observed' AND (t.state NOT IN ('running','uncertain') OR COALESCE(json_extract(e.payload,'$.name'),'')<>'discord_message_read');" and [run]))
+    if not (archive_list_text(unsafe and 1) equals "0"):
+        return 6
+    set current to agent_run_read(database and run)
+    if current equals 0:
+        return 7
+    if archive_list_text(current and 2) equals "tools":
+        if agent_recover_tools_owned(database and run) is not equal to 0:
+            return 8
+        set unresolved to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls WHERE run=?1 AND state<>'observed';" and [run]))
+        if not (archive_list_text(unresolved and 1) equals "0"):
+            return 9
+        set parent to archive_list_text(current and 3)
+        set event to concat(parent and ":observed")
+        set payload to concat(agent_event_envelope(run and parent) and "}")
+        if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+            return 10
+        if archive_append_pending(database and archive_list_text(current and 0) and event and "agent_observation" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and "tools" and parent and "ready" and event) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+            set failed to archive_rollback(database)
+            return 11
+    else if not (archive_list_text(current and 2) equals "ready"):
+        return 12
+    if not (discord_worker_finish(journal and inbox and "service-stopped") equals "recorded"):
+        return 13
+    display "Interrupted read retained honestly; original request queued through normal source and authorization checks. No tool replay or inference performed."
+    return 0

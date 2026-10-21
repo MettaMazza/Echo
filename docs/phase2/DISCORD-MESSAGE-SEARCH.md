@@ -15,3 +15,10 @@ The source reuse inspection is recorded in [message read](DISCORD-MESSAGE-READ.m
 ## Live finding retained
 
 The initial real search returned `message-search-observation:rate-response-unresolved` without releasing cached text; a later read-only retry succeeded. The implementation had retained an SQLite iterator while HTTP receipt recording attempted a write transaction. Candidate rows are now detached and the iterator finalized before any network operation. A production-WAL concurrent-writer regression reproduces the old pattern and checks the corrected boundary. Failed-observation receipt names are now propagated instead of being dropped. Initial receipts and build attempts remain retained; live corrected-worker acceptance is not yet claimed.
+
+
+## Interrupted search and recovery
+
+A subsequent live paginated search crashed before retaining its tool result. Generated C showed the detached candidate list lacked a garbage-collector root. An initial list seed did not root this local in the full production compilation and was rejected before deployment. The application now passes the detached list through an explicitly typed parameter before allocating, without changing the compiler. The native snapshot regression forces and verifies a collection, then checks the retained candidate identity; it passes alongside the WAL receipt-write regression.
+
+Recovery records `interrupted-read` for an abandoned, currently authorised `discord_message_read` call with valid read options. It does not reconstruct a result, perform HTTP, or replay an action. Mutations, revoked authority and cancelled runs remain unreconciled by this handler. Native recovery checks passed those cases, native ownership exclusion and repeat-recovery receipt reuse. A host maintenance entry point handles confirmed-dead foreground reads and returns the original request to normal source/access preflight only after every call is observed. Live recovery and corrected-worker multi-turn acceptance remain pending.
