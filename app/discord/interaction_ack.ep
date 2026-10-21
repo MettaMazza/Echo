@@ -2,6 +2,7 @@ import "interaction_intake"
 import "interaction_callback"
 import "interaction_visibility"
 import "access"
+import "ack_receipts"
 
 # Claim before network; never replay an uncertain callback. The execution
 # worker may run only acknowledged jobs and must perform live access checks.
@@ -62,7 +63,7 @@ define discord_interaction_ack_unsent with journal as Int and identity as Str an
         return "stale-ack"
     return "expired"
 
-define discord_interaction_ack_tick with library as Str and bot_token as Str and journal as Int and directory_path as Str returning Str:
+define discord_interaction_ack_tick with library as Str and bot_token as Str and journal as Int and receipts as Int and refill as Int returning Str:
     set claim to discord_interaction_claim(journal and ep_time_now_ms())
     if not (archive_list_text(claim and 0) equals "found"):
         return archive_list_text(claim and 0)
@@ -78,21 +79,17 @@ define discord_interaction_ack_tick with library as Str and bot_token as Str and
     set remaining to string_to_int(archive_list_text(claim and 4)) + 2800 - ep_time_now_ms()
     if remaining < 1:
         return discord_interaction_ack_unsent(journal and identity and "deadline-before-preparation")
-    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
-    set directory to workspace_root_open(system and directory_path)
-    if directory < 0:
-        set closed to ep_dlclose(system)
-        return discord_interaction_ack_unsent(journal and identity and "receipt-directory-unavailable")
-    set name to ptr_to_str(ep_uuid_v4())
-    set output to workspace_file_open(system and directory and concat(name and ".json") and 1)
-    set headers to workspace_file_open(system and directory and concat(name and ".headers") and 1)
-    set closed to net_close(directory)
-    set closed to ep_dlclose(system)
+    # Receipt allocation runs ahead on a separate worker. Never allocate files
+    # on the callback deadline path; wait only within the remaining deadline.
+    set ready to create_list()
+    set added to append_list(ready and receipts)
+    if select(ready and remaining) < 0:
+        return discord_interaction_ack_unsent(journal and identity and "receipt-reserve-unavailable")
+    set pair to receive from receipts
+    send 1 to refill
+    set output to get_list(pair and 0)
+    set headers to get_list(pair and 1)
     if output < 0 or else headers < 0:
-        if output >= 0:
-            set closed to net_close(output)
-        if headers >= 0:
-            set closed to net_close(headers)
         return discord_interaction_ack_unsent(journal and identity and "receipt-file-unavailable")
     set route to concat("/interactions/" and concat(id and concat("/" and concat(credential and "/callback"))))
     # Only a registered /auto has a public deferred original. Neither form
