@@ -83,3 +83,14 @@ feedback, corrected retry recorded exactly one scoped claim. Evidence directorie
 are `digest-1792596581793077000` and `digest-dispatch-1792596708880923000` under
 the private evidence root above. This feedback change is not yet deployed;
 production remains on the qualified rollback build.
+
+The next native diagnostic replayed all 354 saved provider events through a local
+HTTP socket, event decoder, durable archive and production Discord turn monitor.
+Three independent trials passed, each preserving all 354 events and explicit
+incomplete terminal evidence; no tool was dispatched. Total times were 34.735,
+32.510 and 42.886 seconds on One Touch. A process sample showed archive fsync
+work; these external-drive diagnostic timings are not production inference
+latency. Evidence: `socket-1792597107574882000`. The crash is still not reproduced
+or resolved. The first fixture build lacked the worker-schema import; it failed
+before execution and the corrected build passed. This does not authorise
+promotion of the shared-prefix candidate.

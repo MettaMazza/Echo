@@ -1,0 +1,89 @@
+import "../../app/providers/archived_stream"
+import "../../app/transport/socket_write"
+import "fs"
+import "os"
+import "../../app/transport/cooperative_accept"
+import "../../app/discord/cancel_control"
+
+define event_sender with library as Int and descriptor as Int and wire as Str and completed as Int returning Int:
+    set result to socket_write_all(library and descriptor and -1 and str_to_ptr(wire) and string_length(wire))
+    set failure to 0
+    if not (ptr_to_str(get_list(result and 0)) equals "sent"):
+        set failure to 1
+    set closed to net_close(descriptor)
+    send failure + closed to completed
+    return 0
+
+define measurement_idle_listener with listener as List and completed as Int returning Int:
+    set descriptor to local_socket_accept_cooperative(listener)
+    set closed to net_close(descriptor)
+    send closed to completed
+    return closed
+
+define main returning Int:
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else archive_append(database and "measurement" and "request" and "model_request" and "{}" and "diagnostic") is not equal to 0:
+        return 1
+    set monitored to get_argument_count() > 3
+    set stopped to channel
+    set cancellation to create_list()
+    set stop to create_list()
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if monitored:
+        set journal_path to concat(get_argument(1) and ".journal")
+        set journal to discord_store_open(journal_path and "900")
+        if journal equals 0 or else discord_worker_schema(journal) is not equal to 0:
+            return 1
+        set closed to sql_close(journal)
+        set cancellation to socket_cancellation_create(library)
+        set stop to socket_cancellation_create(library)
+        set monitor_path to concat(journal_path and "")
+        set stop_path to concat(journal_path and ".stop")
+        spawn discord_turn_monitor(monitor_path and "900" and 0 and "100" and "300" and "200" and stop_path and get_list(stop and 0) and get_list(cancellation and 1) and stopped)
+    set accept_done to channel
+    set idle_listener to create_list()
+    set listen_concurrently to 0
+    if monitored:
+        if get_argument(3) equals "listener":
+            set listen_concurrently to 1
+    if listen_concurrently:
+        set idle_listener to local_socket_listen(0)
+        spawn measurement_idle_listener(idle_listener and accept_done)
+    set body_text to ptr_to_str(read_file(get_argument(2)))
+    set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: " and concat(int_to_string(string_length(body_text)) and concat("\r\n\r\n" and body_text)))
+    set listener to local_socket_listen(0)
+    set client to net_connect("127.0.0.1" and get_list(listener and 2))
+    set accepted to local_socket_accept(listener)
+    set completed to channel
+    spawn event_sender(get_list(listener and 0) and client and wire and completed)
+    set reader to http_stream_create(get_list(listener and 0) and accepted and -1)
+    set head to http_response_head(reader and "POST")
+    set body to http_body_create(ptr_to_str(get_list(head and 2)) and get_list(head and 3))
+    set started to ep_time_now_ms()
+    set collected to provider_collect_events(reader and body and database and "measurement" and "request" and 65536)
+    display concat("Stream collection milliseconds: " and int_to_string(ep_time_now_ms() - started))
+    display ptr_to_str(get_list(collected and 0))
+    if not (ptr_to_str(get_list(collected and 0)) equals "incomplete-response"):
+        return 1
+    if listen_concurrently:
+        set wake to net_connect("127.0.0.1" and get_list(idle_listener and 2))
+        set accepted_status to receive from accept_done
+        set closed to net_close(wake)
+        set closed to local_socket_close(idle_listener)
+        if accepted_status is not equal to 0:
+            return 1
+    if monitored:
+        set closed to net_close(get_list(stop and 1))
+        set monitor_result to receive from stopped
+        if monitor_result is not equal to 0:
+            return 1
+        set closed to net_close(get_list(cancellation and 0))
+    set closed to ep_dlclose(library)
+    set sent to receive from completed
+    if sent is not equal to 0 or else archive_verify(database and "measurement") is not equal to 0:
+        return 1
+    set closed to http_stream_release(reader)
+    set closed to net_close(accepted)
+    set closed to local_socket_close(listener)
+    display "PASS: saved incomplete provider bytes traverse socket, Discord monitor, archive and assembly without tool execution. Check elapsed time separately."
+    return sql_close(database)
