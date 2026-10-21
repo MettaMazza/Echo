@@ -1,0 +1,107 @@
+import "reaction_options"
+
+# Reads stay inside the authenticated originating channel. Pagination is an
+# API page, not a limit on how much history can be investigated.
+define discord_message_read_options with arguments as Str returning List:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return history_status("invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        set kind to provider_kind(tokens and index + 2)
+        if key equals "limit":
+            if not (kind equals "number"):
+                return history_status("invalid-limit")
+        else if not (key equals "operation" or else key equals "message" or else key equals "before" or else key equals "after" or else key equals "around") or else not (kind equals "string"):
+            return history_status("invalid-arguments")
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    set message_field to provider_member(tokens and 0 and "message")
+    set message to provider_value(tokens and message_field)
+    set limit_field to provider_member(tokens and 0 and "limit")
+    set limit to 50
+    if limit_field >= 0:
+        set raw_limit to provider_value(tokens and limit_field)
+        set limit to http_decimal(raw_limit)
+        if limit < 1 or else limit > 100 or else not (int_to_string(limit) equals raw_limit):
+            return history_status("invalid-limit")
+    set cursor to ""
+    set cursor_kind to ""
+    set names to create_list()
+    set added to append_list(names and "before")
+    set added to append_list(names and "after")
+    set added to append_list(names and "around")
+    for each name in names:
+        set field to provider_member(tokens and 0 and name)
+        if field >= 0:
+            if string_length(cursor_kind) > 0:
+                return history_status("conflicting-cursors")
+            set cursor_kind to name
+            set cursor to provider_value(tokens and field)
+            if discord_snowflake(cursor) equals 0:
+                return history_status("invalid-cursor")
+    if operation equals "read":
+        if discord_snowflake(message) equals 0 or else limit_field >= 0 or else string_length(cursor_kind) > 0:
+            return history_status("invalid-read-options")
+        return ["valid",operation,concat("/messages/" and message),message]
+    if not (operation equals "history") or else message_field >= 0:
+        return history_status("invalid-operation")
+    set suffix to concat("/messages?limit=" and int_to_string(limit))
+    if string_length(cursor_kind) > 0:
+        set suffix to concat(suffix and concat("&" and concat(cursor_kind and concat("=" and cursor))))
+    return ["valid",operation,suffix,""]
+
+# Validate the complete returned page before exposing any data. Omit nested
+# referenced/forwarded messages: they can belong to another audience.
+define discord_message_read_item with body as Str and tokens as List and item as Int and room as Str returning Str:
+    if not (provider_kind(tokens and item) equals "{"):
+        return ""
+    set identity to provider_value(tokens and provider_member(tokens and item and "id"))
+    set room_identity to provider_value(tokens and provider_member(tokens and item and "channel_id"))
+    set author to provider_member(tokens and item and "author")
+    set author_id to provider_value(tokens and provider_member(tokens and author and "id"))
+    if discord_snowflake(identity) equals 0 or else not (room_identity equals room) or else discord_snowflake(author_id) equals 0:
+        return ""
+    set content_field to provider_member(tokens and item and "content")
+    if not (provider_kind(tokens and content_field) equals "string"):
+        return ""
+    set output to concat("{\"id\":" and provider_quote(identity))
+    set output to concat(output and concat(",\"channel_id\":" and provider_quote(room_identity)))
+    set output to concat(output and concat(",\"author_id\":" and provider_quote(author_id)))
+    set username to provider_value(tokens and provider_member(tokens and author and "username"))
+    set output to concat(output and concat(",\"username\":" and provider_quote(username)))
+    set display_name to provider_value(tokens and provider_member(tokens and author and "global_name"))
+    set output to concat(output and concat(",\"display_name\":" and provider_quote(display_name)))
+    set output to concat(output and concat(",\"content\":" and provider_quote(provider_value(tokens and content_field))))
+    set timestamp to provider_value(tokens and provider_member(tokens and item and "timestamp"))
+    set output to concat(output and concat(",\"timestamp\":" and provider_quote(timestamp)))
+    return concat(output and "}")
+
+define discord_message_read_page with body as Str and room as Str and operation as Str and expected as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    if operation equals "read":
+        if not (provider_value(tokens and provider_member(tokens and 0 and "id")) equals expected):
+            return ""
+        set item to discord_message_read_item(body and tokens and 0 and room)
+        if string_length(item) equals 0:
+            return ""
+        return concat("[" and concat(item and "]"))
+    if not (provider_kind(tokens and 0) equals "["):
+        return ""
+    set output to "["
+    set seen to create_list()
+    for each index in provider_items(tokens and 0):
+        set item to discord_message_read_item(body and tokens and index and room)
+        set identity to provider_value(tokens and provider_member(tokens and index and "id"))
+        if string_length(item) equals 0 or else discord_contains(seen and identity) equals 1:
+            return ""
+        set added to append_list(seen and identity)
+        if string_length(output) > 1:
+            set output to concat(output and ",")
+        set output to concat(output and item)
+    return concat(output and "]")
