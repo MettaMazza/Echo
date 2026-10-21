@@ -1,0 +1,56 @@
+import "attachment_control"
+import "../archive/file_text"
+
+# Explicit file-as-replacement action only. Ordinary attachments remain source
+# data. The caller must authenticate the interaction and validate its target.
+# Read the entire original UTF-8 stream, never a search excerpt or PDF summary.
+define discord_revision_file_text with database as Int and device as Str and guild as Str and room as Str and attachment as Str returning List:
+    if sql_execute(database and "SAVEPOINT discord_revision_file;") is not equal to 0:
+        return history_status("attachment-read-busy")
+    set result to discord_revision_file_snapshot(database and device and guild and room and attachment)
+    if sql_execute(database and "RELEASE discord_revision_file;") is not equal to 0:
+        set rolled to sql_execute(database and "ROLLBACK TO discord_revision_file;")
+        set released to sql_execute(database and "RELEASE discord_revision_file;")
+        return history_status("attachment-read-failed")
+    return result
+
+define discord_revision_file_snapshot with database as Int and device as Str and guild as Str and room as Str and attachment as Str returning List:
+    set source to web_attachment_owned_snapshot(database and device and attachment)
+    if not (archive_list_text(source and 0) equals "found") or else group_session_allows(database and device and archive_list_text(source and 6) and "discord" and guild and room and 1) equals 0:
+        return history_status("attachment-not-authorized")
+    if attachment_selectable(database and attachment) equals 0 or else attachment_context_included(database and attachment) equals 0:
+        return history_status("attachment-not-selected")
+    set media to archive_list_text(source and 3)
+    if not (string_index_of(media and "text/") equals 0 or else media equals "application/json"):
+        return history_status("replacement-text-file-required")
+    set text to file_text_read(archive_list_text(source and 1) and archive_list_text(source and 4) and string_to_int(archive_list_text(source and 5)) and 65536)
+    if not (archive_list_text(text and 0) equals "verified"):
+        return history_status(concat("replacement-file:" and archive_list_text(text and 0)))
+    if string_length(string_trim(archive_list_text(text and 1))) equals 0:
+        return history_status("replacement-text-empty")
+    set result to ["prepared",archive_list_text(text and 1),attachment,archive_list_text(source and 7),archive_list_text(source and 4),archive_list_text(source and 6)]
+    return result
+
+# Freeze the selected replacement against one authenticated interaction. A
+# replay must name the same actor, audience and original file; no new bytes or
+# attachment can silently replace an already-published command prompt.
+define discord_revision_file_prepare with journal as Int and database as Int and interaction as Str and device as Str and guild as Str and room as Str and attachment as Str returning List:
+    if string_length(interaction) equals 0:
+        return history_status("replacement-identity-required")
+    set text to discord_revision_file_text(database and device and guild and room and attachment)
+    if not (archive_list_text(text and 0) equals "prepared"):
+        return text
+    if sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_revision_files(interaction TEXT PRIMARY KEY,device TEXT NOT NULL,guild TEXT NOT NULL,channel TEXT NOT NULL,attachment TEXT NOT NULL,source_event TEXT NOT NULL,digest TEXT NOT NULL,content TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_revision_files_no_update BEFORE UPDATE ON discord_revision_files BEGIN SELECT RAISE(ABORT,'Replacement file provenance is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_revision_files_no_delete BEFORE DELETE ON discord_revision_files BEGIN SELECT RAISE(ABORT,'Replacement file provenance persists'); END;") is not equal to 0 or else sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("replacement-store-unavailable")
+    set values to [interaction,device,guild,room,attachment,archive_list_text(text and 3),archive_list_text(text and 4),archive_list_text(text and 1)]
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_revision_files VALUES(?1,?2,?3,?4,?5,?6,?7,?8);" and values) and 101) is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("replacement-store-unavailable")
+    set match to history_collect_one(checkpoint_prepare(journal and "SELECT interaction FROM discord_revision_files WHERE interaction=?1 AND device=?2 AND guild=?3 AND channel=?4 AND attachment=?5 AND source_event=?6 AND digest=?7 AND content=?8;" and values))
+    if not (archive_list_text(match and 0) equals "found"):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("replacement-request-conflict")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("replacement-store-unavailable")
+    return text
