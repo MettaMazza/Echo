@@ -1,0 +1,65 @@
+import "provider_profile"
+import "run_messages"
+import "../providers/registry"
+import "../providers/llama_modalities"
+
+# The operator names one registered fallback. Source text cannot nominate a
+# provider. Only native parts in the current run can trigger a new route;
+# historical attachments alone must not pin every later text turn to Omni.
+define agent_media_route_required with messages as Str and properties as Str returning Str:
+    set body to concat("{\"messages\":" and concat(messages and "}"))
+    set status to llama_modalities_check(body and properties)
+    if status equals "unsupported-input-audio" or else status equals "unsupported-input-vision" or else status equals "unsupported-input-video":
+        return status
+    if status equals "ready":
+        return "none"
+    return status
+
+define agent_media_profile with database as Int and run as Str and primary as Str and cancellation as Int and read_size as Int returning Str:
+    set saved to archive_read_event(database and concat(run and ":vision-profile"))
+    if saved is not equal to 0:
+        return archive_list_text(saved and 3)
+    set target to ptr_to_str(get_env("ECHO_MEDIA_PROVIDER_ID"))
+    if string_length(target) equals 0:
+        return primary
+    set current to agent_run_messages_after(database and run and 0)
+    if string_length(current) equals 0:
+        return ""
+    # Text-only turns incur no capability request.
+    if not (string_contains(current and "\"input_audio\"") or else string_contains(current and "\"image_url\"") or else string_contains(current and "\"input_video\"") or else string_contains(current and "\"video_url\"")):
+        return primary
+    set config to provider_json_tokens(primary)
+    if not (provider_value(config and provider_member(config and 0 and "adapter")) equals "llama.cpp"):
+        return primary
+    set port to http_decimal(provider_index(config and provider_member(config and 0 and "port")))
+    set properties to local_json_request(port and "GET" and "/props" and "" and cancellation and read_size)
+    if not (archive_list_text(properties and 0) equals "ready"):
+        return ""
+    set needed to agent_media_route_required(current and archive_list_text(properties and 2))
+    if needed equals "none":
+        return primary
+    if not (needed equals "unsupported-input-audio" or else needed equals "unsupported-input-vision" or else needed equals "unsupported-input-video"):
+        return ""
+    set candidate to provider_registry_read(database and target)
+    if not (archive_list_text(candidate and 0) equals "found"):
+        return ""
+    set fallback to archive_list_text(candidate and 2)
+    set config to provider_json_tokens(fallback)
+    set model to provider_value(config and provider_member(config and 0 and "model"))
+    # Instruct is explicitly prohibited by this installation's operator.
+    if string_contains(model and "Instruct") or else string_contains(model and "instruct"):
+        return ""
+    if not (provider_value(config and provider_member(config and 0 and "adapter")) equals "llama.cpp"):
+        return ""
+    set port to http_decimal(provider_index(config and provider_member(config and 0 and "port")))
+    set properties to local_json_request(port and "GET" and "/props" and "" and cancellation and read_size)
+    if not (archive_list_text(properties and 0) equals "ready"):
+        return ""
+    if not (agent_media_route_required(current and archive_list_text(properties and 2)) equals "none"):
+        return ""
+    set owner to agent_run_read(database and run)
+    if owner equals 0:
+        return ""
+    if archive_append(database and archive_list_text(owner and 0) and concat(run and ":vision-profile") and "run_vision_profile" and fallback and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return ""
+    return fallback
