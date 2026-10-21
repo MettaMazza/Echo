@@ -39,3 +39,13 @@ not relaxed. Both receipts are retained.
 
 Deployed registration and actual Discord acceptance remain pending. Native
 acceptance alone does not establish live recovery or Phase Two completion.
+
+Live registration succeeded after handler deployment. The first real command
+against a completed foreground run safely refused retry but described it as
+account-unavailable because that run had no worker row. The corrected lookup
+checks terminal run state even without a worker record. Expanded native
+acceptance passed in 14.637 s, SHA
+`c1fe27bc7df439897ea9d8629090a3fbcff32346fd27abd3eb6be8e5ba546f7a`;
+receipt `manual-retry-20261021/completed-fix-1792608872357414000/result.json`.
+The original live feedback failure remains recorded. Corrected live acceptance
+and positive live recovery remain pending.
