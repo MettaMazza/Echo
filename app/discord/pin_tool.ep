@@ -1,0 +1,115 @@
+import "pin_options"
+import "reaction_tool"
+
+define discord_pin_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    set options to discord_pin_options(arguments)
+    if not (archive_list_text(options and 0) equals "valid"):
+        return discord_pin_result(archive_list_text(options and 0) and "none" and "")
+    if tool_policy_allows(database and run and call_id and "discord_pins") equals 0:
+        return discord_pin_result("not-authorized" and "none" and "")
+    if not ((get_argument_count() equals 15 and also get_argument(13) equals "--turn") or else (get_argument_count() equals 16 and also get_argument(13) equals "--job")):
+        return discord_pin_result("discord-runtime-unavailable" and "none" and "")
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals get_argument(7)) or else not (archive_list_text(location and 1) equals get_argument(4)):
+        return discord_pin_result("discord-binding-denied" and "none" and "")
+    set journal to discord_store_open(get_argument(3) and get_argument(7))
+    if journal equals 0:
+        return discord_pin_result("discord-journal-unavailable" and "none" and "")
+    set source to discord_run_source(journal and database and run)
+    if not (archive_list_text(source and 0) equals "found"):
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-origin-denied" and "none" and "")
+    set credential to read_file(get_argument(2))
+    if credential equals 0:
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-credential-unavailable" and "none" and "")
+    set guilds to string_split(get_argument(8) and ",")
+    set admins to string_split(get_argument(9) and ",")
+    set result to discord_pin_perform(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and database and run and call_id and source and options and get_argument(7) and guilds and admins and get_argument(5) and get_argument(6))
+    set closed to sql_close(journal)
+    return result
+
+# Admin authority is scoped to this Discord action. The generic private-host
+# privileged-audience gate is unchanged and is never bypassed for host tools.
+define discord_pin_admin with database as Int and run as Str and call_id as Str returning Int:
+    return run_authority_allows(database and run and "admin") and also tool_authority_allows(database and run and call_id and "admin")
+
+define discord_pin_result with status as Str and effects as Str and receipt as Str returning Str:
+    return discord_reaction_result(status and effects and receipt)
+
+define discord_pin_perform with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and options as List and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set actor to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    set operation to archive_list_text(options and 1)
+    set mutation to operation equals "pin" or else operation equals "unpin"
+    if mutation and discord_pin_admin(database and run and call_id) equals 0:
+        return "{\"status\":\"admin-required\",\"cause\":\"requester-role-required\",\"restriction_scope\":\"requester\",\"required_role\":\"admin\",\"system_failure\":false,\"effects\":\"none\",\"explanation\":\"Pin changes require an authenticated configured Discord admin. This requester is not authorised; the tool itself is available.\"}"
+    if string_length(guild) equals 0 or else discord_contains(guilds and guild) equals 0 or else (mutation and discord_contains(admins and actor) equals 0):
+        return discord_pin_result("discord-origin-denied" and "none" and "")
+    if file_exists(stop_file) or else tool_policy_allows(database and run and call_id and "discord_pins") equals 0:
+        return discord_pin_result("not-authorized-or-stopped" and "none" and "")
+    set required_bit to -1
+    if mutation:
+        set required_bit to 51
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and required_bit)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_pin_result(concat("discord-access:" and archive_list_text(access and 0)) and "none; both requester and bot require the channel permission" and "")
+    set inbox to discord_job_origin(journal and database and run)
+    set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if not (current equals "current"):
+        return discord_pin_result(current and "none" and "")
+    set route to concat("/channels/" and room)
+    if operation equals "list":
+        set route to concat(route and archive_list_text(options and 2))
+    else:
+        set route to concat(route and concat("/messages/" and archive_list_text(options and 2)))
+    set fetched to discord_access_get(library and token and journal and directory_path and route and "GET:channel-pins" and room)
+    if not (archive_list_text(fetched and 0) equals "observed"):
+        return discord_pin_result(archive_list_text(fetched and 0) and "none" and archive_list_text(fetched and 1))
+    set body to archive_list_text(fetched and 1)
+    set receipt to archive_list_text(fetched and 3)
+    set payload to ""
+    if operation equals "list":
+        set page to discord_pin_page(body and room)
+        if string_length(page) equals 0:
+            return discord_pin_result("invalid-pin-page" and "none" and receipt)
+        set payload to concat("{\"status\":\"observed\",\"source\":\"Discord REST; untrusted content\",\"page\":" and concat(page and concat(",\"receipt\":" and concat(provider_quote(receipt) and "}"))))
+    else:
+        if string_length(discord_message_read_page(body and room and "read" and archive_list_text(options and 2))) equals 0:
+            return discord_pin_result("message-identity-invalid" and "none" and receipt)
+        set tokens to provider_json_tokens(body)
+        set pinned to provider_value(tokens and provider_member(tokens and 0 and "pinned"))
+        if not (pinned equals "true" or else pinned equals "false"):
+            return discord_pin_result("pin-state-unavailable" and "none" and receipt)
+        set desired to "true"
+        if operation equals "unpin":
+            set desired to "false"
+        if operation equals "status" or else pinned equals desired:
+            set payload to concat("{\"status\":\"observed\",\"message\":" and provider_quote(archive_list_text(options and 2)))
+            set payload to concat(payload and concat(",\"pinned\":" and pinned))
+            set payload to concat(payload and concat(",\"effects\":\"none\",\"receipt\":" and concat(provider_quote(receipt) and "}")))
+    if file_exists(stop_file) or else tool_policy_allows(database and run and call_id and "discord_pins") equals 0 or else not (discord_job_origin(journal and database and run) equals inbox) or else (mutation and discord_pin_admin(database and run and call_id) equals 0):
+        return discord_pin_result("authorization-changed-or-stopped" and "none" and receipt)
+    if string_length(payload) > 0:
+        set visible to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and -1)
+        if not (archive_list_text(visible and 0) equals "allowed") or else tool_policy_allows(database and run and call_id and "discord_pins") equals 0:
+            return discord_pin_result("access-changed" and "none" and receipt)
+        return payload
+    if discord_turn_barrier(journal and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
+        return discord_pin_result("source-invalidated" and "none" and receipt)
+    # Fresh operation permission check immediately before the external change.
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 51)
+    if not (archive_list_text(access and 0) equals "allowed") or else file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0:
+        return discord_pin_result("permission-changed-or-stopped" and "none" and receipt)
+    if tool_policy_allows(database and run and call_id and "discord_pins") equals 0 or else not (discord_job_origin(journal and database and run) equals inbox) or else discord_turn_barrier(journal and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
+        return discord_pin_result("source-or-authority-changed" and "none" and receipt)
+    set method to "PUT"
+    if operation equals "unpin":
+        set method to "DELETE"
+    set route to concat("/channels/" and concat(room and concat("/messages/pins/" and archive_list_text(options and 2))))
+    set result to discord_access_request(library and token and journal and directory_path and method and route and concat(method and ":channel-pin") and room)
+    if not (archive_list_text(result and 0) equals "observed"):
+        return discord_pin_result(concat("pin-change-unconfirmed:" and archive_list_text(result and 0)) and "not-established; inspect current state before retry" and archive_list_text(result and 1))
+    return discord_pin_result("applied" and concat(operation and "; reason retained in original tool request") and archive_list_text(result and 3))

@@ -1,0 +1,91 @@
+import "message_read_options"
+
+# Current-channel pins only. No arbitrary routes, room or actor parameters.
+define discord_pin_options with arguments as Str returning List:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return history_status("invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        set kind to provider_kind(tokens and index + 2)
+        if key equals "limit":
+            if not (kind equals "number"):
+                return history_status("invalid-limit")
+        else if not (key equals "operation" or else key equals "message" or else key equals "before" or else key equals "reason") or else not (kind equals "string"):
+            return history_status("invalid-arguments")
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    set message_field to provider_member(tokens and 0 and "message")
+    set limit_field to provider_member(tokens and 0 and "limit")
+    set before_field to provider_member(tokens and 0 and "before")
+    set reason_field to provider_member(tokens and 0 and "reason")
+    if operation equals "list":
+        if message_field >= 0 or else reason_field >= 0:
+            return history_status("unused-arguments")
+        set limit to "50"
+        if limit_field >= 0:
+            set limit to provider_value(tokens and limit_field)
+            if http_decimal(limit) < 1 or else http_decimal(limit) > 50 or else not (int_to_string(http_decimal(limit)) equals limit):
+                return history_status("invalid-limit")
+        set route to concat("/messages/pins?limit=" and limit)
+        if before_field >= 0:
+            set before to provider_value(tokens and before_field)
+            if string_length(before) equals 0:
+                return history_status("invalid-cursor")
+            set route to concat(route and concat("&before=" and network_query_encode(before)))
+        return ["valid",operation,route,""]
+    if not (operation equals "status" or else operation equals "pin" or else operation equals "unpin") or else limit_field >= 0 or else before_field >= 0:
+        return history_status("invalid-operation-or-arguments")
+    set message to provider_value(tokens and message_field)
+    if discord_snowflake(message) equals 0:
+        return history_status("invalid-message")
+    set reason to ""
+    if operation equals "status":
+        if reason_field >= 0:
+            return history_status("unused-reason")
+    else:
+        set reason to provider_value(tokens and reason_field)
+        if string_length(string_trim(reason)) equals 0:
+            return history_status("reason-required")
+    return ["valid",operation,message,reason]
+
+define discord_pin_page with body as Str and room as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set items_field to provider_member(tokens and 0 and "items")
+    set more to provider_value(tokens and provider_member(tokens and 0 and "has_more"))
+    if not (provider_kind(tokens and items_field) equals "[") or else not (more equals "true" or else more equals "false"):
+        return ""
+    return discord_pin_items(body and room and more and tokens and provider_items(tokens and items_field))
+
+# Typed parameters keep both token and item arrays rooted while projecting.
+define discord_pin_items with body as Str and room as Str and more as Str and tokens as List and items as List returning Str:
+    set output to "["
+    set cursor to ""
+    set seen to create_list()
+    for each item in items:
+        set message_field to provider_member(tokens and item and "message")
+        set projected to discord_message_read_item(body and tokens and message_field and room)
+        set identity to provider_value(tokens and provider_member(tokens and message_field and "id"))
+        set time_field to provider_member(tokens and item and "pinned_at")
+        set time to provider_value(tokens and time_field)
+        if string_length(projected) equals 0 or else discord_contains(seen and identity) equals 1 or else not (provider_kind(tokens and time_field) equals "string") or else string_length(time) equals 0:
+            return ""
+        set added to append_list(seen and identity)
+        if string_length(output) > 1:
+            set output to concat(output and ",")
+        set entry to concat("{\"pinned_at\":" and provider_quote(time))
+        set entry to concat(entry and concat(",\"message\":" and concat(projected and "}")))
+        set output to concat(output and entry)
+        set cursor to time
+    if more equals "true" and string_length(cursor) equals 0:
+        return ""
+    if more equals "false":
+        set cursor to ""
+    set output to concat("{\"items\":" and concat(output and "]"))
+    set output to concat(output and concat(",\"has_more\":" and more))
+    return concat(output and concat(",\"next_before\":" and concat(provider_quote(cursor) and "}")))
