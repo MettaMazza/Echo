@@ -1,0 +1,54 @@
+import "../../app/discord/activity_pages"
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    if not (discord_inbox_record(journal and "message:create:100" and "MESSAGE_CREATE" and "{\"id\":\"100\",\"channel_id\":\"300\",\"guild_id\":\"200\"}") equals "recorded"):
+        return 2
+    set text to ""
+    set count to 0
+    repeat while count < 4000:
+        set text to concat(text and "Retained fragment 🎧. ")
+        set count to count + 1
+    set page to concat("{\"status\":\"found\",\"after\":8,\"entries\":[{\"kind\":\"tool_result\",\"text\":" and concat(provider_quote(text) and "}]}"))
+    set identity to discord_activity_page_plan(journal and "message:create:100" and "discord-message:100" and "100" and 0 and page and 1)
+    if string_length(identity) equals 0:
+        return 3
+    # Simulate interruption after the first durable chunk, before queued state.
+    set content to discord_activity_render(page and 1)
+    set chunk to discord_trace_chunk(content and 0)
+    set body to concat("{\"content\":" and concat(provider_quote(chunk) and ",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false}}"))
+    if not (discord_outbox_enqueue(journal and concat(identity and ":0") and "message:create:100" and "100" and body) equals "enqueued"):
+        return 4
+    set closed to sql_close(journal)
+    set journal to discord_store_open(get_argument(1) and "900")
+    if not (discord_activity_page_enqueue(journal and identity) equals "queued"):
+        return 5
+    set started to ep_time_now_ms()
+    set count to 0
+    repeat while count < 3:
+        if not (discord_activity_page_enqueue(journal and identity) equals "queued"):
+            return 6
+        set count to count + 1
+    display concat("queued_repeat_ms=" and int_to_string(ep_time_now_ms() - started))
+    set row to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_activity_pages p WHERE p.content<>(SELECT group_concat(text,'') FROM (SELECT json_extract(o.body,'$.content') AS text FROM discord_outbox o WHERE substr(o.identity,1,length(p.identity)+1)=p.identity||':' ORDER BY o.rowid));"))
+    if not (archive_list_text(row and 1) equals "0"):
+        return 7
+    # Queued delivery identity and bytes cannot change beneath the saved page.
+    if sql_execute(journal and "UPDATE discord_outbox SET body='{}' WHERE rowid=(SELECT MIN(rowid) FROM discord_outbox);") equals 0:
+        return 8
+    if sql_execute(journal and "DELETE FROM discord_outbox WHERE rowid=(SELECT MIN(rowid) FROM discord_outbox);") equals 0:
+        return 9
+    # Transport state remains mutable; reuse never resets an uncertain send.
+    if sql_execute(journal and "UPDATE discord_outbox SET state='uncertain',attempt='lost' WHERE rowid=(SELECT MIN(rowid) FROM discord_outbox);") is not equal to 0:
+        return 10
+    set closed to sql_close(journal)
+    set journal to discord_store_open(get_argument(1) and "900")
+    if not (discord_activity_page_enqueue(journal and identity) equals "queued"):
+        return 11
+    set row to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_outbox WHERE state='uncertain' AND attempt='lost';"))
+    if not (archive_list_text(row and 1) equals "1"):
+        return 12
+    display "PASS: partial-page crash recovery, exact bytes, immutable intent binding and queued reuse without resetting uncertain delivery"
+    return 0

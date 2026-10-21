@@ -54,7 +54,7 @@ define discord_activity_render with page as Str and full_trace as Int returning 
     return ptr_to_str(builder_to_string(builder))
 
 define discord_activity_pages_schema with journal as Int returning Int:
-    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_activity_pages(identity TEXT PRIMARY KEY,inbox TEXT NOT NULL REFERENCES discord_inbox(identity),run TEXT NOT NULL,destination TEXT NOT NULL,after_cursor INTEGER NOT NULL,next_cursor INTEGER NOT NULL,full_trace INTEGER NOT NULL CHECK(full_trace IN (0,1)),content TEXT NOT NULL,parts INTEGER NOT NULL,state TEXT NOT NULL CHECK(state IN ('planned','queued'))); CREATE TRIGGER IF NOT EXISTS discord_activity_page_immutable BEFORE UPDATE OF identity,inbox,run,destination,after_cursor,next_cursor,full_trace,content,parts ON discord_activity_pages BEGIN SELECT RAISE(ABORT,'Activity pages are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_page_no_delete BEFORE DELETE ON discord_activity_pages BEGIN SELECT RAISE(ABORT,'Activity pages persist'); END;")
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_activity_pages(identity TEXT PRIMARY KEY,inbox TEXT NOT NULL REFERENCES discord_inbox(identity),run TEXT NOT NULL,destination TEXT NOT NULL,after_cursor INTEGER NOT NULL,next_cursor INTEGER NOT NULL,full_trace INTEGER NOT NULL CHECK(full_trace IN (0,1)),content TEXT NOT NULL,parts INTEGER NOT NULL,state TEXT NOT NULL CHECK(state IN ('planned','queued'))); CREATE TRIGGER IF NOT EXISTS discord_activity_page_immutable BEFORE UPDATE OF identity,inbox,run,destination,after_cursor,next_cursor,full_trace,content,parts ON discord_activity_pages BEGIN SELECT RAISE(ABORT,'Activity pages are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_page_no_delete BEFORE DELETE ON discord_activity_pages BEGIN SELECT RAISE(ABORT,'Activity pages persist'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_intent_binding BEFORE UPDATE OF identity,inbox,channel,body,nonce ON discord_outbox WHEN substr(OLD.identity,1,14)='activity-page:' BEGIN SELECT RAISE(ABORT,'Activity intent binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_activity_intent_no_delete BEFORE DELETE ON discord_outbox WHEN substr(OLD.identity,1,14)='activity-page:' BEGIN SELECT RAISE(ABORT,'Activity intents persist'); END;")
 
 # Stage a page's exact rendered bytes before producing transport intents.
 # The supplied destination is host-authorized; final delivery rechecks it.
@@ -103,6 +103,15 @@ define discord_activity_page_plan with journal as Int and inbox as Str and run a
 define discord_activity_page_enqueue with journal as Int and identity as Str returning Str:
     set values to create_list()
     set added to append_list(values and identity)
+    # Queued means all immutable intents were durably inserted. Transport may
+    # change their receipt state, but must not rebuild or reset their contents.
+    set queued to history_collect_one(checkpoint_prepare(journal and "SELECT p.state,p.parts,(SELECT COUNT(*) FROM discord_outbox o WHERE o.identity>=p.identity||':' AND o.identity<p.identity||';' AND o.inbox=p.inbox AND o.channel=p.destination) FROM discord_activity_pages p WHERE p.identity=?;" and values))
+    if not (archive_list_text(queued and 0) equals "found"):
+        return "page-unavailable"
+    if archive_list_text(queued and 1) equals "queued":
+        if not (archive_list_text(queued and 2) equals archive_list_text(queued and 3)):
+            return "queued-intents-incomplete"
+        return "queued"
     set page to history_collect_one(checkpoint_prepare(journal and "SELECT inbox,destination,content FROM discord_activity_pages WHERE identity=?;" and values))
     if not (archive_list_text(page and 0) equals "found"):
         return "page-unavailable"
