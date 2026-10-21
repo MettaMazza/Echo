@@ -110,3 +110,26 @@ sender and its ordering barrier; a dedicated pending-question delivery path
 must recheck current source/access and request state before posting. That path,
 scheduler discovery, visible draft updates and actual Discord validation are
 still pending. No question controls are exposed in production.
+
+Dedicated delivery and discovery (source integration, not deployed):
+`question_delivery.ep` selects only fully prepared pages in order. A preceding
+uncertain or rejected page holds successors. The controller checks the current
+question, run authority, configured guild, channel access and original source,
+then checks the question again after network preflight. Confirmed invalidation
+withdraws all still-pending pages with delivery receipts; unknown sends retain
+their nonce and state for reconciliation. Existing transport handles send
+claims, rate deadlines and authenticated Gateway observations.
+
+`question_scheduler.ep` discovers pending archive requests and admits only runs
+resolved by `discord_job_origin`, including descendants using its existing
+lineage checks. It prepares one page per tick and independently selects due
+delivery. The activity executable accepts an optional explicit guild CSV after
+the snapshot directory. Deployment must supply it; legacy launches do not
+gain permission to send guild questions. Actual network, delegated-question
+and deadline acceptance, draft display and full UI flow remain pending.
+
+Discovery installs the shared cancellation schema before querying it, including
+on a fresh connector archive. Once a batch's pages are fully prepared, its
+preparation record becomes inactive; the independent delivery queue continues
+sending due pages. A new request identity reactivates preparation. This avoids
+re-rendering an unchanged long batch while the user considers an answer.

@@ -1,0 +1,79 @@
+import "question_pages"
+import "worker_delivery"
+
+# Only a fully bound ready page may be selected. Unknown/rejected preceding
+# pages hold all successors; no later control can overtake unseen text.
+define discord_question_page_due with journal as Int and now as Int returning List:
+    return history_collect_one(checkpoint_prepare(journal and "SELECT p.outbox FROM discord_question_pages p JOIN discord_outbox o ON o.identity=p.outbox LEFT JOIN discord_delivery_retry_clock c ON c.identity=o.identity WHERE o.state='pending' AND COALESCE(c.next_ms,0)<=CAST(?1 AS INTEGER) AND NOT EXISTS(SELECT 1 FROM discord_question_pages before JOIN discord_outbox prior ON prior.identity=before.outbox WHERE before.question=p.question AND before.position<p.position AND prior.state<>'sent') ORDER BY o.rowid LIMIT 1;" and [int_to_string(now)]))
+
+define discord_question_page_context with journal as Int and database as Int and identity as Str returning List:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT q.identity,q.run,q.inbox,q.actor,q.channel,q.guild FROM discord_question_pages p JOIN discord_questions q ON q.identity=p.question JOIN discord_outbox o ON o.identity=p.outbox AND o.inbox=q.inbox AND o.channel=q.channel WHERE p.outbox=?1 AND o.state='pending';" and [identity]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("question-page-not-pending")
+    set current to discord_question_context(journal and database and archive_list_text(row and 1) and archive_list_text(row and 4) and archive_list_text(row and 5) and archive_list_text(row and 6))
+    if not (archive_list_text(current and 0) equals "found"):
+        return current
+    return row
+
+# Withdraw only unsent pending rows after a locally confirmed invalidation.
+# Unknown sends retain their nonce and evidence for Gateway reconciliation.
+define discord_question_pages_withdraw with journal as Int and question as Str and reason as Str returning Str:
+    if not (reason equals "question-no-longer-pending" or else reason equals "question-authority-denied" or else reason equals "source-changed" or else reason equals "http-404" or else reason equals "question-guild-disabled"):
+        return "question-withdraw-denied"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "store-failed"
+    set values to [question,reason,int_to_string(ep_time_now_ms())]
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_delivery_events(identity,attempt,state,detail,observed_ms) SELECT o.identity,o.attempt,'rejected',?2,CAST(?3 AS INTEGER) FROM discord_question_pages p JOIN discord_outbox o ON o.identity=p.outbox WHERE p.question=?1 AND o.state='pending';" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "UPDATE discord_outbox SET state='rejected' WHERE state='pending' AND identity IN (SELECT outbox FROM discord_question_pages WHERE question=?1);" and [question]) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return "store-failed"
+    return "question-pages-withdrawn"
+
+define discord_question_page_deliver with library as Str and token as Str and journal as Int and database as Int and identity as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    set binding to history_collect_one(checkpoint_prepare(journal and "SELECT question FROM discord_question_pages WHERE outbox=?1;" and [identity]))
+    if not (archive_list_text(binding and 0) equals "found"):
+        return "question-page-not-pending"
+    set question to archive_list_text(binding and 1)
+    set context to discord_question_page_context(journal and database and identity)
+    if not (archive_list_text(context and 0) equals "found"):
+        set result to archive_list_text(context and 0)
+        if result equals "question-no-longer-pending" or else result equals "question-authority-denied":
+            return discord_question_pages_withdraw(journal and question and result)
+        return result
+    set inbox to archive_list_text(context and 3)
+    set actor to archive_list_text(context and 4)
+    set room to archive_list_text(context and 5)
+    set guild to archive_list_text(context and 6)
+    if string_length(guild) > 0 and also discord_contains(guilds and guild) equals 0:
+        return discord_question_pages_withdraw(journal and question and "question-guild-disabled")
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and actor and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        set result to concat("access:" and archive_list_text(access and 0))
+        if discord_reply_reschedule(journal and identity and result and ep_time_now_ms()) is not equal to 0:
+            return "store-failed"
+        return result
+    set source to discord_intake_source(journal and inbox)
+    set fresh to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if fresh equals "source-changed" or else fresh equals "http-404":
+        return discord_question_pages_withdraw(journal and question and fresh)
+    if not (fresh equals "current"):
+        if discord_reply_reschedule(journal and identity and fresh and ep_time_now_ms()) is not equal to 0:
+            return "store-failed"
+        return fresh
+    if file_exists(stop_file):
+        return "stopped"
+    # Cancellation or steering during the network preflight invalidates the page.
+    set current to discord_question_page_context(journal and database and identity)
+    if not (archive_list_text(current and 0) equals "found"):
+        set result to archive_list_text(current and 0)
+        if result equals "question-no-longer-pending" or else result equals "question-authority-denied":
+            return discord_question_pages_withdraw(journal and question and result)
+        return result
+    set result to discord_delivery_send(library and token and journal and identity and directory_path)
+    set receipt to history_collect_one(checkpoint_prepare(journal and "SELECT state,message FROM discord_outbox WHERE identity=?1;" and [identity]))
+    if archive_list_text(receipt and 1) equals "sent" and discord_snowflake(archive_list_text(receipt and 2)):
+        return "question-page-sent"
+    if discord_reply_reschedule(journal and identity and result and ep_time_now_ms()) is not equal to 0:
+        return "store-failed"
+    return concat("question-delivery:" and result)
