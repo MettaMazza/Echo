@@ -66,9 +66,8 @@ small fixture timings do not establish latency for a large historical backlog.
 This change does not implement the separate reviewed Host–Discord continuity
 bridge, the remaining memory UI, or complete Phase Two.
 
-The existing `memory_search` and `memory_read` dispatcher is explicitly private
-principal-only (`app/tools/memory_tools.ep`, `app/memory/archive_recall.ep`). This
-repair does not silently widen that dispatcher. Dedicated audience-scoped original
-search/read integration remains required; the claim graph and episodic timeline
-are the model tools covered by this acceptance. Original conversations can still
-be explicitly selected through the authorised session-history workflow.
+The subsequent [scoped original-recall stage](GROUP-ORIGINAL-RECALL.md) adds
+and deploys `memory_search` and `memory_read` for the exact current audience.
+Native isolation, actual-model two-turn retrieval and actual Discord search/read
+passed. It removes whole pending-original injection without deleting the archive.
+See that report for repeated-turn measurements and the unresolved cold-cache cost.
