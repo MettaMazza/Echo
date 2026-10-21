@@ -1,6 +1,6 @@
 # Resident speech worker
 
-Status on 21 October 2026: native service and real synthesis acceptance passed; live host/Discord routing is not yet promoted. The existing Warm voice remains active through its previous helper until cutover.
+Status on 21 October 2026: native service and real synthesis acceptance passed; Discord now uses the supervised resident Warm worker. Host routing still uses its previously qualified helper and is not yet promoted.
 
 The local service loads the selected TTS model and conditioning once, then serializes jobs through a private socketpair to the native Ernos worker. The acoustic reference, sentence seed, temperature, punctuation prosody and total pitch stay unchanged. Per-job Python dependency references are released after each job; the model remains owned by the worker. Python is used through the existing dependency bridge, not as application-server source.
 
@@ -9,6 +9,19 @@ The local service loads the selected TTS model and conditioning once, then seria
 The service listens only on loopback. It accepts pre-created job directories under configured speech roots; traversal, nested destinations, control characters and wrong credentials are rejected. It does not accept replacement voice assets, models, commands or output destinations. The existing speech tool retains authorization checks before and after generation, private job creation, provenance, cache identity and final attachment validation.
 
 A cancelled helper closes its connection. The service cancels and reaps the owned worker, then reloads on a subsequent request. It does not replay the interrupted job. Normal successful requests retain the worker. macOS supervises the service; initial Documents access required Maria's approval. Automatic restart was tested after that approval. Restart recovery includes a cold load and is not a warm-latency measurement.
+
+The LaunchAgent must use `ProcessType=Interactive`: this socket service directly
+serves user speech requests. Its first supervised configuration used Background,
+which macOS documents as applying CPU and I/O resource limits. Matched testing
+exposed that slowdown; the service was restarted while idle with Interactive
+scheduling. The same short live script then took 2.835, 2.599 and 2.596 seconds,
+and all three waveforms matched the earlier live output byte-for-byte. Preserve
+this setting in installation and restart orchestration.
+
+The same 447-word live story then generated in 64.425 seconds versus the earlier
+151.360-second background-scheduled job. Both produced the identical 158.006-second
+waveform. This is generation wall time, not first-audio streaming or Discord
+delivery latency; long replies still require substantial synthesis time.
 
 ## Recorded acceptance
 
@@ -23,6 +36,8 @@ A cancelled helper closes its connection. The service cancels and reaps the owne
 - Native process regression passed: explicit environment, descriptor isolation, exact exit status, output integrity, cancellation and reaping.
 - The supervised service restarted from a new PID and generated successfully. The first post-restart request took 10.416 seconds, including remaining cold startup.
 
-The short worker's observed RSS was approximately 4.8 GB after repeated short/long jobs; this is not an endurance result. Live Discord Speak, host cutover, extended memory soak and final installer/reboot acceptance remain open. These measurements do not close Phase Two's wider performance requirements or the separate conversational-model latency work.
+Live Discord short Speak generated a shared attachment and played to completion. Hiding and restoring it reused the original cached waveform without rewriting its output file. The same resident worker PID remained alive throughout. The real Discord request took longer than the isolated service benchmark: input-to-WAV file timestamps spanned about 6.9 seconds, and cached restoration took about 7.7 seconds from interaction receipt through channel delivery. These measurements include different work and must not be presented as the isolated 2.5-second result. Network authorization, disk I/O and upload overhead remain relevant.
+
+The worker's observed RSS was approximately 4.8 GB after repeated short/long jobs; this is not an endurance result. Host cutover, extended memory soak and final installer/reboot acceptance remain open. These measurements do not close Phase Two's wider performance requirements or the separate conversational-model latency work.
 
 Private artifacts contain the waveform, reference/profile information and full process receipts. Public receipts intentionally omit those assets and local authentication tokens.
