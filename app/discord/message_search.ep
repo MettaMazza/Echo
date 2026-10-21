@@ -1,0 +1,59 @@
+import "message_index"
+import "message_read_options"
+import "access"
+
+# The local index supplies candidates only. A match is returned exclusively
+# from a fresh current-channel REST observation. Historical text stays private.
+# Result: status, projected page, next local cursor, receipt list.
+define discord_message_search with library as Str and token as Str and journal as Int and directory_path as Str and room as Str and options as List and stop_file as Str returning List:
+    if discord_message_index_refresh(journal) is not equal to 0:
+        return history_status("message-index-unavailable")
+    set query to archive_list_text(options and 2)
+    set statement to discord_message_index_candidates(journal and room and query and archive_list_text(options and 3) and archive_list_text(options and 4))
+    if statement equals 0:
+        return history_status("message-index-unavailable")
+    set output to "["
+    set receipts to "["
+    set next_cursor to ""
+    set count to 0
+    set failed to ""
+    set row to discord_message_index_row(statement)
+    repeat while archive_list_text(row and 0) equals "found":
+        if file_exists(stop_file):
+            set failed to "stopped"
+            break
+        set message to archive_list_text(row and 1)
+        set next_cursor to archive_list_text(row and 2)
+        set count to count + 1
+        set route to concat("/channels/" and concat(room and concat("/messages/" and message)))
+        set fetched to discord_access_get(library and token and journal and directory_path and route and "GET:channel-message-read" and room)
+        if archive_list_text(fetched and 0) equals "observed":
+            set page to discord_message_read_page(archive_list_text(fetched and 1) and room and "read" and message)
+            if string_length(page) equals 0:
+                set failed to "message-response-identity-invalid"
+                break
+            set parsed to provider_json_tokens(page)
+            set item to 1
+            set current_text to provider_value(parsed and provider_member(parsed and item and "content"))
+            if string_contains(current_text and query) is not equal to 0:
+                set source to provider_json_tokens(archive_list_text(fetched and 1))
+                set projected to discord_message_read_item(archive_list_text(fetched and 1) and source and 0 and room)
+                if string_length(output) > 1:
+                    set output to concat(output and ",")
+                    set receipts to concat(receipts and ",")
+                set output to concat(output and projected)
+                set receipts to concat(receipts and provider_quote(archive_list_text(fetched and 3)))
+        else if not (archive_list_text(fetched and 0) equals "http-404"):
+            set failed to concat("message-search-observation:" and archive_list_text(fetched and 0))
+            break
+        set row to discord_message_index_row(statement)
+    set finalized to ep_sqlite3_finalize(statement)
+    if string_length(failed) > 0:
+        return history_status(failed)
+    if not (archive_list_text(row and 0) equals "end") or else finalized is not equal to 0:
+        return history_status("message-index-read-failed")
+    if count < http_decimal(archive_list_text(options and 4)):
+        set next_cursor to ""
+    set output to concat(output and "]")
+    set receipts to concat(receipts and "]")
+    return ["observed",output,next_cursor,receipts]
