@@ -1,0 +1,103 @@
+import "question_view"
+import "question_delivery"
+
+# Applied hashes describe observed Discord content, never merely a PATCH intent.
+define discord_question_sync_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_question_views(outbox TEXT PRIMARY KEY REFERENCES discord_question_pages(outbox),applied TEXT NOT NULL DEFAULT '',next_ms INTEGER NOT NULL DEFAULT 0,failure TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS discord_question_view_receipts(outbox TEXT NOT NULL REFERENCES discord_question_pages(outbox),hash TEXT NOT NULL,observed_ms INTEGER NOT NULL,PRIMARY KEY(outbox,hash));")
+
+# Discord adds component IDs. Compare only the exact public fields we own,
+# including ordering/counts, and authenticate the original reply binding.
+define discord_question_view_matches with journal as Int and identity as Str and bot as Str and desired as Str and observed as Str returning Int:
+    if provider_json_tokens(desired) equals 0 or else provider_json_tokens(observed) equals 0:
+        return 0
+    set result to history_collect_one(checkpoint_prepare(journal and "SELECT CASE WHEN json_extract(?4,'$.id')=o.message AND json_extract(?4,'$.channel_id')=o.channel AND json_extract(?4,'$.author.id')=?2 AND json_extract(?4,'$.message_reference.message_id')=json_extract(i.payload,'$.id') AND json_extract(?4,'$.content')=json_extract(?3,'$.content') AND json_array_length(?4,'$.components')=1 AND json_extract(?4,'$.components[0].type')=1 AND json_array_length(?4,'$.components[0].components')=json_array_length(?3,'$.components[0].components') AND NOT EXISTS(SELECT 1 FROM json_each(?3,'$.components[0].components') d LEFT JOIN json_each(?4,'$.components[0].components') v ON v.key=d.key WHERE v.key IS NULL OR json_extract(d.value,'$.type') IS NOT json_extract(v.value,'$.type') OR json_extract(d.value,'$.label') IS NOT json_extract(v.value,'$.label') OR json_extract(d.value,'$.custom_id') IS NOT json_extract(v.value,'$.custom_id') OR json_extract(d.value,'$.style') IS NOT json_extract(v.value,'$.style') OR COALESCE(json_extract(d.value,'$.disabled'),0)<>COALESCE(json_extract(v.value,'$.disabled'),0)) THEN 1 ELSE 0 END FROM discord_question_pages p JOIN discord_outbox o ON o.identity=p.outbox JOIN discord_inbox i ON i.identity=o.inbox WHERE p.outbox=?1 AND o.state='sent';" and [identity,bot,desired,observed]))
+    if archive_list_text(result and 0) equals "found" and also archive_list_text(result and 1) equals "1":
+        return 1
+    return 0
+
+define discord_question_view_observe with journal as Int and identity as Str and bot as Str and desired as Str and observed as Str returning Str:
+    if discord_question_view_matches(journal and identity and bot and desired and observed) is not equal to 1:
+        return "question-view-unconfirmed"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "store-failed"
+    set values to [identity,ep_sha256(desired),int_to_string(ep_time_now_ms())]
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_question_view_receipts VALUES(?1,?2,CAST(?3 AS INTEGER));" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_question_views(outbox,applied,next_ms) VALUES(?1,?2,CAST(?3 AS INTEGER)+1500) ON CONFLICT(outbox) DO UPDATE SET applied=excluded.applied,next_ms=excluded.next_ms;" and values) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return "store-failed"
+    return "question-view-observed"
+
+define discord_question_view_sync with library as Str and token as Str and journal as Int and database as Int and identity as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT o.inbox,o.channel,o.message,q.actor,q.guild,v.applied,v.failure FROM discord_question_pages p JOIN discord_questions q ON q.identity=p.question JOIN discord_outbox o ON o.identity=p.outbox JOIN discord_question_views v ON v.outbox=p.outbox WHERE p.outbox=?1 AND o.state='sent';" and [identity]))
+    if not (archive_list_text(row and 0) equals "found") or else string_length(archive_list_text(row and 7)) > 0:
+        return "question-view-unavailable"
+    set view to discord_question_view(journal and database and identity)
+    if not (archive_list_text(view and 0) equals "found"):
+        return "question-view-unavailable"
+    if archive_list_text(row and 6) equals archive_list_text(view and 2):
+        return "question-view-settled"
+    set inbox to archive_list_text(row and 1)
+    set room to archive_list_text(row and 2)
+    set message to archive_list_text(row and 3)
+    set actor to archive_list_text(row and 4)
+    set guild to archive_list_text(row and 5)
+    if (string_length(guild) > 0 and discord_contains(guilds and guild) equals 0) or else (string_length(guild) equals 0 and discord_contains(admins and actor) equals 0):
+        return "question-view-scope-denied"
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and actor and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return "question-view-access-denied"
+    set origin to discord_intake_source(journal and inbox)
+    if not (discord_run_source_check(library and token and journal and directory_path and inbox and origin) equals "current") or else file_exists(stop_file):
+        return "question-view-source-changed"
+    set route to concat("/channels/" and concat(room and concat("/messages/" and message)))
+    set prior to discord_access_get(library and token and journal and directory_path and route and "GET:question-view" and room)
+    if archive_list_text(prior and 0) equals "http-404":
+        if archive_finish(checkpoint_prepare(journal and "UPDATE discord_question_views SET failure='message-missing' WHERE outbox=?1;" and [identity]) and 101) is not equal to 0:
+            return "store-failed"
+        return "question-view-missing"
+    if not (archive_list_text(prior and 0) equals "observed"):
+        return archive_list_text(prior and 0)
+    # Validate destination ownership before considering any edit. An existing
+    # stale view is allowed; its content must not supply the new desired state.
+    set check to history_collect_one(checkpoint_prepare(journal and "SELECT json_extract(?1,'$.id')=?2 AND json_extract(?1,'$.channel_id')=?3 AND json_extract(?1,'$.author.id')=?4 AND json_extract(?1,'$.message_reference.message_id')=?5;" and [archive_list_text(prior and 1),message,room,bot,archive_list_text(origin and 6)]))
+    if not (archive_list_text(check and 1) equals "1"):
+        return "question-view-binding-denied"
+    set view to discord_question_view(journal and database and identity)
+    if not (archive_list_text(view and 0) equals "found") or else file_exists(stop_file):
+        return "question-view-unavailable"
+    if discord_question_view_matches(journal and identity and bot and archive_list_text(view and 1) and archive_list_text(prior and 1)) equals 1:
+        return discord_question_view_observe(journal and identity and bot and archive_list_text(view and 1) and archive_list_text(prior and 1))
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and actor and admins)
+    if not (archive_list_text(access and 0) equals "allowed") or else not (discord_run_source_check(library and token and journal and directory_path and inbox and origin) equals "current") or else file_exists(stop_file):
+        return "question-view-access-changed"
+    set view to discord_question_view(journal and database and identity)
+    if not (archive_list_text(view and 0) equals "found"):
+        return "question-view-unavailable"
+    set patch to history_collect_one(checkpoint_prepare(journal and "SELECT json_remove(?1,'$.message_reference');" and [archive_list_text(view and 1)]))
+    if not (archive_list_text(patch and 0) equals "found"):
+        return "store-failed"
+    set changed to discord_access_body(library and token and journal and directory_path and "PATCH" and route and "PATCH:question-view" and room and archive_list_text(patch and 1))
+    if not (archive_list_text(changed and 0) equals "observed"):
+        return archive_list_text(changed and 0)
+    return discord_question_view_observe(journal and identity and bot and archive_list_text(view and 1) and archive_list_text(changed and 1))
+
+# Rotate local checks fairly. Settled pages do not cause network traffic;
+# failed/uncertain edits get a GET before any retry and a bounded retry delay.
+define discord_question_views_tick with library as Str and token as Str and journal as Int and database as Int and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if discord_question_sync_schema(journal) is not equal to 0:
+        return "store-failed"
+    if sql_execute(journal and "INSERT OR IGNORE INTO discord_question_views(outbox) SELECT p.outbox FROM discord_question_pages p JOIN discord_outbox o ON o.identity=p.outbox WHERE o.state='sent' AND json_array_length(o.body,'$.components')=1;") is not equal to 0:
+        return "store-failed"
+    set now to ep_time_now_ms()
+    set due to history_collect_one(checkpoint_prepare(journal and "SELECT outbox FROM discord_question_views WHERE failure='' AND next_ms<=CAST(?1 AS INTEGER) ORDER BY next_ms,rowid LIMIT 1;" and [int_to_string(now)]))
+    if not (archive_list_text(due and 0) equals "found"):
+        return "question-views-idle"
+    set identity to archive_list_text(due and 1)
+    set result to discord_question_view_sync(library and token and journal and database and identity and bot and guilds and admins and directory_path and stop_file)
+    set delay to 30000
+    if result equals "question-view-settled" or else result equals "question-view-observed":
+        set delay to 1500
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_question_views SET next_ms=CAST(?2 AS INTEGER) WHERE outbox=?1;" and [identity,int_to_string(now + delay)]) and 101) is not equal to 0:
+        return "store-failed"
+    return result

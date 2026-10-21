@@ -1,0 +1,36 @@
+import "question_pages"
+
+# Project the saved draft into the original confirmed page. Free text is not
+# copied into public status text: Other is highlighted without exposing it.
+define discord_question_view with journal as Int and database as Int and identity as Str returning List:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT q.identity,q.request,q.run,q.actor,q.channel,q.guild,o.body FROM discord_question_pages p JOIN discord_questions q ON q.identity=p.question JOIN discord_outbox o ON o.identity=p.outbox WHERE p.outbox=?1 AND o.state='sent' AND json_array_length(o.body,'$.components')=1;" and [identity]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("question-view-unavailable")
+    set question to archive_list_text(row and 1)
+    set original to archive_read_event(database and archive_list_text(row and 2))
+    if original equals 0:
+        return history_status("question-view-unavailable")
+    set source to archive_list_text(original and 3)
+    set context to discord_question_context(journal and database and question and archive_list_text(row and 4) and archive_list_text(row and 5) and archive_list_text(row and 6))
+    set pending to "0"
+    if archive_list_text(context and 0) equals "found":
+        set pending to "1"
+    set counts to history_collect_one(checkpoint_prepare(journal and "SELECT count(*),json_array_length(?2,'$.questions') FROM discord_question_drafts d WHERE d.question=?1;" and [question,source]))
+    if not (archive_list_text(counts and 0) equals "found"):
+        return history_status("question-view-unavailable")
+    set complete to "0"
+    if archive_list_text(counts and 1) equals archive_list_text(counts and 2):
+        set complete to "1"
+    set status to "This question is closed."
+    if pending equals "1":
+        set status to concat("Saved " and concat(archive_list_text(counts and 1) and concat(" of " and concat(archive_list_text(counts and 2) and " answers. Not submitted yet."))))
+    else:
+        set answered to archive_read_event(database and concat(archive_list_text(row and 2) and ":answer"))
+        if answered is not equal to 0 and also archive_list_text(answered and 2) equals "user_input_answered":
+            set status to "Answers submitted."
+    set body to archive_list_text(row and 7)
+    set transformed to history_collect_one(checkpoint_prepare(journal and "SELECT json_set(?1,'$.content',json_extract(?1,'$.content')||char(10)||char(10)||?6,'$.components[0].components',json((SELECT json_group_array(json(rendered)) FROM (SELECT json_set(b.value,'$.style',CASE WHEN c.action='submit' THEN 1 WHEN ?4='1' AND ((c.action='choice' AND d.choice=c.choice) OR (c.action='other' AND d.choice=-1)) THEN 3 ELSE 2 END,'$.disabled',json(CASE WHEN ?4='0' OR (c.action='submit' AND ?5='0') THEN 'true' ELSE 'false' END)) AS rendered FROM json_each(?1,'$.components[0].components') b JOIN discord_question_controls c ON c.identity=json_extract(b.value,'$.custom_id') AND c.outbox=?7 AND c.question=?2 LEFT JOIN discord_question_drafts d ON d.question=?2 AND d.item=CASE WHEN c.item>=0 THEN json_extract(?3,'$.questions['||c.item||'].id') ELSE '' END ORDER BY CAST(b.key AS INTEGER)))));" and [body,question,source,pending,complete,status,identity]))
+    if not (archive_list_text(transformed and 0) equals "found"):
+        return history_status("question-view-unavailable")
+    set rendered to archive_list_text(transformed and 1)
+    return ["found",rendered,ep_sha256(rendered)]

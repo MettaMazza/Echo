@@ -133,3 +133,32 @@ on a fresh connector archive. Once a batch's pages are fully prepared, its
 preparation record becomes inactive; the independent delivery queue continues
 sending due pages. A new request identity reactivates preparation. This avoids
 re-rendering an unchanged long batch while the user considers an answer.
+
+Saved-answer projection (not yet connected to message updates):
+`question_view.ep` projects only a confirmed sent page. Saved numbered choices
+and Other receive the selected button style; Other's text is not copied into
+public status content. The batch status shows the saved-answer count. Submit
+is disabled until every answer is saved, and controls become disabled after
+the request closes. The initial content remains immutable in the outbox; the
+projection is separate and does not create new messages.
+
+The action handler now also compares authenticated interaction arrival order.
+A delayed first execution cannot replace a newer saved answer to the same
+question. It records a superseded result without changing the draft. Replays
+of already completed interactions retain their earlier idempotent behavior.
+Free-text-only questions now explicitly direct the user to Other.
+
+Confirmed-message synchronization is now connected in the candidate source.
+`question_sync.ep` compares Discord's observed message identity, channel, bot
+and original-message reference, exact content and ordered button fields. Extra
+Discord-generated component IDs are ignored; missing, reordered or changed
+controls are not accepted. A stored hash is recorded only after a matching GET
+or PATCH response. An interrupted edit is reconciled with GET before another
+write. Missing messages are not recreated. Unchanged local projections perform
+no network call; other failures use a bounded retry delay. Fresh channel access
+and source checks precede edits, and the desired view is refreshed afterwards.
+Question pages explicitly reply to the source message, with mentions disabled.
+
+This source integration is not yet production or live Discord acceptance.
+The admin `/auto` positive interaction remains deferred by Maria. Question
+workflow live acceptance and restart/fault coverage remain open.
