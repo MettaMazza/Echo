@@ -1,7 +1,7 @@
 # Shared session and captured-reasoning reads
 
-21 October 2026. Native shared and private regressions passed; live deployment acceptance
-pending.
+21 October 2026. Native shared and private regressions passed and the stage was deployed at idle.
+Live end-to-end interpretation acceptance remains open.
 
 The previous stage supplied original search/read within an exact shared audience.
 Session enumeration and captured-reasoning retrieval still rejected every shared
@@ -36,3 +36,23 @@ runs lacked workspace configuration, encountered unsupported atomic publication
 on One Touch, or used a symlinked temporary path. Those failures remain retained;
 no workspace safety check was relaxed. Final evidence and workspace outputs are
 archived in `private-r4-1792594876379664000` under the evidence directory.
+
+## Live interpretation failure and source binding
+
+The first Discord check retrieved the correct requested run's saved trace and
+exact source event. Echo nevertheless described the request as a different,
+earlier arithmetic turn and asserted that the lookup had selected the wrong
+run. The archived tool receipt and source record contradict that assertion.
+This is a failed end-to-end result, not a passing retrieval demonstration.
+The original failed response is retained privately on One Touch.
+
+The reader now returns the source `run`, `parent_event`, `session` and echoed
+`requested_id` alongside the event, digest and exact text. Its tool contract
+states that a run selector is restricted to that run; it does not select another
+run's latest response in the conversation. A regression selects an earlier run
+after a newer response exists and checks every source-binding field. This makes
+the provenance available for inspection without inventing a trace or changing
+Echo's identity prompts. Revised native shared regression passed in 17.657 seconds and private regression
+passed in 14.172 seconds. The agent build passed. Live interpretation qualification
+remains pending. Receipts are retained in `lineage-1792595291977088000` and
+`private-lineage-1792595324100290000` beneath the evidence directory.
