@@ -1,0 +1,103 @@
+import "background_retry"
+import "job_origin"
+import "intake_source"
+import "final_binding"
+
+# Called only after authenticated interaction and fresh Discord access. A
+# retry continues the exact run at a ready boundary; it does not regenerate
+# the user's prompt or authorize replay of any unobserved tool side effect.
+define discord_manual_retry with journal as Int and database as Int and source as Str and actor as Str and room as Str and guild as Str and request as Str returning Str:
+    set origin to discord_intake_source(journal and source)
+    if not (archive_list_text(origin and 0) equals "found") or else not (archive_list_text(origin and 3) equals actor) or else not (archive_list_text(origin and 4) equals room) or else not (archive_list_text(origin and 5) equals guild) or else string_length(request) equals 0:
+        return "retry-source-denied"
+    set run to concat("discord-message:" and archive_list_text(origin and 6))
+    if archive_list_text(origin and 1) equals "INTERACTION_CREATE":
+        set run to concat("discord-command:" and source)
+    set device to concat("discord:" and actor)
+    if not (discord_job_source(journal and database and run) equals source) or else web_shared_run_control_allowed(database and device and run) is not equal to 1:
+        return "retry-source-denied"
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return "retry-ownership-unavailable"
+    set lock to compaction_lock_acquire(database and concat("web-worker:" and run) and library)
+    if lock < 0:
+        set closed to ep_dlclose(library)
+        return "retry-worker-active"
+    set result to discord_manual_retry_locked(journal and database and source and device and run and request)
+    set closed to net_close(lock)
+    set closed to ep_dlclose(library)
+    return result
+
+# The durable archive receipt and worker status change share one transaction.
+# If the journal step is interrupted, replay repairs its reservation using the
+# same prior worker. Once a new worker has claimed the run, replay is a no-op.
+define discord_manual_retry_locked with journal as Int and database as Int and source as Str and device as Str and run as Str and request as Str returning Str:
+    set receipt to concat("discord-manual-retry:" and request)
+    set previous to archive_read_event(database and receipt)
+    set keys to [run]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.session,r.state,w.worker,w.status FROM echo_runs r JOIN echo_web_workers w ON w.run=r.run WHERE r.run=?1;" and keys))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "retry-run-unavailable"
+    set worker to archive_list_text(row and 3)
+    if previous is not equal to 0:
+        set parsed to provider_json_tokens(archive_list_text(previous and 3))
+        if not (archive_list_text(previous and 2) equals "discord_retry_requested") or else not (provider_value(parsed and provider_member(parsed and 0 and "run")) equals run) or else not (provider_value(parsed and provider_member(parsed and 0 and "source")) equals source) or else not (provider_value(parsed and provider_member(parsed and 0 and "device")) equals device):
+            return "retry-request-conflict"
+        if not (provider_value(parsed and provider_member(parsed and 0 and "worker")) equals worker) or else not (archive_list_text(row and 2) equals "ready"):
+            return "retry-already-requested"
+    else if not (archive_list_text(row and 2) equals "ready") or else archive_list_text(row and 4) equals "running":
+        return "run-not-retryable"
+    set blocked to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_runs r WHERE r.run=?1 AND (EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=r.run) OR EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state<>'observed'));" and keys))
+    set source_keys to [source]
+    set cancelled to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_cancel_sources WHERE source=?1;" and source_keys))
+    if not (archive_list_text(blocked and 1) equals "0") or else not (archive_list_text(cancelled and 1) equals "0"):
+        return "run-not-retryable"
+    set held to discord_background_reserve(journal and run and source and 1)
+    if not (held equals "reserved" or else held equals "already-reserved"):
+        return concat("retry-reservation:" and held)
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "retry-recovery-required"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return migration_fail(journal and "retry-recovery-required")
+    set cancelled to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_cancel_sources WHERE source=?1;" and source_keys))
+    set values to [run,worker]
+    set eligible to history_collect_one(checkpoint_prepare(database and "SELECT r.session FROM echo_runs r JOIN echo_web_workers w ON w.run=r.run WHERE r.run=?1 AND w.worker=?2 AND r.state='ready' AND w.status<>'running' AND NOT EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=r.run) AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state<>'observed');" and values))
+    if not (archive_list_text(eligible and 0) equals "found") or else not (archive_list_text(cancelled and 1) equals "0") or else web_shared_run_control_allowed(database and device and run) is not equal to 1:
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return migration_fail(journal and "run-not-retryable")
+    if previous equals 0:
+        set payload to concat("{\"run\":" and concat(provider_quote(run) and concat(",\"source\":" and concat(provider_quote(source) and concat(",\"device\":" and concat(provider_quote(device) and concat(",\"worker\":" and concat(provider_quote(worker) and "}"))))))))
+        set payload to concat(substring(payload and 0 and string_length(payload) - 1) and concat(",\"previous_status\":" and concat(provider_quote(archive_list_text(row and 4)) and "}")))
+        if archive_append_pending(database and archive_list_text(eligible and 1) and receipt and "discord_retry_requested" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            set rolled to sql_execute(database and "ROLLBACK;")
+            return migration_fail(journal and "retry-recovery-required")
+    if tool_ledger_change(database and "UPDATE echo_web_workers SET status='launch-failed' WHERE run=?1 AND worker=?2 AND status<>'running' RETURNING run;" and values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return migration_fail(journal and "retry-recovery-required")
+    set now to int_to_string(ep_time_now_ms())
+    set added to append_list(values and source)
+    set added to append_list(values and now)
+    if tool_ledger_change(journal and "UPDATE discord_background_runs SET state='reserved',worker='',process=0,updated_ms=CAST(?4 AS INTEGER) WHERE run=?1 AND inbox=?3 AND ((state='reserved' AND worker='') OR (state IN ('running','recovery') AND worker=?2)) RETURNING run;" and values) is not equal to 0:
+        return migration_fail(journal and "retry-recovery-required")
+    set added to append_list(values and request)
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_background_events(run,inbox,state,detail,observed_ms) SELECT run,inbox,'reserved',?5,CAST(?4 AS INTEGER) FROM discord_background_runs WHERE run=?1 AND NOT EXISTS(SELECT 1 FROM discord_background_events e WHERE e.run=?1 AND e.detail=?5);" and values) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "retry-recovery-required")
+    return "retry-requested"
+
+# Public message IDs resolve to retained sources only; they do not grant rights.
+define discord_manual_retry_message with journal as Int and database as Int and message as Str and actor as Str and room as Str and guild as Str and request as Str returning Str:
+    if discord_snowflake(message) equals 0:
+        return "retry-source-denied"
+    set run to concat("discord-message:" and message)
+    set final to discord_final_lookup(journal and message and room)
+    if archive_list_text(final and 0) equals "found":
+        set run to archive_list_text(final and 1)
+    else:
+        set keys to [message,room,guild,actor]
+        set anchor to history_collect_one(checkpoint_prepare(journal and "SELECT inbox FROM discord_command_anchors WHERE message=?1 AND channel=?2 AND guild=?3 AND actor=?4;" and keys))
+        if archive_list_text(anchor and 0) equals "found":
+            set run to concat("discord-command:" and archive_list_text(anchor and 1))
+    set source to discord_job_source(journal and database and run)
+    if string_length(source) equals 0:
+        return "retry-source-denied"
+    return discord_manual_retry(journal and database and source and actor and room and guild and request)
