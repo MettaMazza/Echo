@@ -1,0 +1,99 @@
+import "hud_control"
+import "command_authority"
+import "agent_bridge"
+import "access"
+import "interaction_recovery"
+
+# The original interaction fixes the actor, namespace, options and operation.
+# Freeze response bytes once; retries never create a newer public response.
+define discord_hud_prepare with journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List returning List:
+    if discord_command_acknowledged(journal and identity and body) equals 0 or else not (discord_interaction_visibility_read(journal and identity and body) equals "private"):
+        return history_status("hud-not-authorized")
+    set command to discord_command_resolve(journal and body and bot and guilds and admins)
+    if not (archive_list_text(command and 0) equals "command-bound-needs-live-access") or else not (archive_list_text(command and 1) equals "hud"):
+        return history_status("hud-not-authorized")
+    set device to discord_agent_principal(database and archive_list_text(command and 2) and admins)
+    set options to archive_list_text(command and 5)
+    if discord_hud_section_allows(database and device and archive_list_text(command and 4) and archive_list_text(command and 3) and options) equals 0:
+        return history_status("hud-not-authorized")
+    if sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_hud_responses(identity TEXT PRIMARY KEY REFERENCES discord_inbox(identity),intake_digest TEXT NOT NULL,payload TEXT NOT NULL,digest TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_hud_response_no_update BEFORE UPDATE ON discord_hud_responses BEGIN SELECT RAISE(ABORT,'HUD response is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_hud_response_no_delete BEFORE DELETE ON discord_hud_responses BEGIN SELECT RAISE(ABORT,'HUD response provenance persists'); END;") is not equal to 0:
+        return history_status("store-failed")
+    set old to history_collect_one(checkpoint_prepare(journal and "SELECT payload,digest,intake_digest FROM discord_hud_responses WHERE identity=?1;" and [identity]))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 3) equals ep_sha256(body)) or else not (ep_sha256(archive_list_text(old and 1)) equals archive_list_text(old and 2)):
+            return history_status("hud-not-authorized")
+        return old
+    if not (archive_list_text(old and 0) equals "end"):
+        return history_status("store-failed")
+    set payload to discord_hud_request(database and device and archive_list_text(command and 4) and archive_list_text(command and 3) and options)
+    set result to provider_json_tokens(payload)
+    set status to provider_value(result and provider_member(result and 0 and "status"))
+    if status equals "database-busy" or else status equals "database-error" or else status equals "archive-error":
+        return history_status("store-failed")
+    if not (status equals "found"):
+        return history_status(concat("hud-rejected:" and status))
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_hud_responses VALUES(?1,?2,?3,?4);" and [identity,ep_sha256(body),payload,ep_sha256(payload)]) and 101) is not equal to 0:
+        return history_status("store-failed")
+    return discord_hud_prepare(journal and database and identity and body and bot and guilds and admins)
+
+define discord_hud_caption with payload as Str returning Str:
+    set fields to provider_json_tokens(payload)
+    set section to provider_value(fields and provider_member(fields and 0 and "section"))
+    return concat("Echo status: " and concat(section and "\nThis is a dated snapshot. Full details and any next_after cursor are in the attached file. Run /hud again for current state."))
+
+define discord_hud_deliver with library as Str and token as Str and journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    set prepared to discord_hud_prepare(journal and database and identity and body and bot and guilds and admins)
+    if not (archive_list_text(prepared and 0) equals "found"):
+        return archive_list_text(prepared and 0)
+    set command to discord_command_resolve(journal and body and bot and guilds and admins)
+    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(command and 4) and archive_list_text(command and 3) and archive_list_text(command and 2) and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return "hud-not-authorized"
+    set credential to history_collect_one(checkpoint_prepare(journal and "SELECT credential FROM discord_interaction_credentials WHERE identity=?1 AND expires_ms>CAST(?2 AS INTEGER);" and [identity,int_to_string(ep_time_now_ms())]))
+    if not (archive_list_text(credential and 0) equals "found") or else discord_interaction_credential_valid(archive_list_text(credential and 1)) equals 0:
+        return "response-expired"
+    set route to concat("/webhooks/" and concat(bot and concat("/" and concat(archive_list_text(credential and 1) and "/messages/@original"))))
+    set observed to discord_access_get(library and token and journal and directory_path and route and "GET:hud-original" and identity)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return archive_list_text(observed and 0)
+    if discord_interaction_original_matches(archive_list_text(observed and 1) and bot and archive_list_text(command and 3)) equals 0:
+        return "hud-not-authorized"
+    set exported to archive_list_text(prepared and 1)
+    set digest to archive_list_text(prepared and 2)
+    set filename to concat("Echo-hud-" and concat(digest and ".json"))
+    set response to provider_json_tokens(archive_list_text(observed and 1))
+    for each item in provider_items(response and provider_member(response and 0 and "attachments")):
+        if provider_value(response and provider_member(response and item and "filename")) equals filename and provider_value(response and provider_member(response and item and "size")) equals int_to_string(string_length(exported)):
+            return "hud-delivered"
+    set envelope to provider_json_tokens(body)
+    set limit to 10485760
+    set reported to http_decimal(provider_value(envelope and provider_member(envelope and 0 and "attachment_size_limit")))
+    if reported > 0 and reported <= 4294967295:
+        set limit to reported
+    if string_length(exported) > limit:
+        return "hud-too-large"
+    set caption to concat(discord_hud_caption(exported) and concat("\nSHA-256: " and digest))
+    set payload to concat("{\"content\":" and concat(provider_quote(caption) and concat(",\"allowed_mentions\":{\"parse\":[]},\"attachments\":[{\"id\":0,\"filename\":" and concat(provider_quote(filename) and "}]}"))))
+    set boundary to concat("EchoExport" and ptr_to_str(ep_uuid_v4()))
+    set multipart to concat("--" and concat(boundary and concat("\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json; charset=utf-8\r\n\r\n" and payload)))
+    set multipart to concat(multipart and concat("\r\n--" and concat(boundary and concat("\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"" and concat(filename and "\"\r\nContent-Type: application/json; charset=utf-8\r\n\r\n")))))
+    set multipart to concat(multipart and concat(exported and concat("\r\n--" and concat(boundary and "--\r\n"))))
+    # Recheck current authority after archive generation and HTTP inspection.
+    set fresh to discord_hud_prepare(journal and database and identity and body and bot and guilds and admins)
+    if not (archive_list_text(fresh and 0) equals "found") or else not (archive_list_text(fresh and 2) equals digest) or else file_exists(stop_file):
+        return "hud-not-authorized"
+    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(command and 4) and archive_list_text(command and 3) and archive_list_text(command and 2) and admins)
+    if not (archive_list_text(access and 0) equals "allowed") or else file_exists(stop_file) or else discord_command_acknowledged(journal and identity and body) equals 0:
+        return "hud-not-authorized"
+    set sent to discord_access_bytes(library and token and journal and directory_path and "PATCH" and route and "PATCH:hud-original" and identity and str_to_ptr(multipart) and string_length(multipart) and concat("multipart/form-data; boundary=" and boundary))
+    if not (archive_list_text(sent and 0) equals "observed"):
+        return archive_list_text(sent and 0)
+    if discord_interaction_original_matches(archive_list_text(sent and 1) and bot and archive_list_text(command and 3)) equals 0:
+        return "hud-not-authorized"
+    set response to provider_json_tokens(archive_list_text(sent and 1))
+    for each item in provider_items(response and provider_member(response and 0 and "attachments")):
+        if provider_value(response and provider_member(response and item and "filename")) equals filename and provider_value(response and provider_member(response and item and "size")) equals int_to_string(string_length(exported)):
+            return "hud-delivered"
+    return "hud-upload-unconfirmed"
