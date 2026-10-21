@@ -2,12 +2,24 @@ import "project_control"
 import "../memory/sharing"
 
 # Authenticated human control only. Neither the source nor destination may
-# borrow Host, DM, another channel or another person's private authority.
+# borrow Host, DM or another person's private authority. The source stays in
+# the command channel; a reviewed destination may be another permitted channel.
 define discord_share_session_allowed with database as Int and device as Str and guild as Str and room as Str and session as Str returning Int:
     set audience to history_collect_one(checkpoint_prepare(database and "SELECT s.group_id,s.revision FROM echo_group_sessions s WHERE s.session=?1 AND NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=s.session);" and [session]))
     if not (archive_list_text(audience and 0) equals "found"):
         return 0
     return group_audience_allows(database and device and archive_list_text(audience and 1) and "discord" and guild and room and string_to_int(archive_list_text(audience and 2)) and 1)
+
+# Return a destination channel only after checking its stored namespace and
+# current membership. The transport must additionally fetch live channel access.
+define discord_share_destination_room with database as Int and device as Str and guild as Str and session as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT g.channel FROM echo_group_sessions s JOIN echo_groups g ON g.identity=s.group_id WHERE s.session=?1 AND g.platform='discord' AND g.server=?2;" and [session,guild]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    set room to archive_list_text(row and 1)
+    if discord_share_session_allowed(database and device and guild and room and session) equals 0:
+        return ""
+    return room
 
 define discord_memory_share_request with database as Int and device as Str and guild as Str and room as Str and arguments as Str returning Str:
     set tokens to provider_json_tokens(arguments)
@@ -24,7 +36,7 @@ define discord_memory_share_request with database as Int and device as Str and g
     if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
         return "{\"status\":\"database-busy\"}"
     set source to archive_read_event(database and source_event)
-    if source equals 0 or else discord_share_session_allowed(database and device and guild and room and archive_list_text(source and 0)) equals 0 or else discord_share_session_allowed(database and device and guild and room and destination) equals 0:
+    if source equals 0 or else discord_share_session_allowed(database and device and guild and room and archive_list_text(source and 0)) equals 0 or else string_length(discord_share_destination_room(database and device and guild and destination)) equals 0:
         set closed to archive_rollback(database)
         return "{\"status\":\"not-authorized\"}"
     if action equals "preview":

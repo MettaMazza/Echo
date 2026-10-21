@@ -42,3 +42,22 @@ exercises, richer message selectors, and the cross-channel scope described above
 Discord's native JSON preview has the same Unicode display limitation documented
 for project receipts; downloaded UTF-8 data remains correct. This is not a full
 Phase Two completion claim. See the release receipt for exact coverage.
+
+## Cross-channel extension awaiting live acceptance
+
+The source now supports a reviewed destination in another Discord channel within
+the same allowed guild. The source must still belong to the command channel.
+Destination namespace and current audience membership are derived from the stored
+conversation, never trusted from a supplied channel ID. The delivery controller
+checks current Discord access in both channels before preparing a copy, and again
+before sending the private receipt. Same-channel requests reuse that one channel
+check rather than performing duplicate permission fetches. Host/DM/private and
+foreign-account destinations remain denied.
+
+Native cross-channel and existing share-command tests passed, including a reviewed
+destination swap refusal. The actions worker compiled successfully. Live acceptance
+is pending: the test destination was created, but the computer-use connection then
+timed out repeatedly on accessibility and screenshot observations. Production
+remains on the previously qualified same-channel implementation. Do not confuse
+this source extension with a qualified rollout. See the separate cross-channel
+receipt for current scope.

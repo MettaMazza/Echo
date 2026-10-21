@@ -4,6 +4,28 @@ import "agent_bridge"
 import "access"
 import "interaction_recovery"
 
+# Both channels must be currently available to the actor. This check precedes
+# preparation because preparation may commit a confirmed copy. Recheck it before
+# delivering the private receipt, including on an uncertain transport retry.
+define discord_share_live_access with library as Str and token as Str and journal as Int and database as Int and body as Str and bot as Str and guilds as List and admins as List and directory_path as Str returning Str:
+    set command to discord_command_resolve(journal and body and bot and guilds and admins)
+    if not (archive_list_text(command and 0) equals "command-bound-needs-live-access") or else not (archive_list_text(command and 1) equals "share"):
+        return "share-not-authorized"
+    set device to discord_agent_principal(database and archive_list_text(command and 2) and admins)
+    set fields to provider_json_tokens(archive_list_text(command and 5))
+    set destination to provider_value(fields and provider_member(fields and 0 and "destination"))
+    set target to discord_share_destination_room(database and device and archive_list_text(command and 4) and destination)
+    if string_length(target) equals 0:
+        return "share-not-authorized"
+    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(command and 4) and archive_list_text(command and 3) and archive_list_text(command and 2) and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return "share-not-authorized"
+    if not (target equals archive_list_text(command and 3)):
+        set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(command and 4) and target and archive_list_text(command and 2) and admins)
+        if not (archive_list_text(access and 0) equals "allowed"):
+            return "share-not-authorized"
+    return "allowed"
+
 # The original interaction fixes the actor, namespace, options and operation.
 # Freeze response bytes once; retries never create a newer public response.
 define discord_share_prepare with journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List returning List:
@@ -55,13 +77,12 @@ define discord_share_caption with payload as Str returning Str:
 define discord_share_deliver with library as Str and token as Str and journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
     if file_exists(stop_file):
         return "stopped"
+    if not (discord_share_live_access(library and token and journal and database and body and bot and guilds and admins and directory_path) equals "allowed"):
+        return "share-not-authorized"
     set prepared to discord_share_prepare(journal and database and identity and body and bot and guilds and admins)
     if not (archive_list_text(prepared and 0) equals "found"):
         return archive_list_text(prepared and 0)
     set command to discord_command_resolve(journal and body and bot and guilds and admins)
-    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(command and 4) and archive_list_text(command and 3) and archive_list_text(command and 2) and admins)
-    if not (archive_list_text(access and 0) equals "allowed"):
-        return "share-not-authorized"
     set credential to history_collect_one(checkpoint_prepare(journal and "SELECT credential FROM discord_interaction_credentials WHERE identity=?1 AND expires_ms>CAST(?2 AS INTEGER);" and [identity,int_to_string(ep_time_now_ms())]))
     if not (archive_list_text(credential and 0) equals "found") or else discord_interaction_credential_valid(archive_list_text(credential and 1)) equals 0:
         return "response-expired"
@@ -92,11 +113,12 @@ define discord_share_deliver with library as Str and token as Str and journal as
     set multipart to concat(multipart and concat("\r\n--" and concat(boundary and concat("\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"" and concat(filename and "\"\r\nContent-Type: application/json; charset=utf-8\r\n\r\n")))))
     set multipart to concat(multipart and concat(exported and concat("\r\n--" and concat(boundary and "--\r\n"))))
     # Recheck current authority after archive generation and HTTP inspection.
+    if not (discord_share_live_access(library and token and journal and database and body and bot and guilds and admins and directory_path) equals "allowed"):
+        return "share-not-authorized"
     set fresh to discord_share_prepare(journal and database and identity and body and bot and guilds and admins)
     if not (archive_list_text(fresh and 0) equals "found") or else not (archive_list_text(fresh and 2) equals digest) or else file_exists(stop_file):
         return "share-not-authorized"
-    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(command and 4) and archive_list_text(command and 3) and archive_list_text(command and 2) and admins)
-    if not (archive_list_text(access and 0) equals "allowed") or else file_exists(stop_file) or else discord_command_acknowledged(journal and identity and body) equals 0:
+    if file_exists(stop_file) or else discord_command_acknowledged(journal and identity and body) equals 0:
         return "share-not-authorized"
     set sent to discord_access_bytes(library and token and journal and directory_path and "PATCH" and route and "PATCH:share-original" and identity and str_to_ptr(multipart) and string_length(multipart) and concat("multipart/form-data; boundary=" and boundary))
     if not (archive_list_text(sent and 0) equals "observed"):
