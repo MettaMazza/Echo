@@ -1,0 +1,69 @@
+import "../../app/discord/activity_scheduler"
+import "../../app/discord/steering_controller"
+import "../../app/discord/background_store"
+
+define auto_admit_fixture with journal as Int and identity as Str and room as Str and prompt as Str returning Int:
+    set body to concat("{\"id\":" and concat(provider_quote(identity) and concat(",\"type\":2,\"application_id\":\"900\",\"guild_id\":\"200\",\"channel_id\":" and concat(provider_quote(room) and concat(",\"member\":{\"user\":{\"id\":\"400\"}},\"data\":{\"type\":1,\"id\":\"802\",\"name\":\"auto\",\"options\":[{\"name\":\"prompt\",\"type\":3,\"value\":" and concat(provider_quote(prompt) and "}]}}"))))))
+    set inbox to concat("interaction:" and identity)
+    set saved to discord_inbox_record(journal and inbox and "INTERACTION_CREATE" and body)
+    if discord_interaction_queue(journal and inbox) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET state='acknowledged' WHERE identity=?1;" and [inbox]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_interaction_credentials VALUES(?1,'synthetic_admission_credential_1234','fixture',0,CAST(?2 AS INTEGER)+900000);" and [inbox,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return 1
+    set response to concat("{\"id\":" and concat(provider_quote(concat("1" and identity)) and concat(",\"channel_id\":" and concat(provider_quote(room) and concat(",\"author\":{\"id\":\"900\"},\"flags\":0,\"content\":\"Autonomy request received.\",\"interaction_metadata\":{\"id\":" and concat(provider_quote(identity) and ",\"type\":2,\"user\":{\"id\":\"400\"}}}"))))))
+    if not (discord_command_anchor_observe(journal and inbox and response and "900" and ["200"] and ["400"]) equals "anchored"):
+        return 1
+    return 0
+
+define background_fixture_message with journal as Int and message as Str and user as Str and room as Str returning Int:
+    set body to concat("{\"id\":" and concat(provider_quote(message) and concat(",\"channel_id\":" and concat(provider_quote(room) and concat(",\"guild_id\":\"200\",\"type\":0,\"author\":{\"id\":" and concat(provider_quote(user) and "},\"mentions\":[{\"id\":\"900\"}],\"content\":\"Public scheduler fixture.\"}"))))))
+    set inbox to concat("message:create:" and message)
+    if not (discord_inbox_record(journal and inbox and "MESSAGE_CREATE" and body) equals "recorded"):
+        return 1
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    set database to discord_agent_open(get_argument(2) and "900")
+    if discord_activity_scheduler_schema(journal) is not equal to 0 or else discord_interaction_schema(journal) is not equal to 0 or else not (delegation_schema(database) equals "applied"):
+        return 2
+    if not (discord_command_observe(journal and "{\"id\":\"802\",\"type\":1,\"application_id\":\"900\",\"guild_id\":\"200\",\"name\":\"auto\"}" and "900" and "200") equals "registered") or else auto_admit_fixture(journal and "701" and "300" and "Work on a task.") is not equal to 0:
+        return 3
+    set run to "discord-command:interaction:701"
+    set admitted to discord_command_auto_admit(journal and database and "interaction:701" and "900" and ["200"] and ["400"])
+    if not (archive_list_text(admitted and 0) equals "accepted") or else not (discord_background_reserve(journal and run and "interaction:701" and 1) equals "reserved") or else background_fixture_message(journal and "101" and "400" and "300") is not equal to 0:
+        return 4
+    if not (discord_steering_reserve(journal and "message:create:101" and "interaction:701" and "400") equals "reserved") or else not (discord_steering_apply(journal and database and "message:create:101" and run and "400") equals "steered") or else discord_activity_discover(journal) is not equal to 0:
+        return 5
+    set observed to history_collect_one(archive_prepare(journal and "SELECT seen_ms FROM discord_activity_targets WHERE run='discord-message:101';"))
+    set revision to archive_list_text(observed and 1)
+    # A stale observation cannot settle a newly revised placeholder.
+    if not (discord_activity_steering_settle(journal and database and "discord-message:101" and "message:create:101" and "0") equals "steered-linked"):
+        return 6
+    set active to history_collect_one(archive_prepare(journal and "SELECT active FROM discord_activity_targets WHERE run='discord-message:101';"))
+    if not (archive_list_text(active and 1) equals "1"):
+        return 7
+    set closed to sql_close(journal)
+    set journal to discord_store_open(get_argument(1) and "900")
+    if discord_activity_scheduler_schema(journal) is not equal to 0 or else not (discord_activity_steering_settle(journal and database and "discord-message:101" and "message:create:101" and revision) equals "steered-linked") or else discord_activity_discover(journal) is not equal to 0:
+        return 8
+    set active to history_collect_one(archive_prepare(journal and "SELECT active,last_status FROM discord_activity_targets WHERE run='discord-message:101';"))
+    if not (archive_list_text(active and 1) equals "0") or else not (archive_list_text(active and 2) equals concat("steered-to:" and run)):
+        return 9
+    set count to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='guidance_received';"))
+    if not (archive_list_text(count and 1) equals "1") or else agent_run_read(database and "discord-message:101") is not equal to 0:
+        return 10
+    # Corrupt/missing receipt must stay active, not count as delivered guidance.
+    if background_fixture_message(journal and "102" and "400" and "300") is not equal to 0 or else not (discord_steering_reserve(journal and "message:create:102" and "interaction:701" and "400") equals "reserved") or else sql_execute(journal and "UPDATE discord_agent_jobs SET state='steered',detail='missing-receipt' WHERE inbox='message:create:102';") is not equal to 0 or else discord_activity_discover(journal) is not equal to 0:
+        return 11
+    set observed to history_collect_one(archive_prepare(journal and "SELECT seen_ms FROM discord_activity_targets WHERE run='discord-message:102';"))
+    set revision to archive_list_text(observed and 1)
+    if not (discord_activity_steering_settle(journal and database and "discord-message:102" and "message:create:102" and revision) equals "steering-receipt-held"):
+        return 12
+    if sql_execute(journal and "UPDATE discord_agent_jobs SET detail=(SELECT detail FROM discord_agent_jobs WHERE inbox='message:create:101') WHERE inbox='message:create:102';") is not equal to 0 or else not (discord_activity_steering_settle(journal and database and "discord-message:102" and "message:create:102" and revision) equals "steering-receipt-held"):
+        return 13
+    set active to history_collect_one(archive_prepare(journal and "SELECT active FROM discord_activity_targets WHERE run='discord-message:102';"))
+    if not (archive_list_text(active and 1) equals "1") or else not (discord_activity_steering_settle(journal and database and run and "interaction:701" and "0") equals "not-steered"):
+        return 14
+    display "PASS: accepted steering retires only its placeholder after restart; exact target receipt required, missing or mismatched receipt held, original run preserved, no repeated guidance, stale revision remains active"
+    return 0

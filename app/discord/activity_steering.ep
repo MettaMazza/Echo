@@ -1,0 +1,25 @@
+import "steering_store"
+import "job_origin"
+
+# Steering has no second inference run. Retire only its scheduler placeholder,
+# after matching the immutable intent to the guidance actually accepted by the
+# target archive. Keep the target's original trace and every receipt intact.
+define discord_activity_steering_settle with journal as Int and database as Int and run as Str and source as Str and revision as Str returning Str:
+    if agent_run_read(database and run) is not equal to 0:
+        return "not-steered"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "steering-receipt-held"
+    set intent to history_collect_one(checkpoint_prepare(journal and "SELECT s.target,s.identity,j.detail FROM discord_agent_jobs j LEFT JOIN discord_steering_intents s ON s.source=j.inbox WHERE j.inbox=?1 AND j.state='steered';" and [source]))
+    if archive_list_text(intent and 0) equals "end":
+        return migration_fail(journal and "not-steered")
+    if not (archive_list_text(intent and 0) equals "found"):
+        return migration_fail(journal and "steering-receipt-held")
+    set receipt to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.run_id') FROM echo_events WHERE event=?1 AND kind='guidance_received';" and [archive_list_text(intent and 3)]))
+    set target to archive_list_text(receipt and 1)
+    if not (archive_list_text(receipt and 0) equals "found") or else string_length(target) equals 0 or else not (archive_list_text(intent and 3) equals concat(target and concat(":guidance:" and archive_list_text(intent and 2)))) or else not (discord_job_origin(journal and database and target) equals archive_list_text(intent and 1)):
+        return migration_fail(journal and "steering-receipt-held")
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_activity_targets SET active=0,last_status=?4 WHERE run=?1 AND inbox=?2 AND seen_ms=CAST(?3 AS INTEGER);" and [run,source,revision,concat("steered-to:" and target)]) and 101) is not equal to 0:
+        return migration_fail(journal and "steering-receipt-held")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return "steering-receipt-held"
+    return "steered-linked"
