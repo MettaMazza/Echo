@@ -1,0 +1,133 @@
+import "joined_groups"
+import "store"
+import "../security/group_gate"
+
+# Offer-only policy: an addressed public message can offer a shared group.
+# Recording or delivering an offer never changes routing or joins anyone.
+define discord_group_offer_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_group_offers(message TEXT PRIMARY KEY,inbox TEXT NOT NULL UNIQUE REFERENCES discord_inbox(identity),actor TEXT NOT NULL,guild TEXT NOT NULL,channel TEXT NOT NULL,source_digest TEXT NOT NULL,invitees TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_group_offers_no_update BEFORE UPDATE ON discord_group_offers BEGIN SELECT RAISE(ABORT,'Group offer is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_group_offers_no_delete BEFORE DELETE ON discord_group_offers BEGIN SELECT RAISE(ABORT,'Group offer provenance persists'); END;")
+
+define discord_group_offer_record with journal as Int and database as Int and inbox as Str and bot as Str returning Str:
+    if discord_group_offer_schema(journal) is not equal to 0:
+        return "store-failed"
+    set values to create_list()
+    set added to append_list(values and inbox)
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT payload FROM discord_inbox WHERE identity=?1 AND kind='MESSAGE_CREATE';" and values))
+    if not (archive_list_text(source and 0) equals "found"):
+        return "offer-source-unavailable"
+    set original to archive_list_text(source and 1)
+    set tokens to provider_json_tokens(original)
+    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id"))
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    if discord_snowflake(guild) equals 0:
+        return "offer-not-needed"
+    set device to concat("discord:" and actor)
+    set bound to discord_joined_bound(database and device and guild and room and concat("discord-message:" and message))
+    if not (archive_list_text(bound and 0) equals "selected"):
+        return "offer-source-denied"
+    set selected to archive_list_text(bound and 1)
+    if discord_joined_namespace(database and selected and guild and room) equals 1:
+        return "offer-not-needed"
+    set invitees to create_list()
+    set encoded to "["
+    set mentions to provider_items(tokens and provider_member(tokens and 0 and "mentions"))
+    for each item in mentions:
+        set user to provider_value(tokens and provider_member(tokens and item and "id"))
+        if discord_snowflake(user) equals 1 and not (user equals actor or else user equals bot) and not (provider_value(tokens and provider_member(tokens and item and "bot")) equals "true") and discord_contains(invitees and user) equals 0:
+            if length_list(invitees) > 0:
+                set encoded to concat(encoded and ",")
+            set added to append_list(invitees and user)
+            set encoded to concat(encoded and provider_quote(user))
+    if length_list(invitees) equals 0:
+        return "offer-not-needed"
+    set encoded to concat(encoded and "]")
+    set values to create_list()
+    set added to append_list(values and message)
+    set added to append_list(values and inbox)
+    set added to append_list(values and actor)
+    set added to append_list(values and guild)
+    set added to append_list(values and room)
+    set added to append_list(values and ep_sha256(original))
+    set added to append_list(values and encoded)
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_group_offers VALUES(?1,?2,?3,?4,?5,?6,?7);" and values) and 101) is not equal to 0:
+        return "store-failed"
+    set verified to history_collect_one(checkpoint_prepare(journal and "SELECT message FROM discord_group_offers WHERE message=?1 AND inbox=?2 AND actor=?3 AND guild=?4 AND channel=?5 AND source_digest=?6 AND invitees=?7;" and values))
+    if not (archive_list_text(verified and 0) equals "found"):
+        return "offer-source-conflict"
+    set content to concat("You tagged another account. To start a shared conversation for this exchange, use /group create source:" and concat(message and ". Tagged accounts choose whether to join; personal histories are not copied."))
+    set body to concat("{\"content\":" and concat(provider_quote(content) and concat(",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false},\"message_reference\":{\"message_id\":" and concat(provider_quote(message) and ",\"fail_if_not_exists\":true}}"))))
+    return discord_outbox_enqueue(journal and concat("discord-group-offer:" and message) and inbox and room and body)
+
+# Only the originating actor may accept an offer in its exact public channel.
+# Live source/access checks precede mutation in the command executor.
+define discord_group_offer_read with journal as Int and message as Str and actor as Str and guild as Str and room as Str returning List:
+    if discord_group_offer_schema(journal) is not equal to 0:
+        return history_status("store-failed")
+    set values to create_list()
+    set added to append_list(values and message)
+    set added to append_list(values and actor)
+    set added to append_list(values and guild)
+    set added to append_list(values and room)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT i.payload,o.invitees,o.inbox FROM discord_group_offers o JOIN discord_inbox i ON i.identity=o.inbox AND i.kind='MESSAGE_CREATE' AND i.digest=o.source_digest WHERE o.message=?1 AND o.actor=?2 AND o.guild=?3 AND o.channel=?4;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("offer-source-denied")
+    return row
+
+# Store only the public initiating message, never the actor's personal session.
+# A later membership revision gets its own source-import receipt on admission.
+define discord_group_seed_bind with database as Int and group_id as Str and original as Str returning Str:
+    if sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_discord_group_seeds(group_id TEXT PRIMARY KEY REFERENCES echo_groups(identity),original TEXT NOT NULL,digest TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS echo_discord_group_seeds_no_update BEFORE UPDATE ON echo_discord_group_seeds BEGIN SELECT RAISE(ABORT,'Public seed is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_discord_group_seeds_no_delete BEFORE DELETE ON echo_discord_group_seeds BEGIN SELECT RAISE(ABORT,'Public seed provenance persists'); END;") is not equal to 0:
+        return "store-failed"
+    set values to create_list()
+    set added to append_list(values and group_id)
+    set added to append_list(values and original)
+    set added to append_list(values and ep_sha256(original))
+    if archive_finish(checkpoint_prepare(database and "INSERT OR IGNORE INTO echo_discord_group_seeds VALUES(?1,?2,?3);" and values) and 101) is not equal to 0:
+        return "store-failed"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT group_id FROM echo_discord_group_seeds WHERE group_id=?1 AND original=?2 AND digest=?3;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "seed-identity-conflict"
+    return "recorded"
+
+define discord_group_seed_import with database as Int and run as Str returning Str:
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_discord_group_seeds';"))
+    if archive_list_text(installed and 0) equals "end":
+        return "seed-not-needed"
+    if not (archive_list_text(installed and 0) equals "found"):
+        return "store-failed"
+    set values to create_list()
+    set added to append_list(values and run)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT p.original,p.digest,s.session,s.group_id FROM echo_runs r JOIN echo_group_sessions s ON s.session=r.session JOIN echo_groups g ON g.identity=s.group_id JOIN echo_discord_group_seeds p ON p.group_id=g.identity WHERE r.run=?1 AND g.platform='discord' AND g.origin LIKE 'discord:joined:%';" and values))
+    if archive_list_text(row and 0) equals "end":
+        return "seed-not-needed"
+    if not (archive_list_text(row and 0) equals "found") or else not (ep_sha256(archive_list_text(row and 1)) equals archive_list_text(row and 2)):
+        return "seed-identity-conflict"
+    set tokens to provider_json_tokens(archive_list_text(row and 1))
+    set content to provider_value(tokens and provider_member(tokens and 0 and "content"))
+    set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id"))
+    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set values to create_list()
+    set added to append_list(values and content)
+    set added to append_list(values and ep_sha256(content))
+    set added to append_list(values and message)
+    set added to append_list(values and archive_list_text(row and 2))
+    set added to append_list(values and actor)
+    set payload to history_collect_one(checkpoint_prepare(database and "SELECT json_object('content',?1,'sha256',?2,'origin','explicit-public-group-seed','revision',?4,'path',?3,'attribution',?5,'original_authorship','user','source_message',?3,'source_digest',?4,'copy_semantics','Only the public initiating message; no personal history or future messages.');" and values))
+    if not (archive_list_text(payload and 0) equals "found"):
+        return "store-failed"
+    set identity to concat("discord-public-seed:" and ep_sha256(archive_list_text(row and 3)))
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "store-failed"
+    set session to archive_list_text(row and 3)
+    if run_authority_allows(database and run and "user") equals 0 or else group_run_session_allows(database and run and session) equals 0:
+        return migration_fail(database and "seed-not-authorized")
+    set prior to archive_read_event(database and identity)
+    if prior is not equal to 0:
+        if not (archive_list_text(prior and 0) equals session) or else not (archive_list_text(prior and 2) equals "source_import") or else not (archive_list_text(prior and 3) equals archive_list_text(payload and 1)):
+            return migration_fail(database and "seed-identity-conflict")
+        return migration_fail(database and "already-recorded")
+    if archive_append_pending(database and session and identity and "source_import" and archive_list_text(payload and 1) and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "store-failed")
+    return "recorded"

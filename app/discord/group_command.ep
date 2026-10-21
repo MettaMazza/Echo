@@ -15,6 +15,12 @@ define discord_group_command_apply with journal as Int and database as Int and i
         return "principal-unavailable"
     set arguments to archive_list_text(command and 5)
     set fields to provider_json_tokens(arguments)
+    set offer to history_status("offer-not-needed")
+    set source_index to provider_member(fields and 0 and "source")
+    if source_index >= 0:
+        set offer to discord_group_offer_read(journal and provider_value(fields and source_index) and archive_list_text(command and 2) and archive_list_text(command and 4) and archive_list_text(command and 3))
+        if not (archive_list_text(offer and 0) equals "found"):
+            return concat("group-control:Offer was not accepted: " and archive_list_text(offer and 0))
     set member to ""
     set target to provider_member(fields and 0 and "member")
     if target >= 0:
@@ -22,11 +28,20 @@ define discord_group_command_apply with journal as Int and database as Int and i
         set member to principal_for_device(database and target_device)
         if string_length(member) equals 0:
             return "principal-unavailable"
-    set result to discord_group_request(database and device and archive_list_text(command and 4) and archive_list_text(command and 3) and concat("discord-group:" and identity) and arguments and member)
+    set operation to concat("discord-group:" and identity)
+    if source_index >= 0:
+        set operation to concat("discord-group-offer:" and provider_value(fields and source_index))
+    set result to discord_group_request(database and device and archive_list_text(command and 4) and archive_list_text(command and 3) and operation and arguments and member)
     set parsed to provider_json_tokens(result)
     set status to provider_value(parsed and provider_member(parsed and 0 and "status"))
     if status equals "writer-lock-unavailable" or else status equals "commit-failed" or else status equals "group-read-failed" or else status equals "selection-read-failed" or else status equals "selection-write-failed":
         return "store-failed"
+    if source_index >= 0 and (status equals "created" or else status equals "already-created"):
+        set group_id to provider_value(parsed and provider_member(parsed and 0 and "group"))
+        set finished to discord_group_offer_accept(journal and database and device and group_id and operation and offer and admins)
+        if not (finished equals "enqueued" or else finished equals "already-enqueued"):
+            return concat("group-control:Shared conversation created; invitation delivery remains pending: " and finished)
+        return concat("group-control:Shared conversation: " and concat(group_id and "\nInvitation receipts are saved. Each account chooses whether to join. Use /group open to select this conversation; only the public initiating message is shared."))
     # The existing response writer suppresses mentions and edits the same
     # private command response. No new public message is posted on retries.
     return concat("group-control:" and discord_group_caption(result))
@@ -59,3 +74,38 @@ define discord_group_caption with result as Str returning Str:
     if status equals "recorded" or else status equals "already-recorded":
         return concat("Membership change saved for " and concat(group_id and ". Use /group inspect for its current revision. An invitation does not force anyone to join."))
     return concat("Group action was not accepted: " and concat(status and ". Check your membership, channel and the latest revision with /group inspect."))
+
+# Replay each invitation by its immutable membership operation, even after a
+# later leave/remove. Retrying acceptance must not invite that person again.
+define discord_group_offer_accept with journal as Int and database as Int and device as Str and group_id as Str and identity as Str and offer as List and admins as List returning Str:
+    set original to archive_list_text(offer and 1)
+    set source to provider_json_tokens(original)
+    set guild to provider_value(source and provider_member(source and 0 and "guild_id"))
+    set room to provider_value(source and provider_member(source and 0 and "channel_id"))
+    if discord_joined_namespace(database and group_id and guild and room) equals 0:
+        return "offer-group-denied"
+    set seeded to discord_group_seed_bind(database and group_id and original)
+    if not (seeded equals "recorded"):
+        return seeded
+    set targets to provider_json_tokens(archive_list_text(offer and 2))
+    set items to provider_items(targets and 0)
+    for each item in items:
+        set target to provider_value(targets and item)
+        set target_device to discord_agent_principal(database and target and admins)
+        set principal to principal_for_device(database and target_device)
+        if string_length(principal) equals 0:
+            return "invitee-unavailable"
+        set operation to concat("discord-group-offer-invite:" and concat(identity and concat(":" and target)))
+        set values to create_list()
+        set added to append_list(values and operation)
+        set added to append_list(values and group_id)
+        set revision to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE((SELECT revision-1 FROM echo_group_membership WHERE identity=?1),(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=?2));" and values))
+        if not (archive_list_text(revision and 0) equals "found"):
+            return "membership-read-failed"
+        set changed to discord_joined_change(database and device and guild and room and operation and group_id and principal and "invited" and http_decimal(archive_list_text(revision and 1)))
+        if not (changed equals "recorded" or else changed equals "already-recorded"):
+            return changed
+    set content to concat("Shared conversation invitation: " and concat(group_id and ". Tagged accounts can use /group list, then /group join with the group and its current revision. Joining is optional; personal histories remain separate."))
+    set message to provider_value(source and provider_member(source and 0 and "id"))
+    set body to concat("{\"content\":" and concat(provider_quote(content) and concat(",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false},\"message_reference\":{\"message_id\":" and concat(provider_quote(message) and ",\"fail_if_not_exists\":true}}"))))
+    return discord_outbox_enqueue(journal and concat("discord-group-invitation:" and identity) and archive_list_text(offer and 3) and room and body)
