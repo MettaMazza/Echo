@@ -52,6 +52,16 @@ define discord_interaction_ack_record with journal as Int and identity as Str an
         return "stale-ack"
     return state
 
+# Use only before entering network transfer. A local failure is known not to
+# have sent the callback; it must not occupy uncertain-delivery recovery.
+define discord_interaction_ack_unsent with journal as Int and identity as Str and reason as Str returning Str:
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET state='expired',detail=?2 WHERE identity=?1 AND state='acknowledging';" and [identity,concat("ack-not-sent:" and reason)]) and 101) is not equal to 0:
+        return "store-failed"
+    set row to history_collect_one(archive_prepare(journal and "SELECT changes();"))
+    if not (archive_list_text(row and 1) equals "1"):
+        return "stale-ack"
+    return "expired"
+
 define discord_interaction_ack_tick with library as Str and bot_token as Str and journal as Int and directory_path as Str returning Str:
     set claim to discord_interaction_claim(journal and ep_time_now_ms())
     if not (archive_list_text(claim and 0) equals "found"):
@@ -60,19 +70,19 @@ define discord_interaction_ack_tick with library as Str and bot_token as Str and
     set credential to archive_list_text(claim and 2)
     set visibility to discord_interaction_visibility_prepare(journal and identity and archive_list_text(claim and 3))
     if not (visibility equals "private" or else visibility equals "public"):
-        return discord_interaction_ack_record(journal and identity and 0)
+        return discord_interaction_ack_unsent(journal and identity and "visibility-unavailable")
     set tokens to provider_json_tokens(archive_list_text(claim and 3))
     set id to provider_value(tokens and provider_member(tokens and 0 and "id"))
     if discord_snowflake(id) equals 0 or else discord_interaction_credential_valid(credential) equals 0:
-        return discord_interaction_ack_record(journal and identity and 0)
+        return discord_interaction_ack_unsent(journal and identity and "invalid-binding")
     set remaining to string_to_int(archive_list_text(claim and 4)) + 2800 - ep_time_now_ms()
     if remaining < 1:
-        return discord_interaction_ack_record(journal and identity and 0)
+        return discord_interaction_ack_unsent(journal and identity and "deadline-before-preparation")
     set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
     set directory to workspace_root_open(system and directory_path)
     if directory < 0:
         set closed to ep_dlclose(system)
-        return discord_interaction_ack_record(journal and identity and 0)
+        return discord_interaction_ack_unsent(journal and identity and "receipt-directory-unavailable")
     set name to ptr_to_str(ep_uuid_v4())
     set output to workspace_file_open(system and directory and concat(name and ".json") and 1)
     set headers to workspace_file_open(system and directory and concat(name and ".headers") and 1)
@@ -83,7 +93,7 @@ define discord_interaction_ack_tick with library as Str and bot_token as Str and
             set closed to net_close(output)
         if headers >= 0:
             set closed to net_close(headers)
-        return discord_interaction_ack_record(journal and identity and 0)
+        return discord_interaction_ack_unsent(journal and identity and "receipt-file-unavailable")
     set route to concat("/interactions/" and concat(id and concat("/" and concat(credential and "/callback"))))
     # Only a registered /auto has a public deferred original. Neither form
     # contains source text or trace. Execution still needs fresh admin access.
@@ -100,13 +110,13 @@ define discord_interaction_ack_tick with library as Str and bot_token as Str and
     if not (prepared equals "modal" or else prepared equals "deferred"):
         set closed to net_close(output)
         set closed to net_close(headers)
-        return discord_interaction_ack_record(journal and identity and 0)
+        return discord_interaction_ack_unsent(journal and identity and "callback-preparation-failed")
     # Recompute after preparation; callback construction consumes deadline too.
     set remaining to string_to_int(archive_list_text(claim and 4)) + 2800 - ep_time_now_ms()
     if remaining < 1:
         set closed to net_close(output)
         set closed to net_close(headers)
-        return discord_interaction_ack_record(journal and identity and 0)
+        return discord_interaction_ack_unsent(journal and identity and "deadline-after-preparation")
     set response to discord_rest_transfer_timed(library and bot_token and "POST" and route and callback and output and headers and remaining and remaining)
     set confirmed to 0
     if archive_list_text(response and 0) equals "complete" and archive_list_text(response and 1) equals "204":
