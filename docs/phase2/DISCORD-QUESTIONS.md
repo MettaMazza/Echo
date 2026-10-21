@@ -17,7 +17,7 @@ This is not a deployed UI. Remaining integration:
 - Discover pending batches from running and delegated Discord jobs and deliver
   them durably to the original channel, without moving the prompt or answer
   into the thinking thread.
-- Bind controls to confirmed outbound messages, not merely a custom ID.
+- Connect the native confirmed-message control bindings to actual delivery.
   Render all question/option text without silent truncation; use numbered
   choices when Discord label limits are shorter than the source text.
 - Save selections as drafts. Provide Other through a text modal and an
@@ -49,3 +49,25 @@ three-question batch, saved drafts/reopen, invalid and foreign submissions,
 explicit complete answer, duplicate prevention, revocation and archive integrity.
 The receipt is `../releases/1.75/discord-questions-2026-10-21.json`.
 This does not establish live Discord component or modal acceptance.
+
+Native control acceptance (not production integration):
+`question_controls.ep` binds each choice, Other and Submit control to an
+immutable question/outbox record. Resolution requires a confirmed sent
+message, its bot author, the original actor, channel and guild, and original
+admission provenance. A copied control ID is insufficient. Modal submission
+can resolve only an Other control. These bindings do not replace the later
+live access and current pending-question checks.
+
+The Other modal uses a generic label and reveals no question content. Its
+parser accepts one explicitly typed text field through a current Label or
+legacy Action Row, preserves exact Unicode and newlines, and rejects blank,
+numeric, duplicate and incorrectly named fields. Opening a modal does not
+save an answer or resume a run.
+
+Acknowledgement integration remains pending. Record the callback kind before
+sending it: a modal callback has no deferred original message to reconcile.
+A confirmed modal-open must finish that interaction without passing through
+the ordinary action worker. An interrupted or uncertain modal-open must not
+be blindly replayed or reconciled by fetching a nonexistent original reply.
+The later modal submission is a distinct authenticated interaction and saves
+only a draft; the explicit Submit button completes the batch.

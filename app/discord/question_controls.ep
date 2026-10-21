@@ -1,0 +1,112 @@
+import "store"
+import "intake_source"
+import "../providers/archived_stream"
+
+# Components address immutable application records, never model-authored
+# destinations. A delivered message and the original human are both required.
+define discord_question_controls_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_question_controls(identity TEXT PRIMARY KEY,question TEXT NOT NULL REFERENCES discord_questions(identity),outbox TEXT NOT NULL REFERENCES discord_outbox(identity),action TEXT NOT NULL CHECK(action IN ('choice','other','submit')),item INTEGER NOT NULL,choice INTEGER NOT NULL,UNIQUE(question,outbox,action,item,choice)); CREATE TRIGGER IF NOT EXISTS discord_question_controls_no_update BEFORE UPDATE ON discord_question_controls BEGIN SELECT RAISE(ABORT,'Question control is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_question_controls_no_delete BEFORE DELETE ON discord_question_controls BEGIN SELECT RAISE(ABORT,'Question control persists'); END;")
+
+define discord_question_control_bind with journal as Int and question as Str and outbox as Str and action as Str and item as Int and choice as Int returning Str:
+    if not (action equals "choice" or else action equals "other" or else action equals "submit") or else discord_question_controls_schema(journal) is not equal to 0:
+        return ""
+    if action equals "submit":
+        if item is not equal to -1 or else choice is not equal to -1:
+            return ""
+    else:
+        if item < 0 or else item > 2:
+            return ""
+        if action equals "choice" and also (choice < 0 or else choice > 2):
+            return ""
+        if action equals "other" and choice is not equal to -1:
+            return ""
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT q.identity FROM discord_questions q JOIN discord_outbox o ON o.identity=?2 AND o.inbox=q.inbox AND o.channel=q.channel WHERE q.identity=?1;" and [question,outbox]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    set key to concat(provider_quote(question) and concat(provider_quote(outbox) and concat(provider_quote(action) and concat(int_to_string(item) and concat(":" and int_to_string(choice))))))
+    set identity to concat("echoqc:" and ep_sha256(key))
+    set values to [identity,question,outbox,action,int_to_string(item),int_to_string(choice)]
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_question_controls VALUES(?1,?2,?3,?4,CAST(?5 AS INTEGER),CAST(?6 AS INTEGER));" and values) and 101) is not equal to 0:
+        return ""
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_question_controls WHERE identity=?1 AND question=?2 AND outbox=?3 AND action=?4 AND item=CAST(?5 AS INTEGER) AND choice=CAST(?6 AS INTEGER);" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return identity
+
+# Only authenticated Gateway bodies may enter this resolver. The returned
+# binding still requires live source access and pending/authority checks.
+define discord_question_control_resolve with journal as Int and body as Str and bot as Str returning List:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return history_status("invalid-question-control")
+    set kind to provider_value(tokens and provider_member(tokens and 0 and "type"))
+    if not (kind equals "3" or else kind equals "5") or else not (provider_value(tokens and provider_member(tokens and 0 and "application_id")) equals bot):
+        return history_status("invalid-question-control")
+    set data to provider_member(tokens and 0 and "data")
+    if kind equals "3" and not (provider_value(tokens and provider_member(tokens and data and "component_type")) equals "2"):
+        return history_status("invalid-question-control")
+    set identity to provider_value(tokens and provider_member(tokens and data and "custom_id"))
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "user") and "id"))
+    if discord_snowflake(guild):
+        set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and provider_member(tokens and 0 and "member") and "user") and "id"))
+    else if guild equals "null" or else string_length(guild) equals 0:
+        set guild to ""
+    else:
+        return history_status("invalid-question-control")
+    set message to provider_member(tokens and 0 and "message")
+    set message_id to provider_value(tokens and provider_member(tokens and message and "id"))
+    if discord_snowflake(actor) equals 0 or else discord_snowflake(room) equals 0 or else discord_snowflake(message_id) equals 0 or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and message and "author") and "id")) equals bot):
+        return history_status("invalid-question-control")
+    set values to [identity,actor,room,guild,message_id]
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT c.action,c.question,c.item,c.choice,q.run,q.request,q.inbox FROM discord_question_controls c JOIN discord_questions q ON q.identity=c.question JOIN discord_outbox o ON o.identity=c.outbox AND o.inbox=q.inbox AND o.channel=q.channel WHERE c.identity=?1 AND q.actor=?2 AND q.channel=?3 AND q.guild=?4 AND o.state='sent' AND o.message=?5;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("question-control-denied")
+    if kind equals "5" and not (archive_list_text(row and 1) equals "other"):
+        return history_status("question-control-denied")
+    set source to discord_intake_source(journal and archive_list_text(row and 7))
+    if not (archive_list_text(source and 0) equals "found") or else not (archive_list_text(source and 3) equals actor) or else not (archive_list_text(source and 4) equals room) or else not (archive_list_text(source and 5) equals guild):
+        return history_status("question-control-denied")
+    return row
+
+# Generic modal text reveals no question content before fresh execution-time
+# permission checks. Opening it saves no answer and resumes no model work.
+define discord_question_other_modal with journal as Int and body as Str and bot as Str returning Str:
+    set context to discord_question_control_resolve(journal and body and bot)
+    set tokens to provider_json_tokens(body)
+    if not (archive_list_text(context and 0) equals "found") or else not (archive_list_text(context and 1) equals "other") or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "3"):
+        return ""
+    set custom to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "data") and "custom_id"))
+    return concat("{\"type\":9,\"data\":{\"custom_id\":" and concat(provider_quote(custom) and ",\"title\":\"Other answer\",\"components\":[{\"type\":18,\"label\":\"Your answer\",\"component\":{\"type\":4,\"custom_id\":\"answer\",\"style\":2,\"required\":true}}]}}"))
+
+# Only one text field is accepted. Both current Label wrappers and legacy
+# Action Row wrappers have explicit structure; arbitrary nested text is not
+# searched for an answer. Caller must resolve the modal binding first.
+define discord_question_modal_text with body as Str returning List:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "5"):
+        return history_status("invalid-question-answer")
+    set data to provider_member(tokens and 0 and "data")
+    set components to provider_member(tokens and data and "components")
+    if not (provider_kind(tokens and components) equals "["):
+        return history_status("invalid-question-answer")
+    set items to provider_items(tokens and components)
+    if length_list(items) is not equal to 1:
+        return history_status("invalid-question-answer")
+    set wrapper to get_list(items and 0)
+    set kind to provider_value(tokens and provider_member(tokens and wrapper and "type"))
+    set field to -1
+    if kind equals "18":
+        set field to provider_member(tokens and wrapper and "component")
+    else if kind equals "1":
+        set children to provider_member(tokens and wrapper and "components")
+        if not (provider_kind(tokens and children) equals "[") or else length_list(provider_items(tokens and children)) is not equal to 1:
+            return history_status("invalid-question-answer")
+        set field to get_list(provider_items(tokens and children) and 0)
+    if field < 0 or else not (provider_value(tokens and provider_member(tokens and field and "type")) equals "4") or else not (provider_value(tokens and provider_member(tokens and field and "custom_id")) equals "answer"):
+        return history_status("invalid-question-answer")
+    set value to provider_member(tokens and field and "value")
+    if not (provider_kind(tokens and value) equals "string") or else string_length(string_trim(provider_value(tokens and value))) equals 0:
+        return history_status("invalid-question-answer")
+    return ["found",provider_value(tokens and value)]
