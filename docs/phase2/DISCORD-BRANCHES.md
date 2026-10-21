@@ -290,3 +290,24 @@ switching unnecessarily to a more distant ancestor. Final native receipt
 The fixtures retain diagnostic duplicate-event probes in their complete logs;
 only the asserted, terminal successful outcomes are counted here.
 No production deployment or live latency improvement is claimed for this candidate.
+
+### Live candidate failure and rollback
+
+The native-qualified candidate was installed idle and one regeneration completed
+with a visible correct reply. However, receipt validation found its snapshot had
+an empty value after `records:` and was not valid JSON. That invalidates the
+apparent 2.898-second prefill result: no latency success is claimed. The subsequent
+normal follow-up produced a valid snapshot, but does not erase the earlier failure.
+The cause remains unresolved. Private archive/journal copies and exact requests
+are retained under `branch-prefix-live-failure`.
+
+The previously qualified revision worker was restored at idle, preserving Warm
+and all archived originals. The candidate source remains published for diagnosis,
+not claimed as the deployed repair. Native synthetic passes did not cover this
+live failure; the next investigation uses the saved archive and validates every
+snapshot rather than only final answers and timing receipts.
+
+Saved-archive diagnostic `test_saved_group_records.ep` then performed twenty
+fresh shared-record reads for the failed run. All returned valid arrays in
+1.457 seconds. This narrows the investigation but does not reproduce or resolve
+the capture-time empty value. The diagnostic did not invoke a model or transport.
