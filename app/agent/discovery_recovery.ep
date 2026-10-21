@@ -1,0 +1,41 @@
+import "../tools/tool_discovery"
+import "run_state"
+
+# Under the abandoned-worker lock and writer transaction. This is deliberately
+# limited to the built-in local catalogue lookup, not arbitrary read-labelled
+# tools, network requests, execution, publication or writes. The original
+# outcome remains unknown; the replacement is an explicitly fresh observation.
+define agent_recover_discovery_pending with database as Int and run as Str and call_id as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT t.session,t.request_event,e.payload FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event AND e.session=t.session AND e.kind='tool_call' WHERE t.run=?1 AND t.call_id=?2 AND t.state IN ('running','uncertain') AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.call_id')=?2 AND json_extract(e.payload,'$.name')='tool_search';" and [run,call_id]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    set current to agent_run_read(database and run)
+    if current equals 0 or else not (archive_list_text(current and 2) equals "tools"):
+        return ""
+    set cancelled to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_cancel_requests WHERE run=?;" and [run]))
+    if not (archive_list_text(cancelled and 0) equals "found") or else not (archive_list_text(cancelled and 1) equals "0"):
+        return ""
+    # Frozen call authority and current audience must both still permit this.
+    if tool_policy_allows(database and run and call_id and "tool_search") equals 0:
+        return ""
+    set request_body to archive_list_text(row and 3)
+    set tokens to provider_json_tokens(request_body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set field to provider_member(tokens and 0 and "arguments")
+    set arguments to provider_value(tokens and field)
+    if not (provider_kind(tokens and field) equals "string"):
+        set arguments to agent_json_source(request_body and tokens and field)
+    set fresh to tool_discovery_snapshot(database and run and arguments)
+    set result to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,'$.recovery_observation',json_object('kind','fresh-local-catalogue-read','original_outcome','unavailable','mutating_tool_replayed',json('false'),'detail','The previous worker stopped before its lookup result was retained. This result is a new authorized local catalogue snapshot, not a reconstructed earlier result.'));" and [fresh]))
+    if not (archive_list_text(result and 0) equals "found"):
+        return ""
+    set request to archive_list_text(row and 2)
+    set event to concat(request and ":result")
+    set payload to agent_event_envelope(run and archive_list_text(current and 3))
+    set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"request_event\":" and provider_quote(request)))
+    set payload to concat(payload and concat(",\"result\":" and concat(archive_list_text(result and 1) and "}")))
+    if archive_append_pending(database and archive_list_text(row and 1) and event and "tool_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return ""
+    return event
