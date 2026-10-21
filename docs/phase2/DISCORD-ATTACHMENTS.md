@@ -13,3 +13,11 @@ Current source: `app/discord/attachment_control.ep`. Browser entry points retain
 Live command surface: `/attachments list session:` and explicit `trash`, `restore-selection`, `exclude-context`, `restore-context` actions with attachment and revision options. Results must clearly distinguish selection from context visibility and retain an inspectable receipt. Delivery rechecks current source membership before returning file metadata.
 
 Evidence: [command acceptance](../releases/1.75/discord-attachment-commands-2026-10-21.json). Full Phase Two remains open.
+
+21 October consumer audit found a recap-cache gap: audio/video reader calls and
+parent visibility changes for derived clips/frames were not fully represented
+in the context revision. The corrected query follows the existing immutable
+lineage for all five attachment readers. A native regression reproduced the
+failure before the change and passes afterward; the existing source-withholding
+and restoration regression also passes. Deployment and live media-recap
+acceptance remain pending. See [bounded evidence](../releases/1.75/media-recap-revision-2026-10-21.json).

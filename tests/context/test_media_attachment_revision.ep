@@ -1,0 +1,46 @@
+import "../../app/context/attachment_revision"
+import "../../app/agent/tool_ledger"
+
+# Exercise recap invalidation with policies outside the reading session.
+# The fixture lineage table isolates the revision query from media decoding.
+define main returning Int:
+    if get_argument_count() is not equal to 2:
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else tool_ledger_schema(database) is not equal to 0:
+        return 2
+    if sql_execute(database and "CREATE TABLE echo_attachment_derivations(attachment TEXT PRIMARY KEY,parent TEXT NOT NULL); INSERT INTO echo_attachment_derivations VALUES('clip','movie'),('frame','clip');") is not equal to 0:
+        return 3
+    for each name in ["attachment_read_text", "attachment_view_image", "attachment_transcribe", "attachment_listen_audio", "attachment_video"]:
+        set arguments to "{\"attachment\":\"frame\"}"
+        set payload to concat("{\"name\":" and concat(provider_quote(name) and concat(",\"arguments\":" and concat(provider_quote(arguments) and "}"))))
+        if archive_append(database and name and name and "tool_call" and payload and "fixture") is not equal to 0:
+            return 4
+        if tool_ledger_change(database and "INSERT INTO echo_tool_calls(run,call_id,session,request_event,state) VALUES(?1,?1,?1,?1,'queued') RETURNING call_id;" and [name]) is not equal to 0:
+            return 5
+        if not (attachment_context_revision(database and name) equals "0"):
+            return 6
+    if archive_append(database and "source" and "exclude-parent" and "attachment_visibility" and "{\"attachment\":\"movie\",\"state\":\"excluded\"}" and "fixture") is not equal to 0:
+        return 7
+    set revision to attachment_context_revision(database and "source")
+    for each name in ["attachment_read_text", "attachment_view_image", "attachment_transcribe", "attachment_listen_audio", "attachment_video"]:
+        if not (attachment_context_revision(database and name) equals revision):
+            display concat("FAIL excluded parent: " and name)
+            return 8
+    if not (attachment_context_revision(database and "unrelated") equals "0"):
+        return 9
+    if sql_close(database) is not equal to 0:
+        return 10
+    set database to archive_open(get_argument(1))
+    if not (attachment_context_revision(database and "attachment_listen_audio") equals revision):
+        return 11
+    if archive_append(database and "source" and "restore-parent" and "attachment_visibility" and "{\"attachment\":\"movie\",\"state\":\"included\"}" and "fixture") is not equal to 0:
+        return 12
+    set restored to attachment_context_revision(database and "attachment_video")
+    if restored equals revision or else restored equals "0" or else string_length(restored) equals 0:
+        return 13
+    set checkpoint to ["", "", "", "", "", "", concat("{\"attachment_context_revision\":" and concat(provider_quote(revision) and "}"))]
+    if attachment_checkpoint_current(database and "attachment_video" and checkpoint) is not equal to 0:
+        return 14
+    display "PASS media lineage invalidation, unrelated scope, restore and reopen"
+    return sql_close(database)
