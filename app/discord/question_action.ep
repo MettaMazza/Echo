@@ -1,0 +1,98 @@
+import "question_store"
+import "question_controls"
+import "interaction_intake"
+
+# An interaction has one immutable input/snapshot and one terminal result.
+# Draft and result commit together; submit snapshots bridge the two databases.
+define discord_question_operations_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_question_operations(identity TEXT PRIMARY KEY REFERENCES discord_interaction_jobs(identity),intake_sha256 TEXT NOT NULL,answers TEXT NOT NULL,result TEXT NOT NULL DEFAULT ''); CREATE TRIGGER IF NOT EXISTS discord_question_operations_input BEFORE UPDATE OF identity,intake_sha256,answers ON discord_question_operations BEGIN SELECT RAISE(ABORT,'Question operation input is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_question_operations_result BEFORE UPDATE OF result ON discord_question_operations WHEN OLD.result<>'' BEGIN SELECT RAISE(ABORT,'Question operation result is final'); END; CREATE TRIGGER IF NOT EXISTS discord_question_operations_retained BEFORE DELETE ON discord_question_operations BEGIN SELECT RAISE(ABORT,'Question operation persists'); END;")
+
+# Called only after fresh transport source/access checks. It independently
+# validates stored intake, current local authority and confirmed message binding.
+define discord_question_action_apply with journal as Int and database as Int and identity as Str and body as Str and bot as Str returning Str:
+    if discord_question_operations_schema(journal) is not equal to 0:
+        return "store-failed"
+    set intake to history_collect_one(checkpoint_prepare(journal and "SELECT i.identity FROM discord_interaction_jobs j JOIN discord_inbox i ON i.identity=j.identity WHERE j.identity=?1 AND j.state='acknowledged' AND i.kind='INTERACTION_CREATE' AND i.payload=?2;" and [identity,body]))
+    if not (archive_list_text(intake and 0) equals "found"):
+        return "question-control-denied"
+    set control to discord_question_control_resolve(journal and body and bot)
+    if not (archive_list_text(control and 0) equals "found"):
+        return archive_list_text(control and 0)
+    set source to discord_intake_source(journal and archive_list_text(control and 7))
+    set actor to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    set run to archive_list_text(control and 5)
+    set request to archive_list_text(control and 6)
+    set question to archive_list_text(control and 2)
+    if not (discord_job_origin(journal and database and run) equals archive_list_text(control and 7)) or else web_shared_run_control_allowed(database and concat("discord:" and actor) and run) equals 0:
+        return "question-authority-denied"
+    set action to archive_list_text(control and 1)
+    set tokens to provider_json_tokens(body)
+    if action equals "other" and not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "5"):
+        return "question-control-denied"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "store-failed"
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT intake_sha256,answers,result FROM discord_question_operations WHERE identity=?1;" and [identity]))
+    set answers to ""
+    if archive_list_text(prior and 0) equals "found":
+        if not (archive_list_text(prior and 1) equals ep_sha256(body)):
+            set rolled to sql_execute(journal and "ROLLBACK;")
+            return "question-control-denied"
+        if string_length(archive_list_text(prior and 3)) > 0:
+            set rolled to sql_execute(journal and "ROLLBACK;")
+            return archive_list_text(prior and 3)
+        set answers to archive_list_text(prior and 2)
+        if not (action equals "submit"):
+            set rolled to sql_execute(journal and "ROLLBACK;")
+            return "store-failed"
+    else:
+        if not (archive_list_text(prior and 0) equals "end"):
+            set rolled to sql_execute(journal and "ROLLBACK;")
+            return "store-failed"
+        set current to discord_question_context(journal and database and question and actor and room and guild)
+        if not (archive_list_text(current and 0) equals "found"):
+            set rolled to sql_execute(journal and "ROLLBACK;")
+            return archive_list_text(current and 0)
+        if action equals "submit":
+            set snapshot to history_collect_one(checkpoint_prepare(journal and "SELECT json_group_array(json_object('id',item,'choice',choice,'text',text)) FROM (SELECT item,choice,text FROM discord_question_drafts WHERE question=?1 ORDER BY item);" and [question]))
+            if not (archive_list_text(snapshot and 0) equals "found"):
+                set rolled to sql_execute(journal and "ROLLBACK;")
+                return "store-failed"
+            set answers to archive_list_text(snapshot and 1)
+        if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_question_operations(identity,intake_sha256,answers) VALUES(?1,?2,?3);" and [identity,ep_sha256(body),answers]) and 101) is not equal to 0:
+            set rolled to sql_execute(journal and "ROLLBACK;")
+            return "store-failed"
+    if not (action equals "submit"):
+        set original to archive_read_event(database and request)
+        set item to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(value,'$.id') FROM json_each(?1,'$.questions') WHERE key=CAST(?2 AS INTEGER);" and [archive_list_text(original and 3),archive_list_text(control and 3)]))
+        set text to ""
+        set choice to string_to_int(archive_list_text(control and 4))
+        if action equals "other":
+            set parsed to discord_question_modal_text(body)
+            if not (archive_list_text(parsed and 0) equals "found"):
+                set rolled to sql_execute(journal and "ROLLBACK;")
+                return "invalid-question-answer"
+            set text to archive_list_text(parsed and 1)
+            set choice to -1
+        if not (archive_list_text(item and 0) equals "found"):
+            set rolled to sql_execute(journal and "ROLLBACK;")
+            return "invalid-question-choice"
+        set result to discord_question_choose(journal and database and question and actor and room and guild and archive_list_text(item and 1) and choice and text)
+        if not (result equals "question-draft-saved"):
+            set rolled to sql_execute(journal and "ROLLBACK;")
+            return result
+        if archive_finish(checkpoint_prepare(journal and "UPDATE discord_question_operations SET result=?2 WHERE identity=?1 AND result='';" and [identity,result]) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+            set rolled to sql_execute(journal and "ROLLBACK;")
+            return "store-failed"
+        return result
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return "store-failed"
+    # The web transaction is already idempotent for this request and exact
+    # frozen answer payload. A crash before journal completion reuses it.
+    if web_questions_environment(database and concat("discord:" and actor) and run and request and answers and message_environment_channel("discord" and guild and room)) is not equal to 0:
+        return "question-answer-not-accepted"
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_question_operations SET result='question-answered' WHERE identity=?1 AND result='';" and [identity]) and 101) is not equal to 0:
+        return "store-failed"
+    return "question-answered"

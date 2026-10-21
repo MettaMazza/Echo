@@ -77,5 +77,20 @@ Type-5 submissions use the same authenticated Gateway intake, guild allowlist,
 admin-only DMs, token separation, cursor transaction and replay identity as
 other interactions. Admission is not answer authorization. Execution still
 needs the current control binding, live source/access check and pending request.
-The answer action worker and renderer remain unfinished. The intended later
-modal submission saves only a draft; explicit Submit completes the batch.
+The answer action worker is now connected in source; renderer/delivery and
+live qualification remain unfinished. Modal submission saves only a draft;
+explicit Submit completes the batch.
+
+Answer execution (source integration, not deployed):
+`question_execution.ep` rechecks the configured guild scope, current Discord
+access and original message before passing an acknowledged, exact stored
+interaction to `question_action.ep`. Local checks resolve the confirmed
+control, current run authority, cancellation and pending request.
+
+Draft changes and their operation receipt commit in one journal transaction.
+A retry of an older click returns its existing receipt without overwriting a
+newer draft. Submit freezes the exact answer batch before calling the existing
+archive transaction. Recovery reuses that snapshot and the shared validator's
+request-keyed answer receipt; it cannot silently pick up later draft changes
+or append a second guidance event. A new explicit click is needed after an
+incomplete submission. No answer content is included in status acknowledgements.

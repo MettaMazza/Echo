@@ -1,12 +1,17 @@
 import "../../app/discord/question_store"
 import "../../app/discord/question_controls"
 import "../../app/discord/interaction_recovery"
+import "../../app/discord/question_action"
 
 define question_control_fixture with identity as Str and actor as Str and room as Str and message as Str and kind as Int returning Str:
     set body to concat("{\"type\":" and concat(int_to_string(kind) and ",\"application_id\":\"900\",\"guild_id\":\"200\",\"channel_id\":"))
     set body to concat(body and concat(provider_quote(room) and concat(",\"member\":{\"user\":{\"id\":" and concat(provider_quote(actor) and "}},\"message\":{\"author\":{\"id\":\"900\"},\"id\":"))))
     set body to concat(body and concat(provider_quote(message) and "},\"data\":{\"component_type\":2,\"custom_id\":"))
     return concat(body and concat(provider_quote(identity) and "}}"))
+
+define question_action_fixture with journal as Int and identity as Str and body as Str returning Int:
+    set saved to discord_inbox_record(journal and identity and "INTERACTION_CREATE" and body)
+    return archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_interaction_jobs VALUES(?1,'acknowledged',0,'fixture');" and [identity]) and 101)
 
 define main returning Int:
     if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
@@ -74,6 +79,24 @@ define main returning Int:
     set terminal to history_collect_one(archive_prepare(journal and "SELECT state,detail FROM discord_interaction_jobs WHERE identity='interaction:modal-unknown';"))
     if not (archive_list_text(terminal and 1) equals "expired") or else not (archive_list_text(terminal and 2) equals "modal-open-unconfirmed-no-replay"):
         return 36
+    set first_click to question_control_fixture(choice_control and "500" and "300" and "700" and 3)
+    set music_control to discord_question_control_bind(journal and binding and "question:100" and "choice" and 0 and 2)
+    set next_click to question_control_fixture(music_control and "500" and "300" and "700" and 3)
+    if question_action_fixture(journal and "interaction:choice-first" and first_click) is not equal to 0 or else question_action_fixture(journal and "interaction:choice-next" and next_click) is not equal to 0:
+        return 37
+    if not (discord_question_action_apply(journal and database and "interaction:choice-first" and first_click and "900") equals "question-draft-saved") or else not (discord_question_action_apply(journal and database and "interaction:choice-next" and next_click and "900") equals "question-draft-saved"):
+        return 38
+    if not (discord_question_action_apply(journal and database and "interaction:choice-first" and first_click and "900") equals "question-draft-saved"):
+        return 39
+    set draft to history_collect_one(checkpoint_prepare(journal and "SELECT choice FROM discord_question_drafts WHERE question=?1 AND item='topic';" and [binding]))
+    if not (archive_list_text(draft and 1) equals "2"):
+        return 40
+    if not (discord_question_action_apply(journal and database and "interaction:choice-first" and next_click and "900") equals "question-control-denied"):
+        return 41
+    set notes_control to discord_question_control_bind(journal and binding and "question:100" and "other" and 0 and -1)
+    set notes_body to string_replace(question_control_fixture(notes_control and "500" and "300" and "700" and 5) and "\"component_type\":2," and "\"components\":[{\"type\":18,\"component\":{\"type\":4,\"custom_id\":\"answer\",\"value\":\"Keep café examples\"}}],")
+    if question_action_fixture(journal and "interaction:notes" and notes_body) is not equal to 0 or else not (discord_question_action_apply(journal and database and "interaction:notes" and notes_body and "900") equals "question-draft-saved"):
+        return 42
     if not (discord_question_submit(journal and database and binding and "500" and "300" and "200") equals "question-answer-not-accepted"):
         return 7
     if not (discord_question_choose(journal and database and binding and "501" and "300" and "200" and "topic" and 0 and "") equals "question-binding-denied") or else not (discord_question_choose(journal and database and binding and "500" and "301" and "200" and "topic" and 0 and "") equals "question-binding-denied") or else not (discord_question_choose(journal and database and binding and "500" and "300" and "201" and "topic" and 0 and "") equals "question-binding-denied"):
@@ -88,7 +111,22 @@ define main returning Int:
     set journal to discord_store_open(concat(get_argument(1) and ".journal") and "900")
     if not (discord_question_bind(journal and database and run) equals binding) or else not (discord_question_choose(journal and database and binding and "500" and "300" and "200" and "notes" and -1 and "Keep café examples") equals "question-draft-saved"):
         return 12
-    if not (discord_question_submit(journal and database and binding and "500" and "300" and "200") equals "question-answered") or else not (questions_pending(database and run) equals "null"):
+    set submit_control to discord_question_control_bind(journal and binding and "question:100" and "submit" and -1 and -1)
+    set submit_body to question_control_fixture(submit_control and "500" and "300" and "700" and 3)
+    if question_action_fixture(journal and "interaction:submit" and submit_body) is not equal to 0 or else question_action_fixture(journal and "interaction:submit-interrupted" and submit_body) is not equal to 0:
+        return 43
+    # Freeze a second submission before the archive commit, then recover it
+    # after the first succeeds: models the cross-database interruption window.
+    set snapshot to history_collect_one(checkpoint_prepare(journal and "SELECT json_group_array(json_object('id',item,'choice',choice,'text',text)) FROM (SELECT item,choice,text FROM discord_question_drafts WHERE question=?1 ORDER BY item);" and [binding]))
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_question_operations(identity,intake_sha256,answers) VALUES('interaction:submit-interrupted',?1,?2);" and [ep_sha256(submit_body),archive_list_text(snapshot and 1)]) and 101) is not equal to 0:
+        return 44
+    if not (discord_question_action_apply(journal and database and "interaction:submit" and submit_body and "900") equals "question-answered"):
+        return 45
+    set closed to sql_close(journal)
+    set journal to discord_store_open(concat(get_argument(1) and ".journal") and "900")
+    if not (discord_question_action_apply(journal and database and "interaction:submit-interrupted" and submit_body and "900") equals "question-answered") or else not (discord_question_action_apply(journal and database and "interaction:submit" and submit_body and "900") equals "question-answered"):
+        return 46
+    if not (discord_question_action_apply(journal and database and "interaction:submit" and submit_body and "900") equals "question-answered") or else not (questions_pending(database and run) equals "null"):
         return 13
     if not (discord_question_submit(journal and database and binding and "500" and "300" and "200") equals "question-no-longer-pending"):
         return 14
@@ -103,6 +141,10 @@ define main returning Int:
     set second to discord_question_bind(journal and database and run)
     if second equals binding or else string_length(second) is not equal to 70:
         return 18
+    if sql_execute(database and "INSERT INTO echo_cancel_requests VALUES('discord-message:100','discord:500');") is not equal to 0:
+        return 47
+    if not (discord_question_choose(journal and database and second and "500" and "300" and "200" and "topic" and 0 and "") equals "question-no-longer-pending"):
+        return 48
     if web_device_revoke(database and "discord:500") is not equal to 0:
         return 19
     if not (discord_question_choose(journal and database and second and "500" and "300" and "200" and "topic" and 0 and "") equals "question-authority-denied"):
