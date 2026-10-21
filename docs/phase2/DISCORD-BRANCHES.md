@@ -155,3 +155,33 @@ excluded the later-parent marker. Its completed reply, Thinking thread and Speak
 control were verified in the reloaded Discord UI.
 The first failed live attempt remains recorded above. This does not establish
 edit/regenerate, old-message backfill or complete Discord UI parity.
+
+## Edit/regenerate command preparation
+
+The candidate adds separate immutable registration bindings for `/edit message: text:`
+and `/regenerate message:`. Parsing accepts only the required named string options,
+rejects duplicate names and authority/destination substitutions, and preserves the
+replacement text without truncation. Registration definitions do not activate commands.
+
+`revision_target.ep` resolves either an admitted original user message or a confirmed
+delivered reply through its immutable final binding. It checks the retained transport
+source, original speaker, terminal run with no unresolved tool calls, and current
+channel audience. The existing transactional revision writer rechecks those boundaries
+before creating a new branch and retaining original attachments. Original messages
+and answers remain intact.
+
+This preparation is not connected to live command execution. Public command anchors,
+queue reservation, durable run-origin receipts, background dispatch, retry reconciliation
+and actual Discord edit/regenerate acceptance remain required. These commands have
+not been registered on the server or deployed.
+
+Native qualification `revision-target-r2-1792602321722191000` passed in 11.895 s,
+binary SHA-256 `ab84f9ee73e9a68bc1d1fb6488ef6d38b8c1ab5d921e41e4b54c7bec1a586a79`.
+It exercises direct and delivered-reply source equivalence, wrong actor/channel
+and unknown-source denial, authenticated registration lookup, reordered valid
+options, duplicate/unknown/wrong-type/empty replacement rejection, immutable
+original history, revision creation and exact replay after database reopen.
+The initial run stopped at revision submission because the fixture supplied a
+plain label as structured environment data; the corrected fixture uses the
+normal channel-environment construction. That failure remains preserved as
+`revision-target-1792602207907640000`, not counted as acceptance.
