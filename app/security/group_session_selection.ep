@@ -107,3 +107,21 @@ define group_session_history with database as Int and device as Str and group_id
     if not (archive_list_text(row and 0) equals "found"):
         return history_status("history-read-failed")
     return row
+
+# Search only human messages and final replies in the authenticated current
+# audience. Tool payloads, reasoning, children and other silos are excluded.
+# SQL parameters make wildcard and quote characters literal search text.
+define group_session_search with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str and revision as Int and query as Str returning List:
+    if string_length(string_trim(query)) equals 0 or else string_length(query) > 1000:
+        return history_status("invalid-command-options")
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return history_status("history-read-failed")
+    if group_audience_allows(database and device and group_id and platform and server and room and revision and 1) equals 0:
+        return history_status(migration_fail(database and "audience-not-authorized"))
+    set values to [group_id,int_to_string(revision),query]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_group_array(json_object('session',session)),'[]') FROM (SELECT s.session FROM echo_group_sessions s WHERE s.group_id=?1 AND s.revision=CAST(?2 AS INTEGER) AND NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=s.session) AND EXISTS(SELECT 1 FROM echo_events e WHERE e.session=s.session AND e.kind IN ('user','assistant_final') AND instr(lower(CASE WHEN e.kind='user' THEN e.payload WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.content') ELSE '' END),lower(?3))>0) ORDER BY s.session LIMIT 10);" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status(migration_fail(database and "history-read-failed"))
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return history_status(migration_fail(database and "history-read-failed"))
+    return row
