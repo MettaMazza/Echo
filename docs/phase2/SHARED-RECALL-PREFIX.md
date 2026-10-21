@@ -1,6 +1,6 @@
 # Stable shared recall prefix
 
-21 October 2026. Candidate implementation; not deployed or live-qualified.
+21 October 2026. Candidate implementation; live acceptance failed and deployment was rolled back.
 
 Request inspection distinguished tool-schema changes from shared recall changes.
 Recent deployments changed the tool catalog, which occurs early in the model
@@ -37,3 +37,24 @@ Metadata-only request comparison is retained privately as
 `request-prefix-comparison.json`. No private prompts or source records are
 published. Cold-cache performance, controlled multi-turn measurements and
 live recall/correction still require qualification. This does not close Phase Two.
+
+## Live failure and rollback
+
+The stage was installed at idle after native tests. The first live record request
+was rejected because the model supplied the wrong source digest; the tool
+misclassified that failure as `not-authorized`. The source-integrity gate held.
+A follow-up read the correct original digest, but its turn process later exited
+with signal 11. The supervisor stopped and required explicit recovery rather
+than replaying the request. The root cause has not yet been isolated.
+
+The crashed labelled test was cancelled through its Discord button. Native
+recovery verified the retained cancellation barrier and that no tool call was
+in an uncertain running state, then closed the claimed job without inference
+or delivery. The previous qualified agent was restored, with other components,
+databases and resident Warm unchanged. Full logs and consistent database
+snapshots are retained privately under this evidence directory.
+
+Native passes do not qualify this candidate for production. No live cache
+speedup is claimed. Investigate the crash and the inaccurate digest-failure
+feedback before another promotion. The source remains a candidate in the
+Phase Two development branch; the live runtime uses the prior qualified build.
