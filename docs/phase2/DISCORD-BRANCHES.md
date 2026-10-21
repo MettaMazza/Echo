@@ -311,3 +311,33 @@ Saved-archive diagnostic `test_saved_group_records.ep` then performed twenty
 fresh shared-record reads for the failed run. All returned valid arrays in
 1.457 seconds. This narrows the investigation but does not reproduce or resolve
 the capture-time empty value. The diagnostic did not invoke a model or transport.
+
+## Snapshot validation repair candidate — 21 October
+
+The saved live archive contains two malformed snapshots with an empty raw
+`records` value, including one predating the rejected branch-prefix deployment.
+The source of the intermittent empty read is not established. The capture path
+previously read shared memory twice and could serialize a failed read as JSON.
+The repair uses one validated shared selection for both rendered content and
+record provenance, rolls back on invalid records, checks existing receipt shape,
+and guards historical JSON queries. Snapshot revision v4 retains older immutable
+receipts while constructing fresh context; it causes an initial cache rebase.
+No memory wording, voice profile, model selection or compiler was changed.
+
+Native branch regression, including a deliberately malformed historical receipt,
+passed in 11.004 s (`test_branch_context_prefix-v4-1792605689613656000`, binary
+`f431c650ea5e664e48f868cfa7273cdd029774eb146391eba4004725443a444d`).
+Private recall regression passed in 4.366 s
+(`test_stable_session_recall-v4-1792605700897489000`, binary
+`8a9213dc9d2b599acc6fb513d845077b60d455038b09881957f80defc2e58de4`).
+Expected missing-event and duplicate-event diagnostics remain in the raw logs.
+
+`test_saved_group_capture.ep` ran on a disposable private copy of the failed
+archive, for both affected runs. Both captures and idempotent recaptures passed
+(0.425 s and 0.278 s). Independent JSON parsing confirmed 50 records and 44,428
+characters of corresponding recalled content in each new snapshot. Receipt:
+`group-branches-20261021/saved-capture-v4-final-1792605722546121000`, binary
+`bce4b70571ccade4ac1be19801a92276600a5981552e10d027d85e72153392c2`.
+The two original malformed receipts remain unchanged. This is saved-state and
+native evidence, not live Discord or latency acceptance. Production remains on
+the previous revision worker pending candidate build and live qualification.
