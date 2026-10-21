@@ -1,0 +1,42 @@
+import "worker_store"
+import "run_barrier"
+
+# Internal operation after authenticated interaction and fresh channel access.
+# The caller supplies the bound source, never a latest-run search. Holding the
+# journal writer serializes cancellation against ordinary dequeue and steering.
+define discord_cancel_source with journal as Int and source as Str and actor as Str and room as Str and guild as Str and request as Str returning Str:
+    if string_length(request) equals 0 or else sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "cancel-unavailable"
+    set origin to discord_intake_source(journal and source)
+    if not (archive_list_text(origin and 0) equals "found") or else not (archive_list_text(origin and 1) equals "MESSAGE_CREATE") or else not (archive_list_text(origin and 3) equals actor) or else not (archive_list_text(origin and 4) equals room) or else not (archive_list_text(origin and 5) equals guild):
+        return migration_fail(journal and "cancel-source-denied")
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT actor FROM discord_cancel_sources WHERE source=?1;" and [source]))
+    if archive_list_text(prior and 0) equals "found":
+        return migration_fail(journal and "already-cancel-requested")
+    if not (archive_list_text(prior and 0) equals "end"):
+        return migration_fail(journal and "cancel-read-failed")
+    set job to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_agent_jobs WHERE inbox=?1;" and [source]))
+    set state to archive_list_text(job and 1)
+    if not (archive_list_text(job and 0) equals "found" or else archive_list_text(job and 0) equals "end"):
+        return migration_fail(journal and "cancel-read-failed")
+    if state equals "steered" or else state equals "steering-reserved":
+        return migration_fail(journal and "cancel-target-is-steering")
+    set background to history_collect_one(checkpoint_prepare(journal and "SELECT run FROM discord_background_runs WHERE inbox=?1 AND state IN ('reserved','running','recovery') LIMIT 1;" and [source]))
+    if not (archive_list_text(background and 0) equals "found" or else archive_list_text(background and 0) equals "end"):
+        return migration_fail(journal and "cancel-read-failed")
+    set queued to archive_list_text(job and 0) equals "end" or else state equals "access:rate-limited" or else state equals "access:http-429" or else state equals "service-stopped" or else state equals "question-suspended"
+    if archive_list_text(background and 0) equals "found":
+        set queued to 0
+    if queued equals 0 and not (state equals "claimed") and not (archive_list_text(background and 0) equals "found"):
+        return migration_fail(journal and "cancel-target-terminal")
+    set now to int_to_string(ep_time_now_ms())
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_cancel_sources VALUES(?1,?2,?3,CAST(?4 AS INTEGER));" and [source,actor,request,now]) and 101) is not equal to 0:
+        return migration_fail(journal and "cancel-write-failed")
+    if queued is not equal to 0:
+        if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_jobs VALUES(?1,'cancelled','Cancelled before intake',CAST(?2 AS INTEGER),(SELECT COALESCE(MAX(rowid),0) FROM discord_inbox)) ON CONFLICT(inbox) DO UPDATE SET state='cancelled',detail='Cancelled before intake',updated_ms=excluded.updated_ms;" and [source,now]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'cancelled','Cancelled before intake',CAST(?2 AS INTEGER));" and [source,now]) and 101) is not equal to 0:
+            return migration_fail(journal and "cancel-write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "cancel-commit-failed")
+    if queued is not equal to 0:
+        return "queue-cancelled"
+    return "cancel-requested"
