@@ -1,5 +1,6 @@
 import "../security/group_route"
 import "../security/channel_silo"
+import "group_lifecycle"
 
 # The Discord adapter supplies authenticated device, guild and channel values.
 # These records select an audience; they never copy a private conversation or
@@ -7,6 +8,8 @@ import "../security/channel_silo"
 define discord_joined_schema with database as Int returning Int:
     set prior to group_run_schema(database)
     if not (prior equals "applied" or else prior equals "already-applied"):
+        return 1
+    if discord_group_lifecycle_schema(database) is not equal to 0:
         return 1
     return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_discord_group_choices(operation TEXT PRIMARY KEY,principal TEXT NOT NULL REFERENCES echo_principals(identity),guild TEXT NOT NULL,channel TEXT NOT NULL,group_id TEXT NOT NULL); CREATE INDEX IF NOT EXISTS echo_discord_group_choices_actor ON echo_discord_group_choices(principal,guild,channel); CREATE TRIGGER IF NOT EXISTS echo_discord_group_choices_no_update BEFORE UPDATE ON echo_discord_group_choices BEGIN SELECT RAISE(ABORT,'Group choices are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_discord_group_choices_no_delete BEFORE DELETE ON echo_discord_group_choices BEGIN SELECT RAISE(ABORT,'Group choice provenance persists'); END;")
 
@@ -50,6 +53,8 @@ define discord_joined_select with database as Int and device as Str and guild as
     if string_length(group_id) > 0:
         if discord_joined_namespace(database and group_id and guild and room) equals 0 or else not (group_member_state(database and group_id and principal) equals "joined"):
             return migration_fail(database and "audience-not-authorized")
+    if string_length(group_id) > 0 and group_active(database and group_id) equals 0:
+        return migration_fail(database and "group-inactive")
     set identity_values to create_list()
     set added to append_list(identity_values and operation)
     set prior to history_collect_one(checkpoint_prepare(database and "SELECT principal,guild,channel,group_id FROM echo_discord_group_choices WHERE operation=?1;" and identity_values))
@@ -91,6 +96,8 @@ define discord_joined_selected with database as Int and device as Str and guild 
         return history_status("personal")
     if discord_joined_namespace(database and group_id and guild and room) equals 0 or else not (group_member_state(database and group_id and principal) equals "joined"):
         return history_status("audience-not-authorized")
+    if group_active(database and group_id) equals 0:
+        return history_status("group-inactive")
     set output to history_status("selected")
     set added to append_list(output and group_id)
     return output
@@ -113,6 +120,8 @@ define discord_joined_bound with database as Int and device as Str and guild as 
                 return history_status("run-audience-conflict")
             if not (group_member_state(database and prior_group and principal) equals "joined"):
                 return history_status("audience-not-authorized")
+            if group_active(database and prior_group) equals 0:
+                return history_status("group-inactive")
             set output to history_status("selected")
             set added to append_list(output and prior_group)
             return output

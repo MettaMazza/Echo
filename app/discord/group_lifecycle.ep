@@ -1,0 +1,56 @@
+import "../security/groups"
+
+# Append-only lifecycle receipts share the audience revision clock. Advancing
+# that clock prevents old queued work becoming valid again after reopening.
+define discord_group_lifecycle_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_group_lifecycle(operation TEXT PRIMARY KEY,group_id TEXT NOT NULL REFERENCES echo_groups(identity),actor TEXT NOT NULL REFERENCES echo_principals(identity),revision INTEGER NOT NULL CHECK(revision>1),state TEXT NOT NULL CHECK(state IN ('active','archived')),expires_ms INTEGER NOT NULL CHECK(expires_ms>=0),UNIQUE(group_id,revision)); CREATE TRIGGER IF NOT EXISTS echo_group_lifecycle_no_update BEFORE UPDATE ON echo_group_lifecycle BEGIN SELECT RAISE(ABORT,'Lifecycle receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_group_lifecycle_no_delete BEFORE DELETE ON echo_group_lifecycle BEGIN SELECT RAISE(ABORT,'Lifecycle history persists'); END;")
+
+# Only the creator while still joined may close/reopen or set an expiry.
+# Adapter namespace and current Discord access are checked by the caller.
+define discord_group_lifecycle_change with database as Int and device as Str and group_id as Str and operation as Str and state as Str and expires_ms as Int and revision as Int returning Str:
+    if string_length(operation) equals 0 or else group_text_valid(operation) equals 0 or else revision < 1 or else revision >= 9223372036854775807 or else expires_ms < 0 or else not (state equals "active" or else state equals "archived") or else (state equals "archived" and expires_ms is not equal to 0):
+        return "invalid-lifecycle-change"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    set actor to principal_for_device(database and device)
+    if string_length(actor) equals 0:
+        return migration_fail(database and "not-authorized")
+    set keys to create_list()
+    set added to append_list(keys and operation)
+    set old to history_collect_one(checkpoint_prepare(database and "SELECT group_id,actor,revision,state,expires_ms FROM echo_group_lifecycle WHERE operation=?1;" and keys))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 1) equals group_id) or else not (archive_list_text(old and 2) equals actor) or else not (archive_list_text(old and 3) equals int_to_string(revision + 1)) or else not (archive_list_text(old and 4) equals state) or else not (archive_list_text(old and 5) equals int_to_string(expires_ms)):
+            return migration_fail(database and "lifecycle-identity-conflict")
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            return migration_fail(database and "commit-failed")
+        return "already-recorded"
+    if not (archive_list_text(old and 0) equals "end"):
+        return migration_fail(database and "lifecycle-read-failed")
+    set keys to create_list()
+    set added to append_list(keys and group_id)
+    set group to history_collect_one(checkpoint_prepare(database and "SELECT creator,origin,(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=?1) FROM echo_groups WHERE identity=?1 AND platform='discord';" and keys))
+    if not (archive_list_text(group and 0) equals "found") or else not (archive_list_text(group and 1) equals actor) or else not (string_index_of(archive_list_text(group and 2) and "discord:joined:") equals 0) or else not (group_member_state(database and group_id and actor) equals "joined"):
+        return migration_fail(database and "lifecycle-not-authorized")
+    if not (archive_list_text(group and 3) equals int_to_string(revision)):
+        return migration_fail(database and "membership-revision-conflict")
+    if expires_ms > 0 and expires_ms <= ep_time_now_ms():
+        return migration_fail(database and "expiry-must-be-future")
+    set values to create_list()
+    set added to append_list(values and operation)
+    set added to append_list(values and group_id)
+    set added to append_list(values and actor)
+    set added to append_list(values and int_to_string(revision + 1))
+    set added to append_list(values and state)
+    set added to append_list(values and int_to_string(expires_ms))
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_lifecycle VALUES(?1,?2,?3,CAST(?4 AS INTEGER),?5,CAST(?6 AS INTEGER));" and values) and 101) is not equal to 0:
+        return migration_fail(database and "lifecycle-write-failed")
+    set member_values to create_list()
+    set added to append_list(member_values and concat("group-lifecycle:" and ep_sha256(operation)))
+    set added to append_list(member_values and group_id)
+    set added to append_list(member_values and int_to_string(revision + 1))
+    set added to append_list(member_values and actor)
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_membership VALUES(?1,?2,CAST(?3 AS INTEGER),?4,?4,'joined');" and member_values) and 101) is not equal to 0 or else group_capture_audience(database and group_id and revision + 1) is not equal to 0:
+        return migration_fail(database and "lifecycle-audience-write-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "recorded"

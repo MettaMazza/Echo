@@ -53,12 +53,33 @@ define discord_group_request with database as Int and device as Str and guild as
         set row to history_collect_one(checkpoint_prepare(database and "SELECT CAST(MAX(revision) AS TEXT) FROM echo_group_membership WHERE group_id=?1;" and values))
         if not (archive_list_text(row and 0) equals "found"):
             return discord_group_result("group-read-failed" and "")
-        return concat("{\"status\":\"found\",\"group\":" and concat(provider_quote(group_id) and concat(",\"membership\":" and concat(provider_quote(membership) and concat(",\"revision\":" and concat(archive_list_text(row and 1) and "}"))))))
+        set lifecycle_values to create_list()
+        set added to append_list(lifecycle_values and group_id)
+        set lifecycle to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE((SELECT state FROM echo_group_lifecycle WHERE group_id=?1 ORDER BY revision DESC LIMIT 1),'active'),COALESCE((SELECT expires_ms FROM echo_group_lifecycle WHERE group_id=?1 ORDER BY revision DESC LIMIT 1),0);" and lifecycle_values))
+        if not (archive_list_text(lifecycle and 0) equals "found"):
+            return discord_group_result("lifecycle-read-failed" and group_id)
+        set lifecycle_state to archive_list_text(lifecycle and 1)
+        if lifecycle_state equals "active" and group_active(database and group_id) equals 0:
+            set lifecycle_state to "expired"
+        set prefix to concat("{\"lifecycle\":" and concat(provider_quote(lifecycle_state) and concat(",\"expires_ms\":" and concat(archive_list_text(lifecycle and 2) and ",\"status\":\"found\",\"group\":"))))
+        return concat(prefix and concat(provider_quote(group_id) and concat(",\"membership\":" and concat(provider_quote(membership) and concat(",\"revision\":" and concat(archive_list_text(row and 1) and "}"))))))
     if action equals "open":
         return discord_group_result(discord_joined_select(database and device and guild and room and operation and group_id) and group_id)
     set revision to http_decimal(provider_value(fields and provider_member(fields and 0 and "revision")))
     if revision < 1:
         return discord_group_result("invalid-revision" and "")
+    if action equals "archive" or else action equals "reopen" or else action equals "expire":
+        set lifecycle_state to "active"
+        set deadline to 0
+        if action equals "archive":
+            set lifecycle_state to "archived"
+        if action equals "expire":
+            set seconds to http_decimal(provider_value(fields and provider_member(fields and 0 and "expires")))
+            if seconds < 1 or else seconds > 9223372036854775:
+                return discord_group_result("invalid-expiry" and group_id)
+            set deadline to seconds * 1000
+        set changed to discord_group_lifecycle_change(database and device and group_id and operation and lifecycle_state and deadline and revision)
+        return discord_group_result(changed and group_id)
     set state to ""
     set target to principal
     if action equals "invite":
