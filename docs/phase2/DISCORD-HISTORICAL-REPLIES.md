@@ -36,5 +36,17 @@ Private live evidence: `final-backfill-20261021/live-1792609335269399000`.
 
 Actual Discord `/branch` interaction `1562541712176455750` used the repaired
 historical reply `1562497673829814293`, returned `branch-created` and visibly
-confirmed the new branch. The follow-up context check is in progress. This
-closes neither the remaining Discord UI work nor Phase Two as a whole.
+confirmed the new branch. Two actual follow-ups completed: `1562541818241880185` recalled the prior
+calculation and answer (24 + 19 = 43); `1562542261072433294` retained 43 and
+correctly added the requested result 63. Both replies, Thinking threads and
+Speak controls persisted through a Discord reload. Private evidence:
+`live-1792609335269399000/two-turn-context.json` under the directory above.
+
+The first historical branch turn processed 29,319 new prompt tokens in
+44.287 s, with 39,643 cached tokens. The next turn processed 639 in 1.333 s,
+with 68,902 cached tokens; decode was 32.57/32.86 tokens/s. These are model
+request timings, not end-to-end Discord latency or a controlled comparison to
+the morning baseline. The slow historical rebuild remains an open performance
+issue. This closes historical reply-binding restoration for all retained
+qualifying anchors in this installation, not remaining Discord parity or
+Phase Two as a whole.
