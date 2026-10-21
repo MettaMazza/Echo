@@ -1,0 +1,67 @@
+import "../../app/discord/worker_delivery"
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    if discord_worker_schema(journal) is not equal to 0 or else discord_delivery_schema(journal) is not equal to 0:
+        return 2
+    for each message in ["100","101","102"]:
+        set actor to "500"
+        if ptr_to_str(message) equals "102":
+            set actor to "501"
+        set body to concat("{\"id\":" and concat(provider_quote(ptr_to_str(message)) and concat(",\"channel_id\":\"300\",\"guild_id\":\"200\",\"author\":{\"id\":" and concat(provider_quote(actor) and "}}"))))
+        if not (discord_inbox_record(journal and concat("message:create:" and ptr_to_str(message)) and "MESSAGE_CREATE" and body) equals "recorded"):
+            return 3
+    for each identity in ["activity-page:test","queue-status:test","reply:first","reply:first-part2","reply:second","reply:independent"]:
+        set source to "message:create:100"
+        if ptr_to_str(identity) equals "reply:second":
+            set source to "message:create:101"
+        else if ptr_to_str(identity) equals "reply:independent":
+            set source to "message:create:102"
+        if not (discord_outbox_enqueue(journal and ptr_to_str(identity) and source and "300" and "{\"content\":\"Synthetic scheduling fixture\"}") equals "enqueued"):
+            return 4
+    # Only relevant, authenticated bucket deadlines govern a throttle wait.
+    if not (discord_rate_observe(journal and "GET:member" and "200" and "200" and "x-ratelimit-bucket: members\nx-ratelimit-remaining: 0\nx-ratelimit-reset-after: 4\n" and "{}" and 1000) equals "recorded"):
+        return 5
+    if not (discord_rate_observe(journal and "GET:member" and "201" and "200" and "x-ratelimit-bucket: members\nx-ratelimit-remaining: 0\nx-ratelimit-reset-after: 90\n" and "{}" and 1000) equals "recorded"):
+        return 6
+    if discord_reply_reschedule(journal and "reply:first" and "access:rate-limited" and 1000) is not equal to 0:
+        return 7
+    set row to history_collect_one(archive_prepare(journal and "SELECT next_ms FROM discord_delivery_retry_clock WHERE identity='reply:first';"))
+    # The shared rate parser adds its existing one-second safety margin.
+    if not (archive_list_text(row and 1) equals "6000"):
+        return 8
+    if not (archive_list_text(discord_reply_due(journal and 5999) and 1) equals "reply:independent"):
+        return 9
+    if not (archive_list_text(discord_outbox_claim(journal and "reply:independent" and "other") and 0) equals "claimed") or else not (discord_outbox_finish(journal and "reply:independent" and "other" and "sent" and "902" and "synthetic") equals "recorded"):
+        return 10
+    if not (archive_list_text(discord_reply_due(journal and 5999) and 0) equals "end") or else not (archive_list_text(discord_reply_due(journal and 6000) and 1) equals "reply:first"):
+        return 11
+    set closed to sql_close(journal)
+    set journal to discord_store_open(get_argument(1) and "900")
+    if not (archive_list_text(discord_outbox_claim(journal and "reply:first" and "first") and 0) equals "claimed") or else not (archive_list_text(discord_reply_due(journal and 90000) and 0) equals "end"):
+        return 12
+    if not (discord_outbox_finish(journal and "reply:first" and "first" and "uncertain" and "" and "synthetic lost response") equals "recorded") or else not (archive_list_text(discord_reply_due(journal and 90000) and 0) equals "end"):
+        return 13
+    set row to history_collect_one(archive_prepare(journal and "SELECT nonce FROM discord_outbox WHERE identity='reply:first';"))
+    set observed to concat("{\"id\":\"901\",\"channel_id\":\"300\",\"author\":{\"id\":\"900\"},\"nonce\":" and concat(provider_quote(archive_list_text(row and 1)) and "}"))
+    if not (discord_delivery_reconcile(journal and "reply:first" and observed) equals "reconciled") or else not (archive_list_text(discord_reply_due(journal and 90000) and 1) equals "reply:first-part2"):
+        return 14
+    if discord_reply_reschedule(journal and "reply:first-part2" and "access:rate-limited" and 10000) is not equal to 0:
+        return 15
+    set row to history_collect_one(archive_prepare(journal and "SELECT next_ms FROM discord_delivery_retry_clock WHERE identity='reply:first-part2';"))
+    if not (archive_list_text(row and 1) equals "11000"):
+        return 16
+    # Editing/deleting a source withdraws its still-pending stale reply,
+    # allowing the next turn through without touching an uncertain send.
+    if discord_reply_reschedule(journal and "reply:first-part2" and "source-changed" and 12000) is not equal to 0 or else not (archive_list_text(discord_reply_due(journal and 12000) and 1) equals "reply:second"):
+        return 17
+    if discord_reply_withdraw(journal and "reply:first-part2" and "source-changed" and 12001) is not equal to 0 or else discord_reply_withdraw(journal and "reply:second" and "untrusted-reason" and 12001) is not equal to 1:
+        return 18
+    set row to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_delivery_events WHERE identity='reply:first-part2' AND state='rejected';"))
+    if not (archive_list_text(row and 1) equals "1"):
+        return 19
+    display "PASS: server-derived cooldown, independent-user progress, ordered multi-part delivery, restart retention and uncertain-send reconciliation without replay."
+    set closed to sql_close(journal)
+    return 0

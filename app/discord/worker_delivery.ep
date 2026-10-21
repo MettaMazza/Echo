@@ -7,7 +7,7 @@ import "dm_redirect"
 define discord_reply_due with journal as Int and now as Int returning List:
     set values to create_list()
     set added to append_list(values and int_to_string(now))
-    return history_collect_one(checkpoint_prepare(journal and "SELECT o.identity FROM discord_outbox o LEFT JOIN discord_delivery_retry_clock c ON c.identity=o.identity WHERE o.state='pending' AND substr(o.identity,1,14)<>'activity-page:' AND substr(o.identity,1,13)<>'queue-status:' AND COALESCE(c.next_ms,0)<=CAST(? AS INTEGER) ORDER BY o.rowid LIMIT 1;" and values))
+    return history_collect_one(checkpoint_prepare(journal and "SELECT o.identity FROM discord_outbox o JOIN discord_inbox origin ON origin.identity=o.inbox LEFT JOIN discord_delivery_retry_clock c ON c.identity=o.identity WHERE o.state='pending' AND substr(o.identity,1,14)<>'activity-page:' AND substr(o.identity,1,13)<>'queue-status:' AND COALESCE(c.next_ms,0)<=CAST(? AS INTEGER) AND NOT EXISTS(SELECT 1 FROM discord_outbox prior JOIN discord_inbox source ON source.identity=prior.inbox WHERE prior.rowid<o.rowid AND prior.channel=o.channel AND prior.state IN ('pending','sending','uncertain') AND substr(prior.identity,1,14)<>'activity-page:' AND substr(prior.identity,1,13)<>'queue-status:' AND COALESCE(json_extract(source.payload,'$.author.id'),json_extract(source.payload,'$.author_id'),json_extract(source.payload,'$.member.user.id'),json_extract(source.payload,'$.user.id'),'')=COALESCE(json_extract(origin.payload,'$.author.id'),json_extract(origin.payload,'$.author_id'),json_extract(origin.payload,'$.member.user.id'),json_extract(origin.payload,'$.user.id'),'')) ORDER BY o.rowid LIMIT 1;" and values))
 
 # A durable pending intent is not an evergreen permission grant. Every actual
 # POST rechecks the original request and both users' current channel access.
@@ -65,3 +65,38 @@ define discord_worker_reconcile with journal as Int returning Int:
     if not (result equals "reconciled" or else result equals "already-reconciled"):
         return 1
     return 0
+
+# Discord's authenticated rate deadlines determine throttle waits. Do not add
+# an unconditional thirty seconds to a subsecond server cooldown. This only
+# schedules pending delivery; sending/uncertain intents still need reconciliation.
+define discord_reply_reschedule with journal as Int and identity as Str and outcome as Str and now as Int returning Int:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT o.channel,COALESCE(json_extract(i.payload,'$.guild_id'),'') FROM discord_outbox o JOIN discord_inbox i ON i.identity=o.inbox WHERE o.identity=?1 AND o.state='pending';" and [identity]))
+    if archive_list_text(row and 0) equals "end":
+        return 0
+    if not (archive_list_text(row and 0) equals "found"):
+        return 1
+    if outcome equals "delivery-invalidated" or else outcome equals "source-changed" or else outcome equals "http-404":
+        return discord_reply_withdraw(journal and identity and outcome and now)
+    set next to now + 30000
+    if outcome equals "rate-limited" or else outcome equals "retry-scheduled" or else outcome equals "access:rate-limited" or else outcome equals "access:http-429" or else outcome equals "http-429":
+        set next to discord_scope_retry_due(journal and archive_list_text(row and 1) and archive_list_text(row and 2) and 1 and now)
+        if next < 0:
+            return 1
+    return archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_delivery_retry_clock VALUES(?1,CAST(?2 AS INTEGER)) ON CONFLICT(identity) DO UPDATE SET next_ms=excluded.next_ms;" and [identity,int_to_string(next)]) and 101)
+
+# Only a host-confirmed invalidation before POST may withdraw a pending reply.
+# One transaction records the withdrawal; a crash cannot turn it into an
+# uncertain send. Retain original intent, nonce and every earlier receipt.
+define discord_reply_withdraw with journal as Int and identity as Str and reason as Str and now as Int returning Int:
+    if not (reason equals "delivery-invalidated" or else reason equals "source-changed" or else reason equals "http-404"):
+        return 1
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT state,attempt FROM discord_outbox WHERE identity=?1;" and [identity]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 1) equals "pending"):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return rolled
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_outbox SET state='rejected' WHERE identity=?1 AND state='pending';" and [identity]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_delivery_events(identity,attempt,state,detail,observed_ms) VALUES(?1,?2,'rejected',?3,CAST(?4 AS INTEGER));" and [identity,archive_list_text(row and 2),concat("host withdrew before POST: " and reason),int_to_string(now)]) and 101) is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return 1
+    return sql_execute(journal and "COMMIT;")
