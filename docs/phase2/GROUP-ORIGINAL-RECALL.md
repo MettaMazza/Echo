@@ -36,3 +36,25 @@ argument rejection and replay denial. Actual-model tool selection, repeated
 Discord turns, restart and controlled latency acceptance remain required before
 deployment. This does not complete
 Phase Two or the separately reviewed Host–Discord continuity bridge.
+
+## Actual-model qualification in progress
+
+A real Qwen3.8 inner-loop test passed cross-conversation original search/read,
+returned the dated marker and Unicode inscription, and re-read the source after
+database reopen. Extraction was intentionally excluded from this fixture so it
+could not provide the answer instead of original retrieval. The first trial took
+254.079 seconds across both turns and repeated searches before reading. This is
+correctness evidence, not acceptable latency. Search now states explicitly that
+its results are metadata without message text, identifies `memory_read`, and
+explains non-message sequence gaps. The revised trial passed both turns in 148.048 seconds; it used three searches
+and one original read on the first turn and re-read on the second. These
+whole-test observations are not a controlled throughput comparison. Deployment
+and actual Discord acceptance remain pending.
+
+A separate actual Discord follow-up on the prior deployment visibly returned the
+correct marker/date. Provider timings: 21,504 cached tokens, 17,292 newly processed
+tokens, 25.280 seconds prompt processing, 0.998 seconds decoding, 33.059 decoded
+tokens/second. The earlier and follow-up system messages were byte-identical;
+the recall message changed after backlog indexing. These figures reinforce the
+prompt-processing diagnosis but do not prove a new deployment fixes steady-state
+latency. Canonical `live-prior-followup-metrics.json` retains the measurements.
