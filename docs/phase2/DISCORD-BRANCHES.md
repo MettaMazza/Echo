@@ -427,3 +427,10 @@ expiry/reopen/immutable-receipt regression passed in 2.287 s; binary
 `30487a4b2713dca45a6327f1041a591a04d43ca3644e4039bc49606cdac72afe`.
 Only the acknowledgement binary changed in the idle deployment; its SHA-256 is
 `59ec9146efbc59ae51d16e368b9e4254b242ddd77ca5dd0a56b32c20ee1ea126`.
+
+The instrumented regeneration and subsequent `/history` both completed visibly.
+Acknowledgement preparation took 96/90 ms and network transfer 691/771 ms.
+The completed regeneration's Cancel disabled and its final reply retained Speak
+and the attached Thinking thread. Private receipt: `ack-timing-live.json`.
+The earlier timeout remains unresolved; these successes do not prove its cause
+or close acknowledgement reliability.
