@@ -125,3 +125,14 @@ index 1, the shared recall context. The subsequent warm arithmetic turn took
 31.613 tokens/second, respectively. These differing prompts are not a controlled
 benchmark. The shared-prefix/cache problem remains open, and this independent
 feedback deployment does not qualify the failed prefix candidate or Phase Two.
+
+
+## Rooted argument lifetime regression — 21 October 2026
+
+A small concurrent collection fixture demonstrated that a temporary inline argument list can lose its lifetime protection while another argument yields. Three unprotected runs produced two corrupted-list failures and one segmentation fault. Three equivalent runs using a named list and named intermediate arguments passed. The compiler was inspected, not modified. Application snapshot queries now retain these arguments explicitly. This is a confirmed failure mechanism, not a conclusive attribution of the earlier live crash.
+
+The rooted shared-memory regression passed in 11.876 seconds. The correct private stable-session regression passed in 4.744 seconds, including forgetting, reopen and write gating. An initially selected older private test failed at assertion 24 because it expected unindexed original text to be copied automatically; that result is retained and is not counted as a pass. Existing archive diagnostic output is retained with the successful test assertions.
+
+An isolated three-turn actual Qwen3.8 test passed in 94.315 seconds overall: one original read, one memory record, two checklist calls, then recall and an unrelated arithmetic question. All three runs completed, with production Discord monitoring and concurrent memory preparation, stable-base assertions and archive integrity checks. This total is a fixture duration, not a user-response latency measurement. The candidate agent was built but has not been promoted; actual Discord cache/latency acceptance remains pending.
+
+Private evidence: shared-prefix-20261021/argument-roots, group_context_prefix-rooted-1792598350609972000, private-rooted-1792598655820081000 and live-prefix-rooted-1792598385607926000. Voice conditioning, conversation payloads and databases are not published.

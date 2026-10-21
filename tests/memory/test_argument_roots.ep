@@ -1,0 +1,56 @@
+import "select"
+
+external define ep_gc_get_minor_count returning Int
+
+# Regression for snapshot query arguments while another thread collects.
+# Keep the list and computed element in named roots across the cooperative wait.
+# The prior inline-list form fails with signal 11 in the retained diagnostic.
+define allocate_probe with value as Str returning Str:
+    return concat(value and "x")
+
+define collect_between_arguments with ready as Int and release as Int and completed as Int returning Int:
+    set requested to receive from ready
+    set before to ep_gc_get_minor_count()
+    set value to "probe"
+    set count to 0
+    repeat while ep_gc_get_minor_count() equals before and count < 4096:
+        set value to allocate_probe(value)
+        set count to count + 1
+    set collected to ep_gc_get_minor_count() > before
+    send collected to release
+    send collected to completed
+    return 0
+
+define pause_argument with ready as Int and release as Int returning Str:
+    send 1 to ready
+    set waits to [release]
+    set selected to select(waits and 10000)
+    if selected < 0:
+        return "no-release"
+    set collected to receive from release
+    if collected equals 0:
+        return "no-collection"
+    return "second"
+
+define inspect_arguments with values as List returning Int:
+    if length_list(values) is not equal to 2:
+        return 2
+    if not (ptr_to_str(get_list(values and 0)) equals "first") or else not (ptr_to_str(get_list(values and 1)) equals "second"):
+        return 3
+    return 0
+
+define main returning Int:
+    set ready to channel
+    set release to channel
+    set completed to channel
+    spawn collect_between_arguments(ready and release and completed)
+    set values to create_list()
+    set added to append_list(values and "first")
+    set second to pause_argument(ready and release)
+    set added to append_list(values and second)
+    set result to inspect_arguments(values)
+    set collected to receive from completed
+    if collected equals 0:
+        return 4
+    display concat("Rooted argument result: " and int_to_string(result))
+    return result
