@@ -370,3 +370,28 @@ A later distinct interaction succeeded. Acknowledgement reliability and the
 remaining command Cancel, long-edit input, retry, broader UI and full Phase Two
 requirements remain open. Production is on this validated snapshot stage; no
 claim of complete Phase Two or complete latency/endurance qualification is made.
+
+## Cancel controls for command runs — candidate
+
+The existing status reply and immutable Cancel binding now support authenticated
+command sources as well as ordinary messages. A command control replies to its
+public bot-authored anchor; the human actor remains the original command user.
+Click resolution checks the exact delivered control, channel, audience and actor,
+then refreshes channel access and command-specific authority. Cancellation records
+an immutable source receipt; the running agent's existing source monitor observes
+it. Completed command work cannot be mistaken for an ordinary queued message.
+Controls disable after completion without editing the immutable command anchor.
+Command status refresh also continues ordinary queue work after a settled update.
+
+Extended revision-admission fixture passed in 17.775 s, including current-command
+control selection, actor/channel rejection, exact source cancellation, idempotent
+replay, monitor barrier, terminal control position, anchor-reference validation
+and removal from refresh selection. Receipt:
+`group-branches-20261021/test_revision_start-command-cancel-1792606466867332000`,
+binary `95b119328e6109f0feacd5fd535734ef7552c769b178f62a2eedb00d0de4fc9e`.
+The ordinary Cancel regression passed in 2.561 s, receipt
+`test_cancel_button-command-cancel-1792606338191420000`, binary
+`50800a2e2d9b3ec0dfe2a211e1d2ef57707d9ae7ae24ef60b8274b1bf60698c4`.
+No live command-button click or deployment is claimed yet. Build dependency
+inspection identifies agent, actions, activity and queue-controls as affected;
+Gateway and acknowledgement workers retain their qualified binaries.

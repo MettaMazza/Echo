@@ -42,7 +42,7 @@ define discord_queue_status_plan_controls with journal as Int and source as Str 
         if not (archive_list_text(pending and 0) equals "found"):
             return "queue-status-read-failed"
     set origin to discord_intake_source(journal and source)
-    if not (archive_list_text(origin and 0) equals "found") or else not (archive_list_text(origin and 1) equals "MESSAGE_CREATE"):
+    if not (archive_list_text(origin and 0) equals "found") or else not (archive_list_text(origin and 1) equals "MESSAGE_CREATE" or else archive_list_text(origin and 1) equals "INTERACTION_CREATE"):
         return "queue-status-source-invalid"
     set body to concat("{\"content\":\"Queue position updating…\",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false},\"message_reference\":{\"message_id\":" and concat(provider_quote(archive_list_text(origin and 6)) and ",\"fail_if_not_exists\":true}}"))
     if controls equals 1:
@@ -59,11 +59,12 @@ define discord_queue_status_plan_controls with journal as Int and source as Str 
 # Exact observed content, author and original reply binding must match before
 # recording success. A stale result records only what actually reached Discord.
 define discord_queue_status_observe with journal as Int and source as Str and bot as Str and position as Int and body as Str returning Str:
-    set row to history_collect_one(checkpoint_prepare(journal and "SELECT o.message,json_extract(i.payload,'$.id') FROM discord_queue_status q JOIN discord_outbox o ON o.identity=q.output JOIN discord_inbox i ON i.identity=q.source WHERE q.source=?1 AND o.state='sent';" and [source]))
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT o.message FROM discord_queue_status q JOIN discord_outbox o ON o.identity=q.output WHERE q.source=?1 AND o.state='sent';" and [source]))
+    set origin to discord_intake_source(journal and source)
     set tokens to provider_json_tokens(body)
-    if not (archive_list_text(row and 0) equals "found") or else tokens equals 0:
+    if not (archive_list_text(row and 0) equals "found") or else tokens equals 0 or else not (archive_list_text(origin and 0) equals "found"):
         return "queue-status-unconfirmed"
-    if not (provider_value(tokens and provider_member(tokens and 0 and "id")) equals archive_list_text(row and 1)) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id")) equals bot) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "message_reference") and "message_id")) equals archive_list_text(row and 2)) or else not (provider_value(tokens and provider_member(tokens and 0 and "content")) equals discord_queue_status_text(position)):
+    if not (provider_value(tokens and provider_member(tokens and 0 and "id")) equals archive_list_text(row and 1)) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id")) equals bot) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "message_reference") and "message_id")) equals archive_list_text(origin and 6)) or else not (provider_value(tokens and provider_member(tokens and 0 and "content")) equals discord_queue_status_text(position)):
         return "queue-status-unconfirmed"
     if discord_cancel_status_matches(journal and source and tokens and position) is not equal to 1:
         return "queue-status-unconfirmed"
@@ -144,6 +145,8 @@ define discord_queue_control_position with journal as Int and database as Int an
         return position
     set origin to discord_intake_source(journal and source)
     set run to concat("discord-message:" and archive_list_text(origin and 6))
+    if archive_list_text(origin and 1) equals "INTERACTION_CREATE":
+        set run to concat("discord-command:" and source)
     set state to agent_run_read(database and run)
     if archive_list_text(state and 2) equals "ready" or else archive_list_text(state and 2) equals "generating" or else archive_list_text(state and 2) equals "tools":
         return -2
@@ -154,8 +157,15 @@ define discord_queue_control_position with journal as Int and database as Int an
 
 define discord_queue_cancel_plan with journal as Int and database as Int and source as Str and bot as Str and guilds as List and admins as List returning Str:
     set origin to discord_intake_source(journal and source)
-    if not (archive_list_text(origin and 0) equals "found") or else not (archive_list_text(origin and 1) equals "MESSAGE_CREATE"):
+    if not (archive_list_text(origin and 0) equals "found") or else not (archive_list_text(origin and 1) equals "MESSAGE_CREATE" or else archive_list_text(origin and 1) equals "INTERACTION_CREATE"):
         return "not-needed"
+    if archive_list_text(origin and 1) equals "INTERACTION_CREATE":
+        if discord_command_source_allows(journal and origin and bot and admins) equals 0:
+            return "not-needed"
+        set position to discord_queue_control_position(journal and database and source)
+        if position is not equal to -2:
+            return "not-needed"
+        return discord_queue_status_plan_controls(journal and source and position and 1)
     set tokens to provider_json_tokens(archive_list_text(origin and 2))
     set reference to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "message_reference") and "message_id"))
     set reply_room to discord_reply_channel(journal and reference and archive_list_text(origin and 4))
