@@ -1,0 +1,105 @@
+import "../providers/archived_stream"
+import "routing"
+import "../network/search_query"
+
+# No model-supplied channel, user, route or credential. Scope is the current
+# authenticated request; moderation of other users' reactions is separate.
+define discord_reaction_options with arguments as Str returning List:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return history_status("invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "operation" or else key equals "emoji") or else not (provider_kind(tokens and index + 2) equals "string"):
+            return history_status("invalid-arguments")
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    set field to provider_member(tokens and 0 and "emoji")
+    set emoji to provider_value(tokens and field)
+    if operation equals "discover" or else operation equals "inspect":
+        if field >= 0:
+            return history_status("unused-emoji")
+        return ["valid",operation,""]
+    if not (operation equals "add" or else operation equals "remove") or else string_length(emoji) equals 0:
+        return history_status("invalid-operation-or-emoji")
+    set index to 0
+    repeat while index < string_length(emoji):
+        set byte to peek_byte(str_to_ptr(emoji) and index)
+        if byte <= 32 or else byte equals 127:
+            return history_status("invalid-emoji")
+        set index to index + 1
+    # Always encode UTF-8 bytes; punctuation cannot escape the route segment.
+    return ["valid",operation,emoji,network_query_encode(emoji)]
+
+# Filter custom emoji to usable entries and strip creator/account metadata.
+# A missing/malformed role list is not evidence of permission.
+define discord_reaction_catalog with body as Str and member_body as Str and application as Int returning Str:
+    set tokens to provider_json_tokens(body)
+    set member to provider_json_tokens(member_body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set root to 0
+    if application equals 1:
+        set root to provider_member(tokens and 0 and "items")
+    if not (provider_kind(tokens and root) equals "["):
+        return ""
+    set member_roles to create_list()
+    if application equals 0:
+        if member equals 0 or else provider_unique_objects(member) equals 0:
+            return ""
+        set roles_field to provider_member(member and 0 and "roles")
+        if not (provider_kind(member and roles_field) equals "["):
+            return ""
+        for each role in provider_items(member and roles_field):
+            set identity to provider_value(member and role)
+            if discord_snowflake(identity) equals 0:
+                return ""
+            set added to append_list(member_roles and identity)
+    set output to "["
+    set seen to create_list()
+    for each item in provider_items(tokens and root):
+        set identity to provider_value(tokens and provider_member(tokens and item and "id"))
+        set name to provider_value(tokens and provider_member(tokens and item and "name"))
+        if discord_snowflake(identity) equals 0 or else string_length(name) equals 0 or else discord_contains(seen and identity) equals 1:
+            return ""
+        set added to append_list(seen and identity)
+        set usable to 1
+        set available to provider_member(tokens and item and "available")
+        if available >= 0 and not (provider_value(tokens and available) equals "true"):
+            set usable to 0
+        if application equals 0:
+            set role_field to provider_member(tokens and item and "roles")
+            if not (provider_kind(tokens and role_field) equals "["):
+                return ""
+            set roles to provider_items(tokens and role_field)
+            if length_list(roles) > 0:
+                set usable to 0
+                for each role in roles:
+                    if discord_snowflake(provider_value(tokens and role)) equals 0:
+                        return ""
+                    if discord_contains(member_roles and provider_value(tokens and role)) equals 1:
+                        set usable to 1
+                if available >= 0 and not (provider_value(tokens and available) equals "true"):
+                    set usable to 0
+        if usable equals 1:
+            if string_length(output) > 1:
+                set output to concat(output and ",")
+            set entry to concat("{\"id\":" and provider_quote(identity))
+            set entry to concat(entry and concat(",\"emoji\":" and provider_quote(concat(name and concat(":" and identity)))))
+            set entry to concat(entry and concat(",\"name\":" and provider_quote(name)))
+            set animated to provider_value(tokens and provider_member(tokens and item and "animated")) equals "true"
+            set entry to concat(entry and concat(",\"animated\":" and int_to_string(animated)))
+            set output to concat(output and concat(entry and "}"))
+    return concat(output and "]")
+
+define discord_reaction_catalog_has with catalog as Str and emoji as Str returning Int:
+    set tokens to provider_json_tokens(catalog)
+    if tokens equals 0 or else not (provider_kind(tokens and 0) equals "["):
+        return 0
+    for each item in provider_items(tokens and 0):
+        if provider_value(tokens and provider_member(tokens and item and "emoji")) equals emoji:
+            return 1
+    return 0
