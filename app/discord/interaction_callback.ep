@@ -1,0 +1,42 @@
+import "interaction_intake"
+import "question_controls"
+
+# Persist callback kind before network. A modal has no deferred original
+# message; recovery must never probe or manufacture one after interruption.
+define discord_interaction_callback_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_interaction_callbacks(identity TEXT PRIMARY KEY REFERENCES discord_interaction_jobs(identity),kind TEXT NOT NULL CHECK(kind IN ('deferred','modal')),intake_sha256 TEXT NOT NULL,callback_sha256 TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_interaction_callbacks_no_update BEFORE UPDATE ON discord_interaction_callbacks BEGIN SELECT RAISE(ABORT,'Callback receipt is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_interaction_callbacks_no_delete BEFORE DELETE ON discord_interaction_callbacks BEGIN SELECT RAISE(ABORT,'Callback receipt persists'); END;")
+
+define discord_interaction_callback_prepare with journal as Int and identity as Str and body as Str and callback as Str returning Str:
+    if discord_interaction_callback_schema(journal) is not equal to 0:
+        return "store-failed"
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT b.bot FROM discord_interaction_jobs j JOIN discord_inbox i ON i.identity=j.identity CROSS JOIN discord_identity b WHERE j.identity=?1 AND j.state='acknowledging' AND i.kind='INTERACTION_CREATE' AND i.payload=?2 AND b.singleton=1;" and [identity,body]))
+    if not (archive_list_text(source and 0) equals "found"):
+        return "ack-source-denied"
+    set kind to "deferred"
+    if callback equals "{\"type\":5,\"data\":{\"flags\":64}}" or else callback equals "{\"type\":5,\"data\":{\"flags\":0}}":
+        set kind to "deferred"
+    else:
+        set expected to discord_question_other_modal(journal and body and archive_list_text(source and 1))
+        if string_length(expected) equals 0 or else not (callback equals expected):
+            return "ack-callback-denied"
+        set kind to "modal"
+    set values to [identity,kind,ep_sha256(body),ep_sha256(callback)]
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_interaction_callbacks VALUES(?1,?2,?3,?4);" and values) and 101) is not equal to 0:
+        return "store-failed"
+    set stored to history_collect_one(checkpoint_prepare(journal and "SELECT kind FROM discord_interaction_callbacks WHERE identity=?1 AND kind=?2 AND intake_sha256=?3 AND callback_sha256=?4;" and values))
+    if not (archive_list_text(stored and 0) equals "found"):
+        return "ack-callback-denied"
+    return kind
+
+define discord_interaction_callback_kind with journal as Int and identity as Str returning Str:
+    if discord_interaction_callback_schema(journal) is not equal to 0:
+        return "store-failed"
+    set stored to history_collect_one(checkpoint_prepare(journal and "SELECT c.kind,c.intake_sha256,i.payload FROM discord_interaction_callbacks c JOIN discord_inbox i ON i.identity=c.identity WHERE c.identity=?1;" and [identity]))
+    if archive_list_text(stored and 0) equals "end":
+        # Older callbacks and failures before preparation used deferral only.
+        return "deferred"
+    if not (archive_list_text(stored and 0) equals "found"):
+        return "store-failed"
+    if not (archive_list_text(stored and 2) equals ep_sha256(archive_list_text(stored and 3))):
+        return "ack-source-denied"
+    return archive_list_text(stored and 1)

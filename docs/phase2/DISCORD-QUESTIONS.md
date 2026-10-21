@@ -22,9 +22,9 @@ This is not a deployed UI. Remaining integration:
   choices when Discord label limits are shorter than the source text.
 - Save selections as drafts. Provide Other through a text modal and an
   explicit Submit control for the batch. Display the saved draft state.
-- Handle modal-open as the initial interaction callback; a deferred callback
-  cannot subsequently be replaced by a modal. Keep token material outside
-  model/context projections. Modal submission is interaction type 5.
+- Qualify the modal-aware initial callback and type-5 intake against live
+  Discord before rollout. The native callback ledger and intake are implemented;
+  live delivery and action execution remain unqualified.
 - Refresh actor, message, channel, authority and pending request at execution;
   reject foreign, superseded, cancelled and revoked actions. Reconcile
   uncertain delivery and submission without duplicate guidance.
@@ -64,10 +64,18 @@ legacy Action Row, preserves exact Unicode and newlines, and rejects blank,
 numeric, duplicate and incorrectly named fields. Opening a modal does not
 save an answer or resume a run.
 
-Acknowledgement integration remains pending. Record the callback kind before
-sending it: a modal callback has no deferred original message to reconcile.
-A confirmed modal-open must finish that interaction without passing through
-the ordinary action worker. An interrupted or uncertain modal-open must not
-be blindly replayed or reconciled by fetching a nonexistent original reply.
-The later modal submission is a distinct authenticated interaction and saves
-only a draft; the explicit Submit button completes the batch.
+Acknowledgement and intake source integration is now implemented, not deployed.
+`interaction_callback.ep` records the callback kind and source/callback digests
+before transmission. The ACK worker selects the validated generic Other modal
+as its initial callback, then recomputes the remaining deadline. Confirmed
+modal-open goes directly to completed without entering the action worker.
+An interrupted/uncertain modal-open retains its receipt and expires without
+replay or a request for a nonexistent deferred original. Older deferred
+callbacks keep the existing original-response reconciliation path.
+
+Type-5 submissions use the same authenticated Gateway intake, guild allowlist,
+admin-only DMs, token separation, cursor transaction and replay identity as
+other interactions. Admission is not answer authorization. Execution still
+needs the current control binding, live source/access check and pending request.
+The answer action worker and renderer remain unfinished. The intended later
+modal submission saves only a draft; explicit Submit completes the batch.
