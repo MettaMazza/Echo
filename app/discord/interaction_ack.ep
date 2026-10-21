@@ -114,7 +114,9 @@ define discord_interaction_ack_tick with library as Str and bot_token as Str and
         set closed to net_close(output)
         set closed to net_close(headers)
         return discord_interaction_ack_unsent(journal and identity and "deadline-after-preparation")
+    set transfer_started_ms to ep_time_now_ms()
     set response to discord_rest_transfer_timed(library and bot_token and "POST" and route and callback and output and headers and remaining and remaining)
+    set transfer_finished_ms to ep_time_now_ms()
     set confirmed to 0
     if archive_list_text(response and 0) equals "complete" and archive_list_text(response and 1) equals "204":
         set confirmed to 1
@@ -127,4 +129,12 @@ define discord_interaction_ack_tick with library as Str and bot_token as Str and
         set added to append_list(values and detail)
         if archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET detail=?2 WHERE identity=?1 AND state='uncertain';" and values) and 101) is not equal to 0:
             return "store-failed"
+    set timing_values to [identity,archive_list_text(claim and 4),int_to_string(transfer_started_ms),int_to_string(transfer_finished_ms),int_to_string(remaining),archive_list_text(response and 0),archive_list_text(response and 1),archive_list_text(response and 2),archive_list_text(response and 3)]
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_ack_timings(identity,received_ms,transfer_started_ms,transfer_finished_ms,budget_ms,status,http_status,curl_code,timing) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);" and timing_values) and 101) is not equal to 0:
+        return "ack-timing-write-failed"
     return recorded
+
+# Created on worker startup, outside the callback deadline. Original delivery
+# state stays authoritative even if this diagnostic write cannot complete.
+define discord_ack_timing_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_ack_timings(identity TEXT PRIMARY KEY REFERENCES discord_interaction_jobs(identity),received_ms INTEGER NOT NULL,transfer_started_ms INTEGER NOT NULL,transfer_finished_ms INTEGER NOT NULL,budget_ms INTEGER NOT NULL,status TEXT NOT NULL,http_status TEXT NOT NULL,curl_code TEXT NOT NULL,timing TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_ack_timings_no_update BEFORE UPDATE ON discord_ack_timings BEGIN SELECT RAISE(ABORT,'Acknowledgement timings are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_ack_timings_no_delete BEFORE DELETE ON discord_ack_timings BEGIN SELECT RAISE(ABORT,'Acknowledgement timings persist'); END;")

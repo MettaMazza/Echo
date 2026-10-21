@@ -395,3 +395,35 @@ The ordinary Cancel regression passed in 2.561 s, receipt
 No live command-button click or deployment is claimed yet. Build dependency
 inspection identifies agent, actions, activity and queue-controls as affected;
 Gateway and acknowledgement workers retain their qualified binaries.
+
+## Command Cancel — deployed live acceptance, 21 October
+
+The four affected workers were built from `9c4031c8` and idle-deployed as
+`command-cancel-stage-20261021`; Gateway/acknowledgement and resident Warm were
+preserved. The actual ordinary-account `/edit` long-output request entered
+`generating`. Its public source-bound Cancel button was clicked; the run became
+`cancelled`, the button disabled, and Discord displayed the cancellation receipt.
+No final reply was delivered for that cancelled run. A subsequent normal message
+completed with the exact requested response and retained Thinking/Speak controls.
+Private evidence: `group-branches-20261021/command-cancel-live.json`.
+This closes the live active-command cancellation case; second-actor, revoked
+permission and real-admin autonomy exercises are not claimed by this sequence.
+
+### Acknowledgement timing investigation
+
+A later regeneration received no confirmed callback (`curl 28`, HTTP 0) and
+admitted no model run; Discord showed its application-timeout notice. This
+failure is retained, not treated as successful command completion. Five
+read-only public API probes took 0.123–0.237 s; the native authenticated REST
+probe took 0.308 s with 8 ms setup. These later probes do not establish the
+cause of the earlier callback failure.
+
+The acknowledgement worker now retains immutable timing receipts after the
+transfer, including intake/preparation timestamps, remaining deadline, transport
+setup, DNS, connect, TLS and first-byte durations. No token, URL or conversation
+text enters these receipts. Callback state remains authoritative; uncertainty
+still uses read-only reconciliation and never resends a callback. Native
+expiry/reopen/immutable-receipt regression passed in 2.287 s; binary
+`30487a4b2713dca45a6327f1041a591a04d43ca3644e4039bc49606cdac72afe`.
+Only the acknowledgement binary changed in the idle deployment; its SHA-256 is
+`59ec9146efbc59ae51d16e368b9e4254b242ddd77ca5dd0a56b32c20ee1ea126`.
