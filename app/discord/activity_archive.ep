@@ -1,0 +1,44 @@
+import "activity_transport"
+
+# Only Echo-owned, source-bound public activity threads may be archived.
+# Archive changes visibility, not retention, locking or audience permissions.
+define discord_activity_archive_set with library as Str and token as Str and journal as Int and inbox as Str and archived as Int and bot as Str and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    set intake to discord_intake_source(journal and inbox)
+    if not (archive_list_text(intake and 0) equals "found"):
+        return "source-unavailable"
+    set binding to history_collect_one(checkpoint_prepare(journal and "SELECT thread FROM discord_activity_threads WHERE inbox=? AND state='ready';" and [inbox]))
+    if not (archive_list_text(binding and 0) equals "found"):
+        return "thread-unavailable"
+    set thread to archive_list_text(binding and 1)
+    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(intake and 5) and archive_list_text(intake and 4) and archive_list_text(intake and 3) and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return "source-access-held"
+    if not (discord_run_source_check(library and token and journal and directory_path and inbox and intake) equals "current"):
+        return "source-not-current"
+    set route to concat("/channels/" and thread)
+    set observed to discord_access_get(library and token and journal and directory_path and route and "GET:channel" and thread)
+    if not (archive_list_text(observed and 0) equals "observed") or else not (discord_activity_observe(journal and inbox and archive_list_text(observed and 1)) equals "ready"):
+        return "thread-revalidation-failed"
+    set tokens to provider_json_tokens(archive_list_text(observed and 1))
+    set metadata to provider_member(tokens and 0 and "thread_metadata")
+    # Do not reopen a thread that a moderator locked.
+    if archived equals 0 and provider_value(tokens and provider_member(tokens and metadata and "locked")) equals "true":
+        return "thread-locked"
+    set desired to "false"
+    if archived equals 1:
+        set desired to "true"
+    if provider_value(tokens and provider_member(tokens and metadata and "archived")) equals desired:
+        return "archive-state-confirmed"
+    if file_exists(stop_file):
+        return "stopped"
+    set body to concat("{\"archived\":" and concat(desired and "}"))
+    set response to discord_access_body(library and token and journal and directory_path and "PATCH" and route and "PATCH:activity-archive" and thread and body)
+    if not (archive_list_text(response and 0) equals "observed") or else not (discord_activity_observe(journal and inbox and archive_list_text(response and 1)) equals "ready"):
+        return "archive-update-held"
+    set result to provider_json_tokens(archive_list_text(response and 1))
+    set metadata to provider_member(result and 0 and "thread_metadata")
+    if not (provider_value(result and provider_member(result and metadata and "archived")) equals desired):
+        return "archive-state-unconfirmed"
+    return "archive-state-confirmed"
