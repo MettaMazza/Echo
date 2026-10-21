@@ -1,0 +1,44 @@
+import "discord/worker_store"
+import "agent/run_state"
+
+# Explicit host-authorised retry of a cancelled, tool-free Discord generation.
+# Preserve originals and cancellation receipts. Normal intake repeats live access
+# and source checks; this command neither sends text nor executes model tools.
+define main returning Int:
+    if get_argument_count() is not equal to 5 or else not (get_argument(4) equals "--user-authorized"):
+        return 1
+    set journal to sql_open(get_argument(1))
+    set database to archive_open(get_argument(2))
+    set message to get_argument(3)
+    set run to concat("discord-message:" and message)
+    set inbox to concat("message:create:" and message)
+    if journal equals 0 or else database equals 0:
+        return 2
+    set values to create_list()
+    set added to append_list(values and run)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 3
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT session,last_event FROM echo_runs WHERE run=?1 AND state='cancelled' AND NOT EXISTS(SELECT 1 FROM echo_tool_calls WHERE run=?1) AND NOT EXISTS(SELECT 1 FROM echo_cancel_requests WHERE run=?1);" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        set failed to archive_rollback(database)
+        return 4
+    set event to concat(run and ":explicit-user-retry")
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"parent_event\":" and provider_quote(archive_list_text(row and 2))))
+    set payload to concat(payload and ",\"reason\":\"explicit-user-request-to-retry-tool-free-cancelled-generation\"}")
+    if archive_append_pending(database and archive_list_text(row and 1) and event and "agent_recovered" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set failed to archive_rollback(database)
+        return 5
+    set added to append_list(values and event)
+    if tool_ledger_change(database and "UPDATE echo_runs SET state='ready',last_event=?2 WHERE run=?1 AND state='cancelled' RETURNING run;" and values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set failed to archive_rollback(database)
+        return 6
+    set keys to create_list()
+    set added to append_list(keys and inbox)
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 7
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_agent_jobs SET state='service-stopped',detail='explicit user-authorized retry',updated_ms=0 WHERE inbox=?1 AND state='cancelled';" and keys) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'service-stopped','explicit user-authorized retry',0);" and keys) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        set failed to archive_rollback(journal)
+        return 8
+    display "Saved request queued for authorised retry; normal access and source checks remain active."
+    return 0

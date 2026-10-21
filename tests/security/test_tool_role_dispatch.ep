@@ -1,0 +1,61 @@
+import "../../app/archive/snapshot"
+import "../../app/web/attachments"
+import "fs"
+import "../../app/security/tool_authority"
+import "../../app/agent/tool_recovery"
+import "../../app/agent/run_messages"
+import "../../app/archive/history"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture" and "secret") is not equal to 0:
+        return 1
+    if not (tool_authority_schema(database) equals "applied"):
+        return 2
+    set configured to set_env("ECHO_WORKSPACE_ROOT" and get_argument(2))
+    set submitted to web_submit_owned(database and "owner" and "request" and "" and "Create source.ep in this session workspace.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set delta to "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"create-file\",\"function\":{\"name\":\"host_execute\",\"arguments\":\"{\\\"path\\\":\\\"source.ep\\\",\\\"text\\\":\\\"display \\\\\\\"Hello\\\\\\\"\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}"
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set messages to agent_run_messages(database and run)
+    set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(messages and concat(",\"tools\":" and concat(session_tool_schemas() and "}"))))
+    set generated to agent_generate_local(database and run and "first-request" and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 1
+    if web_device_authenticate(database and "secret") equals "" or else web_device_session_allowed(database and "owner" and session) is not equal to 1:
+        return 3
+    if agent_tool_step(database and run) is not equal to 0:
+        return 6
+    set state to agent_run_read(database and run)
+    if not (archive_list_text(state and 2) equals "tools"):
+        return 7
+    set result to history_collect_one(archive_prepare(database and "SELECT t.state,json_extract(e.payload,'$.result.status'),json_extract(e.payload,'$.result.effects') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='create-file';"))
+    if not (archive_list_text(result and 1) equals "observed") or else not (archive_list_text(result and 2) equals "admin-required") or else not (archive_list_text(result and 3) equals "none"):
+        return 8
+    set denial to history_collect_one(archive_prepare(database and "SELECT json_extract(e.payload,'$.result.cause'),json_extract(e.payload,'$.result.required_role'),json_extract(e.payload,'$.result.requester_role') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='create-file';"))
+    if not (archive_list_text(denial and 1) equals "requester-role-required") or else not (archive_list_text(denial and 2) equals "admin") or else not (archive_list_text(denial and 3) equals "user"):
+        return 16
+    set workspaces to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM sqlite_master WHERE name='echo_workspaces';"))
+    if not (archive_list_text(workspaces and 1) equals "0"):
+        return 9
+    if agent_tool_step(database and run) is not equal to 0:
+        return 14
+    set resumed to agent_run_read(database and run)
+    if not (archive_list_text(resumed and 2) equals "ready"):
+        return 15
+    if archive_verify_all(database) is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 11
+    display "PASS: authenticated non-admin privileged-tool request denied with requester-specific role feedback at actual dispatch, no file effects, durable observed denial and resumable agent loop."
+    return 0
