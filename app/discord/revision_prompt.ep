@@ -1,0 +1,44 @@
+import "revision_admission"
+import "text_chunk"
+
+# Enqueue complete replacement text before admitting inference. Each chunk is
+# immutable, references the public command anchor and suppresses mentions.
+# Confirmed sent receipts, not enqueue success, permit the next stage.
+define discord_revision_prompt_publish with journal as Int and identity as Str and command as List returning Str:
+    if archive_list_text(command and 1) equals "regenerate":
+        return "revision-prompt-ready"
+    if not (archive_list_text(command and 1) equals "edit"):
+        return "invalid-revision-command"
+    set anchor to discord_command_anchor_read(journal and identity)
+    if not (archive_list_text(anchor and 0) equals "found"):
+        return "command-anchor-unavailable"
+    set arguments to provider_json_tokens(archive_list_text(command and 5))
+    set text to provider_value(arguments and provider_member(arguments and 0 and "text"))
+    if string_length(text) equals 0 or else provider_valid_utf8(text) equals 0:
+        return "invalid-command-options"
+    set offset to 0
+    set part to 0
+    set waiting to 0
+    repeat while offset < string_length(text):
+        set chunk to discord_text_chunk(text and offset and 1900)
+        if string_length(chunk) equals 0:
+            return "invalid-revision-prompt"
+        set output to concat("revision-prompt:" and concat(identity and concat(":" and int_to_string(part))))
+        set body to concat("{\"content\":" and concat(provider_quote(chunk) and ",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false}"))
+        set body to concat(body and concat(",\"message_reference\":{\"message_id\":" and concat(provider_quote(archive_list_text(anchor and 4)) and ",\"fail_if_not_exists\":true}}")))
+        set queued to discord_outbox_enqueue(journal and output and identity and archive_list_text(anchor and 2) and body)
+        if not (queued equals "enqueued" or else queued equals "already-enqueued"):
+            return queued
+        set keys to [output]
+        set state to history_collect_one(checkpoint_prepare(journal and "SELECT state,message FROM discord_outbox WHERE identity=?1;" and keys))
+        if not (archive_list_text(state and 0) equals "found"):
+            return "revision-prompt-recovery-required"
+        if archive_list_text(state and 1) equals "failed":
+            return "revision-prompt-delivery-failed"
+        if not (archive_list_text(state and 1) equals "sent") or else discord_snowflake(archive_list_text(state and 2)) equals 0:
+            set waiting to 1
+        set offset to offset + string_length(chunk)
+        set part to part + 1
+    if waiting equals 1:
+        return "revision-prompt-pending"
+    return "revision-prompt-ready"

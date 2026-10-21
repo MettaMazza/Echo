@@ -170,8 +170,8 @@ channel audience. The existing transactional revision writer rechecks those boun
 before creating a new branch and retaining original attachments. Original messages
 and answers remain intact.
 
-This preparation is not connected to live command execution. Public command anchors,
-queue reservation, durable run-origin receipts, background dispatch, retry reconciliation
+The candidate execution path is now connected to public command anchors, queue
+reservation, durable run-origin receipts and background dispatch. Production builds
 and actual Discord edit/regenerate acceptance remain required. These commands have
 not been registered on the server or deployed.
 
@@ -185,3 +185,40 @@ The initial run stopped at revision submission because the fixture supplied a
 plain label as structured environment data; the corrected fixture uses the
 normal channel-environment construction. That failure remains preserved as
 `revision-target-1792602207907640000`, not counted as acceptance.
+
+## Revision admission and public prompt delivery candidate
+
+The connector chooses the authenticated interaction-derived run identity through
+`group_revision_submit_run`; the existing generic wrapper retains its previous
+identity scheme. Revision admission reserves the conversation before creating
+the branch/run. The admitted command records its exact intake hash and public
+anchor separately from the human actor. The standard worker lineage resolver
+accepts ordinary-user revisions while retaining administrator authority for `/auto`.
+
+Edited text is posted without truncation as immutable, sentence-bounded public
+chunks attached to the command anchor. Admission waits for confirmed sent receipts
+for every chunk. Repeated attempts reuse the same outbox identities and cannot
+append another copy. The original prompt and earlier replies remain preserved.
+Delivery and Thinking-thread paths check command-specific eligibility rather than
+assuming every interaction is administrator-only.
+
+Native receipt `revision-start-r2-1792602810589864000` passed in 15.921 s, binary
+SHA-256 `21e4ff73a37729c0745db1d3cbc3048c1e785eec0d7807b6861cccf2387ab2b4`.
+It covers busy-conversation admission blocking, an ordinary-user regeneration,
+exact original prompt, typed actor/anchor provenance, active replay, cancellation
+and database reopen without reacquiring the released reservation, webhook expiry,
+authority revocation, and a lossless three-chunk edit followed by revision admission.
+The first run incorrectly required an already-applied migration to report a fresh
+application; that fixture assertion was corrected and its failed receipt retained.
+These are native synthetic transport receipts, not live Discord acceptance.
+
+The existing autonomy-admission regression also passed: receipt
+`revision-auto-regression-1792602882243607000`, 16.431 s, SHA-256
+`f58911be067cad6fd40319f0e72dd15e1540f12f05b2d797d61198ec8631b56a`.
+It retains the current admin gate, busy reservation, sender binding, cancellation
+and replay behavior. Callback visibility/recovery regression passed in 5.713 s:
+`revision-visibility-regression-1792602966181078000`, SHA-256
+`b08522957b78362af4e514c9f7e173d08eacd62d63cb1ae86612bd66d6d8ddcb`.
+This preserves public `/auto`, private unrelated controls, exact response binding
+and restart compatibility; actual revision ACK visibility still requires live
+Discord acceptance. No live deployment or command registration is claimed here.
