@@ -1,6 +1,6 @@
 # Authorised local Discord history search
 
-Phase Two Step 15 candidate; native index/replay tests passed. Worker build and live deployment/acceptance are pending.
+Phase Two Step 15 candidate; native index/replay tests passed. The initial worker was deployed to the approved test stage; live acceptance found a cursor/write interaction being repaired before qualification.
 
 `discord_message_read` adds `search_local` with a case-sensitive literal `query`, page `limit` (1–100), and optional `before` taken from its returned `next_before`. Search cursors are local index positions, not message IDs. An empty result page can still have a cursor because deleted or changed candidates were filtered; continue until the cursor is empty. Concurrent edits can change ordering. This is an index of locally observed history, not a claim to have searched every server message.
 
@@ -11,3 +11,7 @@ The model cannot supply a channel, guild, account, route or credential. Candidat
 The source reuse inspection is recorded in [message read](DISCORD-MESSAGE-READ.md) and [joined groups](DISCORD-JOINED-GROUPS.md#actual-hive-ingestion-inspection). Reinspected the actual ErnosDecent bridge's `_exec_bridge_command` and scoped `search_rag_database`: the former reads channel history, the latter delegates session RAG. Neither was treated as an existing public-history index implementation. Echo's index uses its own immutable journal and fixed-origin REST/access layer; no legacy prompt or role policy was copied.
 
 `test_message_index` passed current-channel isolation, full/partial edits, individual and bulk tombstones, literal matching, cursor exhaustion, repeated refresh, reopen and REST observation indexing. Invalid search parameters and cross-channel arguments are refused. Original `test_message_read_options` regression and the final production worker are being checked separately. No compiler, model, voice or identity/emotive prompt changes are part of this stage.
+
+## Live finding retained
+
+The initial real search returned `message-search-observation:rate-response-unresolved` without releasing cached text; a later read-only retry succeeded. The implementation had retained an SQLite iterator while HTTP receipt recording attempted a write transaction. Candidate rows are now detached and the iterator finalized before any network operation. A production-WAL concurrent-writer regression reproduces the old pattern and checks the corrected boundary. Failed-observation receipt names are now propagated instead of being dropped. Initial receipts and build attempts remain retained; live corrected-worker acceptance is not yet claimed.

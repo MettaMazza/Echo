@@ -1,4 +1,5 @@
 import "store"
+import "../providers/archived_stream"
 
 # Derived index only. Originals remain immutable, and callers must revalidate
 # every match with Discord before exposing it. No index content is a receipt
@@ -97,3 +98,20 @@ define discord_message_index_observe with journal as Int and page as Str and rec
         if not (saved equals "recorded" or else saved equals "already-recorded"):
             return 1
     return 0
+
+# Finish the read snapshot before network work writes rate-limit receipts.
+# Keeping an iterator open across another worker's WAL commit can make a
+# later transaction upgrade fail with SQLITE_BUSY_SNAPSHOT.
+define discord_message_index_snapshot with journal as Int and room as Str and query as Str and before as Str and limit as Str returning List:
+    set statement to discord_message_index_candidates(journal and room and query and before and limit)
+    if statement equals 0:
+        return 0
+    set rows to create_list()
+    set row to discord_message_index_row(statement)
+    repeat while archive_list_text(row and 0) equals "found":
+        set added to append_list(rows and row)
+        set row to discord_message_index_row(statement)
+    set finalized to ep_sqlite3_finalize(statement)
+    if finalized is not equal to 0 or else not (archive_list_text(row and 0) equals "end"):
+        return 0
+    return rows
