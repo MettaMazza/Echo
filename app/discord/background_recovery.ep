@@ -21,6 +21,8 @@ define discord_background_rebind with journal as Int and run as Str and previous
         return migration_fail(journal and "owner-changed")
     if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_background_events(run,inbox,state,detail,observed_ms) SELECT run,inbox,'recovery','native ownership recovery; replacement claim awaiting dispatch',CAST(?4 AS INTEGER) FROM discord_background_runs WHERE run=?1;" and values) and 101) is not equal to 0:
         return migration_fail(journal and "write-failed")
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_background_reviews SET resolved=1 WHERE run=?1 AND worker=?2 AND resolved=0;" and [run,previous]) and 101) is not equal to 0:
+        return migration_fail(journal and "write-failed")
     if sql_execute(journal and "COMMIT;") is not equal to 0:
         return migration_fail(journal and "commit-failed")
     return "rebound"
@@ -48,6 +50,40 @@ define discord_background_recover with journal as Int and database as Int and ru
     set closed to ep_dlclose(library)
     return outcome
 
+# Caller holds the abandoned worker's native ownership lock. An uncertain
+# side effect remains unresolved: record review, never fabricate a result or
+# replay it. The process is no longer running or consuming inference capacity.
+# A direct recovery after reconciliation must replace its worker token before
+# the automatic resume path can consider it again.
+define discord_background_require_review with journal as Int and database as Int and run as Str and worker as Str returning List:
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return history_status("run-unavailable")
+    set event to concat(worker and ":discord-recovery-review")
+    set reason to "The worker stopped with an uncertain tool outcome. Work is held for reconciliation; no tool has been replayed."
+    set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"worker\":" and concat(provider_quote(worker) and concat(",\"status\":\"review-required\",\"reason\":" and concat(provider_quote(reason) and "}"))))))
+    set prior to archive_read_event(database and event)
+    if prior equals 0:
+        if archive_append(database and archive_list_text(row and 0) and event and "worker_recovery" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return history_status("review-write-failed")
+    else if not (archive_list_text(prior and 2) equals "worker_recovery") or else not (archive_list_text(prior and 3) equals payload):
+        return history_status("review-binding-conflict")
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("busy")
+    set values to [run,worker,reason,event,int_to_string(ep_time_now_ms())]
+    set held to history_collect_one(checkpoint_prepare(journal and "SELECT run FROM discord_background_runs WHERE run=?1 AND worker=?2 AND state IN ('reserved','running','recovery');" and [run,worker]))
+    if not (archive_list_text(held and 0) equals "found"):
+        return history_status(migration_fail(journal and "owner-changed"))
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_background_reviews(run,worker,reason,event) VALUES(?1,?2,?3,?4);" and [run,worker,reason,event]) and 101) is not equal to 0:
+        return history_status(migration_fail(journal and "review-write-failed"))
+    set changed to history_collect_one(archive_prepare(journal and "SELECT changes();"))
+    if archive_list_text(changed and 1) equals "1":
+        if archive_finish(checkpoint_prepare(journal and "UPDATE discord_background_runs SET state='recovery',process=0,updated_ms=CAST(?5 AS INTEGER) WHERE run=?1 AND worker=?2;" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_background_events(run,inbox,state,detail,observed_ms) SELECT run,inbox,'recovery',?3,CAST(?5 AS INTEGER) FROM discord_background_runs WHERE run=?1;" and values) and 101) is not equal to 0:
+            return history_status(migration_fail(journal and "review-write-failed"))
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return history_status(migration_fail(journal and "review-commit-failed"))
+    return history_status("tool-outcome-needs-review")
+
 define discord_background_recover_owned with journal as Int and database as Int and run as Str and journal_worker as Str returning List:
     set values to create_list()
     set added to append_list(values and run)
@@ -58,7 +94,14 @@ define discord_background_recover_owned with journal as Int and database as Int 
     set restored to agent_recover_generation_owned(database and run and concat(worker and ":generation-recovery") and "0")
     if not (restored equals "ready" or else restored equals "tools" or else restored equals "completed" or else restored equals "cancelled"):
         return history_status("generation-needs-review")
-    if agent_recover_tools_owned(database and run) is not equal to 0 or else web_worker_recover_owned(database and run and archive_list_text(claim and 1) and worker) is not equal to 0:
+    if agent_recover_tools_owned(database and run) is not equal to 0:
+        return history_status("tool-outcome-needs-review")
+    set uncertain to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls WHERE run=?1 AND state='uncertain';" and values))
+    if not (archive_list_text(uncertain and 0) equals "found"):
+        return history_status("tool-read-failed")
+    if not (archive_list_text(uncertain and 1) equals "0"):
+        return discord_background_require_review(journal and database and run and journal_worker)
+    if web_worker_recover_owned(database and run and archive_list_text(claim and 1) and worker) is not equal to 0:
         return history_status("tool-outcome-needs-review")
     if not (discord_background_rebind(journal and run and journal_worker and worker) equals "rebound"):
         return history_status("journal-reconciliation-required")
