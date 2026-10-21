@@ -58,3 +58,28 @@ Native passes do not qualify this candidate for production. No live cache
 speedup is claimed. Investigate the crash and the inaccurate digest-failure
 feedback before another promotion. The source remains a candidate in the
 Phase Two development branch; the live runtime uses the prior qualified build.
+
+## Investigation and digest feedback, 21 October
+
+The captured incomplete stream was reconstructed 100 times in one native reader
+(8.135 seconds) and 100 times each in four concurrent native readers (131.851
+seconds). Both retained incomplete status without inference or tool execution;
+neither reproduced the crash. Concurrent replay reached approximately 11.47 GB
+RSS in an observed mid-run sample. These are diagnostic workloads, not live
+latency measurements or proof that the crash is resolved. Socket/archive/monitor
+reproduction remains pending.
+
+The candidate now distinguishes an incorrect digest for an accessible original
+from denied access. It checks access using the stored original before comparing
+the caller's digest. Foreign and missing sources still receive the same
+non-disclosing denial. An accessible mismatch returns `source-digest-mismatch`,
+explicitly records no effects, and tells the model to read the original with
+`memory_read` and use its exact returned digest. It does not imply a role or
+system-wide tool restriction.
+
+The native group-memory regression passed in 6.295 seconds. The queued tool
+execution regression passed in 13.104 seconds: wrong digest produced the precise
+feedback, corrected retry recorded exactly one scoped claim. Evidence directories
+are `digest-1792596581793077000` and `digest-dispatch-1792596708880923000` under
+the private evidence root above. This feedback change is not yet deployed;
+production remains on the qualified rollback build.
