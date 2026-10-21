@@ -341,3 +341,32 @@ characters of corresponding recalled content in each new snapshot. Receipt:
 The two original malformed receipts remain unchanged. This is saved-state and
 native evidence, not live Discord or latency acceptance. Production remains on
 the previous revision worker pending candidate build and live qualification.
+
+### Live snapshot repair acceptance
+
+Source `d71c44e702ff8146e6c0330985ecdb0d4cb6eb9a` built in 74.259 s;
+agent SHA-256 `b77791bcce3f5bde2b7dcd1fb25a8b604bef29dcf6a1fb46ff9596a3cdc8eef9`.
+The idle-gated stage preserved the other five connector binaries and resident
+Warm. Actual Discord regeneration, normal memory follow-up and nested regeneration
+completed with correct marker and arithmetic replies, visible Thinking threads
+and Speak controls; all persisted after Discord reload. All five model requests,
+including extraction, excluded the future-parent marker. All three new snapshots
+were valid with identical 44,428-character bases; record counts were 50/51/51
+and per-turn delta lengths 0/1,324/1,324. This establishes actual branch reuse
+with preserved recall for these turns.
+
+Answering requests: prefill 1.028/2.019/1.029 s, first output from archived model
+request 1.233/2.218/1.234 s, decode 31.80/31.87/31.86 tokens/s. The historical
+morning median was 1.864 s first output and 31.613 tokens/s; these three different
+requests are not a controlled equivalent workload or full performance acceptance.
+The earlier 38–44 s branch-prefill behavior was absent in this sequence.
+Private evidence: `group-branches-20261021/snapshot-v4-live-sequence.json`.
+
+The first distinct slash interaction timed out during HTTP acknowledgement
+(curl 28, HTTP 0) and admitted no run. Discord displayed “The application did not
+respond”. Its uncertain acknowledgement receipt is preserved separately in
+`snapshot-v4-ack-timeout.json`; it is not counted as a successful interaction.
+A later distinct interaction succeeded. Acknowledgement reliability and the
+remaining command Cancel, long-edit input, retry, broader UI and full Phase Two
+requirements remain open. Production is on this validated snapshot stage; no
+claim of complete Phase Two or complete latency/endurance qualification is made.
