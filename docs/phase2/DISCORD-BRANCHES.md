@@ -222,3 +222,44 @@ and replay behavior. Callback visibility/recovery regression passed in 5.713 s:
 This preserves public `/auto`, private unrelated controls, exact response binding
 and restart compatibility; actual revision ACK visibility still requires live
 Discord acceptance. No live deployment or command registration is claimed here.
+
+## Revision stage deployed for live acceptance — 21 October
+
+The seven production builds from `18baad74a62a6024257d663bd7ecaa216ddd7b5a`
+completed. Six worker binaries were installed only after the journal, active-run
+and background-worker idle checks passed. The resident Warm service and active
+voice profile were preserved. Native registration then successfully installed
+`/edit` and `/regenerate`; the first registration attempt failed before network
+inspection because its private output directory did not yet exist. That failure
+is retained alongside the successful retry.
+
+An ordinary-account `/edit` of a completed human prompt produced its public
+command anchor, replacement prompt, Thinking thread and exact requested answer
+in the channel. The original remained visible. Both the memory extraction and
+answering request excluded the later-parent marker; only the answering request
+contained the replacement prompt. Private receipt: `revision-live-edit.json`.
+
+The attempted 4,340-character slash-option paste was rejected by the Discord
+client before submission; the shorter live prompt succeeded. The native
+three-chunk fixture remains valid, but does not prove a usable long-edit UI.
+That input path requires further work. The first edited answer also incurred
+38.952 seconds of model prefill for 25,845 new tokens; this is not a latency pass.
+Regeneration from the edited answer and the subsequent normal follow-up also
+completed with the correct revised context and main-channel replies. All inspected
+revision requests excluded the later-parent marker. Private combined evidence is
+`revision-live-sequence.json`. The regeneration inserted a 44,428-character shared
+recall block and took 44.298 seconds of prefill; branch recall/cache behavior needs
+repair. Post-restart conversation continuity passed; cancellation on command anchors
+remains open. This stage is not full UI parity or
+Phase Two completion.
+
+The normal follow-up after regeneration retained the selected revision and
+returned both its result sentence and the correct new arithmetic answer. Its
+provider prefill was 1.331 seconds for 627 new tokens with 70,511 cached tokens,
+32.15 decoded tokens/second. This is one observed warm turn, not a completed
+controlled benchmark. An idle restart preserved the exact six worker hashes;
+Discord reload retained the original, edit, regeneration, follow-up and controls.
+
+The subsequent post-restart normal message returned the revised result sentence
+and the correct new sum. The selected revision session and request provenance
+survived restart; the response and Speak control were verified in Discord.
