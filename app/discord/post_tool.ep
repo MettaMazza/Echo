@@ -1,0 +1,114 @@
+import "post_options"
+import "post_store"
+import "reaction_tool"
+import "run_source"
+import "../security/tool_policy"
+
+# Only the host-owned Discord child process carries these arguments. Match
+# both database identities and the admitted origin before reading credentials.
+# Generic host/browser workers cannot borrow a Discord principal by naming it.
+define discord_post_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    set options to discord_post_options(arguments)
+    if not (archive_list_text(options and 0) equals "valid"):
+        return discord_reaction_result(archive_list_text(options and 0) and "none" and "")
+    if tool_policy_allows(database and run and call_id and "discord_post") equals 0:
+        return discord_reaction_result("not-authorized" and "none" and "")
+    if not ((get_argument_count() equals 15 and also get_argument(13) equals "--turn") or else (get_argument_count() equals 16 and also get_argument(13) equals "--job")):
+        return discord_reaction_result("discord-runtime-unavailable" and "none" and "")
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals get_argument(7)) or else not (archive_list_text(location and 1) equals get_argument(4)):
+        return discord_reaction_result("discord-binding-denied" and "none" and "")
+    set journal to discord_store_open(get_argument(3) and get_argument(7))
+    if journal equals 0:
+        return discord_reaction_result("discord-journal-unavailable" and "none" and "")
+    set source to discord_run_source(journal and database and run)
+    if not (archive_list_text(source and 0) equals "found"):
+        set closed to sql_close(journal)
+        return discord_reaction_result("discord-origin-denied" and "none" and "")
+    set credential to read_file(get_argument(2))
+    if credential equals 0:
+        set closed to sql_close(journal)
+        return discord_reaction_result("discord-credential-unavailable" and "none" and "")
+    set guilds to string_split(get_argument(8) and ",")
+    set admins to string_split(get_argument(9) and ",")
+    set result to discord_post_perform(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and database and run and call_id and source and options and get_argument(7) and guilds and admins and get_argument(5) and get_argument(6))
+    set closed to sql_close(journal)
+    return result
+
+define discord_post_perform with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and options as List and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set actor to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    set anchor to archive_list_text(source and 6)
+    set operation to archive_list_text(options and 1)
+    set post to archive_list_text(options and 2)
+    set text to archive_list_text(options and 3)
+    if file_exists(stop_file) or else tool_policy_allows(database and run and call_id and "discord_post") equals 0:
+        return discord_reaction_result("not-authorized-or-stopped" and "none" and "")
+    if (string_length(guild) > 0 and also discord_contains(guilds and guild) equals 0) or else (string_length(guild) equals 0 and also discord_contains(admins and actor) equals 0):
+        return discord_reaction_result("discord-origin-denied" and "none" and "")
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and actor and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_reaction_result(concat("discord-access:" and archive_list_text(access and 0)) and "none" and "")
+    set inbox to discord_job_origin(journal and database and run)
+    set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if not (current equals "current"):
+        return discord_reaction_result(current and "none" and "")
+    if operation equals "reply":
+        set identity_material to concat(run and concat(":" and call_id))
+        set post to concat("tool-post:" and ep_sha256(identity_material))
+        set body to discord_post_body(text and anchor)
+        set queued to discord_outbox_enqueue(journal and post and inbox and room and body)
+        if not (queued equals "enqueued" or else queued equals "already-enqueued"):
+            return discord_reaction_result(queued and "none" and "")
+        set bound to discord_post_bind(journal and post and actor and room and run)
+        if not (bound equals "bound"):
+            return discord_reaction_result(bound and "none" and "")
+    set row to discord_post_lookup(journal and post and actor and room)
+    if not (archive_list_text(row and 0) equals "found"):
+        return discord_reaction_result("post-not-owned-in-this-channel" and "none; this requester cannot modify another user's posts" and "")
+    if tool_policy_allows(database and run and call_id and "discord_post") equals 0 or else not (discord_job_origin(journal and database and run) equals inbox) or else file_exists(stop_file) or else discord_turn_barrier(journal and http_decimal(archive_list_text(source and 7)) and anchor and room and guild) is not equal to 0:
+        return discord_reaction_result("authorization-changed-or-stopped" and "none" and "")
+    if (operation equals "reply" or else operation equals "retry") and archive_list_text(row and 1) equals "pending":
+        set sent to discord_delivery_send(library and token and journal and post and directory_path)
+        set row to discord_post_lookup(journal and post and actor and room)
+    set message to archive_list_text(row and 2)
+    set receipt to concat("{\"status\":" and provider_quote(archive_list_text(row and 1)))
+    set receipt to concat(receipt and concat(",\"post\":" and provider_quote(post)))
+    set receipt to concat(receipt and concat(",\"message\":" and provider_quote(message)))
+    if not (archive_list_text(row and 1) equals "sent"):
+        return concat(receipt and ",\"recovery\":\"Inspect this post ID; uncertain/sending is never blindly resent. Original delivery receipts remain retained.\"}")
+    set route to concat("/channels/" and concat(room and concat("/messages/" and message)))
+    set observed to discord_access_get(library and token and journal and directory_path and route and "GET:channel/message" and room)
+    if archive_list_text(observed and 0) equals "http-404":
+        return concat(receipt and ",\"remote_state\":\"not-found; original delivery history retained\"}")
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return discord_reaction_result(concat("post-observation:" and archive_list_text(observed and 0)) and "delivery history retained; current remote state unconfirmed" and archive_list_text(observed and 1))
+    set body to archive_list_text(observed and 1)
+    set parsed to provider_json_tokens(body)
+    set owner to provider_value(parsed and provider_member(parsed and provider_member(parsed and 0 and "author") and "id"))
+    if not (owner equals bot) or else not (provider_value(parsed and provider_member(parsed and 0 and "id")) equals message) or else not (provider_value(parsed and provider_member(parsed and 0 and "channel_id")) equals room):
+        return discord_reaction_result("remote-post-identity-mismatch" and "none" and archive_list_text(observed and 3))
+    if operation equals "reply" or else operation equals "retry" or else operation equals "status":
+        set receipt to concat(receipt and concat(",\"content\":" and provider_quote(provider_value(parsed and provider_member(parsed and 0 and "content")))))
+        return concat(receipt and "}")
+    if tool_policy_allows(database and run and call_id and "discord_post") equals 0 or else file_exists(stop_file) or else discord_turn_barrier(journal and http_decimal(archive_list_text(source and 7)) and anchor and room and guild) is not equal to 0:
+        return discord_reaction_result("authorization-changed-or-stopped" and "none" and "")
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and actor and admins)
+    if not (archive_list_text(access and 0) equals "allowed") or else tool_policy_allows(database and run and call_id and "discord_post") equals 0 or else file_exists(stop_file):
+        return discord_reaction_result("authorization-changed-or-stopped" and "none" and "")
+    set changed to create_list()
+    if operation equals "edit":
+        set payload to discord_post_body(text and "")
+        set changed to discord_access_body(library and token and journal and directory_path and "PATCH" and route and "PATCH:channel/message" and room and payload)
+    else:
+        set changed to discord_access_request(library and token and journal and directory_path and "DELETE" and route and "DELETE:channel/message" and room)
+    if not (archive_list_text(changed and 0) equals "observed"):
+        return discord_reaction_result("post-change-unconfirmed" and "inspect before retry; outcome may be uncertain" and archive_list_text(changed and 1))
+    if operation equals "edit":
+        set page to discord_message_read_page(archive_list_text(changed and 1) and room and "read" and message)
+        if string_length(page) equals 0:
+            return discord_reaction_result("edit-response-invalid" and "not established; inspect before retry" and archive_list_text(changed and 3))
+        return concat("{\"status\":\"applied\",\"observed_messages\":" and concat(page and "}"))
+    return discord_reaction_result("applied" and concat("own-post:" and operation) and archive_list_text(changed and 3))

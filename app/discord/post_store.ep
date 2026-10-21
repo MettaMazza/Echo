@@ -1,0 +1,25 @@
+import "store"
+
+# Tool posts are separate from immutable final replies and their Speak actions.
+# Each identity binds its original requester/channel; remote names grant nothing.
+define discord_post_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_tool_posts(identity TEXT PRIMARY KEY REFERENCES discord_outbox(identity),actor TEXT NOT NULL,room TEXT NOT NULL,origin_run TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_tool_posts_no_update BEFORE UPDATE ON discord_tool_posts BEGIN SELECT RAISE(ABORT,'Post provenance is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_tool_posts_no_delete BEFORE DELETE ON discord_tool_posts BEGIN SELECT RAISE(ABORT,'Post provenance persists'); END;")
+
+define discord_post_bind with journal as Int and identity as Str and actor as Str and room as Str and run as Str returning Str:
+    if not (string_index_of(identity and "tool-post:") equals 0):
+        return "not-a-tool-post"
+    if discord_post_schema(journal) is not equal to 0:
+        return "post-store-unavailable"
+    set keys to [identity,actor,room,run]
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_tool_posts SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM discord_outbox WHERE identity=?1 AND channel=?3);" and keys) and 101) is not equal to 0:
+        return "post-bind-failed"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_tool_posts WHERE identity=?1 AND actor=?2 AND room=?3 AND origin_run=?4;" and keys))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "post-bind-conflict"
+    return "bound"
+
+define discord_post_lookup with journal as Int and identity as Str and actor as Str and room as Str returning List:
+    if discord_post_schema(journal) is not equal to 0:
+        return history_status("post-store-unavailable")
+    set keys to [identity,actor,room]
+    return history_collect_one(checkpoint_prepare(journal and "SELECT o.state,o.message,o.identity,p.origin_run FROM discord_tool_posts p JOIN discord_outbox o ON o.identity=p.identity AND o.channel=p.room WHERE p.identity=?1 AND p.actor=?2 AND p.room=?3;" and keys))
