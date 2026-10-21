@@ -1,0 +1,51 @@
+import "project_control"
+import "../memory/sharing"
+
+# Authenticated human control only. Neither the source nor destination may
+# borrow Host, DM, another channel or another person's private authority.
+define discord_share_session_allowed with database as Int and device as Str and guild as Str and room as Str and session as Str returning Int:
+    set audience to history_collect_one(checkpoint_prepare(database and "SELECT s.group_id,s.revision FROM echo_group_sessions s WHERE s.session=?1 AND NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=s.session);" and [session]))
+    if not (archive_list_text(audience and 0) equals "found"):
+        return 0
+    return group_audience_allows(database and device and archive_list_text(audience and 1) and "discord" and guild and room and string_to_int(archive_list_text(audience and 2)) and 1)
+
+define discord_memory_share_request with database as Int and device as Str and guild as Str and room as Str and arguments as Str returning Str:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else project_object_keys(tokens and 0 and ["action","source","destination","review"]) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    for each key in ["action","source","destination"]:
+        if not (provider_kind(tokens and provider_member(tokens and 0 and key)) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+    set action to provider_value(tokens and provider_member(tokens and 0 and "action"))
+    set source_event to provider_value(tokens and provider_member(tokens and 0 and "source"))
+    set destination to provider_value(tokens and provider_member(tokens and 0 and "destination"))
+    if not (action equals "preview" or else action equals "confirm"):
+        return "{\"status\":\"invalid-action\"}"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    set source to archive_read_event(database and source_event)
+    if source equals 0 or else discord_share_session_allowed(database and device and guild and room and archive_list_text(source and 0)) equals 0 or else discord_share_session_allowed(database and device and guild and room and destination) equals 0:
+        set closed to archive_rollback(database)
+        return "{\"status\":\"not-authorized\"}"
+    if action equals "preview":
+        set result to memory_share_preview(database and device and source_event and destination)
+        set closed to archive_rollback(database)
+        return result
+    set review to provider_value(tokens and provider_member(tokens and 0 and "review"))
+    if not (provider_kind(tokens and provider_member(tokens and 0 and "review")) equals "string") or else string_length(review) is not equal to 64:
+        set closed to archive_rollback(database)
+        return "{\"status\":\"review-required\"}"
+    # A second explicit Confirm of the same reviewed selection is a safe retry.
+    set binding to history_collect_one(checkpoint_prepare(database and "SELECT json_array(?1,?2,?3,?4);" and [principal_for_device(database and device),source_event,destination,review]))
+    if not (archive_list_text(binding and 0) equals "found"):
+        set closed to archive_rollback(database)
+        return "{\"status\":\"database-error\"}"
+    set identity to concat("discord-reviewed-share:" and ep_sha256(archive_list_text(binding and 1)))
+    set status to memory_share_commit_pending(database and device and identity and source_event and destination and review)
+    if status equals "recorded" or else status equals "already-recorded":
+        if sql_execute(database and "COMMIT;") equals 0:
+            set event to concat("shared-source:" and identity)
+            return concat("{\"status\":" and concat(provider_quote(status) and concat(",\"event\":" and concat(provider_quote(event) and "}"))))
+        set status to "write-failed"
+    set closed to archive_rollback(database)
+    return concat("{\"status\":" and concat(provider_quote(status) and "}"))

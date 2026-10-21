@@ -57,27 +57,34 @@ define memory_share_preview with database as Int and device as Str and source_ev
 
 # Caller supplies an explicit confirmation and the digest from its preview.
 # Retry IDs bind to the same payload and destination, never to a new selection.
-define memory_share_commit with database as Int and device as Str and identity as Str and source_event as Str and destination as Str and review_digest as Str returning Str:
+define memory_share_commit_pending with database as Int and device as Str and identity as Str and source_event as Str and destination as Str and review_digest as Str returning Str:
     if string_length(identity) equals 0 or else string_length(review_digest) is not equal to 64:
         return "invalid-arguments"
-    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
-        return "database-busy"
     set material to memory_share_material(database and device and source_event and destination)
     if not (archive_list_text(material and 0) equals "found"):
-        set closed to archive_rollback(database)
         return archive_list_text(material and 0)
     set payload to archive_list_text(material and 1)
     if not (ep_sha256(payload) equals review_digest):
-        set closed to archive_rollback(database)
         return "review-changed"
     set event to concat("shared-source:" and identity)
     set prior to history_collect_one(checkpoint_prepare(database and "SELECT kind,payload,session FROM echo_events WHERE event=?;" and [event]))
     if archive_list_text(prior and 0) equals "found":
-        set closed to archive_rollback(database)
         if archive_list_text(prior and 1) equals "source_import" and archive_list_text(prior and 2) equals payload and archive_list_text(prior and 3) equals destination:
             return "already-recorded"
         return "identity-conflict"
-    if not (archive_list_text(prior and 0) equals "end") or else archive_append_pending(database and destination and event and "source_import" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
-        set closed to archive_rollback(database)
+    if not (archive_list_text(prior and 0) equals "end") or else archive_append_pending(database and destination and event and "source_import" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
         return "write-failed"
     return "recorded"
+
+# Transaction-owning public entry point; scoped adapters can validate audience
+# and call the pending writer under the same lock.
+define memory_share_commit with database as Int and device as Str and identity as Str and source_event as Str and destination as Str and review_digest as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set result to memory_share_commit_pending(database and device and identity and source_event and destination and review_digest)
+    if result equals "recorded" or else result equals "already-recorded":
+        if sql_execute(database and "COMMIT;") equals 0:
+            return result
+        set result to "write-failed"
+    set closed to archive_rollback(database)
+    return result
