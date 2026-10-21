@@ -1,4 +1,4 @@
-# Long replacement prompts — implementation in progress
+# Long replacement prompts — retained-file input deployed
 
 The existing `/edit` text option remains constrained by Discord's slash text
 field. Its complete-prompt publication and branch admission are already
@@ -27,9 +27,10 @@ normalising it internally to `edit` does not grant autonomy or admin authority.
 Current file access and integrity are rechecked before admission. This is a
 retained-upload selection, not a direct slash attachment option.
 
-Native pipeline acceptance passed; worker builds, registration and real Discord
-upload/multi-turn acceptance are still pending. Production is unchanged at this
-checkpoint. No completed live acceptance is claimed.
+Native pipeline acceptance and real Discord upload/edit/follow-up/reload checks
+have now passed for complete input preservation. The qualified workers are
+deployed and the command is registered. The exact-only answer format and cold
+branch latency observations below remain distinct unresolved findings.
 
 Native final acceptance passed in 7.685 s, binary
 `eec7ddd21b9477c19dcc2b1054b7fe2c7a3aeca203b91b6d93a938ab4e0339f9`.
@@ -59,3 +60,40 @@ already arrived intact, but the origin allowlist omitted the new raw command
 name. The allowlist was corrected without weakening actor or audience checks;
 the failed receipt remains preserved. Final private receipt:
 `revision-file-20261021/pipeline-qualified-1792610563880643000/result.json`.
+
+## Deployed and actual Discord acceptance — 21 October
+
+Qualified source `21ef063` was built into the affected agent, actions, activity,
+queue-control and acknowledgement workers; the unchanged Gateway binary was
+reused. The workers were replaced only after the connector was idle, with the
+previous registry preserved for rollback. The new fixed command was registered
+through the native maintenance program after deployment. Voice, model selection
+and prompts were unchanged.
+
+The ordinary testing account uploaded `live-edit-input.txt` using Discord's
+native file picker. Echo answered “File retained.” without executing the file's
+instructions. The explicitly submitted `/editfile` then published all 5,473
+characters in three confirmed public chunks, and the joined chunks and admitted
+user event exactly matched the original. Both answering model requests and the
+next follow-up retained the entire replacement in the user content array.
+Source SHA-256:
+`6d18b9accb6009e828d700f04a1aaa7787fb261b3c75f41595bb13110fe1371a`.
+
+The edit reply included the final marker `amber-heron-247`; the follow-up answered
+`amber-heron-247 and 23`. The original, public prompt, replies, Thinking threads
+and Speak controls remained visible after client reload. **The edit reply also
+included unrequested verification commentary, so this is not an exact-only
+response-format pass.** No prompt change was made to hide that observation.
+
+The first edited-branch answering request processed 28,242 new tokens and reused
+43,739 cached tokens, with 43.369 s prefill and 32.22 tokens/s decoding. The
+follow-up processed 744 new / 73,302 cached tokens, with 1.467 s prefill and
+32.17 tokens/s decoding. These are provider timings, not complete user-perceived
+latency, and the cold branch remains a performance issue. This is not the final
+controlled baseline/endurance acceptance.
+
+Private evidence: `revision-file-20261021/live-pipeline.json`,
+`request-source-coverage.json`, `ui-acceptance.json`, `worker-build.json`,
+`registration/result.json`, and before/after deployment registries.
+The Discord client file chooser initially stalled; restarting only the client
+recovered it before upload. No duplicate message or command was submitted.
