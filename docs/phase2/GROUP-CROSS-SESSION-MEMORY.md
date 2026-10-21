@@ -1,6 +1,6 @@
 # Shared memory across new conversations
 
-21 October 2026. Native and actual-model qualification passed; not deployed yet.
+21 October 2026. Deployed after native and actual-model qualification. First live recall delivered; repeated live/UI/latency acceptance remains open.
 
 Starting a new conversation in the same audience must preserve provenance-backed
 memory without copying the old transcript into the new conversation. Previously,
@@ -53,8 +53,15 @@ deployment. The next native lifecycle trial exposed the pending-original forgett
 problem above. Successful intermediate extraction is not final acceptance of the
 subsequent lifecycle change.
 
-Live Discord new-session, repeated-turn and restart acceptance, deployment and
-latency qualification remain pending. First-use extraction may add model work;
+Idle deployment and the first real Discord `/new` recall passed: the source
+marker was recorded in the prior conversation, `/new` confirmed a separate
+conversation, and the following question omitted the answer. The correct marker
+and date were committed and delivered to the testing channel. The original
+marker reply and `/new` confirmation were visually observed. Subsequent CUA
+accessibility calls timed out, so final visual, repeated-turn and restart
+acceptance remain pending. The intake-to-final duration was 64.768 seconds
+while 186 previously unindexed originals were being processed. This is not
+acceptable latency or a controlled comparison with the morning baseline. First-use extraction may add model work;
 small fixture timings do not establish latency for a large historical backlog.
 This change does not implement the separate reviewed Host–Discord continuity
 bridge, the remaining memory UI, or complete Phase Two.
