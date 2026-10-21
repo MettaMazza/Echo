@@ -1,0 +1,59 @@
+import "question_store"
+import "question_render"
+
+# Ready metadata is written only after the outbox intent and all controls.
+# The ordinary sender excludes question-page intents, including incomplete ones.
+define discord_question_pages_schema with journal as Int returning Int:
+    if discord_question_schema(journal) is not equal to 0 or else discord_question_controls_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_question_pages(outbox TEXT PRIMARY KEY REFERENCES discord_outbox(identity),question TEXT NOT NULL REFERENCES discord_questions(identity),position INTEGER NOT NULL,UNIQUE(question,position)); CREATE TRIGGER IF NOT EXISTS discord_question_pages_no_update BEFORE UPDATE ON discord_question_pages BEGIN SELECT RAISE(ABORT,'Question page binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_question_pages_no_delete BEFORE DELETE ON discord_question_pages BEGIN SELECT RAISE(ABORT,'Question page persists'); END;")
+
+# Prepare one new page per tick. Crashes between enqueue, control binding and
+# readiness resume the exact same identities; nothing here transmits a message.
+define discord_question_page_prepare with journal as Int and database as Int and run as Str returning Str:
+    if discord_question_pages_schema(journal) is not equal to 0:
+        return "store-failed"
+    set question to discord_question_bind(journal and database and run)
+    if string_length(question) equals 0:
+        return "questions-not-pending"
+    set binding to history_collect_one(checkpoint_prepare(journal and "SELECT request,inbox,actor,channel,guild FROM discord_questions WHERE identity=?1;" and [question]))
+    if not (archive_list_text(binding and 0) equals "found"):
+        return "store-failed"
+    set context to discord_question_context(journal and database and question and archive_list_text(binding and 3) and archive_list_text(binding and 4) and archive_list_text(binding and 5))
+    if not (archive_list_text(context and 0) equals "found"):
+        return archive_list_text(context and 0)
+    set source to archive_read_event(database and archive_list_text(binding and 1))
+    set rows to discord_question_render(question and archive_list_text(source and 3))
+    if length_list(rows) equals 0:
+        return "question-render-failed"
+    set position to 0
+    for each rendered in rows:
+        set row to history_collect_one(checkpoint_prepare(journal and "SELECT json_extract(?1,'$.identity'),json_extract(?1,'$.body'),json_extract(?1,'$.item'),json_extract(?1,'$.choices');" and [ptr_to_str(rendered)]))
+        if not (archive_list_text(row and 0) equals "found"):
+            return "store-failed"
+        set identity to archive_list_text(row and 1)
+        set ready to history_collect_one(checkpoint_prepare(journal and "SELECT outbox FROM discord_question_pages WHERE outbox=?1 AND question=?2 AND position=CAST(?3 AS INTEGER);" and [identity,question,int_to_string(position)]))
+        if archive_list_text(ready and 0) equals "end":
+            set queued to discord_outbox_enqueue(journal and identity and archive_list_text(binding and 2) and archive_list_text(binding and 4) and archive_list_text(row and 2))
+            if not (queued equals "enqueued" or else queued equals "already-enqueued"):
+                return queued
+            set item to string_to_int(archive_list_text(row and 3))
+            set choices to string_to_int(archive_list_text(row and 4))
+            if item equals -1:
+                if string_length(discord_question_control_bind(journal and question and identity and "submit" and -1 and -1)) equals 0:
+                    return "question-control-bind-failed"
+            else if choices >= 0:
+                set choice to 0
+                repeat while choice < choices:
+                    if string_length(discord_question_control_bind(journal and question and identity and "choice" and item and choice)) equals 0:
+                        return "question-control-bind-failed"
+                    set choice to choice + 1
+                if string_length(discord_question_control_bind(journal and question and identity and "other" and item and -1)) equals 0:
+                    return "question-control-bind-failed"
+            if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_question_pages VALUES(?1,?2,CAST(?3 AS INTEGER));" and [identity,question,int_to_string(position)]) and 101) is not equal to 0:
+                return "store-failed"
+            return "question-page-prepared"
+        if not (archive_list_text(ready and 0) equals "found"):
+            return "store-failed"
+        set position to position + 1
+    return "question-pages-ready"

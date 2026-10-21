@@ -94,3 +94,19 @@ archive transaction. Recovery reuses that snapshot and the shared validator's
 request-keyed answer receipt; it cannot silently pick up later draft changes
 or append a second guidance event. A new explicit click is needed after an
 incomplete submission. No answer content is included in status acknowledgements.
+
+Question rendering and preparation (not deployed):
+`question_render.ep` produces deterministic pages with full question and option
+text, numbered answer buttons, Other for every question (including free-text
+questions), and a separate explicit Submit button. Text is split at valid UTF-8
+boundaries into at most 1,800-byte content pages; joining each question's
+content reconstructs the original formatted text exactly. All messages disable
+mention parsing. Controls appear on the last page of each question.
+
+`question_pages.ep` prepares one new page per tick. It retains the outbox intent,
+binds every control, then records readiness. A restart resumes the same page
+and control identities. Question pages are excluded from the ordinary reply
+sender and its ordering barrier; a dedicated pending-question delivery path
+must recheck current source/access and request state before posting. That path,
+scheduler discovery, visible draft updates and actual Discord validation are
+still pending. No question controls are exposed in production.
