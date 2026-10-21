@@ -1,0 +1,84 @@
+import "../web/work_status"
+import "../jobs/schedule_store"
+
+# Human controls use the current account and exact Discord audience. Knowing a
+# schedule ID, linking a Host device or holding admin status does not export it.
+define discord_schedule_scope with database as Int and device as Str and guild as Str and room as Str and session as Str returning Int:
+    return principal_device_active(database and device) equals 1 and also group_session_allows(database and device and session and "discord" and guild and room and 1) equals 1
+
+define discord_schedule_row with database as Int and device as Str and session as Str and identity as Str and after as Int returning List:
+    set values to [session,principal_for_device(database and device)]
+    set query to "SELECT s.identity,s.origin_run,s.instruction,c.status,CAST(c.next_due AS TEXT),CAST(s.interval_ms AS TEXT),s.missed_policy,s.definition_event,s.rowid FROM echo_schedules s JOIN echo_schedule_state c ON c.identity=s.identity JOIN echo_runs r ON r.run=s.origin_run JOIN echo_run_authority a ON a.run=r.run WHERE r.session=?1 AND a.principal=?2"
+    if string_length(identity) > 0:
+        set added to append_list(values and identity)
+        set query to concat(query and " AND s.identity=?3;")
+    else:
+        set added to append_list(values and int_to_string(after))
+        set query to concat(query and " AND s.rowid>CAST(?3 AS INTEGER) ORDER BY s.rowid LIMIT 1;")
+    return history_collect_one(checkpoint_prepare(database and query and values))
+
+# Cancellation only stops future reservations. Existing occurrence runs and
+# their effects retain their original identities and ordinary Cancel controls.
+define discord_schedule_cancel with database as Int and device as Str and guild as Str and room as Str and session as Str and identity as Str and request as Str returning Str:
+    if string_length(request) equals 0 or else string_length(identity) equals 0:
+        return "invalid-arguments"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    if discord_schedule_scope(database and device and guild and room and session) equals 0:
+        return migration_fail(database and "not-authorized")
+    set row to discord_schedule_row(database and device and session and identity and 0)
+    if not (archive_list_text(row and 0) equals "found"):
+        return migration_fail(database and "not-authorized")
+    set event to concat("discord-schedule-cancel:" and request)
+    set payload to concat("{\"schedule\":" and concat(provider_quote(identity) and concat(",\"device\":" and concat(provider_quote(device) and ",\"effects\":\"future-reservations-cancelled-only\"}"))))
+    set prior to archive_read_event(database and event)
+    if prior is not equal to 0:
+        if not (archive_list_text(prior and 0) equals session) or else not (archive_list_text(prior and 2) equals "schedule_cancelled") or else not (archive_list_text(prior and 3) equals payload):
+            return migration_fail(database and "request-conflict")
+        return migration_fail(database and "already-cancelled")
+    if archive_list_text(row and 4) equals "cancelled":
+        return migration_fail(database and "already-cancelled")
+    if archive_append_pending(database and session and event and "schedule_cancelled" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return migration_fail(database and "database-error")
+    set values to [identity,event]
+    if tool_ledger_change(database and "UPDATE echo_schedule_state SET status='cancelled',last_event=?2 WHERE identity=?1 RETURNING identity;" and values) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "database-error")
+    return "cancelled"
+
+define discord_schedule_request with database as Int and device as Str and guild as Str and room as Str and request as Str and arguments as Str returning Str:
+    set fields to provider_json_tokens(arguments)
+    set allowed to ["action","session","schedule","after"]
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else project_object_keys(fields and 0 and allowed) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set action to provider_value(fields and provider_member(fields and 0 and "action"))
+    set session to provider_value(fields and provider_member(fields and 0 and "session"))
+    set identity to provider_value(fields and provider_member(fields and 0 and "schedule"))
+    set after to history_tool_integer(fields and "after")
+    if provider_member(fields and 0 and "after") < 0:
+        set after to 0
+    if not (action equals "list" or else action equals "inspect" or else action equals "occurrences" or else action equals "cancel") or else after < 0 or else not (provider_kind(fields and provider_member(fields and 0 and "session")) equals "string") or else (not (action equals "list") and (not (provider_kind(fields and provider_member(fields and 0 and "schedule")) equals "string") or else string_length(identity) equals 0)):
+        return "{\"status\":\"invalid-arguments\"}"
+    if action equals "cancel":
+        set result to discord_schedule_cancel(database and device and guild and room and session and identity and request)
+        if result equals "cancelled" or else result equals "already-cancelled":
+            return concat("{\"status\":" and concat(provider_quote(result) and ",\"effect\":\"Only future reservations are cancelled; existing occurrence runs are unchanged.\"}"))
+        return concat("{\"status\":" and concat(provider_quote(result) and "}"))
+    if sql_execute(database and "SAVEPOINT discord_schedule_read;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    set result to "{\"status\":\"not-authorized\"}"
+    if discord_schedule_scope(database and device and guild and room and session) equals 1:
+        if action equals "list":
+            set identity to ""
+        set row to discord_schedule_row(database and device and session and identity and after)
+        set keys to ["identity","run","instruction","state","next_due","interval_ms","missed_policy","definition_event","next_after"]
+        set result to history_tool_row(row and keys)
+        if action equals "occurrences" and archive_list_text(row and 0) equals "found":
+            set values to [identity,int_to_string(after)]
+            set occurrence to history_collect_one(checkpoint_prepare(database and "SELECT o.identity,CAST(o.scheduled_for AS TEXT),CAST(o.missed_intervals AS TEXT),o.origin_event,COALESCE(r.state,'reserved'),COALESCE(r.last_event,''),o.rowid FROM echo_schedule_occurrences o LEFT JOIN echo_runs r ON r.run=o.identity WHERE o.schedule=?1 AND o.rowid>CAST(?2 AS INTEGER) ORDER BY o.rowid LIMIT 1;" and values))
+            set keys to ["run","scheduled_for","missed_intervals","origin_event","state","last_event","next_after"]
+            set result to history_tool_row(occurrence and keys)
+    if sql_execute(database and "RELEASE discord_schedule_read;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK TO discord_schedule_read;")
+        set ignored to sql_execute(database and "RELEASE discord_schedule_read;")
+        return "{\"status\":\"database-error\"}"
+    return result

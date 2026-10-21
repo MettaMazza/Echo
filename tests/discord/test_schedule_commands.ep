@@ -1,0 +1,85 @@
+import "../../app/discord/schedule_delivery"
+import "../../app/discord/command_registration"
+import "../../app/security/group_session_selection"
+import "../../app/web/uploads"
+
+# Native authenticated intake fixture; no network or live account is involved.
+define schedule_command_fixture with journal as Int and identity as Str and arguments as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT json_group_array(json_object('type',3,'name',key,'value',value)) FROM json_each(?1);" and [arguments]))
+    set options to archive_list_text(row and 1)
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT json_object('id',?1,'type',2,'application_id','900','guild_id','200','channel_id','300','member',json('{\"user\":{\"id\":\"400\"}}'),'data',json_object('type',1,'id','805','name','schedules','options',json(?2)));" and [identity,options]))
+    set body to archive_list_text(source and 1)
+    set inbox to concat("interaction:" and identity)
+    if not (discord_inbox_record(journal and inbox and "INTERACTION_CREATE" and body) equals "recorded"):
+        return ""
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_interaction_jobs VALUES(?1,'acknowledged',CAST(?2 AS INTEGER),'fixture');" and [inbox,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return ""
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_interaction_credentials VALUES(?1,'synthetic_attachment_credential_1234','fixture',CAST(?2 AS INTEGER),CAST(?2 AS INTEGER)+900000);" and [inbox,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+        return ""
+    return body
+
+define schedule_command_run with journal as Int and database as Int and identity as Str and arguments as Str returning Str:
+    set body to schedule_command_fixture(journal and identity and arguments)
+    set guilds to ["200"]
+    set admins to create_list()
+    set result to discord_schedule_prepare(journal and database and concat("interaction:" and identity) and body and "900" and guilds and admins)
+    if archive_list_text(result and 0) equals "found":
+        return archive_list_text(result and 1)
+    return concat("{\"status\":" and concat(provider_quote(archive_list_text(result and 0)) and "}"))
+
+define schedule_command_field with result as Str and name as Str returning Str:
+    set tokens to provider_json_tokens(result)
+    return provider_value(tokens and provider_member(tokens and 0 and name))
+
+define main returning Int:
+    if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    set database to discord_agent_open(get_argument(2) and "900")
+    if journal equals 0 or else database equals 0 or else discord_interaction_schema(journal) is not equal to 0 or else not (schedule_schema(database) equals "applied") :
+        return 2
+    set definition to discord_control_command_definition("schedules")
+    if discord_control_command_matches(definition and "schedules") is not equal to 1 or else discord_control_command_matches(string_replace(definition and "\"type\":3" and "\"type\":4") and "schedules") is not equal to 0 or else discord_control_command_matches(string_replace(definition and "\"value\":\"cancel\"" and "\"value\":\"erase\"") and "schedules") is not equal to 0:
+        return 3
+    if not (discord_command_observe(journal and "{\"id\":\"805\",\"type\":1,\"application_id\":\"900\",\"guild_id\":\"200\",\"name\":\"schedules\"}" and "900" and "200") equals "registered"):
+        return 4
+    set device to discord_agent_principal(database and "400" and create_list())
+    set first to channel_silo_submit(database and device and "discord" and "200" and "300" and "schedule-first" and "Schedule test" and create_list())
+    set session to archive_list_text(first and 1)
+    if not (archive_list_text(first and 0) equals "accepted"):
+        return 5
+    if archive_append(database and session and "schedule-call" and "tool_call" and "{\"run_id\":\"schedule-first\",\"call_id\":\"schedule\",\"name\":\"schedule_fixture\",\"arguments\":\"{}\"}" and "fixture") is not equal to 0 or else tool_ledger_queue(database and "schedule-first" and "schedule" and session and "schedule-call") is not equal to 0 or else not (schedule_create(database and "schedule-first" and "schedule" and "Schedule command original" and 1000 and 1000 and "coalesce") equals "created"):
+        return 6
+    set list_args to concat("{\"action\":\"list\",\"session\":" and concat(provider_quote(session) and ",\"after\":\"0\"}"))
+    set listing to schedule_command_run(journal and database and "701" and list_args)
+    if string_contains(listing and "Schedule command original") equals 0:
+        display listing
+        return 7
+    set cancel_args to concat("{\"action\":\"cancel\",\"session\":" and concat(provider_quote(session) and ",\"schedule\":\"schedule-first:schedule:schedule\"}"))
+    set cancelled to schedule_command_run(journal and database and "702" and cancel_args)
+    if not (schedule_command_field(cancelled and "status") equals "cancelled"):
+        display cancelled
+        return 8
+    set source to history_collect_one(archive_prepare(journal and "SELECT payload FROM discord_inbox WHERE identity='interaction:702';"))
+    set body to archive_list_text(source and 1)
+    set guilds to ["200"]
+    set admins to create_list()
+    set replay to discord_schedule_prepare(journal and database and "interaction:702" and body and "900" and guilds and admins)
+    if not (archive_list_text(replay and 1) equals cancelled):
+        return 9
+    set forged to string_replace(body and "400" and "401")
+    if not (archive_list_text(discord_schedule_prepare(journal and database and "interaction:702" and forged and "900" and guilds and admins) and 0) equals "schedule-not-authorized"):
+        return 10
+    set bad to schedule_command_fixture(journal and "703" and string_replace(list_args and "\"0\"" and "\"-1\""))
+    if string_length(discord_schedule_command_options(bad)) is not equal to 0:
+        return 11
+    set closed to sql_close(database)
+    set database to discord_agent_open(get_argument(2) and "900")
+    set replay to discord_schedule_prepare(journal and database and "interaction:702" and body and "900" and guilds and admins)
+    if not (archive_list_text(replay and 1) equals cancelled):
+        return 12
+    if web_device_revoke(database and device) is not equal to 0 or else not (archive_list_text(discord_schedule_prepare(journal and database and "interaction:702" and body and "900" and guilds and admins) and 0) equals "schedule-not-authorized"):
+        return 13
+    display "PASS: schedule registration, option validation, exact interaction binding, owner list/cancel, frozen replay, spoof refusal, restart and revoked cached-response refusal."
+    set closed to sql_close(database)
+    return sql_close(journal)
