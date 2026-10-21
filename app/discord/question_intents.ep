@@ -1,0 +1,44 @@
+import "question_store"
+import "delivery"
+
+# This binding precedes outbox enqueue, so even a crash before ready metadata
+# leaves a question-owned intent. No model-controlled destination is accepted.
+define discord_question_intents_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_question_intents(outbox TEXT PRIMARY KEY,question TEXT NOT NULL REFERENCES discord_questions(identity),position INTEGER NOT NULL,body_hash TEXT NOT NULL,next_ms INTEGER NOT NULL DEFAULT 0,UNIQUE(question,position)); CREATE TRIGGER IF NOT EXISTS discord_question_intents_binding BEFORE UPDATE OF outbox,question,position,body_hash ON discord_question_intents BEGIN SELECT RAISE(ABORT,'Question intent is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_question_intents_retained BEFORE DELETE ON discord_question_intents BEGIN SELECT RAISE(ABORT,'Question intent persists'); END;")
+
+define discord_question_intent with journal as Int and identity as Str and question as Str and position as Int and body as Str returning Str:
+    if discord_question_intents_schema(journal) is not equal to 0 or else position < 0 or else provider_json_tokens(body) equals 0:
+        return "question-intent-invalid"
+    set values to [identity,question,int_to_string(position),ep_sha256(body)]
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_question_intents(outbox,question,position,body_hash) VALUES(?1,?2,CAST(?3 AS INTEGER),?4);" and values) and 101) is not equal to 0:
+        return "question-intent-failed"
+    set same to history_collect_one(checkpoint_prepare(journal and "SELECT outbox FROM discord_question_intents WHERE outbox=?1 AND question=?2 AND position=CAST(?3 AS INTEGER) AND body_hash=?4;" and values))
+    if not (archive_list_text(same and 0) equals "found"):
+        return "question-intent-conflict"
+    return "question-intent-recorded"
+
+# Only pending unready rows can be withdrawn. Sending/uncertain rows retain
+# their existing delivery reconciliation, and no network call is made here.
+define discord_question_orphan_tick with journal as Int and database as Int returning Str:
+    if discord_question_intents_schema(journal) is not equal to 0 or else discord_delivery_schema(journal) is not equal to 0:
+        return "store-failed"
+    set now to ep_time_now_ms()
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT i.outbox,q.identity,q.actor,q.channel,q.guild,i.body_hash,o.body FROM discord_question_intents i JOIN discord_questions q ON q.identity=i.question JOIN discord_outbox o ON o.identity=i.outbox AND o.inbox=q.inbox AND o.channel=q.channel WHERE o.state='pending' AND i.next_ms<=CAST(?1 AS INTEGER) AND NOT EXISTS(SELECT 1 FROM discord_question_pages p WHERE p.outbox=i.outbox) ORDER BY i.next_ms,i.rowid LIMIT 1;" and [int_to_string(now)]))
+    if archive_list_text(row and 0) equals "end":
+        return "question-orphans-idle"
+    if not (archive_list_text(row and 0) equals "found") or else not (ep_sha256(archive_list_text(row and 7)) equals archive_list_text(row and 6)):
+        return "question-orphan-binding-denied"
+    set identity to archive_list_text(row and 1)
+    set current to discord_question_context(journal and database and archive_list_text(row and 2) and archive_list_text(row and 3) and archive_list_text(row and 4) and archive_list_text(row and 5))
+    set status to archive_list_text(current and 0)
+    if not (status equals "question-no-longer-pending" or else status equals "question-authority-denied"):
+        if archive_finish(checkpoint_prepare(journal and "UPDATE discord_question_intents SET next_ms=CAST(?2 AS INTEGER) WHERE outbox=?1;" and [identity,int_to_string(now + 30000)]) and 101) is not equal to 0:
+            return "store-failed"
+        return "question-orphan-awaiting-preparation"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "store-failed"
+    set values to [identity,status,int_to_string(now)]
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_delivery_events(identity,attempt,state,detail,observed_ms) SELECT identity,attempt,'rejected',?2,CAST(?3 AS INTEGER) FROM discord_outbox WHERE identity=?1 AND state='pending' AND NOT EXISTS(SELECT 1 FROM discord_question_pages p WHERE p.outbox=?1);" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "UPDATE discord_outbox SET state='rejected' WHERE identity=?1 AND state='pending' AND NOT EXISTS(SELECT 1 FROM discord_question_pages p WHERE p.outbox=?1);" and [identity]) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return "store-failed"
+    return "question-orphan-withdrawn"

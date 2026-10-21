@@ -162,3 +162,23 @@ Question pages explicitly reply to the source message, with mentions disabled.
 This source integration is not yet production or live Discord acceptance.
 The admin `/auto` positive interaction remains deferred by Maria. Question
 workflow live acceptance and restart/fault coverage remain open.
+
+First-choice defaults are now seeded as drafts when the actual pending request
+is bound. Rebinding uses insert-if-absent and preserves explicit choices and
+Other text. This appends neither an answer event nor guidance. The initial
+renderer highlights Answer 1 and explains explicit submission. Submit starts
+disabled when the batch contains an unanswered free-text question. The later
+projection continues to reflect actual saved drafts rather than resetting them.
+
+Observed view receipts are immutable and survive restart. Repeated observation
+of the same view has one receipt. A delayed response for an older view cannot
+confirm a newer desired view; the applied hash continues to name what was
+actually observed. Full uncertain-network and live Discord checks remain open.
+
+Preparation now records an immutable question/page/body-hash intent before
+outbox enqueue. If interrupted before control readiness, a later tick can still
+identify the owning question. Pending unready pages are withdrawn with one
+retained rejection receipt after cancellation or loss of authority. Ready,
+sending and uncertain pages are excluded from this cleanup. Existing delivery
+reconciliation remains responsible for uncertain sends. Repeated cleanup does
+not create a second receipt or transmit anything.
