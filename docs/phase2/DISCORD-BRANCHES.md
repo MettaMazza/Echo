@@ -123,3 +123,18 @@ parent turn used 1.273 s (578 new tokens). The branched turn also ran a separate
 10.234 s prefill / 27.580 s decode extraction request, then a 0.994 s prefill
 answering request. These are observed component timings, not whole-message
 latency or proof that the morning baseline has been restored.
+
+### Boundary repair qualification (not redeployed)
+
+Automatic source selection, extraction reads and recalled claims now use the
+verified recursive branch ancestry boundary, including omitted edit/regenerate
+user events. Explicit audience-authorized original retrieval remains separate.
+The final expanded native fixture passes both positive prior-source/claim access
+and negative later-parent extraction/recall checks: `memory-boundary-r4-1792601342448747000`,
+9.061 s, SHA-256 `93a58806bc0eac5a54990ef8fa473cfbce4252be41150ccfbcc6bcad63aecbea`.
+The cross-conversation regression also passes: `cross-memory-1792601287980217000`,
+7.805 s, SHA-256 `53d4a1f7310cedb89324994b83ffa80d95cc7f422fe83ace07ad7e534fcd191b`.
+Earlier r2 stopped on an invalid test evidence-category argument; r3 passed the
+negative checks before the positive cases were added. All evidence is retained.
+Actual model/Discord requalification is still pending; production remains the
+qualified rollback, not this repaired candidate.
