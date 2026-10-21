@@ -1,0 +1,88 @@
+import "message_moderation_options"
+import "pin_tool"
+
+define discord_message_moderation_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    set options to discord_message_moderation_options(arguments)
+    if not (archive_list_text(options and 0) equals "valid"):
+        return discord_pin_result(archive_list_text(options and 0) and "none" and "")
+    if tool_policy_allows(database and run and call_id and "discord_moderate_message") equals 0:
+        return discord_pin_result("not-authorized" and "none" and "")
+    if not ((get_argument_count() equals 15 and also get_argument(13) equals "--turn") or else (get_argument_count() equals 16 and also get_argument(13) equals "--job")):
+        return discord_pin_result("discord-runtime-unavailable" and "none" and "")
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals get_argument(7)) or else not (archive_list_text(location and 1) equals get_argument(4)):
+        return discord_pin_result("discord-binding-denied" and "none" and "")
+    set journal to discord_store_open(get_argument(3) and get_argument(7))
+    if journal equals 0:
+        return discord_pin_result("discord-journal-unavailable" and "none" and "")
+    set source to discord_run_source(journal and database and run)
+    if not (archive_list_text(source and 0) equals "found"):
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-origin-denied" and "none" and "")
+    set credential to read_file(get_argument(2))
+    if credential equals 0:
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-credential-unavailable" and "none" and "")
+    set guilds to string_split(get_argument(8) and ",")
+    set admins to string_split(get_argument(9) and ",")
+    set result to discord_message_moderation_perform(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and database and run and call_id and source and options and get_argument(7) and guilds and admins and get_argument(5) and get_argument(6))
+    set closed to sql_close(journal)
+    return result
+
+# A Discord administrator may moderate public channel messages without gaining
+# private host-tool access. Both frozen/current call authority must still hold.
+define discord_message_moderation_perform with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and options as List and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if discord_pin_admin(database and run and call_id) equals 0:
+        return "{\"status\":\"admin-required\",\"cause\":\"requester-role-required\",\"restriction_scope\":\"requester\",\"required_role\":\"admin\",\"system_failure\":false,\"effects\":\"none\",\"explanation\":\"This requester is not a configured Discord admin. Message moderation is available to authorised admins.\"}"
+    set actor to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    set operation to archive_list_text(options and 1)
+    set message to archive_list_text(options and 2)
+    if string_length(guild) equals 0 or else discord_contains(guilds and guild) equals 0 or else discord_contains(admins and actor) equals 0:
+        return discord_pin_result("discord-origin-denied" and "none" and "")
+    if file_exists(stop_file) or else tool_policy_allows(database and run and call_id and "discord_moderate_message") equals 0:
+        return discord_pin_result("not-authorized-or-stopped" and "none" and "")
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 13)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_pin_result(concat("discord-access:" and archive_list_text(access and 0)) and "none; requester and bot require MANAGE_MESSAGES" and "")
+    set inbox to discord_job_origin(journal and database and run)
+    set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if not (current equals "current"):
+        return discord_pin_result(current and "none" and "")
+    set route to concat("/channels/" and concat(room and concat("/messages/" and message)))
+    set fetched to discord_access_get(library and token and journal and directory_path and route and "GET:moderation-message" and room)
+    if archive_list_text(fetched and 0) equals "http-404":
+        return discord_pin_result("message-not-found" and "none; absent at this observation, not proof of who deleted it" and archive_list_text(fetched and 1))
+    if not (archive_list_text(fetched and 0) equals "observed"):
+        return discord_pin_result(archive_list_text(fetched and 0) and "none" and archive_list_text(fetched and 1))
+    set body to archive_list_text(fetched and 1)
+    set receipt to archive_list_text(fetched and 3)
+    set view to discord_message_moderation_view(body and room and message)
+    if string_length(view) equals 0:
+        return discord_pin_result("invalid-message-identity" and "none" and receipt)
+    if not (operation equals "inspect") and not (ep_sha256(body) equals archive_list_text(options and 6)):
+        return discord_pin_result("message-changed" and "none; inspect the current message before deciding on a fresh action" and receipt)
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 13)
+    if not (archive_list_text(access and 0) equals "allowed") or else file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else tool_policy_allows(database and run and call_id and "discord_moderate_message") equals 0 or else not (discord_job_origin(journal and database and run) equals inbox) or else discord_turn_barrier(journal and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
+        return discord_pin_result("authority-source-or-permission-changed" and "none" and receipt)
+    if operation equals "inspect":
+        set prefix to substring(view and 0 and string_length(view) - 1)
+        return concat(prefix and concat(",\"receipt\":" and concat(provider_quote(receipt) and "}")))
+    if operation equals "clear_reactions":
+        set route to concat(route and "/reactions")
+    else if operation equals "clear_emoji" or else operation equals "remove_user_reaction":
+        set route to concat(route and concat("/reactions/" and archive_list_text(options and 4)))
+        if operation equals "remove_user_reaction":
+            set route to concat(route and concat("/" and archive_list_text(options and 5)))
+    set reason to archive_list_text(options and 3)
+    # Discord documents audit headers for message deletion. Reaction moderation
+    # retains its reason in the immutable tool request, without claiming an audit event.
+    set audit to ""
+    if operation equals "delete":
+        set audit to reason
+    set result to discord_access_bytes_audit(library and token and journal and directory_path and "DELETE" and route and concat("DELETE:moderation:" and operation) and room and str_to_ptr("") and 0 and "application/json" and audit)
+    if not (archive_list_text(result and 0) equals "observed"):
+        return discord_pin_result(concat("moderation-unconfirmed:" and archive_list_text(result and 0)) and "not established; inspect current state before any retry; no automatic replay" and archive_list_text(result and 1))
+    return discord_pin_result("applied" and concat(operation and "; original tool request and REST evidence retained") and archive_list_text(result and 3))

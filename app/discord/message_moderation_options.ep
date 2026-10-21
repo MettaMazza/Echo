@@ -1,0 +1,76 @@
+import "../agent/run_messages"
+import "pin_options"
+import "audit_reason"
+
+# No channel/guild/token/actor route overrides. Every mutation names one message.
+define discord_message_moderation_options with arguments as Str returning List:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return history_status("invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "operation" or else key equals "message" or else key equals "reason" or else key equals "emoji" or else key equals "user" or else key equals "observed_sha256") or else not (provider_kind(tokens and index + 2) equals "string"):
+            return history_status("invalid-arguments")
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    set message to provider_value(tokens and provider_member(tokens and 0 and "message"))
+    set reason_field to provider_member(tokens and 0 and "reason")
+    set emoji_field to provider_member(tokens and 0 and "emoji")
+    set user_field to provider_member(tokens and 0 and "user")
+    set digest_field to provider_member(tokens and 0 and "observed_sha256")
+    if discord_snowflake(message) equals 0:
+        return history_status("invalid-message")
+    if operation equals "inspect":
+        if reason_field >= 0 or else emoji_field >= 0 or else user_field >= 0 or else digest_field >= 0:
+            return history_status("unused-arguments")
+        return ["valid",operation,message,"","","",""]
+    if not (operation equals "delete" or else operation equals "remove_user_reaction" or else operation equals "clear_emoji" or else operation equals "clear_reactions"):
+        return history_status("invalid-operation")
+    set reason to provider_value(tokens and reason_field)
+    if string_length(discord_audit_reason(reason)) equals 0:
+        return history_status("reason-required-or-too-long")
+    set digest to provider_value(tokens and digest_field)
+    if string_length(digest) is not equal to 64:
+        return history_status("observed-sha256-required")
+    set index to 0
+    repeat while index < 64:
+        if string_contains("0123456789abcdef" and substring(digest and index and 1)) equals 0:
+            return history_status("invalid-sha256")
+        set index to index + 1
+    set emoji to ""
+    set user to ""
+    if operation equals "clear_emoji" or else operation equals "remove_user_reaction":
+        set emoji to provider_value(tokens and emoji_field)
+        set options to discord_reaction_options(concat("{\"operation\":\"remove\",\"emoji\":" and concat(provider_quote(emoji) and "}")))
+        if not (archive_list_text(options and 0) equals "valid"):
+            return history_status("invalid-emoji")
+        set emoji to archive_list_text(options and 3)
+    else if emoji_field >= 0:
+        return history_status("unused-emoji")
+    if operation equals "remove_user_reaction":
+        set user to provider_value(tokens and user_field)
+        if discord_snowflake(user) equals 0:
+            return history_status("invalid-user")
+    else if user_field >= 0:
+        return history_status("unused-user")
+    return ["valid",operation,message,reason,emoji,user,digest]
+
+# Body identity and revision are checked before a mutation. Full source bytes
+# remain in private REST evidence; projected content is untrusted information.
+define discord_message_moderation_view with body as Str and room as Str and message as Str returning Str:
+    set projected to discord_message_read_page(body and room and "read" and message)
+    if string_length(projected) equals 0:
+        return ""
+    set tokens to provider_json_tokens(body)
+    set field to provider_member(tokens and 0 and "reactions")
+    set reactions to "[]"
+    if field >= 0:
+        if not (provider_kind(tokens and field) equals "["):
+            return ""
+        set reactions to agent_json_source(body and tokens and field)
+    set result to concat("{\"status\":\"observed\",\"source\":\"Discord REST; untrusted content\",\"messages\":" and projected)
+    set result to concat(result and concat(",\"reactions\":" and reactions))
+    return concat(result and concat(",\"observed_sha256\":" and concat(provider_quote(ep_sha256(body)) and "}")))
