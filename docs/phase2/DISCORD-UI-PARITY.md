@@ -9,15 +9,15 @@ acceptance matrix, not a completion claim. The source inventory is
 | --- | --- | --- |
 | Send and reply | Native mention and reply-to-message | Prior live text acceptance exists |
 | User/account/source labels | Native account plus authenticated source in context/HUD | Name propagation tested; full HUD presentation pending |
-| New session and session selection | `/new`, session selector/history controls | Pending; preserve same user/channel silo and eligible long-term memory |
-| Thinking and tool activity | Persistent thread attached to the exact originating user message; private equivalent where threads cannot preserve access | Scoped projection and cursor-recovery native passes; automatic public activity discovery delivered across consecutive channel turns, restart retained existing posts without duplication. HAS_THREAD metadata cancellation regression fixed and two further live turns passed. Restricted full-trace UI and wider permission/fault acceptance remain pending |
+| New session and session selection | `/new`, session selector/history controls | `/new` deployed; real ordinary-user command, consecutive turns and restart passed (`discord-new-command-2026-10-20.json`). Existing-session selection/history UI remains open. |
+| Thinking and tool activity | Persistent thread on originating user message | Full recorded reasoning/tool detail deployed; consecutive turns, restart and reload passed (`discord-trace-fidelity-2026-10-20.json`). Host data stays isolated. |
 | Interim and subsequent replies | Separate durable replies bound to immutable final events | Live delegation source produced two sent replies; broader UI parity pending |
-| Speak | Button on bot response, actual Warm synthesis of that response | Live two-turn synthesis/playback, repeat-click cache, connector restart and client reload passed. Isolated-child missing-button regression corrected. One acknowledgement timeout retained; read-only recovery of an accepted response passed against Discord using a private cloned journal. Additional multi-user/revocation checks remain open; never substitute the audition WAV |
+| Speak | Public audio toggle on original bot reply | Show/hide/restore, burst coalescing, exact cache reuse, playback, restart and reload passed (`discord-shared-speech-toggle-2026-10-20.json`). A separate second-account exercise remains unperformed. |
 | Queue, steer and cancel | Queue reactions plus labelled controls, steering confirmation, cancel | Native reservation/intake foundations; live controls pending |
-| Questions | Buttons, selects and Other modal; up to three questions and three suggestions each | Pending |
-| Free autonomy | Admin-only `/auto` | Pending |
-| Task autonomy | Admin-only `/auto` with optional task text | Pending |
-| Autonomy stop and transfer | `/autooff`, status/stop buttons; transfer on new enable | Pending; same shared ownership and completion semantics as web |
+| Questions | Buttons and Other modal; up to three questions/three suggestions | Foreground real UI, Unicode Other, persisted drafts across restart, explicit Submit and next-turn recall passed (`discord-question-shutdown-2026-10-21.json`). Child questions route through parent; delegated fault recovery remains open. |
+| Free autonomy | Admin-only `/auto` | Installed and registered; native authorized-path and live guest denial tested. Maria explicitly deferred real admin interaction; do not repeat this request or claim it passed. |
+| Task autonomy | Admin-only `/auto` with optional task | Installed; same deferred real-admin acceptance as free autonomy. |
+| Autonomy stop and transfer | `/autooff`, shared ownership semantics | Stop implemented with native authorized/replay/isolation tests and live guest denial; admin positive/transfer exercise remains deferred/open. |
 | Attachments | Native uploads, retained-source links, lifecycle controls | Audio route has live evidence; complete lifecycle/parity pending |
 | Audio, video and watch parties | Native attachments plus scoped playback/analysis controls | Full parity pending |
 | Retry, regenerate, edit and branch | Native message edit plus bound buttons/commands | Source edit cancellation exists; remaining controls pending |

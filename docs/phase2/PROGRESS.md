@@ -1,3 +1,15 @@
+# Current closeout — 21 October 2026
+
+The original 32 steps and D01–D20 remain the completion contract. The 18 October records below are historical: their Discord “not integrated” statements are superseded by the actual 1.75 receipts. Do not repeat passed work merely because an older table says pending.
+
+Discord now has live mention/reply, authenticated identity, separate scopes, Thinking audio routing, full source-attached activity threads, persistent replies, public cached Warm Speak toggles, `/new`, queue/steering controls, execution tools and foreground question forms. See the updated [UI parity matrix](DISCORD-UI-PARITY.md) and the bounded receipts in `docs/releases/1.75/`. `/auto` is installed; Maria's real-admin positive exercise is explicitly deferred. These facts do not close the remaining Discord interface, group/admin operation catalogue or complete Phase Two.
+
+Current repair closed: concurrent tool discovery memory safety. Native and AddressSanitizer repeat tests passed after rooting intermediate values; full worker is deployed to the isolated testing connector and two actual consecutive discovery turns passed, including prior-turn recall. Earlier failed child state is retained without replay. See `discord-discovery-memory-2026-10-21.json` for exact acceptance scope.
+
+Closeout order: finish the current live regression once, then remaining required Discord UI/continuity/group/admin operations; proceed through the original remaining integrations (mail, generated-tool lifecycle, protected improvement, primary-model research/training/promotion, optional provider isolation), final lifecycle/integrated acceptance, joint prompt review and publication. No optional polish or new gates are added. Existing passed evidence is reused. Human-only steps remain named dependencies rather than fabricated passes.
+
+---
+
 # Phase Two progress — Echo 1.5, 18 October 2026
 
 ## Live delegation repair — 18 October 2026
