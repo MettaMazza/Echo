@@ -1,0 +1,123 @@
+import "command_authority"
+import "agent_bridge"
+import "access"
+import "interaction_recovery"
+import "../security/group_session_selection"
+import "../web/export"
+
+# An ancestor chain must stay inside the same channel silo and audience.
+# Device ownership of some other conversation is not sufficient for export here.
+define discord_export_chains_allowed with database as Int and payload as Str and group_id as Str and revision as Str returning Int:
+    set tokens to provider_json_tokens(payload)
+    if tokens equals 0:
+        return 0
+    set chains to provider_items(tokens and provider_member(tokens and 0 and "chains"))
+    if provider_value(tokens and provider_member(tokens and 0 and "format")) equals "echo-session-events-v1":
+        set chains to [0]
+    if length_list(chains) equals 0:
+        return 0
+    for each item in chains:
+        set session to provider_value(tokens and provider_member(tokens and item and "session"))
+        set allowed to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_group_sessions WHERE session=?1 AND group_id=?2 AND revision=CAST(?3 AS INTEGER);" and [session,group_id,revision]))
+        if not (archive_list_text(allowed and 0) equals "found"):
+            return 0
+    return 1
+
+# A frozen verified export is bound to the authenticated interaction, never to
+# a user-supplied path. Retrying sends the same snapshot, not a newer archive.
+define discord_export_prepare with journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List returning List:
+    if discord_command_acknowledged(journal and identity and body) equals 0 or else not (discord_interaction_visibility_read(journal and identity and body) equals "private"):
+        return history_status("export-not-authorized")
+    set command to discord_command_resolve(journal and body and bot and guilds and admins)
+    if not (archive_list_text(command and 0) equals "command-bound-needs-live-access") or else not (archive_list_text(command and 1) equals "export"):
+        return history_status("export-not-authorized")
+    set device to discord_agent_principal(database and archive_list_text(command and 2) and admins)
+    set room to archive_list_text(command and 3)
+    set guild to archive_list_text(command and 4)
+    set session to archive_list_text(command and 5)
+    set group_id to channel_silo_identity("discord" and guild and room and principal_for_device(database and device))
+    set target to history_collect_one(checkpoint_prepare(database and "SELECT s.revision FROM echo_group_sessions s WHERE s.group_id=?1 AND s.session=?2 AND s.revision=(SELECT MAX(revision) FROM echo_group_membership WHERE group_id=s.group_id) AND NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=s.session);" and [group_id,session]))
+    if not (archive_list_text(target and 0) equals "found") or else group_audience_allows(database and device and group_id and "discord" and guild and room and string_to_int(archive_list_text(target and 1)) and 1) equals 0:
+        return history_status("export-not-authorized")
+    if sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_conversation_exports(identity TEXT PRIMARY KEY REFERENCES discord_inbox(identity),intake_digest TEXT NOT NULL,session TEXT NOT NULL,payload TEXT NOT NULL,digest TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_export_no_update BEFORE UPDATE ON discord_conversation_exports BEGIN SELECT RAISE(ABORT,'Export snapshot is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_export_no_delete BEFORE DELETE ON discord_conversation_exports BEGIN SELECT RAISE(ABORT,'Export provenance persists'); END;") is not equal to 0:
+        return history_status("store-failed")
+    set old to history_collect_one(checkpoint_prepare(journal and "SELECT payload,digest,intake_digest,session FROM discord_conversation_exports WHERE identity=?1;" and [identity]))
+    if archive_list_text(old and 0) equals "found":
+        if not (archive_list_text(old and 3) equals ep_sha256(body)) or else not (archive_list_text(old and 4) equals session) or else not (ep_sha256(archive_list_text(old and 1)) equals archive_list_text(old and 2)):
+            return history_status("export-not-authorized")
+        if discord_export_chains_allowed(database and archive_list_text(old and 1) and group_id and archive_list_text(target and 1)) equals 0:
+            return history_status("export-not-authorized")
+        return old
+    if not (archive_list_text(old and 0) equals "end"):
+        return history_status("store-failed")
+    set exported to web_session_export(database and device and session)
+    set tokens to provider_json_tokens(exported)
+    if tokens equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "status")) equals "found") or else archive_export_verify(exported and "") is not equal to 0:
+        return history_status("export-verification-failed")
+    if group_audience_allows(database and device and group_id and "discord" and guild and room and string_to_int(archive_list_text(target and 1)) and 1) equals 0 or else discord_command_acknowledged(journal and identity and body) equals 0:
+        return history_status("export-not-authorized")
+    if discord_export_chains_allowed(database and exported and group_id and archive_list_text(target and 1)) equals 0:
+        return history_status("export-not-authorized")
+    set digest to ep_sha256(exported)
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_conversation_exports VALUES(?1,?2,?3,?4,?5);" and [identity,ep_sha256(body),session,exported,digest]) and 101) is not equal to 0:
+        return history_status("store-failed")
+    return discord_export_prepare(journal and database and identity and body and bot and guilds and admins)
+
+# PATCH the token-bound private original, with a content-addressed filename.
+# An uncertain transfer is inspected before retry; no follow-up POST can duplicate it.
+define discord_export_deliver with library as Str and token as Str and journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    set prepared to discord_export_prepare(journal and database and identity and body and bot and guilds and admins)
+    if not (archive_list_text(prepared and 0) equals "found"):
+        return archive_list_text(prepared and 0)
+    set command to discord_command_resolve(journal and body and bot and guilds and admins)
+    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(command and 4) and archive_list_text(command and 3) and archive_list_text(command and 2) and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return "export-not-authorized"
+    set credential to history_collect_one(checkpoint_prepare(journal and "SELECT credential FROM discord_interaction_credentials WHERE identity=?1 AND expires_ms>CAST(?2 AS INTEGER);" and [identity,int_to_string(ep_time_now_ms())]))
+    if not (archive_list_text(credential and 0) equals "found") or else discord_interaction_credential_valid(archive_list_text(credential and 1)) equals 0:
+        return "response-expired"
+    set route to concat("/webhooks/" and concat(bot and concat("/" and concat(archive_list_text(credential and 1) and "/messages/@original"))))
+    set observed to discord_access_get(library and token and journal and directory_path and route and "GET:export-original" and identity)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return archive_list_text(observed and 0)
+    if discord_interaction_original_matches(archive_list_text(observed and 1) and bot and archive_list_text(command and 3)) equals 0:
+        return "export-not-authorized"
+    set exported to archive_list_text(prepared and 1)
+    set digest to archive_list_text(prepared and 2)
+    set filename to concat("Echo-conversation-" and concat(digest and ".json"))
+    set response to provider_json_tokens(archive_list_text(observed and 1))
+    for each item in provider_items(response and provider_member(response and 0 and "attachments")):
+        if provider_value(response and provider_member(response and item and "filename")) equals filename and provider_value(response and provider_member(response and item and "size")) equals int_to_string(string_length(exported)):
+            return "export-delivered"
+    set envelope to provider_json_tokens(body)
+    set limit to 10485760
+    set reported to http_decimal(provider_value(envelope and provider_member(envelope and 0 and "attachment_size_limit")))
+    if reported > 0 and reported <= 4294967295:
+        set limit to reported
+    if string_length(exported) > limit:
+        return "export-too-large"
+    set caption to concat("Verified conversation archive. SHA-256: " and digest)
+    set payload to concat("{\"content\":" and concat(provider_quote(caption) and concat(",\"allowed_mentions\":{\"parse\":[]},\"attachments\":[{\"id\":0,\"filename\":" and concat(provider_quote(filename) and "}]}"))))
+    set boundary to concat("EchoExport" and ptr_to_str(ep_uuid_v4()))
+    set multipart to concat("--" and concat(boundary and concat("\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n" and payload)))
+    set multipart to concat(multipart and concat("\r\n--" and concat(boundary and concat("\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"" and concat(filename and "\"\r\nContent-Type: application/json\r\n\r\n")))))
+    set multipart to concat(multipart and concat(exported and concat("\r\n--" and concat(boundary and "--\r\n"))))
+    # Recheck current authority after archive generation and HTTP inspection.
+    set fresh to discord_export_prepare(journal and database and identity and body and bot and guilds and admins)
+    if not (archive_list_text(fresh and 0) equals "found") or else not (archive_list_text(fresh and 2) equals digest) or else file_exists(stop_file):
+        return "export-not-authorized"
+    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(command and 4) and archive_list_text(command and 3) and archive_list_text(command and 2) and admins)
+    if not (archive_list_text(access and 0) equals "allowed") or else file_exists(stop_file) or else discord_command_acknowledged(journal and identity and body) equals 0:
+        return "export-not-authorized"
+    set sent to discord_access_bytes(library and token and journal and directory_path and "PATCH" and route and "PATCH:export-original" and identity and str_to_ptr(multipart) and string_length(multipart) and concat("multipart/form-data; boundary=" and boundary))
+    if not (archive_list_text(sent and 0) equals "observed"):
+        return archive_list_text(sent and 0)
+    if discord_interaction_original_matches(archive_list_text(sent and 1) and bot and archive_list_text(command and 3)) equals 0:
+        return "export-not-authorized"
+    set response to provider_json_tokens(archive_list_text(sent and 1))
+    for each item in provider_items(response and provider_member(response and 0 and "attachments")):
+        if provider_value(response and provider_member(response and item and "filename")) equals filename and provider_value(response and provider_member(response and item and "size")) equals int_to_string(string_length(exported)):
+            return "export-delivered"
+    return "export-upload-unconfirmed"
