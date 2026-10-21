@@ -1,0 +1,29 @@
+import "../web/projects"
+import "../security/channel_silo"
+
+# The connector supplies the authenticated device and original channel. Project
+# JSON cannot choose an audience, borrow linked Host access or create a run.
+# The channel check and existing project writer share one transaction.
+define discord_project_request with database as Int and device as Str and guild as Str and room as Str and arguments as Str returning Str:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else project_object_keys(tokens and 0 and ["operation","session","identity","project","expected_revision","manifest"]) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    for each key in ["operation","session"]:
+        if not (provider_kind(tokens and provider_member(tokens and 0 and key)) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    set session to provider_value(tokens and provider_member(tokens and 0 and "session"))
+    set audience to history_collect_one(checkpoint_prepare(database and "SELECT s.group_id,s.revision FROM echo_group_sessions s WHERE s.session=?1 AND NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=s.session);" and [session]))
+    if not (archive_list_text(audience and 0) equals "found") or else group_audience_allows(database and device and archive_list_text(audience and 1) and "discord" and guild and room and string_to_int(archive_list_text(audience and 2)) and 1) equals 0:
+        set closed to archive_rollback(database)
+        return "{\"status\":\"not-authorized\"}"
+    set result to web_project_pending(database and device and arguments and tokens)
+    set fields to provider_json_tokens(result)
+    set status to provider_value(fields and provider_member(fields and 0 and "status"))
+    if status equals "found" or else status equals "recorded" or else status equals "already-recorded":
+        if sql_execute(database and "COMMIT;") equals 0:
+            return result
+        set result to "{\"status\":\"commit-failed\"}"
+    set closed to archive_rollback(database)
+    return result

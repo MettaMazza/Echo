@@ -22,7 +22,7 @@ acceptance matrix, not a completion claim. The source inventory is
 | Audio, video and watch parties | Native attachments plus scoped playback/analysis controls | Full parity pending |
 | Retry, regenerate, edit and branch | Native message edit plus bound buttons/commands | Source edit cancellation exists; remaining controls pending |
 | History, search and export | `/history`, `/search query:`, scoped exports | History/resume, bounded literal search and private single-file verified export deployed and live-tested; multipart export and richer selectors remain open. See DISCORD-SESSION-HISTORY.md. |
-| Projects and memory controls | Commands/selectors/forms | Pending |
+| Projects and memory controls | Commands/selectors/forms | Scoped project controller reuses browser revisions and context; native scope, mutation and next-run context tests passed. Discord project UI and memory controls remain pending. See DISCORD-PROJECTS.md. |
 | Schedules | Commands/forms and durable status/cancel controls | Background controller implemented; Discord UI acceptance pending |
 | Compaction | Activity status and explanation with original history preserved | Pending |
 | Settings, providers and HUD | Admin controls with read-only permitted status for ordinary users | Pending |
