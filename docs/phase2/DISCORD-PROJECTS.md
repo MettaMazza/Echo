@@ -64,3 +64,10 @@ and files.
 Known display limitation: Discord’s native JSON attachment preview currently shows
 non-ASCII text incorrectly despite an explicit UTF-8 content type. Stored and
 downloaded bytes were verified correct. This preview issue remains open.
+
+21 October task/file acceptance: the ordinary account used `/project task` to add
+a Unicode title and doing status, then `/project file` to add an existing synthetic
+audio fixture using the newly returned revision. A subsequent `/project read`
+returned both edits exactly, preserving the original attachment digest. All three
+receipts were private and visibly verified. No model turn or new upload was needed.
+Live removal and second-actor exercises remain distinct outstanding checks.
