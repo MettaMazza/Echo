@@ -1,0 +1,69 @@
+import "job_origin"
+import "intake_source"
+import "../web/interaction"
+
+# Question records bind an actual pending archive event to its admitted
+# Discord origin. UI identifiers never carry answer text or grant authority.
+define discord_question_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_questions(identity TEXT PRIMARY KEY,request TEXT UNIQUE NOT NULL,run TEXT NOT NULL,inbox TEXT NOT NULL REFERENCES discord_inbox(identity),actor TEXT NOT NULL,channel TEXT NOT NULL,guild TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_questions_immutable BEFORE UPDATE ON discord_questions BEGIN SELECT RAISE(ABORT,'Question binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_questions_retained BEFORE DELETE ON discord_questions BEGIN SELECT RAISE(ABORT,'Question binding persists'); END; CREATE TABLE IF NOT EXISTS discord_question_drafts(question TEXT NOT NULL REFERENCES discord_questions(identity),item TEXT NOT NULL,choice INTEGER NOT NULL,text TEXT NOT NULL,PRIMARY KEY(question,item));")
+
+define discord_question_bind with journal as Int and database as Int and run as Str returning Str:
+    if discord_question_schema(journal) is not equal to 0:
+        return ""
+    set pending to provider_json_tokens(questions_pending(database and run))
+    set request to provider_value(pending and provider_member(pending and 0 and "request"))
+    if string_length(request) equals 0:
+        return ""
+    set inbox to discord_job_origin(journal and database and run)
+    if string_length(inbox) equals 0:
+        return ""
+    set source to discord_intake_source(journal and inbox)
+    if not (archive_list_text(source and 0) equals "found"):
+        return ""
+    set identity to concat("echoq:" and ep_sha256(request))
+    set values to [identity,request,run,inbox,archive_list_text(source and 3),archive_list_text(source and 4),archive_list_text(source and 5)]
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_questions VALUES(?1,?2,?3,?4,?5,?6,?7);" and values) and 101) is not equal to 0:
+        return ""
+    set same to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_questions WHERE identity=?1 AND request=?2 AND run=?3 AND inbox=?4 AND actor=?5 AND channel=?6 AND guild=?7;" and values))
+    if not (archive_list_text(same and 0) equals "found"):
+        return ""
+    return identity
+
+# Transport callers must also refresh Discord permissions and source access.
+# This check revalidates local authority, pending request and origin each time.
+define discord_question_context with journal as Int and database as Int and identity as Str and actor as Str and room as Str and guild as Str returning List:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT request,run,inbox FROM discord_questions WHERE identity=?1 AND actor=?2 AND channel=?3 AND guild=?4;" and [identity,actor,room,guild]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("question-binding-denied")
+    set run to archive_list_text(row and 2)
+    if not (discord_job_origin(journal and database and run) equals archive_list_text(row and 3)) or else web_shared_run_control_allowed(database and concat("discord:" and actor) and run) equals 0:
+        return history_status("question-authority-denied")
+    set pending to provider_json_tokens(questions_pending(database and run))
+    if not (provider_value(pending and provider_member(pending and 0 and "request")) equals archive_list_text(row and 1)):
+        return history_status("question-no-longer-pending")
+    return row
+
+# A draft is not an answer. Only explicit submit of a complete batch may
+# append guidance. Options have stable numeric indexes; -1 denotes Other.
+define discord_question_choose with journal as Int and database as Int and identity as Str and actor as Str and room as Str and guild as Str and item as Str and choice as Int and text as Str returning Str:
+    set context to discord_question_context(journal and database and identity and actor and room and guild)
+    if not (archive_list_text(context and 0) equals "found"):
+        return archive_list_text(context and 0)
+    set original to archive_read_event(database and archive_list_text(context and 1))
+    set valid to history_collect_one(checkpoint_prepare(database and "SELECT 1 FROM json_each(?1,'$.questions') q WHERE json_extract(q.value,'$.id')=?2 AND ((CAST(?3 AS INTEGER)=-1 AND length(trim(?4))>0) OR (CAST(?3 AS INTEGER)>=0 AND CAST(?3 AS INTEGER)<json_array_length(q.value,'$.options') AND ?4=''));" and [archive_list_text(original and 3),item,int_to_string(choice),text]))
+    if not (archive_list_text(valid and 0) equals "found"):
+        return "invalid-question-choice"
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_question_drafts VALUES(?1,?2,CAST(?3 AS INTEGER),?4) ON CONFLICT(question,item) DO UPDATE SET choice=excluded.choice,text=excluded.text;" and [identity,item,int_to_string(choice),text]) and 101) is not equal to 0:
+        return "question-draft-not-saved"
+    return "question-draft-saved"
+
+define discord_question_submit with journal as Int and database as Int and identity as Str and actor as Str and room as Str and guild as Str returning Str:
+    set context to discord_question_context(journal and database and identity and actor and room and guild)
+    if not (archive_list_text(context and 0) equals "found"):
+        return archive_list_text(context and 0)
+    set answers to history_collect_one(checkpoint_prepare(journal and "SELECT json_group_array(json_object('id',item,'choice',choice,'text',text)) FROM (SELECT item,choice,text FROM discord_question_drafts WHERE question=?1 ORDER BY item);" and [identity]))
+    if not (archive_list_text(answers and 0) equals "found"):
+        return "question-draft-unavailable"
+    if web_questions_environment(database and concat("discord:" and actor) and archive_list_text(context and 2) and archive_list_text(context and 1) and archive_list_text(answers and 1) and message_environment_channel("discord" and guild and room)) is not equal to 0:
+        return "question-answer-not-accepted"
+    return "question-answered"
