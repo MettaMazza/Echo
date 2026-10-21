@@ -44,8 +44,66 @@ define group_session_restart with database as Int and device as Str and operatio
     set added to append_list(audience_values and int_to_string(revision))
     if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_session_choices VALUES(?1,?2,CAST(?3 AS INTEGER),?5,?4,CAST(?6 AS INTEGER));" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_sessions(session,title,created) VALUES(?5,'Shared conversation','unix-ms:'||?6);" and values) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_group_sessions VALUES(?1,?2,CAST(?3 AS INTEGER));" and audience_values) and 101) is not equal to 0:
         return history_status(migration_fail(database and "session-write-failed"))
+    if group_session_choice_record(database and device and operation and group_id and revision and session) is not equal to 0:
+        return history_status(migration_fail(database and "selection-write-failed"))
     if sql_execute(database and "COMMIT;") is not equal to 0:
         return history_status(migration_fail(database and "commit-failed"))
     set result to history_status("created")
     set added to append_list(result and session)
     return result
+
+# Caller holds the write transaction. Archive ordering is the selection order;
+# repeated operation identities never move an older choice ahead of a newer one.
+define group_session_choice_record with database as Int and device as Str and operation as Str and group_id as Str and revision as Int and session as Str returning Int:
+    set values to create_list()
+    set added to append_list(values and device)
+    set added to append_list(values and group_id)
+    set added to append_list(values and int_to_string(revision))
+    set added to append_list(values and session)
+    set payload to history_collect_one(checkpoint_prepare(database and "SELECT json_object('device',?1,'group_id',?2,'revision',CAST(?3 AS INTEGER),'session',?4);" and values))
+    if not (archive_list_text(payload and 0) equals "found"):
+        return 1
+    set event to concat("group-session-choice:" and ep_sha256(operation))
+    set old to archive_read_event(database and event)
+    if old is not equal to 0:
+        if archive_list_text(old and 0) equals session and archive_list_text(old and 2) equals "group_session_selected" and archive_list_text(old and 3) equals archive_list_text(payload and 1):
+            return 0
+        return 1
+    set occurred to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+    return archive_append_pending(database and session and event and "group_session_selected" and archive_list_text(payload and 1) and occurred)
+
+# Resume an existing conversation only within this exact current audience.
+# Children, another user's silo and obsolete membership revisions are excluded.
+define group_session_resume with database as Int and device as Str and operation as Str and group_id as Str and platform as Str and server as Str and room as Str and revision as Int and session as Str returning Str:
+    if string_length(operation) equals 0 or else group_text_valid(operation) equals 0:
+        return "invalid-operation"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-lock-unavailable"
+    if group_audience_allows(database and device and group_id and platform and server and room and revision and 1) equals 0:
+        return migration_fail(database and "audience-not-authorized")
+    set values to create_list()
+    set added to append_list(values and group_id)
+    set added to append_list(values and int_to_string(revision))
+    set added to append_list(values and session)
+    set target to history_collect_one(checkpoint_prepare(database and "SELECT s.session FROM echo_group_sessions s WHERE s.group_id=?1 AND s.revision=CAST(?2 AS INTEGER) AND s.session=?3 AND NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=s.session);" and values))
+    if not (archive_list_text(target and 0) equals "found"):
+        return migration_fail(database and "session-not-authorized")
+    if group_session_choice_record(database and device and operation and group_id and revision and session) is not equal to 0:
+        return migration_fail(database and "selection-identity-conflict")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return migration_fail(database and "commit-failed")
+    return "session-selected"
+
+# Bounded history enumeration uses the same audience check as message routing.
+# The caller can request the next page using the returned session cursor.
+define group_session_history with database as Int and device as Str and group_id as Str and platform as Str and server as Str and room as Str and revision as Int and cursor as Str returning List:
+    if group_audience_allows(database and device and group_id and platform and server and room and revision and 1) equals 0:
+        return history_status("audience-not-authorized")
+    set values to create_list()
+    set added to append_list(values and group_id)
+    set added to append_list(values and int_to_string(revision))
+    set added to append_list(values and cursor)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_group_array(json_object('session',session,'title',title,'created',created)),'[]') FROM (SELECT s.session,c.title,c.created FROM echo_group_sessions s JOIN echo_sessions c ON c.session=s.session WHERE s.group_id=?1 AND s.revision=CAST(?2 AS INTEGER) AND s.session>?3 AND NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=s.session) ORDER BY s.session LIMIT 10);" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("history-read-failed")
+    return row

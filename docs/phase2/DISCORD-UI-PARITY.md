@@ -9,7 +9,7 @@ acceptance matrix, not a completion claim. The source inventory is
 | --- | --- | --- |
 | Send and reply | Native mention and reply-to-message | Prior live text acceptance exists |
 | User/account/source labels | Native account plus authenticated source in context/HUD | Name propagation tested; full HUD presentation pending |
-| New session and session selection | `/new`, session selector/history controls | `/new` deployed; real ordinary-user command, consecutive turns and restart passed (`discord-new-command-2026-10-20.json`). Existing-session selection/history UI remains open. |
+| New session and session selection | `/new`, session selector/history controls | `/new` deployed; real ordinary-user command, consecutive turns and restart passed (`discord-new-command-2026-10-20.json`). `/history` and `/resume` now deployed with native isolation/replay checks and actual two-turn retained-context acceptance; see DISCORD-SESSION-HISTORY.md. |
 | Thinking and tool activity | Persistent thread on originating user message | Full recorded reasoning/tool detail deployed; consecutive turns, restart and reload passed (`discord-trace-fidelity-2026-10-20.json`). Host data stays isolated. |
 | Interim and subsequent replies | Separate durable replies bound to immutable final events | Live delegation source produced two sent replies; broader UI parity pending |
 | Speak | Public audio toggle on original bot reply | Show/hide/restore, burst coalescing, exact cache reuse, playback, restart and reload passed (`discord-shared-speech-toggle-2026-10-20.json`). A separate second-account exercise remains unperformed. |
