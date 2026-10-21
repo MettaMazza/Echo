@@ -139,7 +139,14 @@ define memory_context_capture with database as Int and run as Str returning Int:
             set rooted_argument_added to append_list(context_snapshot_arguments_5 and rooted_argument_value)
             set rooted_argument_value to run
             set rooted_argument_added to append_list(context_snapshot_arguments_5 and rooted_argument_value)
-            set prior to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.base') FROM echo_events WHERE session=?1 AND kind='memory_context_snapshot' AND json_extract(payload,'$.revision')=?2 AND json_extract(payload,'$.run_id')<>?3 AND json_type(payload,'$.base')='text' ORDER BY sequence LIMIT 1;" and context_snapshot_arguments_5))
+            set prior_query to "SELECT json_extract(payload,'$.base') FROM echo_events WHERE session=?1 AND kind='memory_context_snapshot' AND json_extract(payload,'$.revision')=?2 AND json_extract(payload,'$.run_id')<>?3 AND json_type(payload,'$.base')='text' ORDER BY sequence LIMIT 1;"
+            if string_length(group_memory_scope(database and run)) > 0:
+                # Only verified ancestry, never same-audience siblings. Every
+                # retained record must still match the freshly filtered view.
+                set rooted_argument_value to records
+                set rooted_argument_added to append_list(context_snapshot_arguments_5 and rooted_argument_value)
+                set prior_query to concat(session_scope_sql() and "SELECT json_extract(e.payload,'$.base') FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary WHERE e.kind='memory_context_snapshot' AND json_extract(e.payload,'$.revision')=?2 AND json_extract(e.payload,'$.run_id')<>?3 AND json_type(e.payload,'$.base')='text' AND NOT EXISTS(SELECT 1 FROM json_each(e.payload,'$.records') old WHERE NOT EXISTS(SELECT 1 FROM json_each(?4) fresh WHERE fresh.value=old.value)) ORDER BY CASE WHEN e.session=?1 THEN 0 ELSE 1 END,s.boundary DESC,e.sequence LIMIT 1;")
+            set prior to history_collect_one(checkpoint_prepare(database and prior_query and context_snapshot_arguments_5))
             if archive_list_text(prior and 0) equals "found" and string_length(memory_archive_principal(database and run)) > 0:
                 set base to archive_list_text(prior and 1)
                 set context_snapshot_arguments_6 to create_list()
@@ -164,7 +171,11 @@ define memory_context_capture with database as Int and run as Str returning Int:
                 set rooted_argument_added to append_list(context_snapshot_arguments_7 and rooted_argument_value)
                 set rooted_argument_value to revision
                 set rooted_argument_added to append_list(context_snapshot_arguments_7 and rooted_argument_value)
-                set additions to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_group_array(json(n.value)),'[]') FROM json_each(?1) n WHERE NOT EXISTS(SELECT 1 FROM echo_events e,json_each(CASE WHEN e.kind='memory_context_snapshot' AND json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.records') old WHERE e.session=?2 AND e.kind='memory_context_snapshot' AND json_extract(e.payload,'$.revision')=?3 AND json_extract(old.value,'$.identity')=json_extract(n.value,'$.identity'));" and context_snapshot_arguments_7))
+                set rooted_argument_value to base
+                set rooted_argument_added to append_list(context_snapshot_arguments_7 and rooted_argument_value)
+                set scope_query to ptr_to_str(string_replace(session_scope_sql() and "?1" and "?2"))
+                set additions_query to concat(scope_query and "SELECT COALESCE(json_group_array(json(n.value)),'[]') FROM json_each(?1) n WHERE NOT EXISTS(SELECT 1 FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary,json_each(CASE WHEN e.kind='memory_context_snapshot' AND json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.records') old WHERE e.kind='memory_context_snapshot' AND json_extract(e.payload,'$.revision')=?3 AND json_extract(e.payload,'$.base')=?4 AND EXISTS(SELECT 1 FROM echo_runs replay JOIN echo_events objective ON objective.event=replay.objective_event JOIN echo_events last ON last.event=replay.last_event WHERE replay.run=json_extract(e.payload,'$.run_id') AND replay.session=s.session AND replay.state IN ('completed','cancelled','failed') AND objective.sequence<=s.boundary AND last.sequence<=s.boundary AND objective.event<>s.omit_user) AND json_extract(old.value,'$.identity')=json_extract(n.value,'$.identity'));")
+                set additions to history_collect_one(checkpoint_prepare(database and additions_query and context_snapshot_arguments_7))
                 if not (archive_list_text(additions and 0) equals "found"):
                     set ignored to sql_execute(database and "ROLLBACK;")
                     return 1
@@ -219,7 +230,13 @@ define memory_context_delta with database as Int and current_run as Str and sour
     set rooted_argument_added to append_list(context_snapshot_arguments_9 and rooted_argument_value)
     set rooted_argument_value to concat(source_run and concat(":memory-context:" and revision))
     set rooted_argument_added to append_list(context_snapshot_arguments_9 and rooted_argument_value)
-    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(e.payload,'$.delta') FROM echo_events e JOIN echo_runs r ON r.run=?1 WHERE e.event=?2 AND e.session=r.session;" and context_snapshot_arguments_9))
+    set delta_query to "SELECT json_extract(e.payload,'$.delta') FROM echo_events e JOIN echo_runs r ON r.run=?1 WHERE e.event=?2 AND e.session=r.session;"
+    if string_length(group_memory_scope(database and current_run)) > 0:
+        set scope_query to ptr_to_str(string_replace(session_scope_sql() and "?1" and "(SELECT session FROM echo_runs WHERE run=?1)"))
+        set rooted_argument_value to concat(current_run and concat(":memory-context:" and revision))
+        set rooted_argument_added to append_list(context_snapshot_arguments_9 and rooted_argument_value)
+        set delta_query to concat(scope_query and "SELECT json_extract(e.payload,'$.delta') FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary JOIN echo_events current ON current.event=?3 WHERE e.event=?2 AND json_extract(e.payload,'$.base')=json_extract(current.payload,'$.base');")
+    set row to history_collect_one(checkpoint_prepare(database and delta_query and context_snapshot_arguments_9))
     if archive_list_text(row and 0) equals "found":
         return archive_list_text(row and 1)
     return ""

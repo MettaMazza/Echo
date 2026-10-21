@@ -263,3 +263,30 @@ Discord reload retained the original, edit, regeneration, follow-up and controls
 The subsequent post-restart normal message returned the revised result sentence
 and the correct new sum. The selected revision session and request provenance
 survived restart; the response and Speak control were verified in Discord.
+
+## Branch recall-prefix repair candidate
+
+The observed revision prefill gap comes from snapshot reuse being limited to one
+session. The candidate extends shared-memory snapshot lookup to verified branch
+ancestry. Every reused record must equal a record in the current, freshly filtered
+recall view. It retains the existing visibility, corrections, expiry, runtime and
+checkpoint revisions. Private-memory lookup is unchanged.
+
+Ancestor additions are replayed only against the same base and saved boundary.
+Additions from omitted turns are supplied again on the current turn rather than
+silently discarded. Deduplication requires a terminal source turn that the normal
+history renderer can actually replay. Neither same-audience sibling snapshots nor
+unbounded parent history qualify as prefix sources.
+
+The expanded native fixture covers inherited base, relocated omitted-turn additions,
+excluded edited-out source, nested revision replay, reopen, forgetting, checkpoint
+rebase and the existing audience/delegation/private isolation cases. The initial
+expanded run passed in 10.070 seconds; the separate private stable-recall regression
+passed in 5.260 seconds. The replay-eligibility test passed in 10.680 seconds. Final candidate ordering
+prefers the nearest verified ancestor, retaining that parent's prefix rather than
+switching unnecessarily to a more distant ancestor. Final native receipt
+`branch-prefix-final-1792604247603968000` passed in 10.028 seconds, SHA-256
+`aef058517f299e58c8d04d740e7dfd2d8554ed329f71e09677eef403378cf42c`.
+The fixtures retain diagnostic duplicate-event probes in their complete logs;
+only the asserted, terminal successful outcomes are counted here.
+No production deployment or live latency improvement is claimed for this candidate.
