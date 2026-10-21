@@ -50,6 +50,23 @@ define main returning Int:
         return 14
     if not (archive_list_text(discord_worker_claim(journal) and 0) equals "end"):
         return 15
+    # A finished question wait is recoverable, but not while its native owner
+    # still holds the lock and never if the archive is already cancelled.
+    if sql_execute(journal and "UPDATE discord_background_runs SET state='running',worker='retry-worker';") is not equal to 0 or else sql_execute(database and "UPDATE echo_web_workers SET status='question-suspended'; UPDATE echo_runs SET state='cancelled';") is not equal to 0 or else discord_background_retry(journal and database and now + 180000) is not equal to 0:
+        return 16
+    set held to history_collect_one(archive_prepare(journal and "SELECT state FROM discord_background_runs;"))
+    if not (archive_list_text(held and 1) equals "running"):
+        return 17
+    set lock to compaction_lock_acquire(database and "web-worker:discord-message:100" and library)
+    if lock < 0 or else sql_execute(database and "UPDATE echo_runs SET state='ready';") is not equal to 0 or else discord_background_retry(journal and database and now + 180000) is not equal to 0:
+        return 18
+    set held to history_collect_one(archive_prepare(journal and "SELECT state FROM discord_background_runs;"))
+    if not (archive_list_text(held and 1) equals "running") or else net_close(lock) is not equal to 0 or else discord_background_retry(journal and database and now + 180000) is not equal to 0:
+        return 19
+    set released to history_collect_one(archive_prepare(journal and "SELECT state FROM discord_background_runs;"))
+    set claim to history_collect_one(archive_prepare(database and "SELECT status FROM echo_web_workers;"))
+    if not (archive_list_text(released and 1) equals "reserved") or else not (archive_list_text(claim and 1) equals "launch-failed"):
+        return 20
     display "PASS: read-only failure retry respects backoff and live ownership; permission denial is not retried; requeue retains conversation ownership exactly once."
     set closed to ep_dlclose(library)
     return sql_close(database)
