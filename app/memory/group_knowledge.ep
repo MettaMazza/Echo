@@ -16,6 +16,20 @@ define group_memory_abort with database as Int and status as Str returning Str:
     set cancelled_write to archive_rollback(database)
     return status
 
+# Memory can survive a new conversation in the same immutable audience. This
+# does not widen ordinary history/workspace access. SQL expressions come from
+# internal callers only; delegated conversations remain isolated on both sides.
+define group_memory_session_sql with database as Int and current_expression as Str and source_expression as Str returning Str:
+    set children to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_delegations';"))
+    set isolated to "1"
+    if archive_list_text(children and 0) equals "found":
+        set isolated to concat("NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=" and concat(current_expression and concat(" OR d.session=" and concat(source_expression and ")"))))
+    else if not (archive_list_text(children and 0) equals "end"):
+        return "0"
+    set same to concat(current_expression and concat("=" and source_expression))
+    set audience to concat("EXISTS(SELECT 1 FROM echo_group_sessions mc JOIN echo_group_sessions ms ON ms.group_id=mc.group_id AND ms.revision=mc.revision WHERE mc.session=" and concat(current_expression and concat(" AND ms.session=" and concat(source_expression and ")"))))
+    return concat("(" and concat(audience and concat(" AND (" and concat(same and concat(" OR " and concat(isolated and "))"))))))
+
 define group_memory_source_allowed with database as Int and run as Str and event as Str and digest as Str returning Int:
     if string_length(group_memory_scope(database and run)) equals 0:
         return 0
@@ -23,7 +37,9 @@ define group_memory_source_allowed with database as Int and run as Str and event
     if source equals 0 or else not (archive_list_text(source and 6) equals digest):
         return 0
     set session to archive_list_text(source and 0)
-    if group_run_session_allows(database and run and session) equals 0 or else group_history_allows(database and session) equals 0:
+    set current to agent_run_read(database and run)
+    set allowed to history_collect_one(checkpoint_prepare(database and concat("SELECT 1 WHERE " and concat(group_memory_session_sql(database and "?1" and "?2") and ";")) and [archive_list_text(current and 0),session]))
+    if not (archive_list_text(allowed and 0) equals "found") or else group_history_allows(database and session) equals 0:
         return 0
     return 1
 
@@ -139,8 +155,9 @@ define group_memory_next with database as Int and run as Str and node as Str and
         return history_status("invalid-range")
     set query to "SELECT e.event,e.sequence,json_extract(e.payload,'$.kind'),json_extract(e.payload,'$.subject'),json_extract(e.payload,'$.predicate'),json_extract(e.payload,'$.object'),json_extract(e.payload,'$.evidence'),json_extract(e.payload,'$.source_event'),json_extract(e.payload,'$.source_digest'),json_extract(e.payload,'$.event_time'),json_extract(e.payload,'$.valid_until'),e.occurred,json_extract(e.payload,'$.supersedes'),COALESCE((SELECT n.event FROM echo_events n WHERE n.kind='group_memory_claim' AND json_extract(n.payload,'$.supersedes')=e.event),''),__RUNTIME_STATUS__ FROM echo_events e JOIN echo_events original ON original.event=json_extract(e.payload,'$.source_event') AND original.digest=json_extract(e.payload,'$.source_digest') WHERE e.kind='group_memory_claim' AND json_extract(e.payload,'$.scope')=?1 AND (?2='' OR json_extract(e.payload,'$.subject')=?2 OR json_extract(e.payload,'$.object')=?2) AND e.sequence>CAST(?3 AS INTEGER) AND COALESCE((SELECT json_extract(v.payload,'$.state') FROM echo_events v WHERE v.kind='group_memory_visibility' AND json_extract(v.payload,'$.claim')=e.event ORDER BY v.sequence DESC LIMIT 1),'visible')='visible' ORDER BY e.sequence LIMIT 1;"
     set query to ptr_to_str(string_replace(query and "__RUNTIME_STATUS__" and memory_runtime_status_sql("original" and "?4")))
+    set query to ptr_to_str(string_replace(query and " ORDER BY e.sequence LIMIT 1;" and concat(" AND " and concat(group_memory_session_sql(database and "(SELECT session FROM echo_runs WHERE run=?5)" and "original.session") and " ORDER BY e.sequence LIMIT 1;"))))
     set query to ptr_to_str(string_replace(query and " ORDER BY e.sequence LIMIT 1;" and concat(" AND " and concat(attachment_observation_visible_sql(database and "original.event") and " ORDER BY e.sequence LIMIT 1;"))))
-    set row to history_collect_one(checkpoint_prepare(database and query and [scope,node,int_to_string(after_sequence),echo_runtime_binding(database and run)]))
+    set row to history_collect_one(checkpoint_prepare(database and query and [scope,node,int_to_string(after_sequence),echo_runtime_binding(database and run),run]))
     if archive_list_text(row and 0) equals "found":
         if group_memory_source_allowed(database and run and archive_list_text(row and 8) and archive_list_text(row and 9)) equals 0:
             return history_status("not-authorized")

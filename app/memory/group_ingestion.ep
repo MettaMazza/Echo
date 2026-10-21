@@ -1,14 +1,26 @@
 import "group_knowledge"
 
+# Whole-source fallback/extraction must not reintroduce withdrawn or corrected
+# assertions. Retain the original for explicit history access, but withhold it
+# from automatic reuse when any derived assertion has been withdrawn, replaced
+# or expired. Otherwise an unindexed original can bypass the claim lifecycle.
+define group_memory_automatic_sql with scope_expression as Str and event_expression as Str returning Str:
+    set query to "NOT EXISTS(SELECT 1 FROM echo_events c WHERE c.kind='group_memory_claim' AND json_extract(c.payload,'$.scope')=__SCOPE__ AND json_extract(c.payload,'$.source_event')=__EVENT__ AND (COALESCE((SELECT json_extract(v.payload,'$.state') FROM echo_events v WHERE v.kind='group_memory_visibility' AND json_extract(v.payload,'$.claim')=c.event ORDER BY v.sequence DESC LIMIT 1),'visible')='forgotten' OR EXISTS(SELECT 1 FROM echo_events n WHERE n.kind='group_memory_claim' AND json_extract(n.payload,'$.supersedes')=c.event) OR (json_extract(c.payload,'$.valid_until')<>'' AND julianday(json_extract(c.payload,'$.valid_until'))<=julianday('now'))))"
+    set query to ptr_to_str(string_replace(query and "__SCOPE__" and scope_expression))
+    return ptr_to_str(string_replace(query and "__EVENT__" and event_expression))
+
 # Shared turns already remain in the active conversation. Extract originals
-# displaced by an activated recap, rather than adding another model request to
-# every ordinary shared turn. Receipts bind the exact audience and source digest.
+# displaced by an activated recap or a new conversation in the same audience,
+# rather than adding another model request to every ordinary shared turn.
+# Receipts bind the exact audience and source digest.
 define group_memory_pending with database as Int and run as Str returning List:
     set scope to group_memory_scope(database and run)
     if string_length(scope) equals 0:
         return create_list()
     set current to agent_run_read(database and run)
-    set query to "SELECT e.event,e.digest FROM echo_events e WHERE e.session=?2 AND e.sequence<(SELECT o.sequence FROM echo_runs r JOIN echo_events o ON o.event=r.objective_event WHERE r.run=?3) AND e.sequence<=COALESCE((SELECT z.sequence FROM echo_active_context a JOIN echo_checkpoints c ON c.identity=a.checkpoint JOIN echo_events z ON z.event=c.source_end WHERE a.session=?2),0) AND (EXISTS(SELECT 1 FROM echo_runs r WHERE r.objective_event=e.event AND e.kind='user') OR EXISTS(SELECT 1 FROM echo_runs r WHERE r.last_event=e.event AND r.state='completed' AND e.kind='assistant_final')) AND NOT EXISTS(SELECT 1 FROM echo_events m WHERE m.kind='memory_indexed' AND json_extract(m.payload,'$.scope')=?1 AND json_extract(m.payload,'$.source_event')=e.event AND json_extract(m.payload,'$.source_digest')=e.digest) ORDER BY e.sequence;"
+    set query to "SELECT e.event,e.digest FROM echo_events e WHERE __AUDIENCE__ AND e.sequence<(SELECT o.sequence FROM echo_runs r JOIN echo_events o ON o.event=r.objective_event WHERE r.run=?3) AND (e.session<>?2 OR e.sequence<=COALESCE((SELECT z.sequence FROM echo_active_context a JOIN echo_checkpoints c ON c.identity=a.checkpoint JOIN echo_events z ON z.event=c.source_end WHERE a.session=?2),0)) AND (EXISTS(SELECT 1 FROM echo_runs r WHERE r.objective_event=e.event AND e.kind='user') OR EXISTS(SELECT 1 FROM echo_runs r WHERE r.last_event=e.event AND r.state='completed' AND e.kind='assistant_final')) AND NOT EXISTS(SELECT 1 FROM echo_events m WHERE m.kind='memory_indexed' AND json_extract(m.payload,'$.scope')=?1 AND json_extract(m.payload,'$.source_event')=e.event AND json_extract(m.payload,'$.source_digest')=e.digest) ORDER BY e.sequence;"
+    set query to ptr_to_str(string_replace(query and "__AUDIENCE__" and group_memory_session_sql(database and "?2" and "e.session")))
+    set query to ptr_to_str(string_replace(query and " ORDER BY e.sequence;" and concat(" AND " and concat(group_memory_automatic_sql("?1" and "e.event") and " ORDER BY e.sequence;"))))
     set statement to checkpoint_prepare(database and query and [scope,archive_list_text(current and 0),run])
     if statement equals 0:
         return 0
@@ -37,6 +49,9 @@ define memory_extraction_read with database as Int and run as Str and event as S
         return memory_archive_read(database and run and event and 0 and 1)
     set source to archive_read_event(database and event)
     if source equals 0 or else group_memory_source_allowed(database and run and event and archive_list_text(source and 6)) equals 0:
+        return history_status("not-authorized")
+    set allowed to history_collect_one(checkpoint_prepare(database and concat("SELECT 1 WHERE " and concat(group_memory_automatic_sql("?1" and "?2") and ";")) and [group_memory_scope(database and run),event]))
+    if not (archive_list_text(allowed and 0) equals "found"):
         return history_status("not-authorized")
     if not (archive_list_text(source and 2) equals "user" or else archive_list_text(source and 2) equals "assistant_final"):
         return history_status("not-authorized")

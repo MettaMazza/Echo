@@ -1,7 +1,10 @@
 # Discord source-bound cancellation
 
 Cancel button deployed and live-qualified on 21 October 2026. Slash-command
-registration/interaction acceptance remains separate and pending.
+registration completed on 21 October. A real `/cancel` interaction targeting the
+already-cancelled acceptance message returned its cancellation acknowledgement;
+this was replay acceptance, not a second active cancellation. The existing button
+trials cover active and queued interruption.
 
 The Cancel button is also implemented on the request's durable queue/active
 status reply. Its immutable identifier binds to the original message, sender,
