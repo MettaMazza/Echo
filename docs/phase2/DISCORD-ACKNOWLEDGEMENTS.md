@@ -29,7 +29,13 @@ deadline; actual burst and restart acceptance is required.
 
 Status: four concurrent native fixtures on One Touch passed exclusive-pair,
 refill, shutdown-drain and missing-directory checks. Each produced exactly
-three distinct response/header pairs. The worker build also passed; actual Discord
-command timing remains pending. See the dated receipt in `docs/releases/1.75/`.
-Production is unchanged. General conversation latency and the morning-baseline
+three distinct response/header pairs. The worker build and original acknowledgement regression also passed.
+The dedicated idle ACK worker was then replaced without restarting the other
+five workers or interrupting the active human model run. Three actual Discord
+commands (`/new`, `/history`, `/history`) completed with HTTP 204 acknowledgements
+and visible final responses. Header-file modification times were approximately
+691, 468 and 365 ms after durable intake; these are response-write observations,
+not instrumented end-to-end latency. Sustained-stall/burst and full restart
+acceptance remain open. See the dated receipt in `docs/releases/1.75/`.
+The ACK repair is deployed. General conversation latency and the morning-baseline
 comparison remain separate open requirements.
