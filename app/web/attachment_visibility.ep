@@ -6,7 +6,7 @@ import "../archive/attachment_visibility"
 # HTTP callers use the same visibility receipt and scoped authority checks.
 # Shared changes require the current audience; linked private devices resolve
 # the original owner while preserving the actual actor in the receipt.
-define web_attachment_visibility with database as Int and device as Str and tokens as List returning Str:
+define web_attachment_visibility_pending with database as Int and device as Str and tokens as List returning Str:
     if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
         return "invalid-arguments"
     for each key in ["action","attachment","identity","previous"]:
@@ -28,13 +28,11 @@ define web_attachment_visibility with database as Int and device as Str and toke
     set previous to provider_value(tokens and provider_member(tokens and 0 and "previous"))
     if string_length(identity) equals 0 or else string_length(attachment) equals 0:
         return "invalid-identity"
-    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
-        return "database-busy"
     set source to history_collect_one(checkpoint_prepare(database and "SELECT session,digest,event FROM echo_attachments WHERE attachment=?;" and [attachment]))
     set session to archive_list_text(source and 1)
     set owner to web_account_resource_device(database and device and "session" and session)
     if not (archive_list_text(source and 0) equals "found") or else principal_device_active(database and device) equals 0 or else web_attachment_session_allowed(database and owner and session and 1) equals 0:
-        return migration_fail(database and "not-authorized")
+        return "not-authorized"
     set state to "excluded"
     if action equals "restore":
         set state to "included"
@@ -46,17 +44,24 @@ define web_attachment_visibility with database as Int and device as Str and toke
     set prior to history_collect_one(checkpoint_prepare(database and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and [event]))
     if archive_list_text(prior and 0) equals "found":
         if archive_list_text(prior and 1) equals session and archive_list_text(prior and 2) equals "attachment_visibility" and archive_list_text(prior and 3) equals payload:
-            if sql_execute(database and "COMMIT;") equals 0:
-                return "already-recorded"
-            return migration_fail(database and "commit-failed")
-        return migration_fail(database and "identity-conflict")
+            return "already-recorded"
+        return "identity-conflict"
     if not (archive_list_text(prior and 0) equals "end"):
-        return migration_fail(database and "database-error")
+        return "database-error"
     set current to attachment_visibility_state(database and attachment)
     if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 1) equals previous):
-        return migration_fail(database and "revision-conflict")
+        return "revision-conflict"
     if archive_append_pending(database and session and event and "attachment_visibility" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
-        return migration_fail(database and "write-failed")
-    if sql_execute(database and "COMMIT;") is not equal to 0:
-        return migration_fail(database and "commit-failed")
+        return "write-failed"
     return "recorded"
+
+# HTTP entry point; scoped connectors call the pending writer in their own transaction.
+define web_attachment_visibility with database as Int and device as Str and tokens as List returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set result to web_attachment_visibility_pending(database and device and tokens)
+    if result equals "recorded" or else result equals "already-recorded":
+        if sql_execute(database and "COMMIT;") equals 0:
+            return result
+        set result to "commit-failed"
+    return migration_fail(database and result)

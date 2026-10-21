@@ -1,0 +1,44 @@
+import "../web/attachment_lifecycle"
+import "../web/attachment_visibility"
+import "../web/projects"
+import "../security/channel_silo"
+
+define discord_attachment_list with database as Int and device as Str and guild as Str and room as Str and session as Str returning Str:
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return "{\"status\":\"database-busy\"}"
+    if group_session_allows(database and device and session and "discord" and guild and room and 1) equals 0:
+        set closed to archive_rollback(database)
+        return "{\"status\":\"not-authorized\"}"
+    set result to web_attachment_list(database and device and session)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set closed to archive_rollback(database)
+        return "{\"status\":\"commit-failed\"}"
+    return result
+
+# Discord supplies the actor and namespace. A known attachment ID, linked
+# account or admin role does not authorize crossing into Host or another room.
+# Namespace validation and receipt creation share the same writer transaction.
+define discord_attachment_request with database as Int and device as Str and guild as Str and room as Str and family as Str and arguments as Str returning Str:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else project_object_keys(tokens and 0 and ["action","attachment","identity","previous"]) equals 0:
+        return "invalid-arguments"
+    if not (family equals "lifecycle" or else family equals "visibility"):
+        return "invalid-family"
+    set field to provider_member(tokens and 0 and "attachment")
+    if not (provider_kind(tokens and field) equals "string"):
+        return "invalid-arguments"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set source to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_attachments WHERE attachment=?;" and [provider_value(tokens and field)]))
+    if not (archive_list_text(source and 0) equals "found") or else group_session_allows(database and device and archive_list_text(source and 1) and "discord" and guild and room and 1) equals 0:
+        return migration_fail(database and "not-authorized")
+    set result to "invalid-family"
+    if family equals "lifecycle":
+        set result to web_attachment_lifecycle_pending(database and device and tokens)
+    else:
+        set result to web_attachment_visibility_pending(database and device and tokens)
+    if result equals "recorded" or else result equals "already-recorded":
+        if sql_execute(database and "COMMIT;") equals 0:
+            return result
+        set result to "commit-failed"
+    return migration_fail(database and result)
