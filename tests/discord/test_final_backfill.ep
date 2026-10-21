@@ -1,0 +1,140 @@
+import "../../app/discord/final_stream"
+import "../../app/discord/final_backfill"
+
+define main returning Int:
+    if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    set database to discord_agent_open(get_argument(2) and "900")
+    if journal equals 0 or else database equals 0 or else not (delegation_schema(database) equals "applied"):
+        return 2
+    set body to "{\"id\":\"100\",\"channel_id\":\"300\",\"guild_id\":\"200\",\"type\":0,\"author\":{\"id\":\"500\"},\"mentions\":[{\"id\":\"900\"}],\"content\":\"test\"}"
+    if not (discord_inbox_record(journal and "message:create:100" and "MESSAGE_CREATE" and body) equals "recorded"):
+        return 3
+    set submitted to discord_agent_submit(journal and database and "message:create:100" and "900" and ["200"] and ["400"])
+    if not (archive_list_text(submitted and 0) equals "accepted") or else not (discord_agent_output(journal and database and "message:create:100") equals "no-completed-bound-run"):
+        return 4
+    set session to archive_list_text(submitted and 1)
+    set content to "@everyone "
+    set index to 0
+    repeat while index < 700:
+        set content to concat(content and "🙂é")
+        set index to index + 1
+    # Explicit fixture provenance; no claim these events came from inference.
+    set request to "{\"run_id\":\"discord-message:100\",\"parent_event\":\"discord-message:100:user\",\"fixture\":true}"
+    if archive_append(database and session and "fixture-request" and "model_request" and request and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "ready" and "discord-message:100:user" and "generating" and "fixture-request") is not equal to 0:
+        return 5
+    set response to concat("{\"run_id\":\"discord-message:100\",\"parent_event\":\"fixture-request\",\"content\":" and concat(provider_quote(content) and "}"))
+    if archive_append(database and session and "fixture-final" and "assistant_final" and response and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "generating" and "fixture-request" and "completed" and "fixture-final") is not equal to 0:
+        return 6
+    if not (discord_agent_output(journal and database and "message:create:100") equals "enqueued") or else not (discord_agent_output(journal and database and "message:create:100") equals "enqueued"):
+        return 7
+    set rows to history_collect_one(archive_prepare(journal and "SELECT COUNT(*),group_concat(json_extract(body,'$.content'),'') FROM (SELECT body FROM discord_outbox ORDER BY identity);"))
+    if not (archive_list_text(rows and 1) equals "4") or else not (archive_list_text(rows and 2) equals content):
+        return 8
+    set bad to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_outbox WHERE channel<>'300' OR length(CAST(json_extract(body,'$.content') AS BLOB))>1900 OR json_extract(body,'$.message_reference.message_id')<>'100' OR json_array_length(body,'$.allowed_mentions.parse')<>0 OR json_extract(body,'$.allowed_mentions.replied_user')<>0;"))
+    if not (archive_list_text(bad and 1) equals "0"):
+        return 9
+    set controls to history_collect_one(archive_prepare(journal and "SELECT COUNT(*),MIN(outbox) FROM discord_message_actions WHERE action='speak' AND final_event='fixture-final';"))
+    if not (archive_list_text(controls and 1) equals "1") or else not (archive_list_text(controls and 2) equals "discord-message:100:final:3"):
+        return 24
+    set early_controls to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_outbox WHERE identity IN ('discord-message:100:final:0','discord-message:100:final:1','discord-message:100:final:2') AND json_type(body,'$.components') IS NOT NULL;"))
+    if not (archive_list_text(early_controls and 1) equals "0"):
+        return 25
+    # All chunks resolve to the same exact final only after confirmed delivery.
+    set mapping to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_final_bindings WHERE run='discord-message:100' AND final_event='fixture-final';"))
+    if not (archive_list_text(mapping and 1) equals "4") or else not (archive_list_text(discord_final_lookup(journal and "800" and "300") and 0) equals "final-unavailable"):
+        return 26
+    set part to 0
+    repeat while part < 4:
+        set output to concat("discord-message:100:final:" and int_to_string(part))
+        set sent_message to int_to_string(800 + part)
+        set claimed to discord_outbox_claim(journal and output and "fixture-delivery")
+        if not (archive_list_text(claimed and 0) equals "claimed") or else not (discord_outbox_finish(journal and output and "fixture-delivery" and "sent" and sent_message and "synthetic delivery receipt") equals "recorded"):
+            return 27
+        set resolved to discord_final_lookup(journal and sent_message and "300")
+        if not (archive_list_text(resolved and 1) equals "discord-message:100") or else not (archive_list_text(resolved and 2) equals "fixture-final") or else not (archive_list_text(discord_final_lookup(journal and sent_message and "301") and 0) equals "final-unavailable"):
+            return 28
+        set part to part + 1
+    # Deliberately model a journal predating the binding table. Only this
+    # disposable fixture drops metadata; production backfill is append-only.
+    if sql_execute(journal and "DROP TABLE discord_final_bindings;") is not equal to 0:
+        return 31
+    if sql_execute(journal and "UPDATE discord_outbox SET state='pending' WHERE identity='discord-message:100:final:1';") is not equal to 0 or else not (discord_final_backfill(journal and database and "discord-message:100:final:3") equals "legacy-chunks-mismatch"):
+        return 34
+    set empty to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_final_bindings;"))
+    if not (archive_list_text(empty and 1) equals "0") or else sql_execute(journal and "UPDATE discord_outbox SET state='sent' WHERE identity='discord-message:100:final:1';") is not equal to 0:
+        return 35
+    if not (discord_final_backfill(journal and database and "discord-message:100:final:3") equals "bound") or else not (discord_final_backfill(journal and database and "discord-message:100:final:3") equals "bound"):
+        return 32
+    set recovered to discord_final_lookup(journal and "800" and "300")
+    if not (archive_list_text(recovered and 2) equals "fixture-final") or else not (discord_final_backfill(journal and database and "unknown") equals "legacy-anchor-unavailable"):
+        return 33
+    if not (discord_final_bind(journal and "discord-message:100:final:0" and "different-run" and "fixture-final") equals "final-binding-conflict"):
+        return 29
+    # A later accepted parent final must not overwrite or collide with the
+    # original response. Explicit synthetic lineage tests transport behavior.
+    set returned to "{\"run_id\":\"discord-message:100\",\"parent_event\":\"fixture-final\",\"results\":[],\"fixture\":true}"
+    if archive_append(database and session and "fixture-return" and "delegation_results" and returned and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "completed" and "fixture-final" and "ready" and "fixture-return") is not equal to 0:
+        return 11
+    if not (discord_final_stream_step(journal and database and "message:create:100" and "discord-message:100") equals "final-enqueued") or else not (discord_final_stream_step(journal and database and "message:create:100" and "discord-message:100") equals "finals-caught-up"):
+        return 18
+    if not (discord_final_stream_step(journal and database and "message:create:999" and "discord-message:100") equals "scope-denied"):
+        return 19
+    set request to "{\"run_id\":\"discord-message:100\",\"parent_event\":\"fixture-return\",\"fixture\":true}"
+    if archive_append(database and session and "fixture-request-2" and "model_request" and request and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "ready" and "fixture-return" and "generating" and "fixture-request-2") is not equal to 0:
+        return 12
+    set response to "{\"run_id\":\"discord-message:100\",\"parent_event\":\"fixture-request-2\",\"content\":\"The delegated result is available.\",\"fixture\":true}"
+    if archive_append(database and session and "fixture-final-2" and "assistant_final" and response and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "generating" and "fixture-request-2" and "completed" and "fixture-final-2") is not equal to 0:
+        return 13
+    if not (discord_agent_output(journal and database and "message:create:100") equals "enqueued"):
+        return 14
+    set closed to sql_close(database)
+    set database to discord_agent_open(get_argument(2) and "900")
+    if database equals 0 or else not (discord_agent_output(journal and database and "message:create:100") equals "enqueued"):
+        return 15
+    set later to history_collect_one(archive_prepare(journal and "SELECT COUNT(*),COUNT(DISTINCT nonce) FROM discord_outbox;"))
+    if not (archive_list_text(later and 1) equals "5") or else not (archive_list_text(later and 2) equals "5"):
+        return 16
+    set original to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_outbox WHERE identity LIKE 'discord-message:100:final:%';"))
+    if not (archive_list_text(original and 1) equals "4"):
+        return 17
+    if not (discord_final_stream_step(journal and database and "message:create:100" and "discord-message:100") equals "final-enqueued"):
+        return 20
+    set closed to sql_close(journal)
+    set journal to discord_store_open(get_argument(1) and "900")
+    if not (discord_final_stream_step(journal and database and "message:create:100" and "discord-message:100") equals "finals-caught-up"):
+        return 21
+    set reopened to discord_final_lookup(journal and "800" and "300")
+    if not (archive_list_text(reopened and 2) equals "fixture-final"):
+        return 30
+    set unrelated to "{\"run_id\":\"different-run\",\"content\":\"Not this run's reply\",\"fixture\":true}"
+    if archive_append(database and session and "unrelated-final" and "assistant_final" and unrelated and "fixture") is not equal to 0 or else not (discord_agent_output_final(journal and database and "message:create:100" and "discord-message:100" and "unrelated-final") equals "final-run-mismatch"):
+        return 22
+    set count to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM discord_outbox;"))
+    if not (archive_list_text(count and 1) equals "5"):
+        return 23
+    # A retained Speak action alone is not enough when the delivered text
+    # differs from the archived final. These are explicitly synthetic records.
+    set second_body to string_replace(body and "\"id\":\"100\"" and "\"id\":\"101\"")
+    if not (discord_inbox_record(journal and "message:create:101" and "MESSAGE_CREATE" and second_body) equals "recorded"):
+        return 36
+    set second_submit to discord_agent_submit(journal and database and "message:create:101" and "900" and ["200"] and ["400"])
+    if not (archive_list_text(second_submit and 0) equals "accepted"):
+        return 37
+    set mismatch_final to "{\"run_id\":\"discord-message:101\",\"content\":\"Exact archived text.\",\"fixture\":true}"
+    if archive_append(database and archive_list_text(second_submit and 1) and "mismatch-final" and "assistant_final" and mismatch_final and "fixture") is not equal to 0:
+        return 38
+    set mismatch_body to "{\"content\":\"Different delivered text.\",\"message_reference\":{\"message_id\":\"101\"}}"
+    if not (discord_action_output(journal and "discord-message:101:final:0" and "message:create:101" and "300" and mismatch_body and "mismatch-final" and 1) equals "enqueued"):
+        return 39
+    set claimed to discord_outbox_claim(journal and "discord-message:101:final:0" and "mismatch-fixture")
+    if not (archive_list_text(claimed and 0) equals "claimed") or else not (discord_outbox_finish(journal and "discord-message:101:final:0" and "mismatch-fixture" and "sent" and "899" and "synthetic receipt") equals "recorded") or else not (discord_final_backfill(journal and database and "discord-message:101:final:0") equals "legacy-content-mismatch"):
+        return 40
+    if not (archive_list_text(discord_final_lookup(journal and "899" and "300") and 0) equals "final-unavailable"):
+        return 41
+    set revoked to sql_execute(database and "UPDATE echo_devices SET revoked=1 WHERE device='discord:500';")
+    if revoked is not equal to 0 or else not (discord_agent_output(journal and database and "message:create:100") equals "authority-revoked"):
+        return 10
+    display "PASS: historical complete-reply backfill, idempotence and reopen; completed bound output, UTF-8 chunks, resumed final without overwrite, reopen idempotency and revoked authority denial"
+    return 0

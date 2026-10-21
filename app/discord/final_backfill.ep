@@ -1,0 +1,78 @@
+import "agent_output"
+
+# Host maintenance: recover provenance only from a retained Speak binding and
+# the exact complete archived reply. Never regenerate, rechunk or send anything.
+define discord_final_backfill with journal as Int and database as Int and action_output as Str returning Str:
+    if discord_final_binding_schema(journal) is not equal to 0 or else discord_message_actions_schema(journal) is not equal to 0:
+        return "store-failed"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "writer-unavailable"
+    set result to discord_final_backfill_locked(journal and database and action_output)
+    if not (result equals "bound"):
+        return migration_fail(journal and result)
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "commit-failed")
+    return result
+
+define discord_final_backfill_locked with journal as Int and database as Int and action_output as Str returning Str:
+    set keys to [action_output]
+    set anchor to history_collect_one(checkpoint_prepare(journal and "SELECT a.final_event,o.inbox,o.channel FROM discord_message_actions a JOIN discord_outbox o ON o.identity=a.outbox WHERE a.outbox=?1 AND a.action='speak' AND o.state='sent';" and keys))
+    if not (archive_list_text(anchor and 0) equals "found"):
+        return "legacy-anchor-unavailable"
+    set final_event to archive_list_text(anchor and 1)
+    set final to archive_read_event(database and final_event)
+    if final equals 0 or else not (archive_list_text(final and 2) equals "assistant_final"):
+        return "legacy-final-unavailable"
+    set payload to provider_json_tokens(archive_list_text(final and 3))
+    set run to provider_value(payload and provider_member(payload and 0 and "run_id"))
+    set content_index to provider_member(payload and 0 and "content")
+    if string_length(run) equals 0 or else not (provider_kind(payload and content_index) equals "string"):
+        return "legacy-final-unavailable"
+    set content to provider_value(payload and content_index)
+    if string_length(content) equals 0 or else provider_valid_utf8(content) equals 0:
+        return "legacy-final-unavailable"
+    set source to discord_job_source(journal and database and run)
+    if not (source equals archive_list_text(anchor and 2)):
+        return "legacy-source-mismatch"
+    set intake to discord_intake_source(journal and source)
+    if not (archive_list_text(intake and 0) equals "found") or else not (archive_list_text(intake and 4) equals archive_list_text(anchor and 3)):
+        return "legacy-source-mismatch"
+    set run_keys to [run,archive_list_text(final and 0)]
+    set accepted to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_runs WHERE run=?1 AND session=?2;" and run_keys))
+    if not (archive_list_text(accepted and 0) equals "found"):
+        return "legacy-final-mismatch"
+    set prefix to concat(run and ":final:")
+    if not (string_index_of(action_output and prefix) equals 0):
+        set prefix to concat(run and concat(":final-event:" and concat(ep_sha256(final_event) and ":")))
+    if not (string_index_of(action_output and prefix) equals 0):
+        return "legacy-prefix-mismatch"
+    set prefix_keys to [prefix]
+    set rows to history_collect_one(checkpoint_prepare(journal and "SELECT COALESCE(json_group_array(json_object('identity',identity,'inbox',inbox,'channel',channel,'state',state,'message',message,'body',body)),'[]') FROM (SELECT * FROM discord_outbox WHERE substr(identity,1,length(?1))=?1 ORDER BY CAST(substr(identity,length(?1)+1) AS INTEGER));" and prefix_keys))
+    if not (archive_list_text(rows and 0) equals "found"):
+        return "store-failed"
+    set tokens to provider_json_tokens(archive_list_text(rows and 1))
+    set items to provider_items(tokens and 0)
+    if length_list(items) equals 0:
+        return "legacy-chunks-unavailable"
+    set assembled to ""
+    set index to 0
+    set outputs to create_list()
+    for each item in items:
+        set output to provider_value(tokens and provider_member(tokens and item and "identity"))
+        if not (output equals concat(prefix and int_to_string(index))) or else not (provider_value(tokens and provider_member(tokens and item and "inbox")) equals source) or else not (provider_value(tokens and provider_member(tokens and item and "channel")) equals archive_list_text(anchor and 3)) or else not (provider_value(tokens and provider_member(tokens and item and "state")) equals "sent") or else discord_snowflake(provider_value(tokens and provider_member(tokens and item and "message"))) equals 0:
+            return "legacy-chunks-mismatch"
+        set body to provider_json_tokens(provider_value(tokens and provider_member(tokens and item and "body")))
+        set text_index to provider_member(body and 0 and "content")
+        set reference to provider_member(body and 0 and "message_reference")
+        if body equals 0 or else provider_unique_objects(body) equals 0 or else not (provider_kind(body and text_index) equals "string") or else not (provider_value(body and provider_member(body and reference and "message_id")) equals archive_list_text(intake and 6)):
+            return "legacy-chunks-mismatch"
+        set assembled to concat(assembled and provider_value(body and text_index))
+        set added to append_list(outputs and output)
+        set index to index + 1
+    if not (assembled equals content):
+        return "legacy-content-mismatch"
+    for each output in outputs:
+        set result to discord_final_bind(journal and ptr_to_str(output) and run and final_event)
+        if not (result equals "bound"):
+            return result
+    return "bound"
