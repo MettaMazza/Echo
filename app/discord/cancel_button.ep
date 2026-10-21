@@ -1,0 +1,73 @@
+import "cancel_control"
+import "command_authority"
+import "access"
+import "agent_bridge"
+
+# Dedicated bindings do not overload final-message Speak actions. A button
+# names its original request forever; it never searches for the latest run.
+define discord_cancel_buttons_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_cancel_buttons(identity TEXT PRIMARY KEY,outbox TEXT NOT NULL UNIQUE REFERENCES discord_outbox(identity),source TEXT NOT NULL REFERENCES discord_inbox(identity)); CREATE TRIGGER IF NOT EXISTS discord_cancel_buttons_no_update BEFORE UPDATE ON discord_cancel_buttons BEGIN SELECT RAISE(ABORT,'Cancel binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_cancel_buttons_no_delete BEFORE DELETE ON discord_cancel_buttons BEGIN SELECT RAISE(ABORT,'Cancel binding persists'); END;")
+
+define discord_cancel_button_identity with output as Str returning Str:
+    return concat("echocancel:" and ep_sha256(output))
+
+define discord_cancel_button_components with output as Str and enabled as Int returning Str:
+    set disabled to "true"
+    if enabled is not equal to 0:
+        set disabled to "false"
+    return concat("[{\"type\":1,\"components\":[{\"type\":2,\"style\":4,\"label\":\"Cancel\",\"custom_id\":" and concat(provider_quote(discord_cancel_button_identity(output)) and concat(",\"disabled\":" and concat(disabled and "}]}]"))))
+
+define discord_cancel_button_bind with journal as Int and output as Str and source as Str returning Int:
+    if discord_cancel_buttons_schema(journal) is not equal to 0:
+        return 1
+    set identity to discord_cancel_button_identity(output)
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_cancel_buttons SELECT ?1,identity,inbox FROM discord_outbox WHERE identity=?2 AND inbox=?3;" and [identity,output,source]) and 101) is not equal to 0:
+        return 1
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_cancel_buttons WHERE identity=?1 AND outbox=?2 AND source=?3;" and [identity,output,source]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return 1
+    return 0
+
+define discord_cancel_button_resolve with journal as Int and body as Str and bot as Str returning List:
+    if discord_cancel_buttons_schema(journal) is not equal to 0:
+        return history_status("cancel-unavailable")
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "3") or else not (provider_value(tokens and provider_member(tokens and 0 and "application_id")) equals bot):
+        return history_status("cancel-source-denied")
+    set data to provider_member(tokens and 0 and "data")
+    set message to provider_member(tokens and 0 and "message")
+    set author to provider_member(tokens and message and "author")
+    if not (provider_value(tokens and provider_member(tokens and data and "component_type")) equals "2") or else not (provider_value(tokens and provider_member(tokens and author and "id")) equals bot):
+        return history_status("cancel-source-denied")
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "user") and "id"))
+    if guild equals "null":
+        set guild to ""
+    if string_length(guild) > 0:
+        set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and provider_member(tokens and 0 and "member") and "user") and "id"))
+    set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
+    set identity to provider_value(tokens and provider_member(tokens and data and "custom_id"))
+    set message_id to provider_value(tokens and provider_member(tokens and message and "id"))
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT b.source FROM discord_cancel_buttons b JOIN discord_outbox o ON o.identity=b.outbox JOIN discord_inbox i ON i.identity=b.source WHERE b.identity=?1 AND o.state='sent' AND o.message=?2 AND o.channel=?3 AND i.kind='MESSAGE_CREATE' AND json_extract(i.payload,'$.channel_id')=?3 AND COALESCE(json_extract(i.payload,'$.guild_id'),'')=?4 AND json_extract(i.payload,'$.author.id')=?5;" and [identity,message_id,room,guild,actor]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("cancel-source-denied")
+    return ["cancel-bound",archive_list_text(row and 1),actor,room,guild]
+
+define discord_cancel_button_tick with library as Str and token as Str and journal as Int and database as Int and identity as Str and body as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file) or else discord_command_acknowledged(journal and identity and body) equals 0:
+        return "cancel-source-denied"
+    set bound to discord_cancel_button_resolve(journal and body and bot)
+    if not (archive_list_text(bound and 0) equals "cancel-bound"):
+        return archive_list_text(bound and 0)
+    set actor to archive_list_text(bound and 2)
+    set room to archive_list_text(bound and 3)
+    set guild to archive_list_text(bound and 4)
+    if (string_length(guild) > 0 and discord_contains(guilds and guild) equals 0) or else (string_length(guild) equals 0 and discord_contains(admins and actor) equals 0):
+        return "cancel-source-denied"
+    set access to discord_access_check(library and token and journal and directory_path and bot and guild and room and actor and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return "cancel-source-denied"
+    set device to discord_agent_principal(database and actor and admins)
+    if string_length(device) equals 0 or else string_length(principal_for_device(database and device)) equals 0 or else file_exists(stop_file) or else discord_command_acknowledged(journal and identity and body) equals 0:
+        return "cancel-source-denied"
+    return discord_cancel_source(journal and archive_list_text(bound and 1) and actor and room and guild and identity)

@@ -2,6 +2,20 @@
 
 Implementation in progress, not registered or deployed.
 
+The Cancel button is also implemented on the request's durable queue/active
+status reply. Its immutable identifier binds to the original message, sender,
+channel and guild, and the button is disabled once that request is terminal.
+Authenticated component interactions recheck current channel access before
+requesting cancellation. The button does not pick the latest run. Native tests
+passed queue-position-one availability, foreign sender/channel/message denial,
+restart/replay and terminal button state. Live component acceptance is pending.
+
+New completed responses put Speak on their last text chunk. It still speaks the
+whole accepted response. Retry recovery preserves previously published legacy
+first-chunk bindings rather than duplicating or silently moving existing buttons.
+The four-chunk Unicode, retry, reopen and resumed-final fixture passed; live
+multi-chunk acceptance remains pending.
+
 `/cancel message:<original message ID>` identifies the user's original channel
 message, rather than whichever run happens to be current when execution occurs.
 The authenticated interaction supplies actor/channel/guild. The command checks

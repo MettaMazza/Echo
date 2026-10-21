@@ -90,6 +90,15 @@ define discord_agent_output_final with journal as Int and database as Int and in
         set output_prefix to concat(run and concat(":final-event:" and concat(final_hash and ":")))
     # Byte-bounded chunks also fit Discord's character limit, including emoji.
     # Back off continuation bytes rather than corrupting a Unicode codepoint.
+    # Preserve already-published legacy replies on retry. New replies bind
+    # Speak to the final chunk; the action still reads the entire final event.
+    if discord_message_actions_schema(journal) is not equal to 0:
+        return "store-failed"
+    set first_output to concat(output_prefix and "0")
+    set legacy to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_message_actions WHERE outbox=?1 AND action='speak' AND final_event=?2;" and [first_output,final_event]))
+    if not (archive_list_text(legacy and 0) equals "found" or else archive_list_text(legacy and 0) equals "end"):
+        return "action-binding-unavailable"
+    set legacy_first to archive_list_text(legacy and 0) equals "found"
     set offset to 0
     set part to 0
     repeat while offset < string_length(content):
@@ -103,7 +112,7 @@ define discord_agent_output_final with journal as Int and database as Int and in
         set queued to ""
         # Reply controls are part of the Discord interface, not an optional
         # process environment feature. Authority remains checked at click time.
-        if part equals 0:
+        if (legacy_first and part equals 0) or else (not legacy_first and offset + count equals string_length(content)):
             set queued to discord_action_output(journal and identity and inbox and room and body and final_event and 1)
         else:
             set queued to discord_outbox_enqueue(journal and identity and inbox and room and body)
