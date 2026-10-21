@@ -51,3 +51,25 @@ leakage. Evidence `r4-1792599605512192000`, binary
 The separate legacy baseline failed in 6.819 s with the same prepare diagnostic
 as the modified build (`legacy-baseline-1792599605512239000`). Timings were
 collected concurrently and are test durations, not performance comparisons.
+
+## Reply-to-event binding
+
+The candidate delivery path now records an immutable `discord_final_bindings`
+row for every reply chunk, not only the final chunk carrying Speak. The row
+binds the outbox identity, accepted run, exact final event and body digest.
+Resolution requires a confirmed sent message in the exact channel and an
+unchanged body. Conflicting rebindings are rejected; interrupted enqueue/bind
+can be repaired by the same validated output replay. This lookup supplies
+provenance only: command execution must still recheck current Discord access
+and the source group's authority before branching. Existing old replies are
+not blindly inferred or backfilled from their visible text.
+
+Native transport fixture exercises all four chunks, pending/wrong-channel
+denial, conflicting run binding, a later final, journal reopen, unchanged
+Speak placement and revoked output authority. Native qualification passed in 10.019 s: receipt
+`group-branches-20261021/final-binding-r2-1792600025168968000`, binary
+SHA-256 `c69a6181cad4d941e9ebdca36da252d1e926a7533b292171f77d5010abc05757`.
+The earlier 9.840 s pass is retained; the final rebuild uses explicit rooted
+argument/result lists. These are synthetic transport tests, not live Discord
+branch acceptance. No command is registered
+and this delivery change is not deployed yet.

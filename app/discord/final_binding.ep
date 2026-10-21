@@ -1,0 +1,36 @@
+import "store"
+
+# Every delivered chunk points to its exact accepted final, independently of
+# which chunk carries Speak. This is provenance, never an authority grant.
+define discord_final_binding_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_final_bindings(outbox TEXT PRIMARY KEY REFERENCES discord_outbox(identity),run TEXT NOT NULL,final_event TEXT NOT NULL,body_sha256 TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_final_binding_no_update BEFORE UPDATE ON discord_final_bindings BEGIN SELECT RAISE(ABORT,'Final binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_final_binding_no_delete BEFORE DELETE ON discord_final_bindings BEGIN SELECT RAISE(ABORT,'Final provenance persists'); END;")
+
+# Called only after final/run/source validation and successful enqueue. On a
+# crash between enqueue and binding, the same output replay repairs the gap.
+define discord_final_bind with journal as Int and output as Str and run as Str and final_event as Str returning Str:
+    if discord_final_binding_schema(journal) is not equal to 0:
+        return "store-failed"
+    set keys to [output,run,final_event]
+    set output_keys to [output]
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT body FROM discord_outbox WHERE identity=?1;" and output_keys))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "output-unavailable"
+    set added to append_list(keys and ep_sha256(archive_list_text(row and 1)))
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_final_bindings VALUES(?1,?2,?3,?4);" and keys) and 101) is not equal to 0:
+        return "store-failed"
+    set matched to history_collect_one(checkpoint_prepare(journal and "SELECT outbox FROM discord_final_bindings WHERE outbox=?1 AND run=?2 AND final_event=?3 AND body_sha256=?4;" and keys))
+    if not (archive_list_text(matched and 0) equals "found"):
+        return "final-binding-conflict"
+    return "bound"
+
+# Resolve only confirmed delivery in the exact channel. Callers must still
+# check current Discord access and group rights before reading or branching.
+define discord_final_lookup with journal as Int and message as Str and room as Str returning List:
+    if discord_snowflake(message) equals 0 or else discord_snowflake(room) equals 0 or else discord_final_binding_schema(journal) is not equal to 0:
+        return history_status("final-unavailable")
+    set keys to [message,room]
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT b.run,b.final_event,b.body_sha256,o.body FROM discord_final_bindings b JOIN discord_outbox o ON o.identity=b.outbox WHERE o.message=?1 AND o.channel=?2 AND o.state='sent';" and keys))
+    if not (archive_list_text(row and 0) equals "found") or else not (ep_sha256(archive_list_text(row and 4)) equals archive_list_text(row and 3)):
+        return history_status("final-unavailable")
+    set result to ["found",archive_list_text(row and 1),archive_list_text(row and 2)]
+    return result
