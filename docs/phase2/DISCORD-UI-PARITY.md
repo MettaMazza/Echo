@@ -25,7 +25,7 @@ acceptance matrix, not a completion claim. The source inventory is
 | Projects and memory controls | Commands/selectors/forms | Native `/project` deployed: private list/create/read/use/clear and restart passed, task/file editing passed native tests. Live task creation, retained-file reference addition and combined readback passed; removal/second-actor exercises remain open. Reviewed `/share` preview/confirm deployed and live-tested across permitted channels in the same guild; richer selectors, second-account/revocation checks and memory UI remain open. See DISCORD-PROJECTS.md. |
 | Schedules | Commands/forms and durable status/cancel controls | Background controller implemented; Discord UI acceptance pending |
 | Compaction | Activity status and explanation with original history preserved | Pending |
-| Settings, providers and HUD | Admin controls with read-only permitted status for ordinary users | Pending |
+| Settings, providers and HUD | Admin controls with read-only permitted status for ordinary users | Discord HUD controller passes native owner/member reads across six ordinary sections, privileged-section denial, Host/channel/guild isolation and revocation checks. Command transport, actual UI acceptance and settings/provider controls remain pending; this controller is not yet deployed. |
 | Group membership and sharing | Native audience plus explicit authorised group controls | Full parity pending; no implicit Host sharing |
 | Device/account linking | Authorised linking flow with separate platform memory | Full parity pending |
 
