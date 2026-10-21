@@ -81,8 +81,8 @@ The native group-memory regression passed in 6.295 seconds. The queued tool
 execution regression passed in 13.104 seconds: wrong digest produced the precise
 feedback, corrected retry recorded exactly one scoped claim. Evidence directories
 are `digest-1792596581793077000` and `digest-dispatch-1792596708880923000` under
-the private evidence root above. This feedback change is not yet deployed;
-production remains on the qualified rollback build.
+the private evidence root above. At that test stage the feedback change was not deployed. The independent
+qualification and subsequent deployment are recorded below.
 
 The next native diagnostic replayed all 354 saved provider events through a local
 HTTP socket, event decoder, durable archive and production Discord turn monitor.
@@ -94,3 +94,34 @@ latency. Evidence: `socket-1792597107574882000`. The crash is still not reproduc
 or resolved. The first fixture build lacked the worker-schema import; it failed
 before execution and the corrected build passed. This does not authorise
 promotion of the shared-prefix candidate.
+
+
+## Independent digest fix deployed
+
+The digest correction was isolated from the failed shared-prefix candidate:
+application and tests from qualified base `1da7c3a`, with only the two feedback
+source files and two corresponding tests from `760efad`. The exact-base queued
+fixture passed in 12.513 seconds (`digest-base-1792597377349746000`). The resulting
+agent SHA-256 is
+`7a056b5188034f8640db120206a51fd3d09993969c7e1e69f9a239422bbe577b`.
+It was installed at idle, preserving the other five connector components,
+provider configuration, existing databases and resident Warm service.
+
+Actual Discord acceptance then passed over three turns. A deliberately incorrect
+digest returned `source-digest-mismatch` with no effects; the model read the
+original, retried with its exact digest, and recorded exactly one scoped claim.
+Its visible reply accurately distinguished integrity from account authority.
+The next turn recalled the marker and date correctly; an unrelated arithmetic
+turn returned the correct number. Earlier replies and message controls remained
+visible. Private evidence is `digest-live-acceptance.json` and
+`digest-live-followups.json`, with before/after deployment receipts alongside.
+
+The first recall after writing the claim took 31.625 seconds to first model output
+and 34.173 seconds to saved final, including 31.219 seconds of prompt processing
+for 20,369 new tokens. Request comparison found the first changed message at
+index 1, the shared recall context. The subsequent warm arithmetic turn took
+1.487 seconds to first model output and 2.528 seconds to saved final; decode was
+31.214 tokens/second. Historical morning observations were 1.864 seconds and
+31.613 tokens/second, respectively. These differing prompts are not a controlled
+benchmark. The shared-prefix/cache problem remains open, and this independent
+feedback deployment does not qualify the failed prefix candidate or Phase Two.
