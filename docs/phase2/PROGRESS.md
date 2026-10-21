@@ -6,7 +6,9 @@ Discord now has live mention/reply, authenticated identity, separate scopes, Thi
 
 Current repair closed: concurrent tool discovery memory safety. Native and AddressSanitizer repeat tests passed after rooting intermediate values; full worker is deployed to the isolated testing connector and two actual consecutive discovery turns passed, including prior-turn recall. Earlier failed child state is retained without replay. See `discord-discovery-memory-2026-10-21.json` for exact acceptance scope.
 
-Closeout order: finish the current live regression once, then remaining required Discord UI/continuity/group/admin operations; proceed through the original remaining integrations (mail, generated-tool lifecycle, protected improvement, primary-model research/training/promotion, optional provider isolation), final lifecycle/integrated acceptance, joint prompt review and publication. No optional polish or new gates are added. Existing passed evidence is reused. Human-only steps remain named dependencies rather than fabricated passes.
+The shared-memory cache regression is now deployed and passed three actual Discord turns: original read/record, correct recall and unrelated response. The new-memory follow-up retained the base and produced first output in 3.865 s rather than the earlier 31.625 s rebuild; next warm turn was 1.508 s. See [qualified scope and retained failures](SHARED-RECALL-PREFIX.md). This is not whole-system latency/endurance acceptance.
+
+Closeout order: continue then remaining required Discord UI/continuity/group/admin operations; proceed through the original remaining integrations (mail, generated-tool lifecycle, protected improvement, primary-model research/training/promotion, optional provider isolation), final lifecycle/integrated acceptance, joint prompt review and publication. No optional polish or new gates are added. Existing passed evidence is reused. Human-only steps remain named dependencies rather than fabricated passes.
 
 ---
 
