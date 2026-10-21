@@ -1,0 +1,39 @@
+# Stable shared recall prefix
+
+21 October 2026. Candidate implementation; not deployed or live-qualified.
+
+Request inspection distinguished tool-schema changes from shared recall changes.
+Recent deployments changed the tool catalog, which occurs early in the model
+prompt and legitimately invalidates most cached tokens. Separately, shared
+recall reconstructed its entire automatic-memory message when claims changed.
+That message precedes conversation history, causing avoidable recomputation.
+
+The candidate uses the existing per-session snapshot and per-turn delta design
+for the exact shared audience. It retains the first authorised base for the
+current revision, appends each new claim identity once at its original turn, and
+replays those additions from the archive. It does not cap history, shorten
+reasoning, remove claims, change the provider capacity or substitute summaries.
+
+Existing access, audience, runtime, visibility, supersession and expiry revision
+checks still invalidate retained recall. Shared checkpoint changes now also
+invalidate the base, so claims in earlier additions survive a history recap as
+part of the new base. The snapshot format revision advances to v3; this causes
+a one-time rebase for existing private and shared sessions. Private selection
+and delta semantics otherwise remain unchanged.
+
+The first native fixture passed in 10.304 seconds: stable base after a new
+claim, exact nonduplicated addition, idempotent capture, reopen, forgetting,
+source digests, delegated-child isolation and user/channel/server/DM/private
+isolation. It is synthetic data, not model or Discord latency evidence.
+Evidence: `evidence/phase2/shared-prefix-20261021/r1-1792595847077079000`.
+The expanded shared fixture passed in 9.228 seconds, including a real checkpoint
+switch with a labelled synthetic recap. The existing private-prefix regression
+passed in 4.216 seconds. Their receipts are `r2-1792595958060426000` and
+`private-1792595972630675000`. Tests retain their full diagnostic output, including
+pre-existing duplicate semantic-unavailable diagnostic warnings during repeated
+capture; the asserted snapshot and archive-integrity checks passed.
+
+Metadata-only request comparison is retained privately as
+`request-prefix-comparison.json`. No private prompts or source records are
+published. Cold-cache performance, controlled multi-turn measurements and
+live recall/correction still require qualification. This does not close Phase Two.
