@@ -10,6 +10,12 @@ import "media_route"
 import "../archive/location"
 
 define agent_loop_inner_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
+    return agent_loop_inner_provider_managed(database and run and profile and output_reserve and cancellation_reader and read_size and library and "")
+
+# A host service stop at a question boundary suspends the worker without
+# manufacturing a user cancellation. Authority is still checked first, and
+# all active inference/tool cancellation behavior remains unchanged.
+define agent_loop_inner_provider_managed with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int and service_stop as Str returning Str:
     set provider_config to provider_json_tokens(profile)
     set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
     set idle to channel
@@ -28,6 +34,14 @@ define agent_loop_inner_provider with database as Int and run as Str and profile
             if agent_cancel_run(database and run) is not equal to 0:
                 return "cancellation-error"
             return "cancelled"
+        if state equals "ready" and string_length(service_stop) > 0 and file_exists(service_stop):
+            set question to questions_pending(database and run)
+            if not (question equals "null") and string_contains(question and "question-read-error") equals 0:
+                set explicit_cancel to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run=?1;" and [run]))
+                if archive_list_text(explicit_cancel and 0) equals "end":
+                    return "question-suspended"
+                if not (archive_list_text(explicit_cancel and 0) equals "found"):
+                    return "shutdown-cancel-check-error"
         set cancellation to agent_cancellation_pending(library and cancellation_reader)
         if cancellation is less than 0:
             return "cancellation-error"
@@ -99,6 +113,9 @@ define agent_loop_inner_provider with database as Int and run as Str and profile
 # Capacity triggers archived recap/review/activation before resuming this run.
 # Configuration and unresolved recap failures return explicitly, never truncate.
 define agent_loop_provider with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int returning Str:
+    return agent_loop_provider_managed(database and run and profile and output_reserve and cancellation_reader and read_size and "")
+
+define agent_loop_provider_managed with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int and service_stop as Str returning Str:
     set provider_config to provider_json_tokens(profile)
     set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
     set existing to agent_run_read(database and run)
@@ -130,8 +147,8 @@ define agent_loop_provider with database as Int and run as Str and profile as St
         spawn agent_memory_prepare_parallel(memory_path and memory_run and memory_profile and output_reserve and cancellation_reader and read_size and memory_done)
     else:
         set remembered to memory_prepare(database and run and effective and output_reserve and cancellation_reader and read_size)
-    set result to agent_loop_inner_provider(database and run and effective and output_reserve and cancellation_reader and read_size and library)
-    if autonomy_enabled(database and run):
+    set result to agent_loop_inner_provider_managed(database and run and effective and output_reserve and cancellation_reader and read_size and library and service_stop)
+    if autonomy_enabled(database and run) and not (result equals "question-suspended"):
         set disabled to autonomy_off(database and run and concat(run and concat(":auto-exit:" and agent_identity())) and concat("Loop stopped: " and result))
     if not (result equals "completed" or else result equals "cancelled"):
         set recorded to agent_attempt_record(database and run and result)
@@ -144,7 +161,7 @@ define agent_loop_provider with database as Int and run as Str and profile as St
         set retryable to result equals "context-recovery-required" or else result equals "database-busy" or else result equals "archive-error" or else result equals "discovery-failed" or else result equals "invalid-metadata" or else result equals "profile-archive-failed" or else result equals "preflight-archive-failed"
         set retry_state to agent_run_read(database and run)
         if retryable and retry_state is not equal to 0 and archive_list_text(retry_state and 2) equals "ready" and archive_list_text(retry_state and 3) equals archive_list_text(existing and 3):
-            set result to agent_loop_inner_provider(database and run and effective and output_reserve and cancellation_reader and read_size and library)
+            set result to agent_loop_inner_provider_managed(database and run and effective and output_reserve and cancellation_reader and read_size and library and service_stop)
             set recorded to agent_attempt_record(database and run and result)
     if ep_dlclose(library) is not equal to 0:
         return "cleanup-error"
