@@ -30,33 +30,41 @@ define echo_temporal_elapsed with start as Str and observed as Int returning Str
 define echo_temporal_observation with database as Int and run as Str and observed as Int returning Str:
     set values to create_list()
     set added to append_list(values and run)
-    set statement to "SELECT r.session,s.created,e.occurred,e.sequence FROM echo_runs r JOIN echo_sessions s ON s.session=r.session JOIN echo_events e ON e.event=r.objective_event AND e.session=r.session WHERE r.run=?1;"
+    set statement to "SELECT r.session,s.created,e.occurred,e.sequence,COALESCE(json_extract(CASE WHEN json_valid(t.payload) THEN t.payload ELSE '{}' END,'$.received_unix_ms'),'') FROM echo_runs r JOIN echo_sessions s ON s.session=r.session JOIN echo_events e ON e.event=r.objective_event AND e.session=r.session LEFT JOIN echo_events t ON t.event=e.event||':received' AND t.session=e.session AND t.kind='input_received' WHERE r.run=?1;"
     set current to history_collect_one(checkpoint_prepare(database and statement and values))
     if not (archive_list_text(current and 0) equals "found"):
         return "{\"status\":\"temporal-context-unavailable\"}"
     set session to archive_list_text(current and 1)
     set created to echo_temporal_milliseconds(archive_list_text(current and 2))
     set received to echo_temporal_milliseconds(archive_list_text(current and 3))
+    set source_received to echo_temporal_milliseconds(concat("unix-ms:" and archive_list_text(current and 5)))
     set parameters to create_list()
     set added to append_list(parameters and session)
     set added to append_list(parameters and archive_list_text(current and 4))
     # Runtime autonomy messages are not human turns. Guidance counts only when
     # it is an actual human input. Synthetic/delegated origins stay labelled.
-    set query to "WITH turns AS (SELECT sequence,occurred FROM echo_events WHERE session=?1 AND sequence<=CAST(?2 AS INTEGER) AND kind IN ('user','user_guidance') AND NOT (json_valid(payload) AND COALESCE(json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.runtime_autonomy'),0)=1)) SELECT CAST(COUNT(*) AS TEXT),COALESCE((SELECT occurred FROM turns ORDER BY sequence LIMIT 1),''),COALESCE((SELECT occurred FROM turns WHERE sequence<CAST(?2 AS INTEGER) ORDER BY sequence DESC LIMIT 1),'') FROM turns;"
+    set query to "WITH turns AS (SELECT e.sequence,e.occurred,COALESCE(json_extract(CASE WHEN json_valid(t.payload) THEN t.payload ELSE '{}' END,'$.received_unix_ms'),'') AS receipt FROM echo_events e LEFT JOIN echo_events t ON t.event=e.event||':received' AND t.session=e.session AND t.kind='input_received' WHERE e.session=?1 AND e.sequence<=CAST(?2 AS INTEGER) AND e.kind IN ('user','user_guidance') AND NOT (json_valid(e.payload) AND COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.runtime_autonomy'),0)=1)) SELECT CAST(COUNT(*) AS TEXT),COALESCE((SELECT occurred FROM turns ORDER BY sequence LIMIT 1),''),COALESCE((SELECT occurred FROM turns WHERE sequence<CAST(?2 AS INTEGER) ORDER BY sequence DESC LIMIT 1),''),COALESCE((SELECT receipt FROM turns ORDER BY sequence LIMIT 1),''),COALESCE((SELECT receipt FROM turns WHERE sequence<CAST(?2 AS INTEGER) ORDER BY sequence DESC LIMIT 1),'') FROM turns;"
     set turns to history_collect_one(checkpoint_prepare(database and query and parameters))
     if not (archive_list_text(turns and 0) equals "found"):
         return "{\"status\":\"temporal-context-unavailable\"}"
     set first to echo_temporal_milliseconds(archive_list_text(turns and 2))
     set previous to echo_temporal_milliseconds(archive_list_text(turns and 3))
+    set first_receipt to echo_temporal_milliseconds(concat("unix-ms:" and archive_list_text(turns and 4)))
+    set previous_receipt to echo_temporal_milliseconds(concat("unix-ms:" and archive_list_text(turns and 5)))
     set result to concat("{\"status\":\"observed\",\"observed_unix_ms\":" and int_to_string(observed))
     set result to concat(result and concat(",\"clock\":" and provider_quote(echo_clock_observation(observed))))
     set result to concat(result and concat(",\"session_created_unix_ms\":" and created))
     set result to concat(result and concat(",\"session_age_ms\":" and echo_temporal_elapsed(created and observed)))
-    set result to concat(result and concat(",\"first_input_unix_ms\":" and first))
-    set result to concat(result and concat(",\"elapsed_since_first_input_ms\":" and echo_temporal_elapsed(first and observed)))
-    set result to concat(result and concat(",\"current_run_received_unix_ms\":" and received))
-    set result to concat(result and concat(",\"elapsed_since_run_received_ms\":" and echo_temporal_elapsed(received and observed)))
-    set result to concat(result and concat(",\"previous_input_unix_ms\":" and previous))
-    set result to concat(result and concat(",\"gap_before_current_input_ms\":" and echo_temporal_elapsed(previous and http_decimal(received))))
+    set result to concat(result and concat(",\"first_admitted_input_unix_ms\":" and first))
+    set result to concat(result and concat(",\"elapsed_since_first_admitted_input_ms\":" and echo_temporal_elapsed(first and observed)))
+    set result to concat(result and concat(",\"current_run_admitted_unix_ms\":" and received))
+    set result to concat(result and concat(",\"elapsed_since_run_admitted_ms\":" and echo_temporal_elapsed(received and observed)))
+    set result to concat(result and concat(",\"previous_admitted_input_unix_ms\":" and previous))
+    set result to concat(result and concat(",\"gap_between_admitted_inputs_ms\":" and echo_temporal_elapsed(previous and http_decimal(received))))
     set result to concat(result and concat(",\"scoped_input_count\":" and archive_list_text(turns and 1)))
-    return concat(result and ",\"interpretation\":\"Computed from this exact session's stored host timestamps. Inputs include recorded user/guidance events, which may be labelled operator tests or delegated work; do not infer a human author from role alone. Session age and wall-clock gaps are not continuous active conversation time. Historical memories and parent branches do not set this session's start. Null durations mean unknown timestamp or backward clock, not zero. This is dated runtime evidence, not a new user request.\"}")
+    set result to concat(result and concat(",\"first_input_received_unix_ms\":" and first_receipt))
+    set result to concat(result and concat(",\"current_input_received_unix_ms\":" and source_received))
+    set result to concat(result and concat(",\"previous_input_received_unix_ms\":" and previous_receipt))
+    set result to concat(result and concat(",\"gap_between_received_inputs_ms\":" and echo_temporal_elapsed(previous_receipt and http_decimal(source_received))))
+    set result to concat(result and concat(",\"receipt_to_admission_ms\":" and echo_temporal_elapsed(source_received and http_decimal(received))))
+    return concat(result and ",\"interpretation\":\"Computed from this exact session's stored host timestamps. Inputs include recorded user/guidance events, which may be labelled operator tests or delegated work; do not infer a human author from role alone. Admission timestamps describe when a queued request entered its run, NOT when the user sent it or the gateway received it. Separately recorded receipt timestamps come from the immutable transport journal; absent historical receipts remain null. Session age and wall-clock gaps are not continuous active conversation time. Do not estimate time spent computing or active conversation from these values; neither is measured here. Historical memories and parent branches do not set this session's start. Null durations mean unknown timestamp or backward clock, not zero. This is dated runtime evidence, not a new user request.\"}")

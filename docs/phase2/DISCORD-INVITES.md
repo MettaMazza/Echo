@@ -1,6 +1,6 @@
 # Discord channel invitations — candidate qualification
 
-Status: native acceptance passed; worker build and real Discord acceptance pending. This is one controller within original Step 15, not completion of that dependency.
+Status: native and real three-turn invitation lifecycle acceptance passed, including reload and cleanup. This is one controller within original Step 15, not completion of that dependency.
 
 The `discord_invites` tool provides list, inspect, create and delete for the authenticated current channel and guild. Both the frozen configured-admin identity and current requester/bot Discord permissions are required. A guest refusal explicitly identifies a requester-role restriction, not a general system failure. Invites for another channel or guild are rejected.
 
@@ -10,6 +10,12 @@ Public observations contain the invite code, current guild/channel and expiry/us
 
 Native binding tests cover host-runtime refusal, forged calls, ordinary-user denial, configured-admin binding and revocation. The execution helper is rebuilt with the same capability catalogue; actual native process execution, cancellation/reaping and revocation tests passed.
 
-Evidence: `/Volumes/One Touch/Echo/evidence/phase2/discord-invite-admin-20261022/integration/`. Native receipts are evidence for their stated cases only. Real create/inspect/list/delete, follow-up, reload and cleanup remain pending.
+Evidence: `/Volumes/One Touch/Echo/evidence/phase2/discord-invite-admin-20261022/integration/`. Native receipts are evidence for their stated cases only. Actual runs 1562721286134702141, 1562721323107614751 and 1562721357110968321 completed. Five invitation results independently matched retained Discord responses and hashes: exactly one create, two inspections, one delete and one final list confirming absence. All three replies and Speak controls persisted after reload; the cleanup source message opened its thinking/tool thread. No pre-existing invitation was mutated. The normal follow-up preserved iris-731, arithmetic 43 and the authenticated account name.
 
 Primary API references: [Channel invitations](https://docs.discord.com/developers/resources/channel#get-channel-invites), [Invite resource](https://docs.discord.com/developers/resources/invite).
+
+## Separate timing finding
+
+The associated temporal test exposed a distinct admission-versus-receipt bug: two queued messages arrived 8,056 ms apart, while their runs were admitted 143,899 ms apart. The first candidate called the latter a message gap, and Echo repeated it as though it measured sending time. The arithmetic was internally consistent but the meaning was wrong; the temporal requirement is not accepted on that evidence. A correction records immutable gateway receipt timestamps separately, labels admission times explicitly, leaves missing historical receipts unknown and forbids inferring unmeasured active/computing duration. Its dedicated native queue fixture passed; rebuilt integration and live retest remain pending.
+
+Cold first-output latency was 147.682 seconds for the changed request/context; later model steps were approximately 1.9–7.8 seconds. These heterogeneous observations do not establish parity with the historical morning baseline.
