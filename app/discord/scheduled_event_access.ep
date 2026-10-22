@@ -1,6 +1,7 @@
 import "invite_tool"
 import "scheduled_event_view"
 import "scheduled_event_effective"
+import "select"
 
 # All observations are local to one tool invocation; no cross-turn authority cache.
 define discord_event_channel with library as Str and token as Str and journal as Int and directory_path as Str and guild as Str and room as Str returning List:
@@ -76,3 +77,44 @@ define discord_event_mutation_plan with body as Str and options as List and now 
     if entity_type equals "3":
         set room to ""
     return ["valid",payload,entity_type,room]
+
+# Wait only for read-side rate deadlines. Stop, revocation and source changes
+# are checked every 100 ms without consuming further Discord REST allowance.
+define discord_event_read_wait with journal as Int and database as Int and run as Str and call_id as Str and source as List and admins as List and stop_file as Str and bucket as Str and major as Str returning Str:
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    repeat while 1 equals 1:
+        if file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else discord_contains(admins and archive_list_text(source and 3)) equals 0 or else tool_policy_allows(database and run and call_id and "discord_events") equals 0:
+            return "event-authority-revoked-or-stopped"
+        set values to [run]
+        set cancellation to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run=?1;" and values))
+        if not (archive_list_text(cancellation and 0) equals "end"):
+            return "event-cancelled-or-cancellation-unavailable"
+        set inbox to discord_job_origin(journal and database and run)
+        if discord_run_barrier(journal and inbox and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and archive_list_text(source and 4) and archive_list_text(source and 5)) is not equal to 0:
+            return "event-source-or-permission-changed"
+        set deadline to discord_rate_deadline(journal and bucket and major)
+        if deadline < 0:
+            return "event-rate-state-unavailable"
+        if deadline <= ep_time_now_ms():
+            return "ready"
+        set waited to select(waits and 100)
+    return "event-wait-failed"
+
+# Only idempotent GETs retry. Every 429 receipt remains retained. A malformed
+# response without a future recorded deadline returns unchanged, never spins.
+define discord_event_get with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and admins as List and directory_path as Str and stop_file as Str and route as Str and bucket as Str and major as Str returning List:
+    if discord_delivery_schema(journal) is not equal to 0:
+        return history_status("event-rate-state-unavailable")
+    repeat while 1 equals 1:
+        set readiness to discord_event_read_wait(journal and database and run and call_id and source and admins and stop_file and bucket and major)
+        if not (readiness equals "ready"):
+            return history_status(readiness)
+        set observed to discord_access_get(library and token and journal and directory_path and route and bucket and major)
+        set status to archive_list_text(observed and 0)
+        if not (status equals "rate-limited" or else status equals "http-429"):
+            return observed
+        if discord_rate_deadline(journal and bucket and major) <= ep_time_now_ms():
+            return observed
+    return history_status("event-read-failed")

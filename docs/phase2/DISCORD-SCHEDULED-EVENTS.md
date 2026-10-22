@@ -93,7 +93,12 @@ The candidate feedback change names missing required argument paths and says a
 retry must include the complete corrected call, retaining the user's values. Its
 native regression test passed, including exact missing paths, complete-input
 checks and valid JSON. Generated C retains the required-fields list as a GC
-root. The subsequent live retry is pending. This improves
+root. The subsequent E22B live retry created the requested external event with exact
+name, description, location and start/end times, independently read back from
+Discord. Its first call still omitted dates; the named-field feedback enabled
+the next complete call to succeed. Private receipts are
+`integration-feedback/E22B-create-turn.json` and
+`integration-feedback/E22B-create-readback.json`. This improves
 error recovery without weakening permission or input validation.
 
 The initial cold request processed approximately 179,000 tokens. Archived request
@@ -102,3 +107,28 @@ into automatic context (bypassing private-memory semantic selection), plus three
 large historical system-inspection results. Evidence is retained in
 `integration/live-context-sizing.json`. No memory or reasoning was removed, and
 no latency fix is claimed by this event-controller checkpoint.
+
+
+## Follow-up rate-limit defect — 22 October
+
+E22C attempted inspection before a description edit and interested-user read.
+The final fresh-state GET repeatedly hit the same Discord rate bucket already
+used by the initial GET. Repeating the entire tool call reproduced the failure.
+The real Cancel control stopped the run; independent REST confirmed that the
+fixture remained scheduled with its original description. No edit is accepted.
+The failure and readback are retained in `integration-rate/E22C-failure.json`.
+
+The candidate now shares one event-read bucket keyed by guild, waits for the
+recorded server deadline, and retries only idempotent GETs. The wait checks
+stop, admitted admin authority, cancellation and source/permission barriers at
+100 ms intervals. Missing rate-state or a 429 without a future recorded deadline
+returns an error. Mutation requests are never automatically replayed. Final
+fresh authority observations occur after the potentially delayed event read.
+Native deadline/cancellation/revocation qualification passed, and all five affected
+worker builds passed with unchanged application sources. The initial test build
+missed an import; its first runtime fixture lacked worker/job schemas. Both
+failures are retained alongside the corrected passing test. The candidate was
+deployed at verified idle for live acceptance; E22D is now exercising inspection,
+description editing and interested-user retrieval. Those results remain pending.
+Evidence: `integration-rate/native-wait.json`, `build-qualification.json` and
+`after-deployment.json`.
