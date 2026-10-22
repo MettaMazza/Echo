@@ -1,0 +1,78 @@
+import "invite_tool"
+import "scheduled_event_view"
+import "scheduled_event_effective"
+
+# All observations are local to one tool invocation; no cross-turn authority cache.
+define discord_event_channel with library as Str and token as Str and journal as Int and directory_path as Str and guild as Str and room as Str returning List:
+    if string_length(room) equals 0:
+        return ["observed","{}"]
+    if discord_snowflake(room) equals 0:
+        return history_status("invalid-event-channel")
+    set route to concat("/channels/" and room)
+    set observed to discord_access_get(library and token and journal and directory_path and route and "GET:event-channel" and guild)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return observed
+    set fields to provider_json_tokens(archive_list_text(observed and 1))
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "id")) equals room) or else not (provider_value(fields and provider_member(fields and 0 and "guild_id")) equals guild):
+        return history_status("event-channel-binding-invalid")
+    return observed
+
+define discord_event_permissions with bundle as List and origin as Str and channel_body as Str and guild as Str and actor as Str and bot as Str and creator as Str and entity_type as Int and operation as Str returning Int:
+    if discord_member_bundle_valid(bundle and guild and actor and bot and actor and 0) equals 0:
+        return 0
+    if entity_type is not equal to 3 and also discord_channel_same_audience(origin and channel_body and guild) equals 0:
+        return 0
+    set server to archive_list_text(bundle and 1)
+    set roles to archive_list_text(bundle and 2)
+    set requester to archive_list_text(bundle and 3)
+    set bot_member to archive_list_text(bundle and 4)
+    return discord_scheduled_event_permission(server and roles and requester and channel_body and guild and actor and creator and entity_type and operation) equals 1 and also discord_scheduled_event_permission(server and roles and bot_member and channel_body and guild and bot and creator and entity_type and operation) equals 1
+
+# Current-state identity and permissions are checked even for explicit event IDs.
+define discord_event_observation_view with body as Str and identity as Str and bundle as List and origin as Str and channel_body as Str and guild as Str and actor as Str and bot as Str returning Str:
+    set fields to provider_json_tokens(body)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "id")) equals identity) or else not (provider_value(fields and provider_member(fields and 0 and "guild_id")) equals guild):
+        return ""
+    set entity_type to string_to_int(provider_value(fields and provider_member(fields and 0 and "entity_type")))
+    set creator to provider_value(fields and provider_member(fields and 0 and "creator_id"))
+    if discord_event_permissions(bundle and origin and channel_body and guild and actor and bot and creator and entity_type and "read") equals 0:
+        return ""
+    return discord_event_view(body and guild and archive_list_text(bundle and 1) and archive_list_text(bundle and 2) and archive_list_text(bundle and 3) and actor and channel_body)
+
+define discord_event_read_result with view as Str and body as Str returning Str:
+    set digest to provider_quote(ep_sha256(body))
+    set result to concat("{\"status\":\"observed\",\"source\":\"Discord REST; untrusted event metadata\",\"observed_sha256\":" and digest)
+    return concat(result and concat(",\"data\":" and concat(view and "}")))
+
+# Make the outgoing mutation from fresh state. This does not execute a request.
+define discord_event_mutation_plan with body as Str and options as List and now as Int returning List:
+    set operation to archive_list_text(options and 1)
+    if operation equals "create":
+        return discord_event_effective("{}" and archive_list_text(options and 5) and 1 and now)
+    if not (ep_sha256(body) equals archive_list_text(options and 4)):
+        return history_status("event-state-changed")
+    set fields to provider_json_tokens(body)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0:
+        return history_status("event-response-invalid")
+    set current to string_to_int(provider_value(fields and provider_member(fields and 0 and "status")))
+    if operation equals "edit":
+        if current is not equal to 1 and also current is not equal to 2:
+            return history_status("event-is-terminal")
+        return discord_event_effective(body and archive_list_text(options and 5) and 0 and now)
+    set payload to ""
+    if not (operation equals "delete"):
+        set desired to 0
+        if operation equals "start":
+            set desired to 2
+        else if operation equals "end":
+            set desired to 3
+        else if operation equals "cancel":
+            set desired to 4
+        if discord_scheduled_event_transition(current and desired) equals 0:
+            return history_status("invalid-event-transition")
+        set payload to concat("{\"status\":" and concat(int_to_string(desired) and "}"))
+    set room to provider_value(fields and provider_member(fields and 0 and "channel_id"))
+    set entity_type to provider_value(fields and provider_member(fields and 0 and "entity_type"))
+    if entity_type equals "3":
+        set room to ""
+    return ["valid",payload,entity_type,room]

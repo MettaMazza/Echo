@@ -33,7 +33,7 @@ and names, not full member objects; duplicate IDs and mismatched events fail.
 
 The controller must supply fresh observations and evaluate requester and bot
 separately. This helper does not fetch permissions, authorize mutations or grant
-access by itself. Full controller wiring and live event acceptance remain open.
+access by itself. Controller wiring is now implemented in the working candidate; live event acceptance remains open.
 The native projection suite covers denied visibility, mismatched channel/guild/
 member, profile omission, malformed and duplicate responses, recurrence nesting
 and repeated allocating calls. Final native qualification is recorded separately
@@ -54,3 +54,26 @@ failure are retained in the private build logs; neither build was deployed.
 `scheduled_event_options.ep` parses the nine planned operations with operation-specific arguments, mandatory mutation reasons and fresh state hashes, exclusive user-list cursors, explicit nullable edits, and bounded image-data syntax. Its native tests passed. Image syntax validation is not a claim that the encoded bytes are a valid or Discord-accepted image; live cover-image acceptance remains required.
 
 `scheduled_event_effective.ep` merges supplied changes with freshly observed state for cross-field checks but sends only the explicit patch. It checks future changed start times, end-after-start, external location/end requirements and channel/metadata transitions; creator metadata never becomes part of the outgoing patch. Its native test passed. Source hashes, generated-root review and executable results for all four validators are retained in canonical `discord-scheduled-events-20261022/native-validation.json`. All four builds and native runs passed; no remote event was created or changed.
+
+## Controller integration — 22 October 2026, pending live qualification
+
+The candidate now registers `discord_events` only in the bound Discord runtime,
+with list, inspect, users, create, edit, start, end, cancel and delete operations.
+The controller rechecks the actual admitted message, configured administrator,
+requester and bot permissions, guild binding and channel audience before
+publication or mutation. Mutations require a reason and, except creation, the
+observed event hash. A durable claim prevents automatic mutation replay after
+an ambiguous response. Full creator/member profiles are not returned.
+
+Native binding and mutation-plan suites passed. They exercise host exclusion,
+ordinary-user and revoked-admin refusals, actual admitted bindings, stale event
+hashes, explicit outgoing patches, invalid lifecycle transitions, future dates,
+independent creator permissions and stage/private-channel visibility. Receipts:
+`discord-scheduled-events-20261022/native-binding-run.json` and
+`discord-scheduled-events-20261022/native-plan.json`. Generated controller C was
+reviewed for rooted lists across allocating calls.
+
+Integrated worker and matching execution-helper builds are in progress. These
+results do not establish live Discord event lifecycle, cover-image acceptance,
+recurrence acceptance, interested-user paging or restart/replay behavior. The
+production runtime has not been changed by this integration checkpoint.

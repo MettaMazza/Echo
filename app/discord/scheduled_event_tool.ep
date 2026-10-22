@@ -1,0 +1,255 @@
+import "scheduled_event_access"
+
+# Source checks bind every operation to the actual admitted message and actor.
+define discord_event_source_current with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and bot as Str and admins as List and directory_path as Str and stop_file as Str returning List:
+    set actor to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    if file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else discord_contains(admins and actor) equals 0 or else tool_policy_allows(database and run and call_id and "discord_events") equals 0:
+        return history_status("event-authority-revoked-or-stopped")
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 10)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return access
+    set inbox to discord_job_origin(journal and database and run)
+    set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if not (current equals "current"):
+        return history_status(current)
+    if discord_run_barrier(journal and inbox and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
+        return history_status("event-source-or-permission-changed")
+    return history_status("allowed")
+
+# Items are typed/rooted through allocating REST and projection operations.
+define discord_event_list_items with library as Str and token as Str and journal as Int and directory_path as Str and body as Str and fields as List and items as List and bundle as List and origin as Str and guild as Str and actor as Str and bot as Str returning List:
+    set result to "["
+    set seen to create_list()
+    set count to 0
+    for each item in items:
+        set identity to provider_value(fields and provider_member(fields and item and "id"))
+        if discord_snowflake(identity) equals 0 or else discord_contains(seen and identity) equals 1 or else not (provider_value(fields and provider_member(fields and item and "guild_id")) equals guild):
+            return history_status("event-list-binding-invalid")
+        set added to append_list(seen and identity)
+        set event_body to agent_json_source(body and fields and item)
+        set room to provider_value(fields and provider_member(fields and item and "channel_id"))
+        if provider_value(fields and provider_member(fields and item and "entity_type")) equals "3":
+            set room to ""
+        set channel_observed to discord_event_channel(library and token and journal and directory_path and guild and room)
+        if not (archive_list_text(channel_observed and 0) equals "observed"):
+            return channel_observed
+        set view to discord_event_observation_view(event_body and identity and bundle and origin and archive_list_text(channel_observed and 1) and guild and actor and bot)
+        if string_length(view) > 0:
+            if count > 0:
+                set result to concat(result and ",")
+            set entry to discord_event_read_result(view and event_body)
+            set result to concat(result and entry)
+            set count to count + 1
+    return ["observed",concat(result and "]")]
+
+define discord_events_perform with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and options as List and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set actor to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    set operation to archive_list_text(options and 1)
+    set identity to archive_list_text(options and 2)
+    if discord_pin_admin(database and run and call_id) equals 0 or else discord_contains(admins and actor) equals 0:
+        return "{\"status\":\"admin-required\",\"cause\":\"requester-role-required\",\"restriction_scope\":\"requester\",\"required_role\":\"admin\",\"system_failure\":false,\"effects\":\"none\"}"
+    if discord_contains(guilds and guild) equals 0:
+        return discord_pin_result("discord-origin-denied" and "none" and "")
+    set access to discord_event_source_current(library and token and journal and database and run and call_id and source and bot and admins and directory_path and stop_file)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_access_failure_result(access and "scheduled event source check")
+    set route to concat("/guilds/" and concat(guild and "/scheduled-events"))
+    if string_length(identity) > 0:
+        set route to concat(route and concat("/" and identity))
+    set body to "{}"
+    if not (operation equals "create"):
+        set observed to discord_access_get(library and token and journal and directory_path and route and "GET:scheduled-event" and room)
+        if not (archive_list_text(observed and 0) equals "observed"):
+            return discord_access_failure_result(observed and "scheduled event observation")
+        set body to archive_list_text(observed and 1)
+    set bundle to discord_member_bundle(library and token and journal and directory_path and guild and actor and bot and actor and 0)
+    if not (archive_list_text(bundle and 0) equals "observed"):
+        return discord_access_failure_result(bundle and "scheduled event authority")
+    if discord_member_bundle_valid(bundle and guild and actor and bot and actor and 0) equals 0:
+        return discord_pin_result("event-authority-invalid" and "none" and "")
+    set origin_observed to discord_event_channel(library and token and journal and directory_path and guild and room)
+    if not (archive_list_text(origin_observed and 0) equals "observed"):
+        return discord_access_failure_result(origin_observed and "event source channel")
+    set origin to archive_list_text(origin_observed and 1)
+    if operation equals "list":
+        set fields to provider_json_tokens(body)
+        if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_kind(fields and 0) equals "["):
+            return discord_pin_result("event-list-invalid" and "none" and "")
+        set items to provider_items(fields and 0)
+        set projected to discord_event_list_items(library and token and journal and directory_path and body and fields and items and bundle and origin and guild and actor and bot)
+        if not (archive_list_text(projected and 0) equals "observed"):
+            return discord_access_failure_result(projected and "event list projection")
+        set list_fresh_bundle to discord_member_bundle(library and token and journal and directory_path and guild and actor and bot and actor and 0)
+        if not (archive_list_text(list_fresh_bundle and 0) equals "observed"):
+            return discord_access_failure_result(list_fresh_bundle and "final event list authority")
+        set list_index to 1
+        repeat while list_index < 5:
+            if not (archive_list_text(list_fresh_bundle and list_index) equals archive_list_text(bundle and list_index)):
+                return discord_pin_result("event-list-authority-changed" and "none; repeat read" and "")
+            set list_index to list_index + 1
+        set list_origin to discord_event_channel(library and token and journal and directory_path and guild and room)
+        if not (archive_list_text(list_origin and 0) equals "observed"):
+            return discord_access_failure_result(list_origin and "final event list channel")
+        if not (archive_list_text(list_origin and 1) equals origin):
+            return discord_pin_result("event-list-audience-changed" and "none; repeat read" and "")
+        set projected to discord_event_list_items(library and token and journal and directory_path and body and fields and items and list_fresh_bundle and origin and guild and actor and bot)
+        if not (archive_list_text(projected and 0) equals "observed"):
+            return discord_access_failure_result(projected and "final event list projection")
+        set access to discord_event_source_current(library and token and journal and database and run and call_id and source and bot and admins and directory_path and stop_file)
+        if not (archive_list_text(access and 0) equals "allowed"):
+            return discord_access_failure_result(access and "final event list source check")
+        set public_list to archive_list_text(projected and 1)
+        return discord_event_read_result(public_list and public_list)
+    set mutation to not (operation equals "inspect" or else operation equals "users")
+    set channel_body to "{}"
+    set view to ""
+    set creator to ""
+    set old_type to 0
+    if not (operation equals "create"):
+        set fields to provider_json_tokens(body)
+        set target_room to provider_value(fields and provider_member(fields and 0 and "channel_id"))
+        set old_type to string_to_int(provider_value(fields and provider_member(fields and 0 and "entity_type")))
+        set creator to provider_value(fields and provider_member(fields and 0 and "creator_id"))
+        if old_type equals 3:
+            set target_room to ""
+        set channel_observed to discord_event_channel(library and token and journal and directory_path and guild and target_room)
+        if not (archive_list_text(channel_observed and 0) equals "observed"):
+            return discord_access_failure_result(channel_observed and "event target channel")
+        set channel_body to archive_list_text(channel_observed and 1)
+        set view to discord_event_observation_view(body and identity and bundle and origin and channel_body and guild and actor and bot)
+        if string_length(view) equals 0:
+            return discord_pin_result("event-audience-or-binding-denied" and "none; withheld is not absent" and "")
+    set old_channel_body to channel_body
+    set payload to ""
+    set plan to create_list()
+    if mutation:
+        set plan to discord_event_mutation_plan(body and options and ep_time_now_ms())
+        if not (archive_list_text(plan and 0) equals "valid"):
+            return discord_pin_result(archive_list_text(plan and 0) and "none; inspect current event again" and "")
+        set payload to archive_list_text(plan and 1)
+        set permission to "modify"
+        if operation equals "delete":
+            set permission to "delete"
+        if not (operation equals "create") and also discord_event_permissions(bundle and origin and channel_body and guild and actor and bot and creator and old_type and permission) equals 0:
+            return discord_pin_result("event-operation-permission-denied" and "none; requester and bot require this event permission, not an overall system failure" and "")
+        set target_observed to discord_event_channel(library and token and journal and directory_path and guild and archive_list_text(plan and 3))
+        if not (archive_list_text(target_observed and 0) equals "observed"):
+            return discord_access_failure_result(target_observed and "effective event channel")
+        set target_type to string_to_int(archive_list_text(plan and 2))
+        set target_permission to permission
+        if operation equals "create" or else target_type is not equal to old_type or else not (archive_list_text(target_observed and 1) equals channel_body):
+            set target_permission to "create"
+        if discord_event_permissions(bundle and origin and archive_list_text(target_observed and 1) and guild and actor and bot and creator and target_type and target_permission) equals 0:
+            return discord_pin_result("effective-event-permission-or-audience-denied" and "none" and "")
+        set channel_body to archive_list_text(target_observed and 1)
+    if operation equals "users":
+        set users_route to concat(route and concat("/users?with_member=false&limit=" and archive_list_text(options and 6)))
+        if string_length(archive_list_text(options and 7)) > 0:
+            set users_route to concat(users_route and concat("&before=" and archive_list_text(options and 7)))
+        if string_length(archive_list_text(options and 8)) > 0:
+            set users_route to concat(users_route and concat("&after=" and archive_list_text(options and 8)))
+        set users_observed to discord_access_get(library and token and journal and directory_path and users_route and "GET:event-users" and room)
+        if not (archive_list_text(users_observed and 0) equals "observed"):
+            return discord_access_failure_result(users_observed and "event users")
+        set view to discord_event_users_view(archive_list_text(users_observed and 1) and identity)
+        if string_length(view) equals 0:
+            return discord_pin_result("event-users-response-invalid" and "none" and "")
+    # Reinspect source and all authority observations at the mutation/publication boundary.
+    set fresh_bundle to discord_member_bundle(library and token and journal and directory_path and guild and actor and bot and actor and 0)
+    if not (archive_list_text(fresh_bundle and 0) equals "observed"):
+        return discord_access_failure_result(fresh_bundle and "final event authority")
+    set index to 1
+    repeat while index < 5:
+        if not (archive_list_text(fresh_bundle and index) equals archive_list_text(bundle and index)):
+            return discord_pin_result("event-authority-changed" and "none; retry from fresh inspection" and "")
+        set index to index + 1
+    set fresh_origin to discord_event_channel(library and token and journal and directory_path and guild and room)
+    if not (archive_list_text(fresh_origin and 0) equals "observed"):
+        return discord_access_failure_result(fresh_origin and "final event source channel")
+    if not (archive_list_text(fresh_origin and 1) equals origin):
+        return discord_pin_result("event-source-channel-changed" and "none" and "")
+    if not (operation equals "create"):
+        set fresh_event to discord_access_get(library and token and journal and directory_path and route and "GET:event-final-state" and room)
+        if not (archive_list_text(fresh_event and 0) equals "observed"):
+            return discord_access_failure_result(fresh_event and "final event state")
+        if not (ep_sha256(archive_list_text(fresh_event and 1)) equals ep_sha256(body)):
+            return discord_pin_result("event-state-changed" and "none; inspect again" and "")
+    if mutation and also not (operation equals "create"):
+        set old_channel_fields to provider_json_tokens(old_channel_body)
+        set old_room to provider_value(old_channel_fields and provider_member(old_channel_fields and 0 and "id"))
+        set old_fresh to discord_event_channel(library and token and journal and directory_path and guild and old_room)
+        if not (archive_list_text(old_fresh and 0) equals "observed"):
+            return discord_access_failure_result(old_fresh and "final original event channel")
+        if not (archive_list_text(old_fresh and 1) equals old_channel_body):
+            return discord_pin_result("original-event-permission-changed" and "none; inspect again" and "")
+    set final_fields to provider_json_tokens(channel_body)
+    set final_room to provider_value(final_fields and provider_member(final_fields and 0 and "id"))
+    set fresh_channel to discord_event_channel(library and token and journal and directory_path and guild and final_room)
+    if not (archive_list_text(fresh_channel and 0) equals "observed"):
+        return discord_access_failure_result(fresh_channel and "final event target channel")
+    if not (archive_list_text(fresh_channel and 1) equals channel_body):
+        return discord_pin_result("event-target-channel-changed" and "none" and "")
+    set access to discord_event_source_current(library and token and journal and database and run and call_id and source and bot and admins and directory_path and stop_file)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_access_failure_result(access and "final event source check")
+    if not mutation:
+        return discord_event_read_result(view and body)
+    set method to "PATCH"
+    if operation equals "create":
+        set method to "POST"
+    else if operation equals "delete":
+        set method to "DELETE"
+    set claim to discord_community_claim(journal and run and call_id and concat(method and concat(route and payload)))
+    if not (claim equals "claimed"):
+        return discord_pin_result(claim and "inspect retained receipts and current event; no automatic replay" and "")
+    set changed to discord_access_bytes_audit(library and token and journal and directory_path and method and route and concat(method and ":scheduled-event") and room and str_to_ptr(payload) and string_length(payload) and "application/json" and archive_list_text(options and 3))
+    if not (archive_list_text(changed and 0) equals "observed"):
+        return discord_pin_result(concat("event-change-unconfirmed:" and archive_list_text(changed and 0)) and "inspect retained receipt/current state; never automatically repeat mutation" and archive_list_text(changed and 1))
+    if operation equals "delete":
+        return discord_pin_result("applied" and "Discord confirmed event deletion" and archive_list_text(changed and 3))
+    set changed_body to archive_list_text(changed and 1)
+    set changed_fields to provider_json_tokens(changed_body)
+    set changed_id to provider_value(changed_fields and provider_member(changed_fields and 0 and "id"))
+    if not (operation equals "create") and also not (changed_id equals identity):
+        return discord_pin_result("event-response-unconfirmed" and "inspect receipt; never repeat mutation automatically" and archive_list_text(changed and 3))
+    set result_view to discord_event_observation_view(changed_body and changed_id and fresh_bundle and origin and channel_body and guild and actor and bot)
+    if string_length(result_view) equals 0:
+        return discord_pin_result("applied" and "Discord accepted action; response metadata withheld" and archive_list_text(changed and 3))
+    set result to concat("{\"status\":\"applied\",\"observed_sha256\":" and provider_quote(ep_sha256(changed_body)))
+    set result to concat(result and concat(",\"data\":" and result_view))
+    return concat(result and concat(",\"receipt\":" and concat(provider_quote(archive_list_text(changed and 3)) and "}")))
+
+define discord_events_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    set options to discord_event_options(arguments)
+    if not (archive_list_text(options and 0) equals "valid"):
+        return discord_pin_result(archive_list_text(options and 0) and "none" and "")
+    if tool_policy_allows(database and run and call_id and "discord_events") equals 0:
+        return discord_pin_result("not-authorized" and "none" and "")
+    if not ((get_argument_count() equals 15 and also get_argument(13) equals "--turn") or else (get_argument_count() equals 16 and also get_argument(13) equals "--job")):
+        return discord_pin_result("discord-runtime-unavailable" and "none" and "")
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals get_argument(7)) or else not (archive_list_text(location and 1) equals get_argument(4)):
+        return discord_pin_result("discord-binding-denied" and "none" and "")
+    set journal to discord_store_open(get_argument(3) and get_argument(7))
+    if journal equals 0:
+        return discord_pin_result("discord-journal-unavailable" and "none" and "")
+    set source to discord_run_source(journal and database and run)
+    if not (archive_list_text(source and 0) equals "found"):
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-origin-denied" and "none" and "")
+    set credential to read_file(get_argument(2))
+    if credential equals 0:
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-credential-unavailable" and "none" and "")
+    set guilds to create_list()
+    set split_count to retained_text_split(guilds and get_argument(8) and ",")
+    set admins to create_list()
+    set split_count to retained_text_split(admins and get_argument(9) and ",")
+    set result to discord_events_perform(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and database and run and call_id and source and options and get_argument(7) and guilds and admins and get_argument(5) and get_argument(6))
+    set closed to sql_close(journal)
+    return result
