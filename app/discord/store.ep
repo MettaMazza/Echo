@@ -27,6 +27,9 @@ define discord_store_open with path as Str and bot as Str returning Int:
     if sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_cancel_sources(source TEXT PRIMARY KEY REFERENCES discord_inbox(identity),actor TEXT NOT NULL,request TEXT NOT NULL,created_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_cancel_no_update BEFORE UPDATE ON discord_cancel_sources BEGIN SELECT RAISE(ABORT,'Cancellation receipts persist'); END; CREATE TRIGGER IF NOT EXISTS discord_cancel_no_delete BEFORE DELETE ON discord_cancel_sources BEGIN SELECT RAISE(ABORT,'Cancellation receipts persist'); END;") is not equal to 0:
         set closed to sql_close(database)
         return 0
+    if sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_channel_scopes(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room TEXT NOT NULL,guild TEXT NOT NULL,parent TEXT NOT NULL,kind TEXT NOT NULL); CREATE INDEX IF NOT EXISTS discord_channel_scopes_room ON discord_channel_scopes(room,sequence); CREATE TRIGGER IF NOT EXISTS discord_channel_scopes_no_update BEFORE UPDATE ON discord_channel_scopes BEGIN SELECT RAISE(ABORT,'Channel scope observations persist'); END; CREATE TRIGGER IF NOT EXISTS discord_channel_scopes_no_delete BEFORE DELETE ON discord_channel_scopes BEGIN SELECT RAISE(ABORT,'Channel scope observations persist'); END;") is not equal to 0:
+        set closed to sql_close(database)
+        return 0
     set rooted_literal_1 to create_list()
     set retained_value_added to append_list(rooted_literal_1 and bot)
     if archive_finish(checkpoint_prepare(database and "INSERT OR IGNORE INTO discord_identity(singleton,bot) VALUES(1,?);" and rooted_literal_1) and 101) is not equal to 0:
@@ -193,3 +196,24 @@ define discord_reply_channel with database as Int and message as Str and room as
     if not (archive_list_text(row and 0) equals "found"):
         return ""
     return archive_list_text(row and 1)
+
+# Authenticated channel metadata narrows invalidation only, never access. Unknown
+# scope remains a guild-wide barrier. Keep changes append-only for recovery.
+define discord_channel_scope_record with journal as Int and body as Str returning Int:
+    set tokens to provider_json_tokens(body)
+    set room to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    set parent to provider_value(tokens and provider_member(tokens and 0 and "parent_id"))
+    set kind to provider_value(tokens and provider_member(tokens and 0 and "type"))
+    if discord_snowflake(room) equals 0 or else discord_snowflake(guild) equals 0:
+        return 1
+    if provider_kind(tokens and provider_member(tokens and 0 and "parent_id")) equals "null":
+        set parent to ""
+    if string_length(parent) > 0 and discord_snowflake(parent) equals 0:
+        return 1
+    if not (kind equals "0" or else kind equals "5" or else kind equals "10" or else kind equals "11" or else kind equals "12"):
+        return 1
+    if (kind equals "10" or else kind equals "11" or else kind equals "12") and string_length(parent) equals 0:
+        return 1
+    set values to [room,guild,parent,kind]
+    return archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_channel_scopes(room,guild,parent,kind) SELECT ?1,?2,?3,?4 WHERE NOT EXISTS(SELECT 1 FROM discord_channel_scopes WHERE sequence=(SELECT MAX(sequence) FROM discord_channel_scopes WHERE room=?1) AND guild=?2 AND parent=?3 AND kind=?4);" and values) and 101)

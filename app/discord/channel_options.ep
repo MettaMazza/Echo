@@ -1,0 +1,218 @@
+import "message_moderation_options"
+
+# Strict typed fields; no generic REST/body/header or permission-mask escape.
+define discord_channel_options with arguments as Str returning List:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return history_status("invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        set kind to provider_kind(tokens and index + 2)
+        if key equals "type" or else key equals "slowmode" or else key equals "position" or else key equals "limit" or else key equals "offset" or else key equals "bitrate" or else key equals "user_limit":
+            if not (kind equals "number"):
+                return history_status("invalid-numeric-field")
+        else if key equals "parent" or else key equals "operation" or else key equals "channel" or else key equals "name" or else key equals "topic" or else key equals "reason" or else key equals "observed_sha256":
+            if not (kind equals "string"):
+                return history_status("invalid-text-field")
+        else:
+            return history_status("unknown-field")
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    set channel_id to provider_value(tokens and provider_member(tokens and 0 and "channel"))
+    set reason to provider_value(tokens and provider_member(tokens and 0 and "reason"))
+    set digest to provider_value(tokens and provider_member(tokens and 0 and "observed_sha256"))
+    if not (operation equals "list" or else operation equals "inspect" or else operation equals "create" or else operation equals "edit" or else operation equals "delete"):
+        return history_status("invalid-operation")
+    if operation equals "list" or else operation equals "create":
+        if string_length(channel_id) > 0:
+            return history_status("unused-channel")
+    else if discord_snowflake(channel_id) equals 0:
+        return history_status("channel-required")
+    set mutation to operation equals "create" or else operation equals "edit" or else operation equals "delete"
+    if mutation and string_length(discord_audit_reason(reason)) equals 0:
+        return history_status("reason-required-or-too-long")
+    if operation equals "edit" or else operation equals "delete":
+        if string_length(digest) is not equal to 64:
+            return history_status("observed-sha256-required")
+        set index to 0
+        repeat while index < 64:
+            if string_contains("0123456789abcdef" and substring(digest and index and 1)) equals 0:
+                return history_status("invalid-sha256")
+            set index to index + 1
+    else if string_length(digest) > 0:
+        return history_status("unused-sha256")
+    if not mutation and string_length(reason) > 0:
+        return history_status("unused-reason")
+    set payload to "{"
+    set fields to 0
+    set retained_keys_0 to create_list()
+    set added to append_list(retained_keys_0 and "name")
+    set added to append_list(retained_keys_0 and "topic")
+    set added to append_list(retained_keys_0 and "parent")
+    set added to append_list(retained_keys_0 and "type")
+    set added to append_list(retained_keys_0 and "slowmode")
+    set added to append_list(retained_keys_0 and "position")
+    set added to append_list(retained_keys_0 and "bitrate")
+    set added to append_list(retained_keys_0 and "user_limit")
+    set added to append_list(retained_keys_0 and "limit")
+    set added to append_list(retained_keys_0 and "offset")
+    for each key in retained_keys_0:
+        set name to ptr_to_str(key)
+        set field to provider_member(tokens and 0 and name)
+        if field >= 0:
+            if name equals "limit" or else name equals "offset":
+                if not (operation equals "list"):
+                    return history_status("unused-pagination")
+            else if not (operation equals "create" or else operation equals "edit"):
+                return history_status("unused-change")
+            set value to provider_value(tokens and field)
+            if name equals "parent":
+                if discord_snowflake(value) equals 0:
+                    return history_status("invalid-parent")
+            else if name equals "name":
+                if string_length(string_trim(value)) < 1 or else string_length(value) > 100 or else provider_valid_utf8(value) equals 0:
+                    return history_status("invalid-name")
+            else if name equals "topic":
+                if string_length(value) > 1024 or else provider_valid_utf8(value) equals 0:
+                    return history_status("invalid-topic")
+            else:
+                set number to http_decimal(value)
+                if number < 0 or else not (int_to_string(number) equals value):
+                    return history_status("invalid-number")
+                if name equals "type":
+                    if not (operation equals "create") or else not (number equals 0 or else number equals 2 or else number equals 4 or else number equals 15):
+                        return history_status("unsupported-channel-type")
+                else if name equals "slowmode" and number > 21600:
+                    return history_status("invalid-slowmode")
+                else if name equals "position" and number > 500:
+                    return history_status("invalid-position")
+                else if name equals "bitrate" and (number < 8000 or else number > 384000):
+                    return history_status("invalid-bitrate")
+                else if name equals "user_limit" and number > 99:
+                    return history_status("invalid-user-limit")
+                else if name equals "limit" and (number < 1 or else number > 100):
+                    return history_status("invalid-limit")
+                else if name equals "offset" and number > 10000:
+                    return history_status("invalid-offset")
+            if fields > 0:
+                set payload to concat(payload and ",")
+            set remote_name to name
+            if name equals "parent":
+                set remote_name to "parent_id"
+            if name equals "slowmode":
+                set remote_name to "rate_limit_per_user"
+            set payload to concat(payload and concat(provider_quote(remote_name) and ":"))
+            if name equals "name" or else name equals "topic" or else name equals "parent":
+                set payload to concat(payload and provider_quote(value))
+            else:
+                set payload to concat(payload and value)
+            set fields to fields + 1
+    if operation equals "create" and (provider_member(tokens and 0 and "name") < 0 or else provider_member(tokens and 0 and "type") < 0):
+        return history_status("create-name-type-required")
+    if operation equals "edit" and fields equals 0:
+        return history_status("change-required")
+    return ["valid",operation,channel_id,reason,digest,concat(payload and "}")]
+
+# Conservative same-audience proof: exact overwrite representation. A mismatch
+# does not disclose private metadata and does not mean the channel is absent.
+define discord_channel_same_audience with origin as Str and target as Str and guild as Str returning Int:
+    set left to provider_json_tokens(origin)
+    set right to provider_json_tokens(target)
+    if left equals 0 or else right equals 0 or else provider_unique_objects(left) equals 0 or else provider_unique_objects(right) equals 0:
+        return 0
+    if not (provider_value(left and provider_member(left and 0 and "guild_id")) equals guild) or else not (provider_value(right and provider_member(right and 0 and "guild_id")) equals guild):
+        return 0
+    set kind to provider_value(right and provider_member(right and 0 and "type"))
+    if not (kind equals "0" or else kind equals "2" or else kind equals "4" or else kind equals "5" or else kind equals "15" or else kind equals "16"):
+        return 0
+    set a to provider_member(left and 0 and "permission_overwrites")
+    set b to provider_member(right and 0 and "permission_overwrites")
+    if not (provider_kind(left and a) equals "[") or else not (provider_kind(right and b) equals "["):
+        return 0
+    return agent_json_source(origin and left and a) equals agent_json_source(target and right and b)
+
+define discord_channel_view with body as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else discord_snowflake(provider_value(tokens and provider_member(tokens and 0 and "id"))) equals 0:
+        return ""
+    set result to "{"
+    set count to 0
+    set retained_keys_1 to create_list()
+    set added to append_list(retained_keys_1 and "id")
+    set added to append_list(retained_keys_1 and "guild_id")
+    set added to append_list(retained_keys_1 and "type")
+    set added to append_list(retained_keys_1 and "name")
+    set added to append_list(retained_keys_1 and "topic")
+    set added to append_list(retained_keys_1 and "parent_id")
+    set added to append_list(retained_keys_1 and "position")
+    set added to append_list(retained_keys_1 and "rate_limit_per_user")
+    set added to append_list(retained_keys_1 and "bitrate")
+    set added to append_list(retained_keys_1 and "user_limit")
+    set added to append_list(retained_keys_1 and "permission_overwrites")
+    for each key in retained_keys_1:
+        set name to ptr_to_str(key)
+        set field to provider_member(tokens and 0 and name)
+        if field >= 0:
+            if count > 0:
+                set result to concat(result and ",")
+            set result to concat(result and concat(provider_quote(name) and concat(":" and agent_json_source(body and tokens and field))))
+            set count to count + 1
+    return concat(result and concat(",\"observed_sha256\":" and concat(provider_quote(ep_sha256(body)) and "}")))
+
+# Render only channels proven to have the originating channel's audience.
+# A guild listing omits guild_id; the authenticated list route supplies it.
+define discord_channels_page with body as Str and origin as Str and guild as Str and options as List returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "["):
+        return ""
+    return discord_channels_page_items(body and origin and guild and options and tokens and provider_items(tokens and 0))
+
+define discord_channels_page_items with body as Str and origin as Str and guild as Str and options as List and tokens as List and items as List returning Str:
+    set settings to provider_json_tokens(archive_list_text(options and 5))
+    set limit to 50
+    set offset to 0
+    if provider_member(settings and 0 and "limit") >= 0:
+        set limit to http_decimal(provider_value(settings and provider_member(settings and 0 and "limit")))
+    if provider_member(settings and 0 and "offset") >= 0:
+        set offset to http_decimal(provider_value(settings and provider_member(settings and 0 and "offset")))
+    set index to 0
+    set count to 0
+    set next_offset to -1
+    set result to "["
+    for each item in items:
+        if index >= offset and count < limit:
+            set raw to agent_json_source(body and tokens and item)
+            if provider_member(tokens and item and "guild_id") < 0:
+                set raw to concat(substring(raw and 0 and string_length(raw) - 1) and concat(",\"guild_id\":" and concat(provider_quote(guild) and "}")))
+            if discord_channel_same_audience(origin and raw and guild) equals 1:
+                set view to discord_channel_view(raw)
+                if string_length(view) equals 0:
+                    return ""
+                if count > 0:
+                    set result to concat(result and ",")
+                set result to concat(result and view)
+                set count to count + 1
+        else if index >= offset and next_offset < 0:
+            set next_offset to index
+        set index to index + 1
+    set result to concat("{\"channels\":" and concat(result and "]"))
+    return concat(result and concat(",\"next_offset\":" and concat(int_to_string(next_offset) and ",\"scope\":\"same guild and exact originating permission overwrites; other audiences omitted\"}")))
+
+
+define discord_channel_fields_match with payload as Str and kind as Str returning Int:
+    set fields to provider_json_tokens(payload)
+    if kind equals "4" and provider_member(fields and 0 and "parent_id") >= 0:
+        return 0
+    if provider_member(fields and 0 and "bitrate") >= 0 or else provider_member(fields and 0 and "user_limit") >= 0:
+        if not (kind equals "2"):
+            return 0
+    if provider_member(fields and 0 and "topic") >= 0:
+        if not (kind equals "0" or else kind equals "5" or else kind equals "15" or else kind equals "16"):
+            return 0
+    if provider_member(fields and 0 and "rate_limit_per_user") >= 0:
+        if not (kind equals "0" or else kind equals "2" or else kind equals "5" or else kind equals "15" or else kind equals "16"):
+            return 0
+    return 1
