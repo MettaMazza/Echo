@@ -1,3 +1,15 @@
+# Current Phase Two continuation — 22 October 2026
+
+The original 32 steps and D01–D20 remain the completion ledger. Phase Two is not complete. The dated 18 October reconciliation below is historical and must not be used to describe current Discord availability.
+
+Current executable work is the remaining Step 15 Discord catalogue. Durable transport, ordinary conversations, recorded Thinking threads, Warm Speak, queue/cancel controls and numerous scoped workflows have live evidence in the linked Discord records. Joined-group controls are deployed, but the full real multi-user/compaction lifecycle and Step 16 integrated isolation gate remain open. The actual admin autonomy interaction remains explicitly deferred by Maria.
+
+Channel creation/editing/removal and permission overwrites have now passed native checks and real multi-turn disposable-resource acceptance, including stale-hash refusal, restored permissions, remote deletion verification, ordinary follow-up, restart and UI reload. Permission-observation failures now preserve their actual rate-limit deadline or transport status rather than implying revoked authority. See [channel administration](DISCORD-CHANNEL-ADMINISTRATION.md), [channel permissions](DISCORD-CHANNEL-PERMISSIONS.md) and [retained-text repair](RETAINED-TEXT-2026-10-22.md).
+
+Rich embeds and polls are deployed in the existing owned tool-post workflow and passed five actual turns, remote receipt comparison, disposable cleanup and reload persistence. A shared-schema allocation crash discovered in the first attempt was repaired at application level and its failed evidence retained. See [rich posts](DISCORD-RICH-POSTS.md). The remaining catalogue and later original steps are not closed by these individual controller passes. The full controlled latency/endurance acceptance also remains open; recorded warm and cold observations are not interchangeable with the historical morning baseline.
+
+---
+
 # Current closeout — 21 October 2026
 
 The original 32 steps and D01–D20 remain the completion contract. The 18 October records below are historical: their Discord “not integrated” statements are superseded by the actual 1.75 receipts. Do not repeat passed work merely because an older table says pending.

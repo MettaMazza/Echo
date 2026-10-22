@@ -1,0 +1,161 @@
+import "../agent/run_messages"
+
+# Text-only rich embeds: no arbitrary fetch URLs, credentials or component IDs.
+define discord_rich_keys with tokens as List and object as Int and allowed as Str returning Int:
+    if not (provider_kind(tokens and object) equals "{"):
+        return 0
+    set index to object + 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if string_length(key) equals 0 or else string_contains(key and "|") is not equal to 0 or else string_contains(allowed and concat("|" and concat(key and "|"))) equals 0:
+            return 0
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    return 1
+
+define discord_rich_units with text as Str returning Int:
+    if provider_valid_utf8(text) equals 0:
+        return -1
+    set units to 0
+    set offset to 0
+    repeat while offset < string_length(text):
+        set byte to peek_byte(str_to_ptr(text) and offset)
+        if byte < 128 or else byte >= 192:
+            set units to units + 1
+            if byte >= 240:
+                set units to units + 1
+        set offset to offset + 1
+    return units
+
+define discord_rich_text with tokens as List and field as Int and maximum as Int and required as Int returning Int:
+    if field < 0:
+        if required equals 1:
+            return -1
+        return 0
+    if not (provider_kind(tokens and field) equals "string"):
+        return -1
+    set value to provider_value(tokens and field)
+    set units to discord_rich_units(value)
+    if units < 1 or else units > maximum or else string_length(string_trim(value)) equals 0:
+        return -1
+    return units
+
+define discord_rich_integer with tokens as List and field as Int and minimum as Int and maximum as Int returning Int:
+    if not (provider_kind(tokens and field) equals "number"):
+        return 0
+    set value to provider_value(tokens and field)
+    if string_length(value) equals 0 or else string_length(value) > 8:
+        return 0
+    set index to 0
+    repeat while index < string_length(value):
+        if provider_digit(value and index) equals 0:
+            return 0
+        set index to index + 1
+    set number to string_to_int(value)
+    return number >= minimum and also number <= maximum
+
+define discord_rich_embed_fields with tokens as List and items as List returning Int:
+    if length_list(items) > 25:
+        return -1
+    set count to 0
+    for each item in items:
+        if discord_rich_keys(tokens and item and "|name|value|inline|") equals 0:
+            return -1
+        set name_count to discord_rich_text(tokens and provider_member(tokens and item and "name") and 256 and 1)
+        set value_count to discord_rich_text(tokens and provider_member(tokens and item and "value") and 1024 and 1)
+        set inline_field to provider_member(tokens and item and "inline")
+        if inline_field >= 0 and not (provider_kind(tokens and inline_field) equals "true" or else provider_kind(tokens and inline_field) equals "false"):
+            return -1
+        if name_count < 0 or else value_count < 0:
+            return -1
+        set count to count + name_count + value_count
+    return count
+
+define discord_rich_embeds with tokens as List and items as List returning Int:
+    if length_list(items) < 1 or else length_list(items) > 10:
+        return -1
+    set total to 0
+    for each item in items:
+        if discord_rich_keys(tokens and item and "|title|description|color|fields|footer|") equals 0:
+            return -1
+        set title_count to discord_rich_text(tokens and provider_member(tokens and item and "title") and 256 and 0)
+        set description_count to discord_rich_text(tokens and provider_member(tokens and item and "description") and 4096 and 0)
+        if title_count < 0 or else description_count < 0:
+            return -1
+        set count to title_count + description_count
+        set color to provider_member(tokens and item and "color")
+        if color >= 0 and discord_rich_integer(tokens and color and 0 and 16777215) equals 0:
+            return -1
+        set fields to provider_member(tokens and item and "fields")
+        if fields >= 0:
+            if not (provider_kind(tokens and fields) equals "["):
+                return -1
+            set field_count to discord_rich_embed_fields(tokens and provider_items(tokens and fields))
+            if field_count < 0:
+                return -1
+            set count to count + field_count
+        set footer to provider_member(tokens and item and "footer")
+        if footer >= 0:
+            if discord_rich_keys(tokens and footer and "|text|") equals 0:
+                return -1
+            set footer_count to discord_rich_text(tokens and provider_member(tokens and footer and "text") and 2048 and 1)
+            if footer_count < 0:
+                return -1
+            set count to count + footer_count
+        if count equals 0:
+            return -1
+        set total to total + count
+        if total > 6000:
+            return -1
+    return total
+
+# Friendly poll input is converted to Discord's exact request shape. API IDs,
+# results, expiry and arbitrary object fields cannot be supplied by the model.
+define discord_rich_poll with tokens as List and object as Int returning Str:
+    if discord_rich_keys(tokens and object and "|question|answers|duration_hours|multiselect|") equals 0:
+        return ""
+    set question to provider_member(tokens and object and "question")
+    if discord_rich_text(tokens and question and 300 and 1) < 0:
+        return ""
+    set answers to provider_member(tokens and object and "answers")
+    if not (provider_kind(tokens and answers) equals "["):
+        return ""
+    return discord_rich_poll_answers(tokens and object and provider_items(tokens and answers))
+
+define discord_rich_poll_answers with tokens as List and object as Int and answers as List returning Str:
+    if length_list(answers) < 2 or else length_list(answers) > 10:
+        return ""
+    set result to concat("{\"question\":{\"text\":" and concat(provider_quote(provider_value(tokens and provider_member(tokens and object and "question"))) and "},\"answers\":["))
+    set count to 0
+    for each answer in answers:
+        if discord_rich_text(tokens and answer and 55 and 1) < 0:
+            return ""
+        if count > 0:
+            set result to concat(result and ",")
+        set result to concat(result and concat("{\"poll_media\":{\"text\":" and concat(provider_quote(provider_value(tokens and answer)) and "}}")))
+        set count to count + 1
+    set duration to "24"
+    set field to provider_member(tokens and object and "duration_hours")
+    if field >= 0:
+        if discord_rich_integer(tokens and field and 1 and 768) equals 0:
+            return ""
+        set duration to provider_value(tokens and field)
+    set multiselect to "false"
+    set field to provider_member(tokens and object and "multiselect")
+    if field >= 0:
+        if not (provider_kind(tokens and field) equals "true" or else provider_kind(tokens and field) equals "false"):
+            return ""
+        set multiselect to provider_value(tokens and field)
+    return concat(result and concat("],\"duration\":" and concat(duration and concat(",\"allow_multiselect\":" and concat(multiselect and ",\"layout_type\":1}")))))
+
+define discord_rich_post_body with text as Str and reply_to as Str and embeds as Str and poll as Str returning Str:
+    set body to concat("{\"content\":" and provider_quote(text))
+    set body to concat(body and ",\"allowed_mentions\":{\"parse\":[],\"replied_user\":false}")
+    if string_length(reply_to) > 0:
+        set body to concat(body and concat(",\"message_reference\":{\"message_id\":" and concat(provider_quote(reply_to) and ",\"fail_if_not_exists\":true}")))
+    if string_length(embeds) > 0:
+        set body to concat(body and concat(",\"embeds\":" and embeds))
+    if string_length(poll) > 0:
+        set body to concat(body and concat(",\"poll\":" and poll))
+    return concat(body and "}")
