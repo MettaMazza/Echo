@@ -261,7 +261,7 @@ fetched remote trees match. Full Step 15 remains open.
 | Interested users | Event binding, profile projection and pagination arguments | E22K populated limit-one page and empty next cursor; E22L empty after removal | Covered workflow retained |
 | Recurrence | Timestamp/pattern validation and response projection | E22J weekly Friday; E22K explicit null independently verified | Covered workflow retained |
 | Cover image | Data-URI/base64 syntax and explicit null | E22J PNG/hash readback; E22K removal independently verified | Covered workflow retained |
-| Voice/stage events | Channel type, visibility, permissions and field transitions | E22M failed due to model omission of channel; no event created | Correct argument generation and supported live channel workflow; no Stage channel currently configured |
+| Voice/stage events | Channel type, visibility, permissions and field transitions | E22N voice create/inspect passed with exact independent channel/type/time readback; E22O edit applied after inherited-metadata refusals | Empty-metadata regression fix under native qualification; cleanup/reload pending; no Stage channel configured |
 | Gateway | Five types, deduplication, foreign-guild exclusion, intent migration | Fresh READY mask 112129; create/update/delete plus E22J USER_ADD and E22K USER_REMOVE | Covered event types retained |
 | Cancellation/revocation while waiting | Actual native wait/cancel/revoke fixture | E22C run cancelled; failed read loop retained | Broader combined races remain at integrated gate |
 
@@ -269,3 +269,29 @@ This table avoids interpreting historical candidate descriptions as current
 absence, or interpreting one successful external event as every event type.
 
 E22I cleanup evidence: `gateway/E22I-delete.json`; native event subscription plus actual create/update/delete delivery are now verified.
+
+## Voice-event live follow-up — 22 October
+
+The deployed flat/explicit-clear interface created exactly one E22N voice event
+`1562825852700327966`. Independent readback confirms channel, type, description,
+start/end and scheduled status. One pre-REST refusal of extraneous fields is
+retained; this was not a clean first-attempt pass.
+
+E22O recalled the event in a follow-up without a supplied ID. Correct rename
+and description-clear requests were rejected because Discord returns
+`entity_metadata: {}` for this voice event, whereas the projected observation
+shows null. Echo recovered by explicitly clearing metadata too; the mutation
+applied once. Independent readback confirms the renamed event, null description
+and unchanged channel/type/times/status. The raw response still contains `{}`.
+
+The candidate validator now treats an **inherited empty metadata object** as
+null for effective-state validation only. Explicit caller-supplied empty or
+nonempty invalid metadata remains rejected, and the outgoing patch still
+contains only the requested changes. The native effective-state regression passes, including the actual-shaped empty
+metadata response, minimal outgoing patch and supplied-empty-object refusal.
+Five affected workers are building against the frozen source; this repair is
+not yet deployed or live-qualified.
+
+Evidence: `gateway/E22N-readback.json`, `gateway/E22O-raw-state.json`,
+`gateway/E22O-readback.json`, and `gateway/E22O-turn.json`. The disposable event
+remains scheduled pending final reply, cleanup and reload acceptance.
