@@ -132,3 +132,14 @@ deployed at verified idle for live acceptance; E22D is now exercising inspection
 description editing and interested-user retrieval. Those results remain pending.
 Evidence: `integration-rate/native-wait.json`, `build-qualification.json` and
 `after-deployment.json`.
+
+
+The E22D real Discord follow-up completed. Three event calls inspected, edited
+only the requested description using its fresh hash, and read the empty first
+interested-user page with limit 1. Independent REST readback confirmed the
+name, location, start/end, channel/type and status were unchanged. The final
+reply and Speak control appeared in the channel, with the activity thread
+attached to the initiating message. Evidence: `integration-rate/E22D-turn.json`
+and `E22D-readback.json`. This proves the repaired workflow, not populated
+subscriber pagination or the remaining lifecycle operations. E22E is exercising
+start on the same disposable fixture; its result is not yet accepted.
