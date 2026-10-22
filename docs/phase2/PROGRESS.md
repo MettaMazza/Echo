@@ -1,3 +1,7 @@
+## 22 October — member controller qualification update
+
+Seven real Discord turns completed, final revision restarted idle, fresh member/ban hashes independently matched, normal memory/identity follow-up and reload persistence passed. Exact rate/Unknown User/initial command-timeout failures retained. Native read-permission and absence boundaries passed. No real member was moderated: positive destructive tests require an approved disposable member. Step 15 remains open for the remaining catalogue; Step 16 integrated gate remains open. See `DISCORD-MEMBER-ADMINISTRATION.md` and canonical `discord-member-admin-20261022`. Invite controller work is next; no blanket Phase Two completion claim.
+
 # Current Phase Two continuation — 22 October 2026
 
 The original 32 steps and D01–D20 remain the completion ledger. Phase Two is not complete. The dated 18 October reconciliation below is historical and must not be used to describe current Discord availability.
