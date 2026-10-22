@@ -1,0 +1,91 @@
+import "message_moderation_options"
+import "permissions"
+
+# REST overwrite masks are decimal strings, never JSON floating-point numbers.
+# Current permission evaluator supports Discord's published bits 0 through 52.
+define discord_overwrite_mask with value as Str returning Int:
+    if string_length(value) equals 0 or else string_length(value) > 16:
+        return 0
+    set number to http_decimal(value)
+    if number < 0 or else number > 9007199254740991 or else not (int_to_string(number) equals value):
+        return 0
+    return 1
+
+define discord_channel_permission_options with arguments as Str returning List:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return history_status("invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        set kind to provider_kind(tokens and index + 2)
+        if key equals "subject_type":
+            if not (kind equals "number"):
+                return history_status("invalid-subject-type")
+        else if key equals "operation" or else key equals "channel" or else key equals "subject" or else key equals "allow" or else key equals "deny" or else key equals "reason" or else key equals "observed_sha256":
+            if not (kind equals "string"):
+                return history_status("invalid-text-field")
+        else:
+            return history_status("unknown-field")
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    set channel_id to provider_value(tokens and provider_member(tokens and 0 and "channel"))
+    set subject to provider_value(tokens and provider_member(tokens and 0 and "subject"))
+    set kind to provider_value(tokens and provider_member(tokens and 0 and "subject_type"))
+    set reason to provider_value(tokens and provider_member(tokens and 0 and "reason"))
+    set digest to provider_value(tokens and provider_member(tokens and 0 and "observed_sha256"))
+    if not (operation equals "permissions_set" or else operation equals "permissions_delete"):
+        return history_status("invalid-operation")
+    if discord_snowflake(channel_id) equals 0 or else discord_snowflake(subject) equals 0:
+        return history_status("channel-and-subject-required")
+    if not (kind equals "0" or else kind equals "1"):
+        return history_status("subject-type-required")
+    if string_length(discord_audit_reason(reason)) equals 0:
+        return history_status("reason-required-or-too-long")
+    if string_length(digest) is not equal to 64:
+        return history_status("observed-sha256-required")
+    set index to 0
+    repeat while index < 64:
+        if string_contains("0123456789abcdef" and substring(digest and index and 1)) equals 0:
+            return history_status("invalid-sha256")
+        set index to index + 1
+    set allow to provider_value(tokens and provider_member(tokens and 0 and "allow"))
+    set deny to provider_value(tokens and provider_member(tokens and 0 and "deny"))
+    set payload to ""
+    if operation equals "permissions_set":
+        if discord_overwrite_mask(allow) equals 0 or else discord_overwrite_mask(deny) equals 0:
+            return history_status("invalid-or-unsupported-permission-mask")
+        set bit to 0
+        repeat while bit <= 52:
+            if discord_permission_bit(allow and bit) equals 1 and discord_permission_bit(deny and bit) equals 1:
+                return history_status("overlapping-allow-deny")
+            set bit to bit + 1
+        set payload to concat("{\"type\":" and concat(kind and concat(",\"allow\":" and concat(provider_quote(allow) and concat(",\"deny\":" and concat(provider_quote(deny) and "}"))))))
+    else if provider_member(tokens and 0 and "allow") >= 0 or else provider_member(tokens and 0 and "deny") >= 0:
+        return history_status("unused-permission-mask")
+    return ["valid",operation,channel_id,reason,digest,payload,subject,kind]
+
+# A 204 confirms acceptance; this independent read confirms the requested state.
+# Return a status only, never newly private channel names, masks or members.
+define discord_overwrite_matches with body as Str and options as List returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "id")) equals archive_list_text(options and 2)) or else not (provider_kind(tokens and provider_member(tokens and 0 and "permission_overwrites")) equals "["):
+        return "invalid-verification-snapshot"
+    return discord_overwrite_matches_items(tokens and provider_items(tokens and provider_member(tokens and 0 and "permission_overwrites")) and options)
+
+define discord_overwrite_matches_items with tokens as List and items as List and options as List returning Str:
+    set count to 0
+    set match to 0
+    set wanted to provider_json_tokens(archive_list_text(options and 5))
+    for each item in items:
+        if provider_value(tokens and provider_member(tokens and item and "id")) equals archive_list_text(options and 6):
+            set count to count + 1
+            if provider_value(tokens and provider_member(tokens and item and "type")) equals archive_list_text(options and 7) and provider_value(tokens and provider_member(tokens and item and "allow")) equals provider_value(wanted and provider_member(wanted and 0 and "allow")) and provider_value(tokens and provider_member(tokens and item and "deny")) equals provider_value(wanted and provider_member(wanted and 0 and "deny")):
+                set match to 1
+    if archive_list_text(options and 1) equals "permissions_delete" and count equals 0:
+        return "verified-absent"
+    if archive_list_text(options and 1) equals "permissions_set" and count equals 1 and match equals 1:
+        return "verified-match"
+    return "state-differs; inspect before deciding again"

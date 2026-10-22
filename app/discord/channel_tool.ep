@@ -1,5 +1,6 @@
 import "../retained_text"
 import "channel_options"
+import "channel_permission_guard"
 import "pin_tool"
 import "community_intent"
 import "run_barrier"
@@ -72,13 +73,17 @@ define discord_channels_perform with library as Str and token as Str and journal
     set operation to archive_list_text(options and 1)
     set target_id to archive_list_text(options and 2)
     set payload to archive_list_text(options and 5)
+    set permission_change to operation equals "permissions_set" or else operation equals "permissions_delete"
+    set required_bit to 4
+    if permission_change:
+        set required_bit to 28
     if discord_contains(guilds and guild) equals 0 or else discord_contains(admins and actor) equals 0:
         return discord_pin_result("discord-origin-denied" and "none" and "")
     if file_exists(stop_file) or else tool_policy_allows(database and run and call_id and "discord_channels") equals 0:
         return discord_pin_result("not-authorized-or-stopped" and "none" and "")
-    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 4)
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and required_bit)
     if not (archive_list_text(access and 0) equals "allowed"):
-        return discord_pin_result(concat("discord-access:" and archive_list_text(access and 0)) and "none; requester and bot require MANAGE_CHANNELS" and "")
+        return discord_pin_result(concat("discord-access:" and archive_list_text(access and 0)) and "none; requester and bot lack the required live channel permission" and "")
     set inbox to discord_job_origin(journal and database and run)
     set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
     if not (current equals "current"):
@@ -111,13 +116,17 @@ define discord_channels_perform with library as Str and token as Str and journal
         set fields to provider_json_tokens(target)
         if not (operation equals "create") and not (provider_value(fields and provider_member(fields and 0 and "id")) equals target_id):
             return discord_pin_result("target-identity-mismatch" and "none" and receipt)
-        if operation equals "edit" or else operation equals "delete":
+        if operation equals "edit" or else operation equals "delete" or else permission_change:
             if not (ep_sha256(target) equals archive_list_text(options and 4)):
                 return discord_pin_result("channel-changed" and "none; inspect current channel before deciding again" and receipt)
         set create_flag to 0
         if operation equals "create":
             set create_flag to 1
-        set permission to discord_channels_permission(library and token and journal and directory_path and bot and guild and actor and target and create_flag)
+        set permission to "allowed"
+        if permission_change:
+            set permission to discord_overwrite_permission(library and token and journal and directory_path and bot and guild and actor and target and options)
+        else:
+            set permission to discord_channels_permission(library and token and journal and directory_path and bot and guild and actor and target and create_flag)
         if not (permission equals "allowed"):
             return discord_pin_result(permission and "none" and receipt)
         if operation equals "create" or else operation equals "edit":
@@ -151,7 +160,7 @@ define discord_channels_perform with library as Str and token as Str and journal
                 return discord_pin_result(permission and "none" and "")
     # Recheck current source permission and captured/current call authority. No
     # target content is released after a revocation or cancelled source.
-    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 4)
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and required_bit)
     if not (archive_list_text(access and 0) equals "allowed") or else file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else tool_policy_allows(database and run and call_id and "discord_channels") equals 0 or else not (discord_job_origin(journal and database and run) equals inbox) or else discord_run_barrier(journal and inbox and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
         return discord_pin_result("authority-source-or-permission-changed" and "none" and receipt)
     if string_length(view) > 0:
@@ -162,12 +171,23 @@ define discord_channels_perform with library as Str and token as Str and journal
     else if operation equals "delete":
         set method to "DELETE"
         set payload to ""
+    if permission_change:
+        set route to concat(route and concat("/permissions/" and archive_list_text(options and 6)))
+        set method to "PUT"
+        if operation equals "permissions_delete":
+            set method to "DELETE"
     set claim to discord_community_claim(journal and run and call_id and concat(method and concat(route and payload)))
     if not (claim equals "claimed"):
         return discord_pin_result(claim and "not established by this invocation; no automatic replay" and "")
     set changed to discord_access_bytes_audit(library and token and journal and directory_path and method and route and concat(method and ":community-channel") and guild and str_to_ptr(payload) and string_length(payload) and "application/json" and archive_list_text(options and 3))
     if not (archive_list_text(changed and 0) equals "observed"):
         return discord_pin_result(concat("channel-change-unconfirmed:" and archive_list_text(changed and 0)) and "not established; inspect current state; do not repeat uncertain creates" and archive_list_text(changed and 1))
+    if permission_change:
+        set verified to discord_access_get(library and token and journal and directory_path and concat("/channels/" and target_id) and "GET:permission-verification" and guild)
+        set verification to "unavailable"
+        if archive_list_text(verified and 0) equals "observed":
+            set verification to discord_overwrite_matches(archive_list_text(verified and 1) and options)
+        return concat("{\"status\":\"applied\",\"effects\":\"Discord accepted the permission change\",\"verification\":" and concat(provider_quote(verification) and concat(",\"receipt\":" and concat(provider_quote(archive_list_text(changed and 3)) and concat(",\"verification_receipt\":" and concat(provider_quote(archive_list_text(verified and 3)) and "}"))))))
     set changed_body to archive_list_text(changed and 1)
     if discord_channel_same_audience(origin and changed_body and guild) equals 0:
         return discord_pin_result("applied" and "Discord accepted the action; response metadata withheld because audience no longer matches" and archive_list_text(changed and 3))
@@ -175,3 +195,60 @@ define discord_channels_perform with library as Str and token as Str and journal
     if string_length(response) equals 0:
         return discord_pin_result("channel-response-unconfirmed" and "remote response retained; inspect channel before another action" and archive_list_text(changed and 3))
     return concat("{\"status\":\"applied\",\"data\":" and concat(response and concat(",\"receipt\":" and concat(provider_quote(archive_list_text(changed and 3)) and "}"))))
+
+# Fetch complete current snapshots for both authenticated requester and bot.
+# Subject and parent validation never exports additional channel metadata.
+define discord_overwrite_permission with library as Str and token as Str and journal as Int and directory_path as Str and bot as Str and guild as Str and actor as Str and target as Str and options as List returning Str:
+    set target_tokens to provider_json_tokens(target)
+    set room to provider_value(target_tokens and provider_member(target_tokens and 0 and "id"))
+    set server to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and guild) and "GET:guild" and guild)
+    set roles to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild and "/roles")) and "GET:roles" and guild)
+    if not (archive_list_text(server and 0) equals "observed") or else not (archive_list_text(roles and 0) equals "observed"):
+        return "permission-snapshot-unavailable"
+    set role_tokens to provider_json_tokens(archive_list_text(roles and 1))
+    set retained to create_list()
+    set role_items to provider_items(role_tokens and 0)
+    set added to append_list(retained and role_items)
+    set subject to archive_list_text(options and 6)
+    set subject_type to archive_list_text(options and 7)
+    set found to 0
+    if subject_type equals "0":
+        for each item in role_items:
+            if provider_value(role_tokens and provider_member(role_tokens and item and "id")) equals subject:
+                set found to found + 1
+        if found is not equal to 1:
+            return "subject-role-not-found"
+    else:
+        set person to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild and concat("/members/" and subject))) and "GET:overwrite-subject" and guild)
+        if not (archive_list_text(person and 0) equals "observed"):
+            return "subject-member-unavailable"
+        set member_tokens to provider_json_tokens(archive_list_text(person and 1))
+        if not (provider_value(member_tokens and provider_member(member_tokens and provider_member(member_tokens and 0 and "user") and "id")) equals subject):
+            return "subject-member-identity-mismatch"
+    set parent to "{}"
+    set parent_id to provider_value(target_tokens and provider_member(target_tokens and 0 and "parent_id"))
+    if discord_snowflake(parent_id) equals 1:
+        set observed_parent to discord_access_get(library and token and journal and directory_path and concat("/channels/" and parent_id) and "GET:permission-parent" and guild)
+        if not (archive_list_text(observed_parent and 0) equals "observed"):
+            return "parent-permission-unavailable"
+        set parent to archive_list_text(observed_parent and 1)
+        set fields to provider_json_tokens(parent)
+        if not (provider_value(fields and provider_member(fields and 0 and "id")) equals parent_id) or else not (provider_value(fields and provider_member(fields and 0 and "guild_id")) equals guild) or else not (provider_value(fields and provider_member(fields and 0 and "type")) equals "4"):
+            return "parent-identity-mismatch"
+    set people to create_list()
+    set added to append_list(people and actor)
+    set added to append_list(people and bot)
+    for each identity in people:
+        set user to ptr_to_str(identity)
+        set observed to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild and concat("/members/" and user))) and "GET:member" and guild)
+        if not (archive_list_text(observed and 0) equals "observed") or else discord_member_timeout(journal and archive_list_text(observed and 1) and ep_time_now_ms()) is not equal to 0:
+            return "member-unavailable-or-timeout"
+        set allow to "0"
+        set deny to "0"
+        if archive_list_text(options and 1) equals "permissions_set":
+            set fields to provider_json_tokens(archive_list_text(options and 5))
+            set allow to provider_value(fields and provider_member(fields and 0 and "allow"))
+            set deny to provider_value(fields and provider_member(fields and 0 and "deny"))
+        if discord_overwrite_assignment(archive_list_text(server and 1) and archive_list_text(roles and 1) and archive_list_text(observed and 1) and target and parent and guild and user and room and allow and deny) is not equal to 1:
+            return "permission-assignment-denied"
+    return "allowed"

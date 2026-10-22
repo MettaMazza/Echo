@@ -1,10 +1,14 @@
 import "message_moderation_options"
+import "channel_permission_options"
 
 # Strict typed fields; no generic REST/body/header or permission-mask escape.
 define discord_channel_options with arguments as Str returning List:
     set tokens to provider_json_tokens(arguments)
     if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
         return history_status("invalid-arguments")
+    set requested_operation to provider_value(tokens and provider_member(tokens and 0 and "operation"))
+    if requested_operation equals "permissions_set" or else requested_operation equals "permissions_delete":
+        return discord_channel_permission_options(arguments)
     set index to 1
     repeat while not (provider_kind(tokens and index) equals "}"):
         set key to provider_value(tokens and index)
@@ -116,8 +120,9 @@ define discord_channel_options with arguments as Str returning List:
         return history_status("change-required")
     return ["valid",operation,channel_id,reason,digest,concat(payload and "}")]
 
-# Conservative same-audience proof: exact overwrite representation. A mismatch
-# does not disclose private metadata and does not mean the channel is absent.
+# Same guild and identical VIEW_CHANNEL overwrite semantics prove the same
+# metadata audience. Non-visibility permission changes do not block restoration.
+# A mismatch withholds metadata; it is not evidence that a channel is absent.
 define discord_channel_same_audience with origin as Str and target as Str and guild as Str returning Int:
     set left to provider_json_tokens(origin)
     set right to provider_json_tokens(target)
@@ -132,7 +137,16 @@ define discord_channel_same_audience with origin as Str and target as Str and gu
     set b to provider_member(right and 0 and "permission_overwrites")
     if not (provider_kind(left and a) equals "[") or else not (provider_kind(right and b) equals "["):
         return 0
-    return agent_json_source(origin and left and a) equals agent_json_source(target and right and b)
+    set left_view to create_list()
+    set right_view to create_list()
+    if discord_channel_visibility(left_view and left and provider_items(left and a)) equals 0 or else discord_channel_visibility(right_view and right and provider_items(right and b)) equals 0:
+        return 0
+    if length_list(left_view) is not equal to length_list(right_view):
+        return 0
+    for each key in left_view:
+        if discord_contains(right_view and ptr_to_str(key)) equals 0:
+            return 0
+    return 1
 
 define discord_channel_view with body as Str returning Str:
     set tokens to provider_json_tokens(body)
@@ -199,7 +213,7 @@ define discord_channels_page_items with body as Str and origin as Str and guild 
             set next_offset to index
         set index to index + 1
     set result to concat("{\"channels\":" and concat(result and "]"))
-    return concat(result and concat(",\"next_offset\":" and concat(int_to_string(next_offset) and ",\"scope\":\"same guild and exact originating permission overwrites; other audiences omitted\"}")))
+    return concat(result and concat(",\"next_offset\":" and concat(int_to_string(next_offset) and ",\"scope\":\"same guild and matching visibility overwrites; other audiences omitted\"}")))
 
 
 define discord_channel_fields_match with payload as Str and kind as Str returning Int:
@@ -215,4 +229,29 @@ define discord_channel_fields_match with payload as Str and kind as Str returnin
     if provider_member(fields and 0 and "rate_limit_per_user") >= 0:
         if not (kind equals "0" or else kind equals "2" or else kind equals "5" or else kind equals "15" or else kind equals "16"):
             return 0
+    return 1
+
+# The caller retains output. Typed token/item parameters survive allocation.
+define discord_channel_visibility with output as List and tokens as List and items as List returning Int:
+    set seen to create_list()
+    for each item in items:
+        set id_field to provider_member(tokens and item and "id")
+        set type_field to provider_member(tokens and item and "type")
+        set allow_field to provider_member(tokens and item and "allow")
+        set deny_field to provider_member(tokens and item and "deny")
+        if not (provider_kind(tokens and id_field) equals "string") or else not (provider_kind(tokens and type_field) equals "number") or else not (provider_kind(tokens and allow_field) equals "string") or else not (provider_kind(tokens and deny_field) equals "string"):
+            return 0
+        set identity to provider_value(tokens and id_field)
+        set kind to provider_value(tokens and type_field)
+        set key to concat(kind and concat(":" and identity))
+        if discord_snowflake(identity) equals 0 or else not (kind equals "0" or else kind equals "1") or else discord_contains(seen and key) equals 1:
+            return 0
+        set added to append_list(seen and key)
+        set allow to discord_permission_bit(provider_value(tokens and allow_field) and 10)
+        set deny to discord_permission_bit(provider_value(tokens and deny_field) and 10)
+        if allow < 0 or else deny < 0 or else (allow equals 1 and deny equals 1):
+            return 0
+        if allow equals 1 or else deny equals 1:
+            set signature to concat(key and concat(":" and concat(int_to_string(allow) and concat(":" and int_to_string(deny)))))
+            set added to append_list(output and signature)
     return 1
