@@ -44,3 +44,49 @@ Source review reused Echo member/event/invite boundaries, re-read the pinned
 ErnosDecent rights source and HIVE scope blob
 `69c59740c40468b7bb1998d82ce7035ce7f37235` (revision in SOURCE-MAP.md).
 These inform authority/provenance handling; no foreign prompts are installed.
+
+Metadata validation candidate `expression_changes.ep` now separates emoji
+name/role changes from sticker name/description/tag changes. Sticker creation
+allows an empty description; modification uses explicit null to clear it.
+Unknown/duplicate fields, invalid role IDs and duplicate roles are rejected.
+The 17-case native metadata regression passes (`native-changes.json`).
+Generated C inspection confirms the retained JSON, strings and both input
+references are rooted across collection. No controller deployment is claimed. File upload validation, fresh role/guild checks, controller wiring
+and actual resource acceptance remain. Official API pages were rechecked on
+22 October before implementing these payload distinctions.
+
+`expression_options.ep` adds flat operation arguments and constructs metadata
+patches without admitting arbitrary REST paths or upload destinations. Mutation
+reasons are mandatory; edit/delete require a complete observed SHA-256. Read
+operations reject mutation fields, and creation requires a retained attachment
+identifier. The identifier still requires scoped controller resolution before
+any use. The separate 13-case native operation test passes (`native-options.json`).
+
+The public projection component passes five native resource/guild binding and
+creator-profile exclusion cases (`native-view.json`). Its generated C retains
+all ten reference roots; the operation parser retains all fourteen roots.
+Sticker multipart assembly reuses the
+existing digest-checked frozen-file reader and creates the sticker-specific
+name/description/tags/file form. Its native binary/form test passes (`native-multipart.json`), including exact
+sticker field names and absence of message-upload fields. Dimensions,
+format validation, scoped attachment resolution and controller integration
+remain required before any live upload.
+
+The new `expression_access.ep` candidate binds routes to validated guild and
+resource IDs, checks requester and bot ownership independently, rejects managed
+emoji mutations and verifies requested role IDs against fresh guild roles. Its seven
+native tests pass (`native-access.json`). Runtime admin/source/cancellation checks and the
+HTTP controller still need integration; these helpers alone grant no access.
+
+Scoped upload preparation now reuses `discord_post_file_source` and verifies
+the retained digest before encoding emoji data or freezing sticker multipart
+bytes. It enforces the documented byte limits and the Lottie guild-feature
+restriction. Discord remains authoritative for image decoding, dimensions and
+animation limits; HTTP rejection must retain the original receipt without
+automatic mutation retry or substituted content. The native upload test passed (`native-upload.json`), covering scoped emoji/sticker preparation, cross-conversation, exclusion and changed-byte denial. No live upload is claimed.
+
+The HTTP controller candidate compiled and its projection/forged-request test passed (`native-controller.json`). It rechecks configured admin, source visibility, independent requester/bot permissions, cancellation and scoped attachment eligibility before a durable mutation claim. Frozen sticker buffers remain owned until the transfer returns. Schema, discovery and dispatch wiring are now present in candidate source; the registered binding regression passed (`native-binding-initial.json`). Generated C review then found the collection item list lacked a reference root; explicit list initialisation did not produce a root either, so collection projection now traverses token indices directly. The final registered regression passed (`native-binding.json`), including multi-item projection; generated C confirms the seven retained collection references and the added schema reference. These changes are not deployed, and live resource lifecycle acceptance remains pending.
+
+Gateway expression change markers now retain only the allowed guild identifier, never entire emoji/sticker collections or creator profiles. The candidate intent mask is 112137, adding the standard GUILD_EXPRESSIONS bit 3 to the previous mask. Native marker, duplicate/reopen/foreign-guild tests and the existing protocol/scheduled-event regressions pass (`native-gateway.json`). A saved connection with the old mask cannot resume. [Discord Gateway documentation](https://docs.discord.com/developers/events/gateway) was rechecked on 22 October. Live READY and expression lifecycle checks remain pending; production has not changed.
+
+All component and registered native checks above pass. Six Discord workers and the matching execution helper are building from the same candidate source. Deployment, actual Gateway READY with mask 112137, and disposable-resource acceptance are still pending.

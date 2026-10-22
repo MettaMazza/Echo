@@ -1,0 +1,69 @@
+import "expression_guard"
+import "expression_view"
+
+# Routes are derived from bound guild/resource IDs, never caller-supplied URLs.
+define discord_expression_route with kind as Str and guild as Str and resource as Str returning Str:
+    if discord_snowflake(guild) equals 0 or else (string_length(resource) > 0 and also discord_snowflake(resource) equals 0):
+        return ""
+    set family to ""
+    if kind equals "emoji":
+        set family to "emojis"
+    else if kind equals "sticker":
+        set family to "stickers"
+    else:
+        return ""
+    set route to concat("/guilds/" and concat(guild and concat("/" and family)))
+    if string_length(resource) > 0:
+        set route to concat(route and concat("/" and resource))
+    return route
+
+# Both actors must independently qualify against the same fresh guild snapshot.
+# A bot-created resource is not thereby owned by its requesting administrator.
+define discord_expression_authority with server as Str and roles as Str and requester as Str and bot_member as Str and kind as Str and body as Str and guild as Str and actor as Str and bot as Str and resource as Str and operation as Str returning Int:
+    set creator to ""
+    set managed to 0
+    set permission to "read"
+    if operation equals "create":
+        set permission to "create"
+    else if operation equals "edit":
+        set permission to "modify"
+    else if operation equals "delete":
+        set permission to "delete"
+    else if not (operation equals "list" or else operation equals "inspect"):
+        return 0
+    if string_length(discord_expression_route(kind and guild and resource)) equals 0:
+        return 0
+    if operation equals "inspect" or else operation equals "edit" or else operation equals "delete":
+        if string_length(resource) equals 0 or else string_length(discord_expression_view(body and kind and guild and resource)) equals 0:
+            return 0
+        set fields to provider_json_tokens(body)
+        set creator to provider_value(fields and provider_member(fields and provider_member(fields and 0 and "user") and "id"))
+        if kind equals "emoji":
+            set field to provider_member(fields and 0 and "managed")
+            if provider_kind(fields and field) equals "true":
+                set managed to 1
+            else if not (provider_kind(fields and field) equals "false") and also not (operation equals "inspect"):
+                return 0
+    else if string_length(resource) > 0:
+        return 0
+    return discord_expression_permission(server and roles and requester and guild and actor and creator and managed and permission) equals 1 and also discord_expression_permission(server and roles and bot_member and guild and bot and creator and managed and permission) equals 1
+
+# Role restrictions may reference only roles in this freshly read guild list.
+define discord_expression_roles_current with changes as Str and roles as Str returning Int:
+    set fields to provider_json_tokens(changes)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0:
+        return 0
+    set field to provider_member(fields and 0 and "roles")
+    if field < 0 or else provider_kind(fields and field) equals "null":
+        return 1
+    if not (provider_kind(fields and field) equals "["):
+        return 0
+    set index to field + 1
+    repeat while not (provider_kind(fields and index) equals "]"):
+        set role to provider_value(fields and index)
+        if not (provider_kind(fields and index) equals "string") or else string_length(discord_role_snapshot(roles and role)) equals 0:
+            return 0
+        set index to provider_after(fields and index)
+        if provider_kind(fields and index) equals ",":
+            set index to index + 1
+    return 1
