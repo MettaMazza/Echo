@@ -21,6 +21,30 @@ Reference: [Discord scheduled events](https://docs.discord.com/developers/resour
 
 All of these remain required before scheduled events can be called complete. Full Step 15 also retains the other administration and moderation work in phase2.md.
 
+## Scoped response projection
+
+`scheduled_event_view.ep` adds a response boundary for the controller: bind the
+event to the authenticated guild and its actual channel, evaluate current member
+visibility, and project documented event fields without the full creator profile.
+External-event location is projected separately. Recurrence responses allow
+documented server-owned fields while rejecting unexpected nested profile data.
+Interested-user pages are bound to the inspected event and return account IDs
+and names, not full member objects; duplicate IDs and mismatched events fail.
+
+The controller must supply fresh observations and evaluate requester and bot
+separately. This helper does not fetch permissions, authorize mutations or grant
+access by itself. Full controller wiring and live event acceptance remain open.
+The native projection suite covers denied visibility, mismatched channel/guild/
+member, profile omission, malformed and duplicate responses, recurrence nesting
+and repeated allocating calls. Final native qualification is recorded separately
+in `discord-scheduled-events-20261022/native-view.json`; no production deployment
+is implied by that component receipt.
+
+Final native build and execution passed on 22 October, including 200 repeated
+allocating calls. Generated C confirms both iterable response lists are retained
+as typed GC roots. An initial function-name typo and helper-extraction parse
+failure are retained in the private build logs; neither build was deployed.
+
 ## Timestamp and recurrence validation
 
 `scheduled_event_time.ep` parses explicit RFC3339 timestamps without depending on host locale or timezone. It validates Gregorian dates, leap years, clock bounds, timezone offsets and fractional seconds (truncated to milliseconds); missing or unknown offsets are rejected. The controller still must compare times against the current clock and validate merged start/end values. Dates before 1970 and leap-second notation are outside this administrative timestamp format.
