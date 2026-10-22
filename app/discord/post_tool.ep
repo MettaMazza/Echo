@@ -2,6 +2,7 @@ import "access_failure"
 import "../retained_text"
 import "post_options"
 import "post_store"
+import "post_file"
 import "reaction_tool"
 import "run_source"
 import "../security/tool_policy"
@@ -59,18 +60,30 @@ define discord_post_perform with library as Str and token as Str and journal as 
     set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
     if not (current equals "current"):
         return discord_reaction_result(current and "none" and "")
+    set file to create_list()
+    set attachment to archive_list_text(options and 6)
+    if operation equals "reply" and string_length(attachment) > 0:
+        set file to discord_post_file_source(database and run and actor and attachment)
+        if not (archive_list_text(file and 0) equals "found"):
+            return discord_reaction_result(archive_list_text(file and 0) and "none" and "")
     if operation equals "reply":
         if tool_policy_allows(database and run and call_id and "discord_post") equals 0 or else file_exists(stop_file) or else discord_turn_barrier(journal and http_decimal(archive_list_text(source and 7)) and anchor and room and guild) is not equal to 0:
             return discord_reaction_result("authorization-changed-or-stopped" and "none" and "")
         set identity_material to concat(run and concat(":" and call_id))
         set post to concat("tool-post:" and ep_sha256(identity_material))
         set body to discord_rich_post_body(text and anchor and archive_list_text(options and 4) and archive_list_text(options and 5))
+        if string_length(attachment) > 0:
+            set body to concat(substring(body and 0 and string_length(body) - 1) and concat(",\"attachments\":[{\"id\":0,\"filename\":" and concat(provider_quote(discord_post_filename(archive_list_text(file and 2))) and "}]}")))
         set queued to discord_outbox_enqueue(journal and post and inbox and room and body)
         if not (queued equals "enqueued" or else queued equals "already-enqueued"):
             return discord_reaction_result(queued and "none" and "")
         set bound to discord_post_bind(journal and post and actor and room and run)
         if not (bound equals "bound"):
             return discord_reaction_result(bound and "none" and "")
+        if string_length(attachment) > 0:
+            set bound to discord_post_file_bind(journal and post and attachment and file)
+            if not (bound equals "bound"):
+                return discord_reaction_result(bound and "none; pending post retained" and "")
     set row to discord_post_lookup(journal and post and actor and room)
     if not (archive_list_text(row and 0) equals "found"):
         return discord_reaction_result("post-not-owned-in-this-channel" and "none; this requester cannot modify another user's posts" and "")
@@ -82,6 +95,10 @@ define discord_post_perform with library as Str and token as Str and journal as 
         if pending equals 0:
             return discord_reaction_result("invalid-stored-post" and "none" and "")
         if string_length(guild) > 0:
+            if provider_member(pending and 0 and "attachments") >= 0:
+                set file_access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 15)
+                if not (archive_list_text(file_access and 0) equals "allowed"):
+                    return discord_access_failure_result(file_access and concat("file permission check; pending post " and post))
             if provider_member(pending and 0 and "embeds") >= 0:
                 set rich_access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 14)
                 if not (archive_list_text(rich_access and 0) equals "allowed"):
@@ -92,7 +109,42 @@ define discord_post_perform with library as Str and token as Str and journal as 
                     return discord_access_failure_result(poll_access and concat("poll permission check; pending post " and post))
         if tool_policy_allows(database and run and call_id and "discord_post") equals 0 or else file_exists(stop_file) or else discord_turn_barrier(journal and http_decimal(archive_list_text(source and 7)) and anchor and room and guild) is not equal to 0:
             return discord_reaction_result("authorization-changed-or-stopped" and "none" and "")
-        set sent to discord_delivery_send(library and token and journal and post and directory_path)
+        if provider_member(pending and 0 and "attachments") >= 0:
+            # Default Discord per-file limit. Interaction-supplied limit is
+            # authenticated input; ordinary message turns use the API default.
+            set maximum to 10485760
+            if archive_list_text(source and 1) equals "INTERACTION_CREATE":
+                set envelope to provider_json_tokens(archive_list_text(source and 2))
+                set reported to http_decimal(provider_value(envelope and provider_member(envelope and 0 and "attachment_size_limit")))
+                if reported > 0:
+                    set maximum to reported
+            set prepared to discord_post_file_prepare(journal and database and post and run and actor and maximum)
+            if not (archive_list_text(prepared and 0) equals "multipart-ready"):
+                return discord_reaction_result(archive_list_text(prepared and 0) and concat("none; pending post " and post) and "")
+            if tool_policy_allows(database and run and call_id and "discord_post") equals 0 or else file_exists(stop_file) or else discord_turn_barrier(journal and http_decimal(archive_list_text(source and 7)) and anchor and room and guild) is not equal to 0:
+                set released to discord_audio_multipart_release(prepared)
+                return discord_reaction_result("authorization-changed-or-stopped" and "none" and "")
+            # Publication eligibility is checked again after preparing bytes.
+            set eligible to discord_post_file_source(database and run and actor and archive_list_text(options and 6))
+            # Retry obtains its immutable source ID from the stored binding.
+            if operation equals "retry":
+                set stored_file to history_collect_one(checkpoint_prepare(journal and "SELECT attachment FROM discord_tool_post_files WHERE post=?;" and [post]))
+                set eligible to discord_post_file_source(database and run and actor and archive_list_text(stored_file and 1))
+            if not (archive_list_text(eligible and 0) equals "found"):
+                set released to discord_audio_multipart_release(prepared)
+                return discord_reaction_result("attachment-authorization-changed" and "none" and "")
+            if string_length(guild) > 0:
+                set file_access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 15)
+                if not (archive_list_text(file_access and 0) equals "allowed"):
+                    set released to discord_audio_multipart_release(prepared)
+                    return discord_access_failure_result(file_access and concat("file permission recheck; pending post " and post))
+            if tool_policy_allows(database and run and call_id and "discord_post") equals 0 or else file_exists(stop_file) or else discord_turn_barrier(journal and http_decimal(archive_list_text(source and 7)) and anchor and room and guild) is not equal to 0:
+                set released to discord_audio_multipart_release(prepared)
+                return discord_reaction_result("authorization-changed-or-stopped" and "none" and "")
+            set sent to discord_delivery_send_prepared(library and token and journal and post and directory_path and get_list(prepared and 1) and get_list(prepared and 2) and archive_list_text(prepared and 3) and archive_list_text(prepared and 5))
+            set released to discord_audio_multipart_release(prepared)
+        else:
+            set sent to discord_delivery_send(library and token and journal and post and directory_path)
         set row to discord_post_lookup(journal and post and actor and room)
     set message to archive_list_text(row and 2)
     set receipt to concat("{\"status\":" and provider_quote(archive_list_text(row and 1)))
@@ -113,6 +165,9 @@ define discord_post_perform with library as Str and token as Str and journal as 
         return discord_reaction_result("remote-post-identity-mismatch" and "none" and archive_list_text(observed and 3))
     if operation equals "reply" or else operation equals "retry" or else operation equals "status":
         set receipt to concat(receipt and concat(",\"content\":" and provider_quote(provider_value(parsed and provider_member(parsed and 0 and "content")))))
+        set attachment_field to provider_member(parsed and 0 and "attachments")
+        if attachment_field >= 0:
+            set receipt to concat(receipt and concat(",\"attachments\":" and agent_json_source(body and parsed and attachment_field)))
         set embed_field to provider_member(parsed and 0 and "embeds")
         set poll_field to provider_member(parsed and 0 and "poll")
         if embed_field >= 0:

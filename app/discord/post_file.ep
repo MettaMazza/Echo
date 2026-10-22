@@ -1,0 +1,70 @@
+import "multipart_audio"
+import "post_store"
+import "../web/attachments"
+import "../archive/attachment_lifecycle"
+
+# Source selection is confined to this exact admitted run's conversation.
+# A private attachment ID or another Discord conversation is never a path grant.
+define discord_post_file_source with database as Int and run as Str and actor as Str and attachment as Str returning List:
+    set device to concat("discord:" and actor)
+    set current to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_runs WHERE run=?;" and [run]))
+    set file to web_attachment_owned(database and device and attachment)
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(file and 0) equals "found") or else not (archive_list_text(current and 1) equals archive_list_text(file and 6)):
+        return history_status("attachment-not-in-current-discord-conversation")
+    if attachment_selectable(database and attachment) equals 0 or else attachment_context_included(database and attachment) equals 0:
+        return history_status("attachment-selection-disabled")
+    return file
+
+# MIME headers use a deterministic ASCII filename. Original name/provenance
+# stays in the immutable attachment archive; no model can inject a header.
+define discord_post_filename with original as Str returning Str:
+    set result to ""
+    set offset to 0
+    repeat while offset < string_length(original) and offset < 200:
+        set byte to char_at(original and offset)
+        if (byte >= 48 and byte <= 57) or else (byte >= 65 and byte <= 90) or else (byte >= 97 and byte <= 122) or else byte equals 45 or else byte equals 95 or else byte equals 46:
+            set result to concat(result and substring(original and offset and 1))
+        else:
+            set result to concat(result and "_")
+        set offset to offset + 1
+    if string_length(result) equals 0 or else result equals "." or else result equals "..":
+        return "Echo-file.bin"
+    return result
+
+define discord_post_file_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_tool_post_files(post TEXT PRIMARY KEY REFERENCES discord_tool_posts(identity),attachment TEXT NOT NULL,digest TEXT NOT NULL,bytes INTEGER NOT NULL,filename TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_tool_post_files_no_update BEFORE UPDATE ON discord_tool_post_files BEGIN SELECT RAISE(ABORT,'File post provenance is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_tool_post_files_no_delete BEFORE DELETE ON discord_tool_post_files BEGIN SELECT RAISE(ABORT,'File post provenance persists'); END;")
+
+define discord_post_file_bind with journal as Int and post as Str and attachment as Str and file as List returning Str:
+    if discord_post_file_schema(journal) is not equal to 0 or else not (archive_list_text(file and 0) equals "found"):
+        return "file-post-store-unavailable"
+    set values to create_list()
+    set added to append_list(values and post)
+    set added to append_list(values and attachment)
+    set added to append_list(values and archive_list_text(file and 4))
+    set added to append_list(values and archive_list_text(file and 5))
+    set added to append_list(values and discord_post_filename(archive_list_text(file and 2)))
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_tool_post_files VALUES(?1,?2,?3,CAST(?4 AS INTEGER),?5);" and values) and 101) is not equal to 0:
+        return "file-post-bind-failed"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT post FROM discord_tool_post_files WHERE post=?1 AND attachment=?2 AND digest=?3 AND bytes=CAST(?4 AS INTEGER) AND filename=?5;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "file-post-bind-conflict"
+    return "bound"
+
+# Re-read eligibility and original bytes on pending retry; a missing binding
+# cannot degrade into a text-only send. Buffer is hash-checked and frozen.
+define discord_post_file_prepare with journal as Int and database as Int and post as Str and run as Str and actor as Str and maximum as Int returning List:
+    if discord_post_file_schema(journal) is not equal to 0:
+        return history_status("file-post-store-unavailable")
+    set binding to history_collect_one(checkpoint_prepare(journal and "SELECT f.attachment,f.digest,CAST(f.bytes AS TEXT),f.filename,o.body,o.nonce FROM discord_tool_post_files f JOIN discord_outbox o ON o.identity=f.post WHERE f.post=?;" and [post]))
+    if not (archive_list_text(binding and 0) equals "found"):
+        return history_status("file-post-binding-unavailable")
+    set file to discord_post_file_source(database and run and actor and archive_list_text(binding and 1))
+    if not (archive_list_text(file and 0) equals "found"):
+        return file
+    if not (archive_list_text(binding and 2) equals archive_list_text(file and 4)) or else not (archive_list_text(binding and 3) equals archive_list_text(file and 5)) or else not (archive_list_text(binding and 4) equals discord_post_filename(archive_list_text(file and 2))):
+        return history_status("file-post-source-changed")
+    set request to discord_delivery_body(archive_list_text(binding and 5) and archive_list_text(binding and 6))
+    set ready to discord_file_multipart(archive_list_text(file and 1) and archive_list_text(file and 4) and http_decimal(archive_list_text(file and 5)) and maximum and request and archive_list_text(binding and 4) and "application/octet-stream")
+    if archive_list_text(ready and 0) equals "multipart-ready":
+        set added to append_list(ready and ep_sha256(request))
+    return ready

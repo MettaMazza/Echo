@@ -8,6 +8,8 @@ Channel creation/editing/removal and permission overwrites have now passed nativ
 
 Rich embeds and polls are deployed in the existing owned tool-post workflow and passed five actual turns, remote receipt comparison, disposable cleanup and reload persistence. A shared-schema allocation crash discovered in the first attempt was repaired at application level and its failed evidence retained. See [rich posts](DISCORD-RICH-POSTS.md). The remaining catalogue and later original steps are not closed by these individual controller passes. The full controlled latency/endurance acceptance also remains open; recorded warm and cold observations are not interchangeable with the historical morning baseline.
 
+Retained file posts now passed native isolation/binary checks and four actual turns, exact downloaded-byte comparison, disposable cleanup, reload and a fresh public Speak regression. The first live attempt exposed a missing dedicated Discord attachment root; its repair and failures are retained in [file delivery](DISCORD-FILE-POSTS.md).
+
 ---
 
 # Current closeout — 21 October 2026
