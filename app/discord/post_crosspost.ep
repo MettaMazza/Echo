@@ -1,0 +1,66 @@
+import "pin_tool"
+import "community_intent"
+import "access_failure"
+
+# Publishing is an explicit audience expansion, never a side effect of reply.
+# Only the actor-owned bot post already resolved by post_tool can reach here.
+define discord_crosspost_guard with room_snapshot as Str and body as Str and guild as Str and room as Str and message as Str and bot as Str and expected as Str returning Str:
+    set fields to provider_json_tokens(room_snapshot)
+    if fields equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "id")) equals room) or else not (provider_value(fields and provider_member(fields and 0 and "guild_id")) equals guild):
+        return "channel-identity-mismatch"
+    if not (provider_value(fields and provider_member(fields and 0 and "type")) equals "5"):
+        return "announcement-channel-required"
+    set fields to provider_json_tokens(body)
+    if fields equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "id")) equals message) or else not (provider_value(fields and provider_member(fields and 0 and "channel_id")) equals room) or else not (provider_value(fields and provider_member(fields and provider_member(fields and 0 and "author") and "id")) equals bot):
+        return "message-identity-mismatch"
+    if discord_permission_bit(provider_value(fields and provider_member(fields and 0 and "flags")) and 0) equals 1:
+        return "already-published"
+    if not (ep_sha256(body) equals expected):
+        return "message-changed; inspect status before publication"
+    return "ready"
+
+define discord_post_crosspost with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and options as List and bot as Str and admins as List and directory_path as Str and stop_file as Str and route as Str and original as Str returning Str:
+    set actor to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    set parsed to provider_json_tokens(original)
+    set message to provider_value(parsed and provider_member(parsed and 0 and "id"))
+    set expected to archive_list_text(options and 7)
+    if string_length(guild) equals 0:
+        return discord_pin_result("announcement-channel-required" and "none" and "")
+    set room_snapshot to discord_access_get(library and token and journal and directory_path and concat("/channels/" and room) and "GET:channel" and room)
+    if not (archive_list_text(room_snapshot and 0) equals "observed"):
+        return discord_access_failure_result(room_snapshot and "publication channel inspection")
+    set guard to discord_crosspost_guard(archive_list_text(room_snapshot and 1) and original and guild and room and message and bot and expected)
+    if not (guard equals "ready"):
+        return discord_pin_result(guard and "none; publication state inspected" and archive_list_text(room_snapshot and 3))
+    # Requester did not author the bot's message, so require MANAGE_MESSAGES
+    # on both identities as well as ordinary send/read access.
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 13)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_access_failure_result(access and "publication permission check")
+    set observed to discord_access_get(library and token and journal and directory_path and route and "GET:channel/message" and room)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return discord_access_failure_result(observed and "publication message recheck")
+    set room_snapshot to discord_access_get(library and token and journal and directory_path and concat("/channels/" and room) and "GET:channel" and room)
+    if not (archive_list_text(room_snapshot and 0) equals "observed"):
+        return discord_access_failure_result(room_snapshot and "publication channel recheck")
+    set guard to discord_crosspost_guard(archive_list_text(room_snapshot and 1) and archive_list_text(observed and 1) and guild and room and message and bot and expected)
+    if not (guard equals "ready"):
+        return discord_pin_result(guard and "none" and archive_list_text(observed and 3))
+    set inbox to discord_job_origin(journal and database and run)
+    if file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else discord_contains(admins and actor) equals 0 or else tool_policy_allows(database and run and call_id and "discord_post") equals 0 or else discord_turn_barrier(journal and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
+        return discord_pin_result("authority-source-or-permission-changed" and "none" and "")
+    set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if not (current equals "current"):
+        return discord_pin_result(current and "none" and "")
+    set claim to discord_community_claim(journal and run and call_id and concat(route and concat(":crosspost:" and expected)))
+    if not (claim equals "claimed"):
+        return discord_pin_result(claim and "inspect status; no publication replay" and "")
+    set changed to discord_access_request(library and token and journal and directory_path and "POST" and concat(route and "/crosspost") and "POST:message-crosspost" and room)
+    if not (archive_list_text(changed and 0) equals "observed"):
+        return discord_pin_result(concat("publication:" and archive_list_text(changed and 0)) and "outcome unconfirmed; inspect status before any retry; intent retained" and archive_list_text(changed and 3))
+    set guard to discord_crosspost_guard(archive_list_text(room_snapshot and 1) and archive_list_text(changed and 1) and guild and room and message and bot and expected)
+    if not (guard equals "already-published"):
+        return discord_pin_result("publication-response-unconfirmed" and "inspect status; no automatic replay" and archive_list_text(changed and 3))
+    return discord_pin_result("published" and "post distributed to announcement-channel followers" and archive_list_text(changed and 3))

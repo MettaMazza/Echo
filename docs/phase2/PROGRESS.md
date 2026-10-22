@@ -10,6 +10,8 @@ Rich embeds and polls are deployed in the existing owned tool-post workflow and 
 
 Retained file posts now passed native isolation/binary checks and four actual turns, exact downloaded-byte comparison, disposable cleanup, reload and a fresh public Speak regression. The first live attempt exposed a missing dedicated Discord attachment root; its repair and failures are retained in [file delivery](DISCORD-FILE-POSTS.md).
 
+Announcement publication now has native guards and three actual negative-boundary/cleanup/follow-up turns, including reload. Positive publication remains unperformed: the authorised server lacks a suitable announcement channel. See [publication scope](DISCORD-CROSSPOSTS.md).
+
 ---
 
 # Current closeout — 21 October 2026
