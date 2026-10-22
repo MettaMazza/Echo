@@ -1,0 +1,31 @@
+# Native Discord thread administration — 22 October 2026
+
+Status: native checks and all five worker builds passed; deployed during an idle boundary. Five actual turns completed: creation, lifecycle, membership, post-restart cleanup and ordinary recall/identity. The member-list positive path remains unavailable under the application’s current access. This is not a complete Step 15 or Phase Two acceptance.
+
+`discord_threads` exposes configured-admin create, inspect, edit, join/leave, add/remove member, member paging and delete operations within the current parent channel. Thread creation supports text-parent public/private threads and message-started threads under text/announcement parents. Forum/media starter-post creation and archived-thread listing are not yet implemented here.
+
+The ordinary channel permission path checks current actor and bot rights. Changes have retained intent and audit reason; edit/delete require the inspected hash. Closing the current control thread must be requested from its parent so replies and controls remain deliverable. Existing request-attached Thinking threads are protected from these manual lifecycle operations.
+
+Private thread details and member lists are not exported into a public parent. A selected private ID can return only opaque identity/hash after membership or its recorded creator has been verified. Only the exact private source can receive private metadata. Adding a member exposes Discord's existing thread history according to platform rules, but never joins an Echo memory group or imports private Host data. Created-thread ownership is immutable.
+
+Native guards, real disposable public/private lifecycle and membership tests, permission/identity denial, restart/reload and ordinary follow-up must have actual receipts before acceptance. Unsupported or unavailable platform features remain named gaps, not passed operations. Protocol: [Discord channel/thread endpoints](https://docs.discord.com/developers/resources/channel).
+
+## Observed qualification
+
+Evidence directory: `evidence/phase2/discord-thread-admin-20261022/` on the canonical One Touch copy. Native option/scope tests and captured-authority/binding tests passed, including Host exclusion, ordinary-user refusal, revocation and forged context. All five importing workers compiled; the generated application roots were inspected. The deployment retained the existing models, Warm resident voice and configured admin IDs.
+
+The first actual Discord turn created a public and a private disposable thread, inspected both, and added the authenticated test account to the private thread. Independent REST reads confirmed both thread types, parent, 60-minute archive setting and the private membership. The public response withheld private metadata; a private member-list request from that public audience was refused. The subsequent lifecycle, membership and post-restart cleanup observations are recorded below.
+
+An independent list-members request returned HTTP 403/code 50001 for both test threads, while individual membership reads succeeded. Discord documents that the list endpoint requires the application's `GUILD_MEMBERS` privileged intent. This observation does not justify changing application access or reporting the list as passed. The current controller preserves the actual refusal; no intent or server permission was changed. Protocol reference: [List Thread Members](https://docs.discord.com/developers/resources/channel#list-thread-members).
+
+The lifecycle turn renamed the public thread, set slow mode to three seconds, archived/locked it, then reopened/unlocked it. Original API bodies match the requested changes and hashes; independent reads corroborate both closed and reopened states. The model's final prose called this “four edits”; the retained calls show three mutations. Acceptance uses those receipts, not that prose count.
+
+The membership turn added the test account, made the bot leave/rejoin, and removed the account from the public thread. Independent individual-membership reads observed the transitions and final state. Private membership remained unchanged. Both attempted member listings returned the documented platform limitation; a later extra inspection was stopped after the model had already marked its checklist complete. Those failures remain in the evidence and are not counted as successful inspections.
+
+After all three runs completed, the connector restarted at an observed idle boundary. The same compiled thread workers and voice profile were retained. The post-restart turn successfully inspected both saved thread IDs and deleted only those two disposable resources. Independent requests returned HTTP 404/code 10003 for both. Two initially mistargeted test messages mentioned a similarly named role rather than the bot; they created no runs or effects and were corrected through the Discord UI. See `test-addressing-correction.json`.
+
+The fifth turn used no tools and correctly returned marker 407, sum 43 and the authenticated account username. Its first provider output arrived after 3.817 seconds. Across the subsequent provider requests, the median was 4.753 seconds; the initial schema-change/cold request took 177.565 seconds. This long existing conversation is not a controlled comparison to the historical morning 1.864-second baseline and does not close performance/endurance acceptance. Public Speak generated an attachment on the final ordinary reply using the existing voice service.
+
+Completion boundary: create/inspect/edit/archive/unarchive/lock/unlock/delete and add/remove/join/leave have real disposable-resource evidence. Member-page projection and permission denial have native/live evidence; successful member listing still needs the application’s privileged-intent access. No access grant is claimed or changed. Forum/media starter posts and archived-thread discovery remain unsupported by this controller. The original supported-operation scope and later integrated acceptance remain unchanged.
+
+Final native Discord reload retained the cleanup and ordinary replies, their request-attached Thinking threads and the public generated audio attachment. The remaining member-list access dependency is not a UI failure.

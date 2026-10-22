@@ -12,6 +12,8 @@ Retained file posts now passed native isolation/binary checks and four actual tu
 
 Announcement publication now has native guards and three actual negative-boundary/cleanup/follow-up turns, including reload. Positive publication remains unperformed: the authorised server lacks a suitable announcement channel. See [publication scope](DISCORD-CROSSPOSTS.md).
 
+Native thread administration is deployed after authority/scope checks and five worker builds. Five actual turns now cover disposable public/private creation, archive/reopen, member and bot join/leave changes, idle restart, deletion and correct ordinary recall/identity. API receipts and independent reads verify the changes. The member-list endpoint currently returns Discord HTTP 403, while individual membership reads succeed. See [thread administration](DISCORD-THREAD-ADMINISTRATION.md); no privileged intent or server permission was changed.
+
 ---
 
 # Current closeout — 21 October 2026

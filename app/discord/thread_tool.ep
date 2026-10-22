@@ -1,0 +1,236 @@
+import "channel_tool"
+import "thread_options"
+import "thread_scope"
+
+define discord_thread_membership with library as Str and token as Str and journal as Int and directory_path as Str and target as Str and person as Str returning Str:
+    set observed to discord_access_get(library and token and journal and directory_path and concat("/channels/" and concat(target and concat("/thread-members/" and person))) and "GET:thread-member" and target)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return discord_access_failure_result(observed and "private thread membership check")
+    set fields to provider_json_tokens(archive_list_text(observed and 1))
+    if not (provider_value(fields and provider_member(fields and 0 and "id")) equals target) or else not (provider_value(fields and provider_member(fields and 0 and "user_id")) equals person):
+        return "thread-membership-identity-mismatch"
+    return "member"
+
+define discord_threads_perform with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and options as List and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set actor to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    set operation to archive_list_text(options and 1)
+    set target_id to archive_list_text(options and 2)
+    set mutation to not (operation equals "inspect" or else operation equals "members")
+    if discord_pin_admin(database and run and call_id) equals 0 or else discord_contains(admins and actor) equals 0:
+        return "{\"status\":\"admin-required\",\"cause\":\"requester-role-required\",\"restriction_scope\":\"requester\",\"required_role\":\"admin\",\"system_failure\":false,\"effects\":\"none\"}"
+    if discord_contains(guilds and guild) equals 0 or else file_exists(stop_file) or else tool_policy_allows(database and run and call_id and "discord_threads") equals 0:
+        return discord_pin_result("discord-origin-denied-or-stopped" and "none" and "")
+    if sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_managed_threads(thread TEXT PRIMARY KEY,guild TEXT NOT NULL,parent TEXT NOT NULL,actor TEXT NOT NULL,run TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_managed_threads_no_update BEFORE UPDATE ON discord_managed_threads BEGIN SELECT RAISE(ABORT,'Thread creator binding is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_managed_threads_no_delete BEFORE DELETE ON discord_managed_threads BEGIN SELECT RAISE(ABORT,'Thread creator binding persists'); END;") is not equal to 0:
+        return discord_pin_result("thread-store-unavailable" and "none" and "")
+    set required_bit to 34
+    if operation equals "create":
+        set required_bit to 35
+        if archive_list_text(options and 8) equals "true":
+            set required_bit to 36
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and required_bit)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_access_failure_result(access and "thread operation permission check")
+    set inbox to discord_job_origin(journal and database and run)
+    set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if not (current equals "current"):
+        return discord_pin_result(current and "none" and "")
+    set observed to discord_access_get(library and token and journal and directory_path and concat("/channels/" and room) and "GET:channel" and room)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return discord_access_failure_result(observed and "thread origin inspection")
+    set origin to archive_list_text(observed and 1)
+    set origin_fields to provider_json_tokens(origin)
+    if not (provider_value(origin_fields and provider_member(origin_fields and 0 and "id")) equals room) or else not (provider_value(origin_fields and provider_member(origin_fields and 0 and "guild_id")) equals guild):
+        return discord_pin_result("origin-identity-mismatch" and "none" and "")
+    set parent_id to room
+    set origin_kind to provider_value(origin_fields and provider_member(origin_fields and 0 and "type"))
+    if origin_kind equals "10" or else origin_kind equals "11" or else origin_kind equals "12":
+        set parent_id to provider_value(origin_fields and provider_member(origin_fields and 0 and "parent_id"))
+    set parent_observation to discord_access_get(library and token and journal and directory_path and concat("/channels/" and parent_id) and "GET:thread-parent" and parent_id)
+    if not (archive_list_text(parent_observation and 0) equals "observed"):
+        return discord_access_failure_result(parent_observation and "thread parent inspection")
+    set parent_body to archive_list_text(parent_observation and 1)
+    set parent_fields to provider_json_tokens(parent_body)
+    if not (provider_value(parent_fields and provider_member(parent_fields and 0 and "id")) equals parent_id) or else not (provider_value(parent_fields and provider_member(parent_fields and 0 and "guild_id")) equals guild):
+        return discord_pin_result("parent-identity-mismatch" and "none" and "")
+    set payload to archive_list_text(options and 5)
+    set route to concat("/channels/" and target_id)
+    set target to ""
+    set scope to ""
+    set view to ""
+    set method to "PATCH"
+    if operation equals "create":
+        set kind to provider_value(parent_fields and provider_member(parent_fields and 0 and "type"))
+        set message to archive_list_text(options and 7)
+        if not (kind equals "0" or else (kind equals "5" and also string_length(message) > 0)):
+            return discord_pin_result("thread-creation-parent-type-unsupported" and "none; use a text parent, or an announcement parent with a message" and "")
+        if archive_list_text(options and 8) equals "true" and not (kind equals "0"):
+            return discord_pin_result("private-thread-needs-text-parent" and "none" and "")
+        set route to concat("/channels/" and concat(parent_id and "/threads"))
+        if string_length(message) > 0:
+            set source_message to discord_access_get(library and token and journal and directory_path and concat("/channels/" and concat(parent_id and concat("/messages/" and message))) and "GET:thread-source-message" and parent_id)
+            if not (archive_list_text(source_message and 0) equals "observed"):
+                return discord_access_failure_result(source_message and "thread source message inspection")
+            set message_fields to provider_json_tokens(archive_list_text(source_message and 1))
+            if not (provider_value(message_fields and provider_member(message_fields and 0 and "id")) equals message) or else not (provider_value(message_fields and provider_member(message_fields and 0 and "channel_id")) equals parent_id):
+                return discord_pin_result("thread-source-message-mismatch" and "none" and "")
+            if provider_member(message_fields and 0 and "thread") >= 0:
+                return discord_pin_result("source-already-has-thread" and "none; inspect the existing thread" and "")
+            set route to concat("/channels/" and concat(parent_id and concat("/messages/" and concat(message and "/threads"))))
+        set method to "POST"
+    else:
+        set observed to discord_access_get(library and token and journal and directory_path and route and "GET:managed-thread" and target_id)
+        if not (archive_list_text(observed and 0) equals "observed"):
+            return discord_access_failure_result(observed and "thread inspection")
+        set target to archive_list_text(observed and 1)
+        set scope to discord_thread_scope(origin and target and guild and room and target_id)
+        if not (scope equals "private-source" or else scope equals "private-metadata-withheld" or else scope equals "public-parent-audience"):
+            return discord_pin_result(scope and "none; metadata withheld" and "")
+        if scope equals "private-source" or else scope equals "private-metadata-withheld":
+            set people to create_list()
+            set added to append_list(people and actor)
+            set added to append_list(people and bot)
+            for each person in people:
+                set membership to discord_thread_membership(library and token and journal and directory_path and target_id and ptr_to_str(person))
+                if not (membership equals "member"):
+                    set binding_values to create_list()
+                    set added to append_list(binding_values and target_id)
+                    set added to append_list(binding_values and guild)
+                    set added to append_list(binding_values and parent_id)
+                    set added to append_list(binding_values and actor)
+                    set creator to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_managed_threads WHERE thread=? AND guild=? AND parent=? AND actor=?;" and binding_values))
+                    set creator_self_management to ptr_to_str(person) equals actor and also archive_list_text(creator and 1) equals "1"
+                    set bot_join to ptr_to_str(person) equals bot and also operation equals "join"
+                    if not creator_self_management and not bot_join:
+                        return discord_pin_result("private-thread-membership-required" and "none; private metadata withheld" and "")
+        if mutation:
+            set target_values to create_list()
+            set added to append_list(target_values and target_id)
+            set added to append_list(target_values and target_id)
+            set protected_thread to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_activity_threads WHERE thread=? OR source=?;" and target_values))
+            if not (archive_list_text(protected_thread and 1) equals "0"):
+                return discord_pin_result("retained-activity-thread" and "none; activity lifecycle is managed by its originating request" and "")
+        if operation equals "edit" or else operation equals "delete":
+            if not (ep_sha256(target) equals archive_list_text(options and 4)):
+                return discord_pin_result("thread-changed" and "none; inspect again" and "")
+        set target_fields to provider_json_tokens(target)
+        set changes to provider_json_tokens(payload)
+        if provider_member(changes and 0 and "invitable") >= 0 and not (provider_value(target_fields and provider_member(target_fields and 0 and "type")) equals "12"):
+            return discord_pin_result("invitable-private-only" and "none" and "")
+        if target_id equals room and (operation equals "delete" or else operation equals "leave" or else provider_value(changes and provider_member(changes and 0 and "archived")) equals "true" or else provider_value(changes and provider_member(changes and 0 and "locked")) equals "true"):
+            return discord_pin_result("current-control-thread" and "none; issue this operation from its parent so control and delivery remain available" and "")
+        if operation equals "inspect":
+            set view to discord_thread_view(target and scope)
+        else if operation equals "members":
+            if scope equals "private-metadata-withheld":
+                return discord_pin_result("private-member-list-not-for-this-audience" and "none; request inside the private thread" and "")
+            set member_route to concat(route and concat("/thread-members?with_member=true&limit=" and archive_list_text(options and 10)))
+            if string_length(archive_list_text(options and 9)) > 0:
+                set member_route to concat(member_route and concat("&after=" and archive_list_text(options and 9)))
+            set members to discord_access_get(library and token and journal and directory_path and member_route and "GET:managed-thread-members" and target_id)
+            if not (archive_list_text(members and 0) equals "observed"):
+                return discord_access_failure_result(members and "thread members inspection")
+            set view to discord_thread_member_page(archive_list_text(members and 1) and target_id)
+            if string_length(view) equals 0:
+                return discord_pin_result("invalid-thread-members-response" and "none" and "")
+        else if operation equals "delete":
+            set method to "DELETE"
+            set payload to ""
+        else if not (operation equals "edit"):
+            set metadata to provider_member(target_fields and 0 and "thread_metadata")
+            if not (provider_value(target_fields and provider_member(target_fields and metadata and "archived")) equals "false"):
+                return discord_pin_result("thread-archived" and "none; explicitly reopen before membership changes" and "")
+            set person to archive_list_text(options and 6)
+            if operation equals "join" or else operation equals "leave":
+                set person to "@me"
+            else:
+                set member_check to discord_thread_recipient(library and token and journal and directory_path and guild and parent_id and parent_body and person)
+                if not (member_check equals "allowed"):
+                    return discord_pin_result(member_check and "none" and "")
+            set route to concat(route and concat("/thread-members/" and person))
+            set method to "PUT"
+            if operation equals "leave" or else operation equals "remove_member":
+                set method to "DELETE"
+            set payload to ""
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and required_bit)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_access_failure_result(access and "final thread permission check")
+    if file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else tool_policy_allows(database and run and call_id and "discord_threads") equals 0 or else not (discord_job_origin(journal and database and run) equals inbox) or else discord_run_barrier(journal and inbox and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
+        return discord_pin_result("authority-source-or-permission-changed" and "none" and "")
+    if string_length(view) > 0:
+        return concat("{\"status\":\"observed\",\"source\":\"Discord REST; untrusted metadata\",\"data\":" and concat(view and "}"))
+    if string_length(target) > 0:
+        set recheck to discord_access_get(library and token and journal and directory_path and concat("/channels/" and target_id) and "GET:managed-thread" and target_id)
+        if not (archive_list_text(recheck and 0) equals "observed"):
+            return discord_access_failure_result(recheck and "thread mutation recheck")
+        if not (ep_sha256(archive_list_text(recheck and 1)) equals ep_sha256(target)):
+            return discord_pin_result("thread-changed" and "none; inspect again" and "")
+    if file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else tool_policy_allows(database and run and call_id and "discord_threads") equals 0 or else discord_run_barrier(journal and inbox and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
+        return discord_pin_result("authority-source-or-permission-changed" and "none" and "")
+    set claim to discord_community_claim(journal and run and call_id and concat(method and concat(route and payload)))
+    if not (claim equals "claimed"):
+        return discord_pin_result(claim and "inspect retained results and current state; no automatic replay" and "")
+    set changed to discord_access_bytes_audit(library and token and journal and directory_path and method and route and concat(method and ":managed-thread") and parent_id and str_to_ptr(payload) and string_length(payload) and "application/json" and archive_list_text(options and 3))
+    if not (archive_list_text(changed and 0) equals "observed"):
+        return discord_pin_result(concat("thread-change-unconfirmed:" and archive_list_text(changed and 0)) and "outcome unconfirmed; inspect before retry" and archive_list_text(changed and 1))
+    if operation equals "create" or else operation equals "edit":
+        set body to archive_list_text(changed and 1)
+        set fields to provider_json_tokens(body)
+        if operation equals "create":
+            set target_id to provider_value(fields and provider_member(fields and 0 and "id"))
+        set scope to discord_thread_scope(origin and body and guild and room and target_id)
+        if not (scope equals "private-source" or else scope equals "private-metadata-withheld" or else scope equals "public-parent-audience"):
+            return discord_pin_result("thread-response-unconfirmed" and "inspect retained receipt; no create replay" and archive_list_text(changed and 3))
+        if operation equals "create":
+            set creator_values to create_list()
+            set added to append_list(creator_values and target_id)
+            set added to append_list(creator_values and guild)
+            set added to append_list(creator_values and parent_id)
+            set added to append_list(creator_values and actor)
+            set added to append_list(creator_values and run)
+            if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_managed_threads(thread,guild,parent,actor,run) VALUES(?,?,?,?,?);" and creator_values) and 101) is not equal to 0:
+                return discord_pin_result("thread-created-binding-unconfirmed" and "thread exists; inspect retained receipt and do not create a duplicate" and archive_list_text(changed and 3))
+        return concat("{\"status\":\"applied\",\"data\":" and concat(discord_thread_view(body and scope) and concat(",\"receipt\":" and concat(provider_quote(archive_list_text(changed and 3)) and "}"))))
+    return discord_pin_result("applied" and concat("thread:" and operation) and archive_list_text(changed and 3))
+
+define discord_thread_recipient with library as Str and token as Str and journal as Int and directory_path as Str and guild as Str and parent as Str and parent_body as Str and person as Str returning Str:
+    set server to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and guild) and "GET:guild" and guild)
+    set roles to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild and "/roles")) and "GET:roles" and guild)
+    set member to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild and concat("/members/" and person))) and "GET:member" and guild)
+    if not (archive_list_text(server and 0) equals "observed") or else not (archive_list_text(roles and 0) equals "observed") or else not (archive_list_text(member and 0) equals "observed"):
+        return "recipient-membership-or-permission-unavailable"
+    if discord_channel_permission(archive_list_text(server and 1) and archive_list_text(roles and 1) and archive_list_text(member and 1) and parent_body and guild and person and parent and 10) is not equal to 1:
+        return "recipient-cannot-view-parent"
+    return "allowed"
+
+define discord_threads_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    set options to discord_thread_options(arguments)
+    if not (archive_list_text(options and 0) equals "valid"):
+        return discord_pin_result(archive_list_text(options and 0) and "none" and "")
+    if tool_policy_allows(database and run and call_id and "discord_threads") equals 0:
+        return discord_pin_result("not-authorized" and "none" and "")
+    if not ((get_argument_count() equals 15 and also get_argument(13) equals "--turn") or else (get_argument_count() equals 16 and also get_argument(13) equals "--job")):
+        return discord_pin_result("discord-runtime-unavailable" and "none" and "")
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals get_argument(7)) or else not (archive_list_text(location and 1) equals get_argument(4)):
+        return discord_pin_result("discord-binding-denied" and "none" and "")
+    set journal to discord_store_open(get_argument(3) and get_argument(7))
+    if journal equals 0:
+        return discord_pin_result("discord-journal-unavailable" and "none" and "")
+    set source to discord_run_source(journal and database and run)
+    if not (archive_list_text(source and 0) equals "found"):
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-origin-denied" and "none" and "")
+    set credential to read_file(get_argument(2))
+    if credential equals 0:
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-credential-unavailable" and "none" and "")
+    set guilds to create_list()
+    set split_count to retained_text_split(guilds and get_argument(8) and ",")
+    set admins to create_list()
+    set split_count to retained_text_split(admins and get_argument(9) and ",")
+    set result to discord_threads_perform(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and database and run and call_id and source and options and get_argument(7) and guilds and admins and get_argument(5) and get_argument(6))
+    set closed to sql_close(journal)
+    return result

@@ -1,0 +1,129 @@
+import "channel_options"
+
+define discord_thread_options with arguments as Str returning List:
+    set fields to provider_json_tokens(arguments)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_kind(fields and 0) equals "{"):
+        return history_status("invalid-arguments")
+    set index to 1
+    repeat while not (provider_kind(fields and index) equals "}"):
+        set key to provider_value(fields and index)
+        set kind to provider_kind(fields and index + 2)
+        if key equals "private" or else key equals "archived" or else key equals "locked" or else key equals "invitable":
+            if not (kind equals "true" or else kind equals "false"):
+                return history_status("invalid-boolean")
+        else if key equals "auto_archive_minutes" or else key equals "slowmode" or else key equals "limit":
+            if not (kind equals "number"):
+                return history_status("invalid-number")
+        else if key equals "operation" or else key equals "thread" or else key equals "message" or else key equals "member" or else key equals "name" or else key equals "reason" or else key equals "observed_sha256" or else key equals "after":
+            if not (kind equals "string"):
+                return history_status("invalid-string")
+        else:
+            return history_status("unknown-field")
+        set index to provider_after(fields and index + 2)
+        if provider_kind(fields and index) equals ",":
+            set index to index + 1
+    set operation to provider_value(fields and provider_member(fields and 0 and "operation"))
+    if not (operation equals "create" or else operation equals "inspect" or else operation equals "edit" or else operation equals "delete" or else operation equals "join" or else operation equals "leave" or else operation equals "add_member" or else operation equals "remove_member" or else operation equals "members"):
+        return history_status("invalid-operation")
+    set target to provider_value(fields and provider_member(fields and 0 and "thread"))
+    if operation equals "create":
+        if string_length(target) > 0:
+            return history_status("unused-thread")
+    else if discord_snowflake(target) equals 0:
+        return history_status("thread-required")
+    set reason to provider_value(fields and provider_member(fields and 0 and "reason"))
+    set mutation to not (operation equals "inspect" or else operation equals "members")
+    if mutation and string_length(discord_audit_reason(reason)) equals 0:
+        return history_status("reason-required")
+    if not mutation and string_length(reason) > 0:
+        return history_status("unused-reason")
+    set digest to provider_value(fields and provider_member(fields and 0 and "observed_sha256"))
+    if operation equals "edit" or else operation equals "delete":
+        if string_length(digest) is not equal to 64:
+            return history_status("observed-sha256-required")
+        set index to 0
+        repeat while index < 64:
+            if string_contains("0123456789abcdef" and substring(digest and index and 1)) equals 0:
+                return history_status("invalid-sha256")
+            set index to index + 1
+    else if string_length(digest) > 0:
+        return history_status("unused-sha256")
+    set member to provider_value(fields and provider_member(fields and 0 and "member"))
+    if operation equals "add_member" or else operation equals "remove_member":
+        if discord_snowflake(member) equals 0:
+            return history_status("member-required")
+    else if string_length(member) > 0:
+        return history_status("unused-member")
+    set message to provider_value(fields and provider_member(fields and 0 and "message"))
+    if string_length(message) > 0 and (not (operation equals "create") or else discord_snowflake(message) equals 0):
+        return history_status("invalid-or-unused-message")
+    set private_field to provider_member(fields and 0 and "private")
+    set private_value to provider_value(fields and private_field)
+    if private_field >= 0 and not (operation equals "create"):
+        return history_status("unused-private")
+    if private_value equals "true" and string_length(message) > 0:
+        return history_status("private-thread-cannot-start-from-message")
+    set payload to "{"
+    set count to 0
+    set keys to create_list()
+    set added to append_list(keys and "name")
+    set added to append_list(keys and "auto_archive_minutes")
+    set added to append_list(keys and "slowmode")
+    set added to append_list(keys and "archived")
+    set added to append_list(keys and "locked")
+    set added to append_list(keys and "invitable")
+    for each item in keys:
+        set key to ptr_to_str(item)
+        set field to provider_member(fields and 0 and key)
+        if field >= 0:
+            if not (operation equals "create" or else operation equals "edit"):
+                return history_status("unused-thread-change")
+            if operation equals "create" and (key equals "archived" or else key equals "locked"):
+                return history_status("edit-only-state")
+            set value to provider_value(fields and field)
+            set remote_key to key
+            set serialized to value
+            if key equals "name":
+                if string_length(string_trim(value)) equals 0 or else string_length(value) > 100 or else provider_valid_utf8(value) equals 0:
+                    return history_status("invalid-name")
+                set serialized to provider_quote(value)
+            else if key equals "auto_archive_minutes":
+                if not (value equals "60" or else value equals "1440" or else value equals "4320" or else value equals "10080"):
+                    return history_status("invalid-auto-archive")
+                set remote_key to "auto_archive_duration"
+            else if key equals "slowmode":
+                set number to http_decimal(value)
+                if number < 0 or else number > 21600 or else not (int_to_string(number) equals value):
+                    return history_status("invalid-slowmode")
+                set remote_key to "rate_limit_per_user"
+            if count > 0:
+                set payload to concat(payload and ",")
+            set payload to concat(payload and concat(provider_quote(remote_key) and concat(":" and serialized)))
+            set count to count + 1
+    if operation equals "create":
+        if provider_member(fields and 0 and "name") < 0:
+            return history_status("name-required")
+        if string_length(message) equals 0:
+            set kind to "11"
+            if private_value equals "true":
+                set kind to "12"
+            set payload to concat(payload and concat(",\"type\":" and kind))
+        if provider_member(fields and 0 and "invitable") >= 0 and not (private_value equals "true"):
+            return history_status("invitable-private-only")
+    if operation equals "edit" and count equals 0:
+        return history_status("change-required")
+    set payload to concat(payload and "}")
+    set after to provider_value(fields and provider_member(fields and 0 and "after"))
+    set limit_field to provider_member(fields and 0 and "limit")
+    set limit_value to provider_value(fields and limit_field)
+    if operation equals "members":
+        if string_length(after) > 0 and discord_snowflake(after) equals 0:
+            return history_status("invalid-after")
+        if limit_field < 0:
+            set limit_value to "100"
+        set limit_number to http_decimal(limit_value)
+        if limit_number < 1 or else limit_number > 100 or else not (int_to_string(limit_number) equals limit_value):
+            return history_status("invalid-limit")
+    else if string_length(after) > 0 or else limit_field >= 0:
+        return history_status("unused-pagination")
+    return ["valid",operation,target,reason,digest,payload,member,message,private_value,after,limit_value]
