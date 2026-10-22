@@ -1,0 +1,39 @@
+import "store"
+
+# Session-scoped observations only. Unknown changes remain audience barriers.
+# No role names, hierarchy or membership are used as access grants here.
+define discord_gateway_role_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_gateway_role_permissions(session TEXT NOT NULL,guild TEXT NOT NULL,role TEXT NOT NULL,permissions TEXT NOT NULL,PRIMARY KEY(session,guild,role));")
+
+# Called inside the accepted dispatch transaction, after replay/sequence checks.
+# Return 1 only for a newly created zero-permission role or an observed update
+# whose permission mask is unchanged. Deletion always invalidates: even a zero
+# role may have channel overwrites. Current tool hierarchy checks still apply.
+define discord_gateway_role_observe with database as Int and session as Str and kind as Str and payload as Str returning Int:
+    if kind equals "GUILD_CREATE":
+        set baseline_keys to create_list()
+        set added to append_list(baseline_keys and session)
+        set added to append_list(baseline_keys and payload)
+        if archive_finish(checkpoint_prepare(database and "DELETE FROM discord_gateway_role_permissions WHERE session=?1 AND guild=json_extract(?2,'$.guild_id');" and baseline_keys) and 101) is not equal to 0:
+            return -1
+        if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_gateway_role_permissions(session,guild,role,permissions) SELECT ?1,json_extract(?2,'$.guild_id'),json_extract(value,'$.role_id'),json_extract(value,'$.permissions') FROM json_each(?2,'$.roles') WHERE json_type(value,'$.role_id')='text' AND json_type(value,'$.permissions')='text' AND length(json_extract(value,'$.permissions')) BETWEEN 1 AND 20 AND json_extract(value,'$.permissions') NOT GLOB '*[^0-9]*';" and baseline_keys) and 101) is not equal to 0:
+            return -1
+        return 0
+    if not (kind equals "GUILD_ROLE_CREATE" or else kind equals "GUILD_ROLE_UPDATE" or else kind equals "GUILD_ROLE_DELETE"):
+        return 0
+    set values to create_list()
+    set added to append_list(values and session)
+    set added to append_list(values and payload)
+    set added to append_list(values and kind)
+    set neutral to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN ?3='GUILD_ROLE_CREATE' AND json_extract(?2,'$.permissions')='0' THEN 1 WHEN ?3='GUILD_ROLE_UPDATE' AND EXISTS(SELECT 1 FROM discord_gateway_role_permissions WHERE session=?1 AND guild=json_extract(?2,'$.guild_id') AND role=json_extract(?2,'$.role_id') AND permissions=json_extract(?2,'$.permissions')) THEN 1 ELSE 0 END;" and values))
+    if not (archive_list_text(neutral and 0) equals "found"):
+        return -1
+    set keys to create_list()
+    set added to append_list(keys and session)
+    set added to append_list(keys and payload)
+    # Remove the old observation even if a malformed update lacks permissions.
+    if archive_finish(checkpoint_prepare(database and "DELETE FROM discord_gateway_role_permissions WHERE session=?1 AND guild=json_extract(?2,'$.guild_id') AND role=json_extract(?2,'$.role_id');" and keys) and 101) is not equal to 0:
+        return -1
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_gateway_role_permissions(session,guild,role,permissions) SELECT ?1,json_extract(?2,'$.guild_id'),json_extract(?2,'$.role_id'),json_extract(?2,'$.permissions') WHERE ?3<>'GUILD_ROLE_DELETE' AND json_type(?2,'$.guild_id')='text' AND json_type(?2,'$.role_id')='text' AND json_type(?2,'$.permissions')='text' AND length(json_extract(?2,'$.permissions')) BETWEEN 1 AND 20 AND json_extract(?2,'$.permissions') NOT GLOB '*[^0-9]*';" and values) and 101) is not equal to 0:
+        return -1
+    return string_to_int(archive_list_text(neutral and 1))

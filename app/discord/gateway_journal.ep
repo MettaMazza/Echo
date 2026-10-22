@@ -1,10 +1,13 @@
 import "interaction_intake"
 import "store"
+import "gateway_roles"
 
 # A generation fences old socket workers after reconnect. Sequence advances
 # only in the transaction which records the dispatch receipt and admitted work.
 # Ignored messages retain only an envelope digest, never their message content.
 define discord_gateway_schema with database as Int returning Int:
+    if discord_gateway_role_schema(database) is not equal to 0:
+        return 1
     return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_gateway(singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation TEXT NOT NULL,session TEXT NOT NULL,sequence INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_dispatch(session TEXT NOT NULL,sequence INTEGER NOT NULL,kind TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(session,sequence)); CREATE TRIGGER IF NOT EXISTS discord_dispatch_no_update BEFORE UPDATE ON discord_dispatch BEGIN SELECT RAISE(ABORT,'Dispatch receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_dispatch_no_delete BEFORE DELETE ON discord_dispatch BEGIN SELECT RAISE(ABORT,'Dispatch receipts are immutable'); END;")
 
 define discord_gateway_bind with database as Int and generation as Str and session as Str returning Str:
@@ -55,6 +58,15 @@ define discord_gateway_dispatch with database as Int and generation as Str and s
         return migration_fail(database and "read-failed")
     if sequence <= string_to_int(archive_list_text(live and 3)):
         return migration_fail(database and "sequence-regressed")
+    set retained_identity to identity
+    # Classification and its prior permission observation commit with the cursor.
+    # A duplicate, stale connection or failed transaction cannot erase a barrier.
+    if string_index_of(identity and "audience:") equals 0:
+        set role_classification to discord_gateway_role_observe(database and session and kind and payload)
+        if role_classification < 0:
+            return migration_fail(database and "role-observation-failed")
+        if role_classification equals 1:
+            set retained_identity to concat("role-metadata:" and identity)
     set retained_payload to payload
     if kind equals "INTERACTION_CREATE" and string_length(identity) > 0:
         set retained_payload to discord_interaction_retain(database and identity and payload)
@@ -62,14 +74,14 @@ define discord_gateway_dispatch with database as Int and generation as Str and s
             return migration_fail(database and "interaction-credential-conflict")
     if string_length(identity) > 0:
         set rooted_literal_2 to create_list()
-        set retained_value_added to append_list(rooted_literal_2 and identity)
+        set retained_value_added to append_list(rooted_literal_2 and retained_identity)
         set prior to history_collect_one(checkpoint_prepare(database and "SELECT kind,digest FROM discord_inbox WHERE identity=?;" and rooted_literal_2))
         if archive_list_text(prior and 0) equals "found":
             if not (archive_list_text(prior and 1) equals kind) or else not (archive_list_text(prior and 2) equals ep_sha256(retained_payload)):
                 return migration_fail(database and "identity-conflict")
         else if archive_list_text(prior and 0) equals "end":
             set retained_values_2 to create_list()
-            set retained_value_added to append_list(retained_values_2 and identity)
+            set retained_value_added to append_list(retained_values_2 and retained_identity)
             set retained_value_added to append_list(retained_values_2 and kind)
             set retained_value_added to append_list(retained_values_2 and retained_payload)
             set retained_value_added to append_list(retained_values_2 and ep_sha256(retained_payload))

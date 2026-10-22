@@ -1,0 +1,108 @@
+import "channel_permission_options"
+
+# Guild role positions govern role editing/assignment independently of Echo's
+# administrator IDs. Creating or assigning a Discord role never changes them.
+define discord_role_snapshot with roles as Str and role_id as Str returning Str:
+    set fields to provider_json_tokens(roles)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_kind(fields and 0) equals "["):
+        return ""
+    return discord_role_snapshot_items(roles and fields and provider_items(fields and 0) and role_id)
+
+define discord_role_snapshot_items with body as Str and fields as List and items as List and role_id as Str returning Str:
+    set result to ""
+    for each item in items:
+        if provider_value(fields and provider_member(fields and item and "id")) equals role_id:
+            if string_length(result) > 0:
+                return ""
+            set result to agent_json_source(body and fields and item)
+    return result
+
+define discord_member_highest_position with roles as Str and member as Str and guild as Str and person as Str returning Int:
+    set fields to provider_json_tokens(member)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_value(fields and provider_member(fields and provider_member(fields and 0 and "user") and "id")) equals person) or else not (provider_kind(fields and provider_member(fields and 0 and "roles")) equals "["):
+        return -1
+    return discord_member_highest_items(roles and fields and provider_items(fields and provider_member(fields and 0 and "roles")) and guild)
+
+define discord_member_highest_items with roles as Str and fields as List and items as List and guild as Str returning Int:
+    set everyone to discord_role_snapshot(roles and guild)
+    if string_length(everyone) equals 0:
+        return -1
+    set highest to 0
+    for each item in items:
+        set role_id to provider_value(fields and item)
+        if discord_snowflake(role_id) equals 0:
+            return -1
+        set role_body to discord_role_snapshot(roles and role_id)
+        if string_length(role_body) equals 0:
+            return -1
+        set role_fields to provider_json_tokens(role_body)
+        set value to provider_value(role_fields and provider_member(role_fields and 0 and "position"))
+        set position to http_decimal(value)
+        if position < 0 or else not (int_to_string(position) equals value):
+            return -1
+        if position > highest:
+            set highest to position
+    return highest
+
+# Discord sorts equal numeric positions by snowflake: the older, smaller ID
+# is higher. Compare decimal digits directly, without float or integer overflow.
+define discord_role_below_member with server as Str and roles as Str and member as Str and guild as Str and person as Str and role_body as Str and owner_exception as Int returning Int:
+    set server_fields to provider_json_tokens(server)
+    set role_fields to provider_json_tokens(role_body)
+    if server_fields equals 0 or else role_fields equals 0 or else not (provider_value(server_fields and provider_member(server_fields and 0 and "id")) equals guild):
+        return 0
+    set role_id to provider_value(role_fields and provider_member(role_fields and 0 and "id"))
+    if discord_snowflake(role_id) equals 0 or else role_id equals guild or else not (provider_value(role_fields and provider_member(role_fields and 0 and "managed")) equals "false"):
+        return 0
+    set highest to discord_member_highest_position(roles and member and guild and person)
+    if highest < 0:
+        return 0
+    if owner_exception equals 1 and provider_value(server_fields and provider_member(server_fields and 0 and "owner_id")) equals person:
+        return 1
+    set value to provider_value(role_fields and provider_member(role_fields and 0 and "position"))
+    set position to http_decimal(value)
+    if position < 0 or else not (int_to_string(position) equals value):
+        return 0
+    if position < highest:
+        return 1
+    if position > highest:
+        return 0
+    set member_fields to provider_json_tokens(member)
+    return discord_role_equal_position_below(roles and member_fields and provider_items(member_fields and provider_member(member_fields and 0 and "roles")) and role_id and position)
+
+# All member-role IDs and snapshots were validated by highest_position above.
+define discord_role_equal_position_below with roles as Str and fields as List and items as List and target_id as Str and position as Int returning Int:
+    for each item in items:
+        set member_role to provider_value(fields and item)
+        set body to discord_role_snapshot(roles and member_role)
+        set tokens to provider_json_tokens(body)
+        if http_decimal(provider_value(tokens and provider_member(tokens and 0 and "position"))) equals position and discord_role_id_older(member_role and target_id) equals 1:
+            return 1
+    return 0
+
+define discord_role_id_older with left as Str and right as Str returning Int:
+    if discord_snowflake(left) equals 0 or else discord_snowflake(right) equals 0:
+        return 0
+    if string_length(left) is not equal to string_length(right):
+        return string_length(left) < string_length(right)
+    set index to 0
+    repeat while index < string_length(left):
+        set a to string_to_int(substring(left and index and 1))
+        set b to string_to_int(substring(right and index and 1))
+        if a is not equal to b:
+            return a < b
+        set index to index + 1
+    return 0
+
+define discord_role_permissions_held with server as Str and roles as Str and member as Str and guild as Str and person as Str and wanted as Str returning Int:
+    if discord_overwrite_mask(wanted) equals 0:
+        return 0
+    set base to concat("{\"id\":" and concat(provider_quote(guild) and concat(",\"guild_id\":" and concat(provider_quote(guild) and ",\"permission_overwrites\":[]}"))))
+    if discord_channel_permission(server and roles and member and base and guild and person and guild and 28) is not equal to 1:
+        return 0
+    set bit to 0
+    repeat while bit <= 52:
+        if discord_permission_bit(wanted and bit) equals 1 and discord_channel_permission(server and roles and member and base and guild and person and guild and bit) is not equal to 1:
+            return 0
+        set bit to bit + 1
+    return 1

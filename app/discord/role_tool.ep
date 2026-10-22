@@ -1,0 +1,161 @@
+import "thread_tool"
+import "role_options"
+
+define discord_roles_perform with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and options as List and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set actor to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    set operation to archive_list_text(options and 1)
+    set role_id to archive_list_text(options and 2)
+    set member_id to archive_list_text(options and 3)
+    set mutation to not (operation equals "list" or else operation equals "inspect")
+    if discord_pin_admin(database and run and call_id) equals 0 or else discord_contains(admins and actor) equals 0:
+        return "{\"status\":\"admin-required\",\"cause\":\"requester-role-required\",\"restriction_scope\":\"requester\",\"required_role\":\"admin\",\"system_failure\":false,\"effects\":\"none\"}"
+    if discord_contains(guilds and guild) equals 0 or else file_exists(stop_file) or else tool_policy_allows(database and run and call_id and "discord_roles") equals 0:
+        return discord_pin_result("discord-origin-denied-or-stopped" and "none" and "")
+    set required_bit to 10
+    if mutation:
+        set required_bit to 28
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and required_bit)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_access_failure_result(access and "role operation permission check")
+    set inbox to discord_job_origin(journal and database and run)
+    set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if not (current equals "current"):
+        return discord_pin_result(current and "none" and "")
+    set base to concat("/guilds/" and guild)
+    set roles_route to concat(base and "/roles")
+    set roles_observation to discord_access_get(library and token and journal and directory_path and roles_route and "GET:roles" and guild)
+    if not (archive_list_text(roles_observation and 0) equals "observed"):
+        return discord_access_failure_result(roles_observation and "role inspection")
+    set roles to archive_list_text(roles_observation and 1)
+    set roles_fields to provider_json_tokens(roles)
+    if roles_fields equals 0 or else provider_unique_objects(roles_fields) equals 0 or else not (provider_kind(roles_fields and 0) equals "["):
+        return discord_pin_result("invalid-roles-response" and "none" and "")
+    set target to ""
+    if string_length(role_id) > 0:
+        set target to discord_role_snapshot(roles and role_id)
+        if string_length(target) equals 0:
+            return discord_pin_result("role-not-found" and "none" and "")
+    set view to roles
+    if operation equals "inspect":
+        set view to target
+    if not mutation:
+        set read_access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and required_bit)
+        if not (archive_list_text(read_access and 0) equals "allowed"):
+            return discord_access_failure_result(read_access and "final role read permission check")
+        if file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else tool_policy_allows(database and run and call_id and "discord_roles") equals 0 or else discord_run_barrier(journal and inbox and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
+            return discord_pin_result("authority-changed" and "none" and "")
+        return concat("{\"status\":\"observed\",\"source\":\"Discord REST; untrusted role metadata\",\"observed_sha256\":" and concat(provider_quote(ep_sha256(roles)) and concat(",\"data\":" and concat(view and "}"))))
+    if not (operation equals "create") and not (ep_sha256(roles) equals archive_list_text(options and 5)):
+        return discord_pin_result("roles-changed" and "none; inspect roles again" and "")
+    set server_observation to discord_access_get(library and token and journal and directory_path and base and "GET:guild" and guild)
+    set actor_route to concat(base and concat("/members/" and actor))
+    set bot_route to concat(base and concat("/members/" and bot))
+    set actor_observation to discord_access_get(library and token and journal and directory_path and actor_route and "GET:member" and guild)
+    set bot_observation to discord_access_get(library and token and journal and directory_path and bot_route and "GET:member" and guild)
+    if not (archive_list_text(server_observation and 0) equals "observed") or else not (archive_list_text(actor_observation and 0) equals "observed") or else not (archive_list_text(bot_observation and 0) equals "observed"):
+        return discord_pin_result("role-authority-snapshots-unavailable" and "none; inspect retained permission observations" and "")
+    set server to archive_list_text(server_observation and 1)
+    set actor_member to archive_list_text(actor_observation and 1)
+    set bot_member to archive_list_text(bot_observation and 1)
+    if discord_role_permissions_held(server and roles and actor_member and guild and actor and "0") equals 0 or else discord_role_permissions_held(server and roles and bot_member and guild and bot and "0") equals 0:
+        return discord_pin_result("guild-manage-roles-required" and "none; both requester and bot require guild role-management authority" and "")
+    if string_length(target) > 0:
+        if discord_role_below_member(server and roles and actor_member and guild and actor and target and 1) equals 0 or else discord_role_below_member(server and roles and bot_member and guild and bot and target and 0) equals 0:
+            return discord_pin_result("role-hierarchy-or-managed-role-restriction" and "none; target must be an assignable role below the relevant role hierarchy" and "")
+    set payload to archive_list_text(options and 6)
+    set changes to provider_json_tokens(payload)
+    set wanted to provider_value(changes and provider_member(changes and 0 and "permissions"))
+    if operation equals "assign":
+        set target_fields to provider_json_tokens(target)
+        set wanted to provider_value(target_fields and provider_member(target_fields and 0 and "permissions"))
+        if discord_overwrite_mask(wanted) equals 0:
+            return discord_pin_result("invalid-role-permissions" and "none" and "")
+    if string_length(wanted) > 0:
+        if discord_role_permissions_held(server and roles and actor_member and guild and actor and wanted) equals 0 or else discord_role_permissions_held(server and roles and bot_member and guild and bot and wanted) equals 0:
+            return discord_pin_result("role-permissions-exceed-authority" and "none; requested permissions exceed current requester or bot permissions" and "")
+    set route to concat(roles_route and concat("/" and role_id))
+    set method to "PATCH"
+    if operation equals "create":
+        set route to roles_route
+        set method to "POST"
+    else if operation equals "reorder":
+        set position to http_decimal(archive_list_text(options and 7))
+        set proposed to concat("{\"id\":" and concat(provider_quote(role_id) and concat(",\"managed\":false,\"position\":" and concat(int_to_string(position) and "}"))))
+        if discord_role_below_member(server and roles and actor_member and guild and actor and proposed and 1) equals 0 or else discord_role_below_member(server and roles and bot_member and guild and bot and proposed and 0) equals 0:
+            return discord_pin_result("role-position-exceeds-hierarchy" and "none" and "")
+        set route to roles_route
+        set payload to concat("[{\"id\":" and concat(provider_quote(role_id) and concat(",\"position\":" and concat(int_to_string(position) and "}]"))))
+    else if operation equals "delete":
+        set method to "DELETE"
+        set payload to ""
+    else if operation equals "assign" or else operation equals "remove":
+        set member_observation to discord_access_get(library and token and journal and directory_path and concat(base and concat("/members/" and member_id)) and "GET:member" and guild)
+        if not (archive_list_text(member_observation and 0) equals "observed"):
+            return discord_access_failure_result(member_observation and "role recipient membership")
+        set member_fields to provider_json_tokens(archive_list_text(member_observation and 1))
+        if not (provider_value(member_fields and provider_member(member_fields and provider_member(member_fields and 0 and "user") and "id")) equals member_id):
+            return discord_pin_result("role-recipient-identity-mismatch" and "none" and "")
+        set route to concat(base and concat("/members/" and concat(member_id and concat("/roles/" and role_id))))
+        set method to "PUT"
+        if operation equals "remove":
+            set method to "DELETE"
+        set payload to ""
+    set current_roles to discord_access_get(library and token and journal and directory_path and roles_route and "GET:roles" and guild)
+    set current_actor to discord_access_get(library and token and journal and directory_path and actor_route and "GET:member" and guild)
+    set current_bot to discord_access_get(library and token and journal and directory_path and bot_route and "GET:member" and guild)
+    if not (archive_list_text(current_roles and 0) equals "observed") or else not (archive_list_text(current_actor and 0) equals "observed") or else not (archive_list_text(current_bot and 0) equals "observed"):
+        return discord_pin_result("role-authority-recheck-unavailable" and "none" and "")
+    if not (ep_sha256(archive_list_text(current_roles and 1)) equals ep_sha256(roles)) or else not (ep_sha256(archive_list_text(current_actor and 1)) equals ep_sha256(actor_member)) or else not (ep_sha256(archive_list_text(current_bot and 1)) equals ep_sha256(bot_member)):
+        return discord_pin_result("roles-or-membership-changed" and "none; inspect current state before retry" and "")
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and required_bit)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_access_failure_result(access and "final role permission check")
+    if file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else tool_policy_allows(database and run and call_id and "discord_roles") equals 0 or else not (discord_job_origin(journal and database and run) equals inbox) or else discord_run_barrier(journal and inbox and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
+        return discord_pin_result("authority-source-or-permission-changed" and "none" and "")
+    set claim to discord_community_claim(journal and run and call_id and concat(method and concat(route and payload)))
+    if not (claim equals "claimed"):
+        return discord_pin_result(claim and "inspect retained results and current state; no automatic replay" and "")
+    set changed to discord_access_bytes_audit(library and token and journal and directory_path and method and route and concat(method and ":managed-role") and guild and str_to_ptr(payload) and string_length(payload) and "application/json" and archive_list_text(options and 4))
+    if not (archive_list_text(changed and 0) equals "observed"):
+        return discord_pin_result(concat("role-change-unconfirmed:" and archive_list_text(changed and 0)) and "outcome unconfirmed; inspect before retry" and archive_list_text(changed and 1))
+    if operation equals "create" or else operation equals "edit":
+        set response to archive_list_text(changed and 1)
+        set response_fields to provider_json_tokens(response)
+        set result_id to provider_value(response_fields and provider_member(response_fields and 0 and "id"))
+        if response_fields equals 0 or else provider_unique_objects(response_fields) equals 0 or else discord_snowflake(result_id) equals 0 or else (operation equals "edit" and not (result_id equals role_id)):
+            return discord_pin_result("role-response-unconfirmed" and "inspect retained receipt; no create replay" and archive_list_text(changed and 3))
+        return concat("{\"status\":\"applied\",\"source\":\"Discord REST; untrusted role metadata\",\"data\":" and concat(response and concat(",\"receipt\":" and concat(provider_quote(archive_list_text(changed and 3)) and "}"))))
+    return discord_pin_result("applied" and concat("role:" and operation) and archive_list_text(changed and 3))
+
+define discord_roles_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    set options to discord_role_options(arguments)
+    if not (archive_list_text(options and 0) equals "valid"):
+        return discord_pin_result(archive_list_text(options and 0) and "none" and "")
+    if tool_policy_allows(database and run and call_id and "discord_roles") equals 0:
+        return discord_pin_result("not-authorized" and "none" and "")
+    if not ((get_argument_count() equals 15 and also get_argument(13) equals "--turn") or else (get_argument_count() equals 16 and also get_argument(13) equals "--job")):
+        return discord_pin_result("discord-runtime-unavailable" and "none" and "")
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals get_argument(7)) or else not (archive_list_text(location and 1) equals get_argument(4)):
+        return discord_pin_result("discord-binding-denied" and "none" and "")
+    set journal to discord_store_open(get_argument(3) and get_argument(7))
+    if journal equals 0:
+        return discord_pin_result("discord-journal-unavailable" and "none" and "")
+    set source to discord_run_source(journal and database and run)
+    if not (archive_list_text(source and 0) equals "found"):
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-origin-denied" and "none" and "")
+    set credential to read_file(get_argument(2))
+    if credential equals 0:
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-credential-unavailable" and "none" and "")
+    set guilds to create_list()
+    set split_count to retained_text_split(guilds and get_argument(8) and ",")
+    set admins to create_list()
+    set split_count to retained_text_split(admins and get_argument(9) and ",")
+    set result to discord_roles_perform(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and database and run and call_id and source and options and get_argument(7) and guilds and admins and get_argument(5) and get_argument(6))
+    set closed to sql_close(journal)
+    return result
