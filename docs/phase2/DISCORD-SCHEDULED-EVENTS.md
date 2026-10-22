@@ -73,7 +73,32 @@ independent creator permissions and stage/private-channel visibility. Receipts:
 `discord-scheduled-events-20261022/native-plan.json`. Generated controller C was
 reviewed for rooted lists across allocating calls.
 
-Integrated worker and matching execution-helper builds are in progress. These
+Integrated worker and matching execution-helper builds passed. The matching helper passed actual execution, cancellation and revocation checks. These
 results do not establish live Discord event lifecycle, cover-image acceptance,
-recurrence acceptance, interested-user paging or restart/replay behavior. The
-production runtime has not been changed by this integration checkpoint.
+recurrence acceptance, interested-user paging or restart/replay behavior. The candidate was installed after an atomic idle check for live qualification; it is not yet accepted as a complete scheduled-event feature.
+
+## First live qualification — failed creation, retained evidence
+
+The actual testing-channel request E22A reached Qwen3.8 and successfully called
+`discord_events` list, returning no events. Create attempts omitted required
+fields (particularly the start/end timestamps). The raw provider argument stream
+matched the archived arguments, so this was not an application parser removing
+fields. The controller rejected every attempted mutation before REST. The test
+was cancelled with the real Discord Cancel button; the run became cancelled,
+and independent authenticated REST readback confirmed zero scheduled events.
+Private evidence: `integration/live-E22A-failure.json`. Creation and the remaining
+lifecycle operations are **not accepted**.
+
+The candidate feedback change names missing required argument paths and says a
+retry must include the complete corrected call, retaining the user's values. Its
+native regression test passed, including exact missing paths, complete-input
+checks and valid JSON. Generated C retains the required-fields list as a GC
+root. The subsequent live retry is pending. This improves
+error recovery without weakening permission or input validation.
+
+The initial cold request processed approximately 179,000 tokens. Archived request
+sizing and source inspection identified all eligible shared claims being copied
+into automatic context (bypassing private-memory semantic selection), plus three
+large historical system-inspection results. Evidence is retained in
+`integration/live-context-sizing.json`. No memory or reasoning was removed, and
+no latency fix is claimed by this event-controller checkpoint.
