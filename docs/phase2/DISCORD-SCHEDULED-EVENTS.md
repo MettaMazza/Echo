@@ -1,6 +1,13 @@
 # Discord scheduled events — implementation in progress
 
-This is part of original Step 15, not a replacement milestone. Scheduled-event tooling is not registered or deployed yet. Native guard qualification alone does not establish working event administration.
+This is part of original Step 15, not a replacement milestone. The nine-operation
+controller is registered and deployed. Actual Discord turns have passed external
+event creation, inspection, editing, empty subscriber lookup, start, end,
+cancellation and deletion; independent REST reads verify the mutations.
+Gateway create/update markers and intent-aware reconnect are deployed and observed.
+Cover images, recurrence, populated subscriber paging and channel-based event
+workflows still need live qualification. The dated development entries below
+preserve earlier failures and intermediate states; they are not the current status.
 
 ## Authority and lifecycle foundation
 
@@ -10,7 +17,7 @@ This is part of original Step 15, not a replacement milestone. Scheduled-event t
 
 Reference: [Discord scheduled events](https://docs.discord.com/developers/resources/guild-scheduled-event), inspected 22 October 2026. Also re-read existing Echo invitation/member/role guards, original ErnosDecent rights source and HIVE scoped-context source at the revisions in SOURCE-MAP.md. Their authority/provenance patterns inform the boundary; their prompts and runtime-specific paths are not copied.
 
-## Remaining controller and acceptance requirements
+## Required scope and acceptance contract
 
 - Bound list/inspect/create/edit/start/end/cancel/delete and paginated interested-user inspection. Event IDs remain inside the authenticated guild; list results must exclude channels the requester cannot currently view.
 - Validate create and merged edit payloads against event type, required fields, explicit timestamps and temporal ordering. Support documented recurrence, image and nullable edit semantics without silently ignoring fields. Numeric recurrence enum takes precedence over contradictory prose examples in the upstream documentation.
@@ -19,7 +26,7 @@ Reference: [Discord scheduled events](https://docs.discord.com/developers/resour
 - Native argument/response/authority/revocation/race tests; actual disposable event lifecycles through Echo over multiple turns; independent REST verification, cleanup, thread/reply persistence and restart checks. No existing community event is a test fixture.
 - Separate unsupported configuration or external permission gates from implementation gaps. Neither a native build nor a direct manual REST request is model-driven acceptance.
 
-All of these remain required before scheduled events can be called complete. Full Step 15 also retains the other administration and moderation work in phase2.md.
+All of these require evidence before scheduled events can be called complete; the current summary and dated receipts identify the covered subset. Full Step 15 also retains the other administration and moderation work in phase2.md.
 
 ## Scoped response projection
 
@@ -77,7 +84,7 @@ Integrated worker and matching execution-helper builds passed. The matching help
 results do not establish live Discord event lifecycle, cover-image acceptance,
 recurrence acceptance, interested-user paging or restart/replay behavior. The candidate was installed after an atomic idle check for live qualification; it is not yet accepted as a complete scheduled-event feature.
 
-## First live qualification — failed creation, retained evidence
+## Historical first live qualification — failed creation, retained evidence
 
 The actual testing-channel request E22A reached Qwen3.8 and successfully called
 `discord_events` list, returning no events. Create attempts omitted required
@@ -86,8 +93,7 @@ matched the archived arguments, so this was not an application parser removing
 fields. The controller rejected every attempted mutation before REST. The test
 was cancelled with the real Discord Cancel button; the run became cancelled,
 and independent authenticated REST readback confirmed zero scheduled events.
-Private evidence: `integration/live-E22A-failure.json`. Creation and the remaining
-lifecycle operations are **not accepted**.
+Private evidence: `integration/live-E22A-failure.json`. This attempt did not pass; subsequent successful lifecycle tests are recorded below.
 
 The candidate feedback change names missing required argument paths and says a
 retry must include the complete corrected call, retaining the user's values. Its
@@ -179,3 +185,32 @@ replay and intent-profile migration checks passed. E22H actual creation/cancel
 acceptance is in progress; live marker delivery is not yet claimed.
 Evidence: integration-rate/E22F-*, E22G-turn.json, E22G-delete-readback.json,
 gateway/build-qualification.json and gateway/live-subscription.json.
+
+## Live cancellation and subscription acceptance
+
+E22H created a new disposable external event, inspected it, and cancelled it
+using its observed hash. Independent REST readback confirms status 4. The
+updated Gateway retained both CREATE and UPDATE markers for that exact ID,
+with only guild/event references. Evidence: `gateway/E22H-progress.json`.
+Cleanup E22I deleted the cancelled fixture. Independent REST returned 404/code 10070; the Gateway retained the DELETE marker. Final reply/reload acceptance remains pending.
+The source publication is recorded in `gateway/publication.json`; local and
+fetched remote trees match. Full Step 15 remains open.
+
+## Acceptance coverage at this checkpoint
+
+| Capability | Native evidence | Actual Discord evidence | Remaining |
+| --- | --- | --- | --- |
+| External create/list/inspect/edit | Options, effective state, bindings and mutation plan | E22B and E22D, independent values | Covered workflow retained |
+| Start/end/delete | Status-pair guards, fresh hashes and mutation claims | E22E/F/G, independent status 2/3 and 404 | Covered workflow retained |
+| Cancel | Status-pair guards and mutation plan | E22H, independent status 4 | E22I delete independently verified |
+| Interested users | Event binding, profile projection and pagination arguments | E22D empty page | Populated pages and cursors |
+| Recurrence | Timestamp/pattern validation and response projection | Not performed | Real recurring event and nullable removal |
+| Cover image | Data-URI/base64 syntax and explicit null | Not performed | Valid image upload, hash readback and removal |
+| Voice/stage events | Channel type, visibility, permissions and field transitions | Not performed | Supported real channel workflows |
+| Gateway | Five types, deduplication, foreign-guild exclusion, intent migration | Fresh READY mask 112129; E22H create/update | Interested-user add/remove changes |
+| Cancellation/revocation while waiting | Actual native wait/cancel/revoke fixture | E22C run cancelled; failed read loop retained | Broader combined races remain at integrated gate |
+
+This table avoids interpreting historical candidate descriptions as current
+absence, or interpreting one successful external event as every event type.
+
+E22I cleanup evidence: `gateway/E22I-delete.json`; native event subscription plus actual create/update/delete delivery are now verified.
