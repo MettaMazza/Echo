@@ -1,0 +1,175 @@
+import "member_observation"
+
+# Permission and hierarchy are checked for both the requester and bot. Discord
+# role permission never promotes an account into Echo's configured admin list.
+define discord_member_operation_allowed with bundle as List and guild as Str and actor as Str and bot as Str and target as Str and operation as Str returning Int:
+    set server to archive_list_text(bundle and 1)
+    set roles to archive_list_text(bundle and 2)
+    set requester to archive_list_text(bundle and 3)
+    set bot_member to archive_list_text(bundle and 4)
+    set member to archive_list_text(bundle and 5)
+    set bit to 10
+    if operation equals "kick":
+        set bit to 1
+    else if operation equals "ban" or else operation equals "unban" or else operation equals "inspect_ban":
+        set bit to 2
+    else if operation equals "timeout" or else operation equals "remove_timeout":
+        set bit to 40
+    else if operation equals "nickname":
+        set bit to 27
+    set actor_bit to bit
+    set bot_bit to bit
+    if operation equals "nickname" and actor equals target:
+        set actor_bit to 26
+    if operation equals "nickname" and bot equals target:
+        set bot_bit to 26
+    if discord_member_guild_permission(server and roles and requester and guild and actor and actor_bit) is not equal to 1 or else discord_member_guild_permission(server and roles and bot_member and guild and bot and bot_bit) is not equal to 1:
+        return 0
+    if operation equals "inspect" or else operation equals "inspect_ban" or else operation equals "unban":
+        return 1
+    if operation equals "ban" and (target equals actor or else target equals bot):
+        return 0
+    set server_fields to provider_json_tokens(server)
+    if provider_value(server_fields and provider_member(server_fields and 0 and "owner_id")) equals target:
+        return 0
+    if not (member equals "null"):
+        if not (operation equals "nickname" and actor equals target):
+            if discord_member_below(server and roles and requester and member and guild and actor and target and 1) is not equal to 1:
+                return 0
+        if not (operation equals "nickname" and bot equals target):
+            if discord_member_below(server and roles and bot_member and member and guild and bot and target and 0) is not equal to 1:
+                return 0
+        if operation equals "timeout" or else operation equals "remove_timeout":
+            if discord_member_guild_permission(server and roles and member and guild and target and 3) is not equal to 0:
+                return 0
+    else if not (operation equals "ban"):
+        return 0
+    return 1
+
+define discord_members_perform with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and options as List and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set actor to archive_list_text(source and 3)
+    set room to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    set operation to archive_list_text(options and 1)
+    set target to archive_list_text(options and 2)
+    set mutation to not (operation equals "inspect" or else operation equals "inspect_ban")
+    set include_ban to operation equals "inspect_ban" or else operation equals "ban" or else operation equals "unban"
+    if discord_pin_admin(database and run and call_id) equals 0 or else discord_contains(admins and actor) equals 0:
+        return "{\"status\":\"admin-required\",\"cause\":\"requester-role-required\",\"restriction_scope\":\"requester\",\"required_role\":\"admin\",\"system_failure\":false,\"effects\":\"none\"}"
+    if discord_contains(guilds and guild) equals 0 or else file_exists(stop_file) or else tool_policy_allows(database and run and call_id and "discord_members") equals 0:
+        return discord_pin_result("discord-origin-denied-or-stopped" and "none" and "")
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 10)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_access_failure_result(access and "member source permission check")
+    set inbox to discord_job_origin(journal and database and run)
+    set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if not (current equals "current"):
+        return discord_pin_result(current and "none" and "")
+    set bundle to discord_member_bundle(library and token and journal and directory_path and guild and actor and bot and target and include_ban)
+    if not (archive_list_text(bundle and 0) equals "observed"):
+        return discord_access_failure_result(bundle and "member authority and state inspection")
+    if discord_member_bundle_valid(bundle and guild and actor and bot and target and include_ban) equals 0:
+        return discord_pin_result("invalid-member-snapshot" and "none" and "")
+    if discord_member_operation_allowed(bundle and guild and actor and bot and target and operation) equals 0:
+        return discord_pin_result("discord-member-permission-or-hierarchy-denied" and "none; current requester and bot need the operation permission and applicable hierarchy; this is not an overall system failure" and "")
+    set snapshot to discord_member_snapshot(guild and target and archive_list_text(bundle and 2) and archive_list_text(bundle and 5) and archive_list_text(bundle and 6))
+    if mutation and not (ep_sha256(snapshot) equals archive_list_text(options and 4)):
+        return discord_pin_result("member-state-changed" and "none; inspect the member or ban again before requesting a new action" and "")
+    set route to concat("/guilds/" and concat(guild and concat("/members/" and target)))
+    set method to "PATCH"
+    set payload to ""
+    if operation equals "kick":
+        set method to "DELETE"
+    else if operation equals "ban" or else operation equals "unban":
+        set route to concat("/guilds/" and concat(guild and concat("/bans/" and target)))
+        set method to "PUT"
+        set payload to concat("{\"delete_message_seconds\":" and concat(archive_list_text(options and 7) and "}"))
+        if operation equals "unban":
+            if archive_list_text(bundle and 6) equals "null":
+                return discord_pin_result("already-not-banned" and "none" and "")
+            set method to "DELETE"
+            set payload to ""
+        else if not (archive_list_text(bundle and 6) equals "null"):
+            return discord_pin_result("already-banned" and "none; no repeated message deletion" and "")
+    else if operation equals "nickname":
+        set payload to concat("{\"nick\":" and concat(archive_list_text(options and 5) and "}"))
+        if target equals bot:
+            set route to concat("/guilds/" and concat(guild and "/members/@me"))
+    else if operation equals "remove_timeout":
+        set payload to "{\"communication_disabled_until\":null}"
+    if mutation:
+        set rechecked to discord_member_bundle(library and token and journal and directory_path and guild and actor and bot and target and include_ban)
+        if not (archive_list_text(rechecked and 0) equals "observed"):
+            return discord_access_failure_result(rechecked and "member authority recheck")
+        if discord_member_bundle_valid(rechecked and guild and actor and bot and target and include_ban) equals 0:
+            return discord_pin_result("member-authority-recheck-invalid" and "none" and "")
+        set index to 1
+        repeat while index < 7:
+            if not (ep_sha256(archive_list_text(bundle and index)) equals ep_sha256(archive_list_text(rechecked and index))):
+                return discord_pin_result("member-authority-or-state-changed" and "none; inspect again" and "")
+            set index to index + 1
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and room and actor and admins and 10)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_access_failure_result(access and "final member source permission check")
+    if file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else tool_policy_allows(database and run and call_id and "discord_members") equals 0 or else not (discord_job_origin(journal and database and run) equals inbox) or else discord_run_barrier(journal and inbox and http_decimal(archive_list_text(source and 7)) and archive_list_text(source and 6) and room and guild) is not equal to 0:
+        return discord_pin_result("member-authority-source-or-permission-changed" and "none" and "")
+    if not mutation:
+        set result to concat("{\"status\":\"observed\",\"source\":\"Discord REST; untrusted member metadata\",\"observed_sha256\":" and provider_quote(ep_sha256(snapshot)))
+        set result to concat(result and concat(",\"member\":" and discord_member_projection(archive_list_text(bundle and 5))))
+        if include_ban equals 1:
+            set banned to "true"
+            if archive_list_text(bundle and 6) equals "null":
+                set banned to "false"
+            set result to concat(result and concat(",\"banned\":" and banned))
+        return concat(result and "}")
+    if operation equals "timeout":
+        set expires to ep_time_now_ms() / 1000 + http_decimal(archive_list_text(options and 6))
+        set parameters to create_list()
+        set added to append_list(parameters and int_to_string(expires))
+        set timestamp to history_collect_one(checkpoint_prepare(journal and "SELECT strftime('%Y-%m-%dT%H:%M:%SZ',CAST(?1 AS INTEGER),'unixepoch');" and parameters))
+        if not (archive_list_text(timestamp and 0) equals "found") or else string_length(archive_list_text(timestamp and 1)) is not equal to 20:
+            return discord_pin_result("timeout-clock-unavailable" and "none" and "")
+        set payload to concat("{\"communication_disabled_until\":" and concat(provider_quote(archive_list_text(timestamp and 1)) and "}"))
+    set claim to discord_community_claim(journal and run and call_id and concat(method and concat(route and payload)))
+    if not (claim equals "claimed"):
+        return discord_pin_result(claim and "inspect retained results and current state; no automatic replay" and "")
+    set changed to discord_access_bytes_audit(library and token and journal and directory_path and method and route and concat(method and ":managed-member") and guild and str_to_ptr(payload) and string_length(payload) and "application/json" and archive_list_text(options and 3))
+    if not (archive_list_text(changed and 0) equals "observed"):
+        return discord_pin_result(concat("member-change-unconfirmed:" and archive_list_text(changed and 0)) and "outcome unconfirmed; inspect before retry" and archive_list_text(changed and 1))
+    if method equals "PATCH":
+        set response to archive_list_text(changed and 1)
+        set fields to provider_json_tokens(response)
+        if fields equals 0 or else not (provider_value(fields and provider_member(fields and provider_member(fields and 0 and "user") and "id")) equals target):
+            return discord_pin_result("member-response-unconfirmed" and "inspect retained receipt and current state; never replay automatically" and archive_list_text(changed and 3))
+    return discord_pin_result("applied" and concat("member:" and operation) and archive_list_text(changed and 3))
+
+define discord_members_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    set options to discord_member_options(arguments)
+    if not (archive_list_text(options and 0) equals "valid"):
+        return discord_pin_result(archive_list_text(options and 0) and "none" and "")
+    if tool_policy_allows(database and run and call_id and "discord_members") equals 0:
+        return discord_pin_result("not-authorized" and "none" and "")
+    if not ((get_argument_count() equals 15 and also get_argument(13) equals "--turn") or else (get_argument_count() equals 16 and also get_argument(13) equals "--job")):
+        return discord_pin_result("discord-runtime-unavailable" and "none" and "")
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals get_argument(7)) or else not (archive_list_text(location and 1) equals get_argument(4)):
+        return discord_pin_result("discord-binding-denied" and "none" and "")
+    set journal to discord_store_open(get_argument(3) and get_argument(7))
+    if journal equals 0:
+        return discord_pin_result("discord-journal-unavailable" and "none" and "")
+    set source to discord_run_source(journal and database and run)
+    if not (archive_list_text(source and 0) equals "found"):
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-origin-denied" and "none" and "")
+    set credential to read_file(get_argument(2))
+    if credential equals 0:
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-credential-unavailable" and "none" and "")
+    set guilds to create_list()
+    set split_count to retained_text_split(guilds and get_argument(8) and ",")
+    set admins to create_list()
+    set split_count to retained_text_split(admins and get_argument(9) and ",")
+    set result to discord_members_perform(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and database and run and call_id and source and options and get_argument(7) and guilds and admins and get_argument(5) and get_argument(6))
+    set closed to sql_close(journal)
+    return result

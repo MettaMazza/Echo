@@ -1,0 +1,101 @@
+import "thread_tool"
+import "member_options"
+
+# Only the documented exact absence code is an absent object. A permission,
+# transport, rate or other 404 failure is never converted into absence.
+define discord_member_optional_observation with observation as List and directory_path as Str and code as Str returning List:
+    if archive_list_text(observation and 0) equals "observed":
+        return observation
+    if not (archive_list_text(observation and 0) equals "http-404"):
+        return observation
+    set filename to archive_list_text(observation and 1)
+    set content to read_file(concat(directory_path and concat("/" and filename)))
+    if content equals 0:
+        return history_status("absence-receipt-unavailable")
+    set tokens to provider_json_tokens(ptr_to_str(content))
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "code")) equals code):
+        return observation
+    set result to create_list()
+    set added to append_list(result and "observed")
+    set added to append_list(result and "null")
+    set added to append_list(result and ep_sha256("null"))
+    set added to append_list(result and filename)
+    return result
+
+# Full snapshots stay in the private spool. The model sees only this projection.
+define discord_member_projection with body as Str returning Str:
+    if body equals "null":
+        return "null"
+    set fields to provider_json_tokens(body)
+    set person to provider_member(fields and 0 and "user")
+    set result to concat("{\"id\":" and provider_quote(provider_value(fields and provider_member(fields and person and "id"))))
+    set result to concat(result and concat(",\"username\":" and provider_quote(provider_value(fields and provider_member(fields and person and "username")))))
+    set keys to create_list()
+    set added to append_list(keys and "nick")
+    set added to append_list(keys and "roles")
+    set added to append_list(keys and "joined_at")
+    set added to append_list(keys and "communication_disabled_until")
+    for each item in keys:
+        set key to ptr_to_str(item)
+        set field to provider_member(fields and 0 and key)
+        if field >= 0:
+            set result to concat(result and concat("," and concat(provider_quote(key) and concat(":" and agent_json_source(body and fields and field)))))
+    return concat(result and "}")
+
+define discord_member_snapshot with guild as Str and target as Str and roles as Str and member as Str and ban as Str returning Str:
+    set result to concat("{\"guild\":" and provider_quote(guild))
+    set result to concat(result and concat(",\"target\":" and provider_quote(target)))
+    set result to concat(result and concat(",\"roles\":" and roles))
+    set result to concat(result and concat(",\"member\":" and member))
+    return concat(result and concat(",\"ban\":" and concat(ban and "}")))
+
+# A list owns all observed strings throughout the second inspection. The bundle
+# is compared before a mutation; no credentials or account profile leave it.
+define discord_member_bundle with library as Str and token as Str and journal as Int and directory_path as Str and guild as Str and actor as Str and bot as Str and target as Str and include_ban as Int returning List:
+    set base to concat("/guilds/" and guild)
+    set routes to create_list()
+    set added to append_list(routes and base)
+    set added to append_list(routes and concat(base and "/roles"))
+    set added to append_list(routes and concat(base and concat("/members/" and actor)))
+    set added to append_list(routes and concat(base and concat("/members/" and bot)))
+    set added to append_list(routes and concat(base and concat("/members/" and target)))
+    if include_ban equals 1:
+        set added to append_list(routes and concat(base and concat("/bans/" and target)))
+    set result to create_list()
+    set added to append_list(result and "observed")
+    set index to 0
+    for each route in routes:
+        set observation to discord_access_get(library and token and journal and directory_path and ptr_to_str(route) and concat("GET:member-snapshot:" and int_to_string(index)) and guild)
+        if index equals 4 and include_ban equals 1:
+            set observation to discord_member_optional_observation(observation and directory_path and "10007")
+        if index equals 5:
+            set observation to discord_member_optional_observation(observation and directory_path and "10026")
+        if not (archive_list_text(observation and 0) equals "observed"):
+            return observation
+        set added to append_list(result and archive_list_text(observation and 1))
+        set index to index + 1
+    if include_ban equals 0:
+        set added to append_list(result and "null")
+    return result
+
+define discord_member_bundle_valid with bundle as List and guild as Str and actor as Str and bot as Str and target as Str and include_ban as Int returning Int:
+    if length_list(bundle) is not equal to 7:
+        return 0
+    set server to provider_json_tokens(archive_list_text(bundle and 1))
+    if server equals 0 or else provider_unique_objects(server) equals 0 or else not (provider_value(server and provider_member(server and 0 and "id")) equals guild):
+        return 0
+    set roles to archive_list_text(bundle and 2)
+    if discord_member_highest_position(roles and archive_list_text(bundle and 3) and guild and actor) < 0 or else discord_member_highest_position(roles and archive_list_text(bundle and 4) and guild and bot) < 0:
+        return 0
+    set member to archive_list_text(bundle and 5)
+    if member equals "null":
+        if include_ban is not equal to 1:
+            return 0
+    else if discord_member_highest_position(roles and member and guild and target) < 0:
+        return 0
+    set ban to archive_list_text(bundle and 6)
+    if not (ban equals "null"):
+        set fields to provider_json_tokens(ban)
+        if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_value(fields and provider_member(fields and provider_member(fields and 0 and "user") and "id")) equals target):
+            return 0
+    return 1

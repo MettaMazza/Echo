@@ -1,0 +1,60 @@
+import "role_guard"
+
+# Highest-role identity matters as well as numeric position. @everyone is the
+# bottom role even when an invalid or partial member snapshot omits role IDs.
+define discord_member_highest_role with roles as Str and member as Str and guild as Str and person as Str returning Str:
+    if discord_member_highest_position(roles and member and guild and person) < 0:
+        return ""
+    set fields to provider_json_tokens(member)
+    return discord_member_highest_role_items(roles and fields and provider_items(fields and provider_member(fields and 0 and "roles")) and guild)
+
+define discord_member_highest_role_items with roles as Str and fields as List and items as List and guild as Str returning Str:
+    set highest to discord_role_snapshot(roles and guild)
+    set highest_position to 0
+    set highest_id to guild
+    for each item in items:
+        set role_id to provider_value(fields and item)
+        set body to discord_role_snapshot(roles and role_id)
+        set tokens to provider_json_tokens(body)
+        set position to http_decimal(provider_value(tokens and provider_member(tokens and 0 and "position")))
+        if highest_id equals guild or else position > highest_position or else (position equals highest_position and discord_role_id_older(role_id and highest_id) equals 1):
+            set highest to body
+            set highest_position to position
+            set highest_id to role_id
+    return highest
+
+# Discord member moderation cannot target the guild owner, the acting identity,
+# or an equal/higher hierarchy. Managed roles still count in member hierarchy;
+# unlike role editing, their managed flag does not itself protect the member.
+define discord_member_below with server as Str and roles as Str and actor_member as Str and target_member as Str and guild as Str and actor as Str and target as Str and owner_exception as Int returning Int:
+    set server_fields to provider_json_tokens(server)
+    if server_fields equals 0 or else provider_unique_objects(server_fields) equals 0 or else not (provider_value(server_fields and provider_member(server_fields and 0 and "id")) equals guild) or else actor equals target:
+        return 0
+    set owner to provider_value(server_fields and provider_member(server_fields and 0 and "owner_id"))
+    if discord_snowflake(owner) equals 0 or else owner equals target:
+        return 0
+    set actor_role to discord_member_highest_role(roles and actor_member and guild and actor)
+    set target_role to discord_member_highest_role(roles and target_member and guild and target)
+    if string_length(actor_role) equals 0 or else string_length(target_role) equals 0:
+        return 0
+    if owner_exception equals 1 and owner equals actor:
+        return 1
+    set actor_fields to provider_json_tokens(actor_role)
+    set target_fields to provider_json_tokens(target_role)
+    set actor_id to provider_value(actor_fields and provider_member(actor_fields and 0 and "id"))
+    set target_id to provider_value(target_fields and provider_member(target_fields and 0 and "id"))
+    if actor_id equals guild or else actor_id equals target_id:
+        return 0
+    if target_id equals guild:
+        return 1
+    set actor_position to http_decimal(provider_value(actor_fields and provider_member(actor_fields and 0 and "position")))
+    set target_position to http_decimal(provider_value(target_fields and provider_member(target_fields and 0 and "position")))
+    if actor_position is not equal to target_position:
+        return actor_position > target_position
+    return discord_role_id_older(actor_id and target_id)
+
+# Administrative actions require guild-level permission, not a channel overwrite
+# which happens to contain a guild-only bit. Source-channel access is separate.
+define discord_member_guild_permission with server as Str and roles as Str and member as Str and guild as Str and person as Str and bit as Int returning Int:
+    set base to concat("{\"id\":" and concat(provider_quote(guild) and concat(",\"guild_id\":" and concat(provider_quote(guild) and ",\"permission_overwrites\":[]}"))))
+    return discord_channel_permission(server and roles and member and base and guild and person and guild and bit)
