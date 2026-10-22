@@ -37,7 +37,14 @@ Canonical evidence: `evidence/phase2/discord-role-admin-20261022/`.
   cancelled that turn. No member assignment had occurred. A subsequent request
   completed only assignment/removal. Independent member reads captured the role
   appearing and then disappearing; the final member role list is empty again.
-  Cleanup and final reload acceptance are still in progress at this checkpoint.
+  Both disposable roles were then deleted (actual HTTP 204 receipts), with the
+  conservative deletion barrier terminating each mutation turn. A fresh final
+  read completed and confirmed both absent. Independent reads confirmed the
+  original two roles and member role list; only the bot role’s numeric position
+  retained a gap (1 to 3), with relative hierarchy and all other fields unchanged.
+  Final recall returned marker 518, arithmetic 43 and the authenticated username.
+  Replies, attached Thinking threads and the final Speak button persisted after
+  actual Discord reload. The connector was left with zero active runs.
 
 ## Gateway classification
 
@@ -64,3 +71,18 @@ multi-user revocation/isolation acceptance.
 References: [Guild roles](https://docs.discord.com/developers/resources/guild#create-guild-role),
 [Discord permission hierarchy](https://github.com/discord/discord-api-docs/blob/main/developers/topics/permissions.mdx),
 [discord.js role ordering](https://github.com/discordjs/discord.js/blob/main/packages/discord.js/src/structures/Role.js).
+
+
+Eight actual turns and eight applied mutations are retained, including the
+original failed/cancelled turns and both cleanup receipts. The model’s creation/
+edit summary counted four calls although five role calls occurred; the actual
+receipts are authoritative. No fixture was recreated, no completed mutation was
+blindly retried, and no unrelated server resource was removed. Canonical records
+include `acceptance.json`, `receipt-comparisons.json`,
+`independent-observations.jsonl`, `cleanup-verification.json` and `idle-state.json`.
+
+The observed median first output across these heterogeneous role turns was
+3.442 seconds; cold and subsequent tool requests are mixed. This is not a
+controlled comparison to the 1.864-second morning baseline and does not close
+Phase Two latency or endurance acceptance. Conservative cancellation on deletion
+and unknown prior masks remains explicit; no seamless-resumption claim is made.
