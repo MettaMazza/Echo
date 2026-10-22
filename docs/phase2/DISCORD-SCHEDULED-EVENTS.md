@@ -20,3 +20,13 @@ Reference: [Discord scheduled events](https://docs.discord.com/developers/resour
 - Separate unsupported configuration or external permission gates from implementation gaps. Neither a native build nor a direct manual REST request is model-driven acceptance.
 
 All of these remain required before scheduled events can be called complete. Full Step 15 also retains the other administration and moderation work in phase2.md.
+
+## Timestamp and recurrence validation
+
+`scheduled_event_time.ep` parses explicit RFC3339 timestamps without depending on host locale or timezone. It validates Gregorian dates, leap years, clock bounds, timezone offsets and fractional seconds (truncated to milliseconds); missing or unknown offsets are rejected. The controller still must compare times against the current clock and validate merged start/end values. Dates before 1970 and leap-second notation are outside this administrative timestamp format.
+
+`scheduled_event_recurrence.ep` validates Discord's numeric frequency enum, supported intervals, weekday sets, monthly nth-weekday and annual month/day patterns, mutual exclusion and unsupported fields. Omitted/null optional selectors remain distinct from malformed values. Timestamp and recurrence native tests passed. These validators do not yet expose remote event operations.
+
+`scheduled_event_options.ep` parses the nine planned operations with operation-specific arguments, mandatory mutation reasons and fresh state hashes, exclusive user-list cursors, explicit nullable edits, and bounded image-data syntax. Its native tests passed. Image syntax validation is not a claim that the encoded bytes are a valid or Discord-accepted image; live cover-image acceptance remains required.
+
+`scheduled_event_effective.ep` merges supplied changes with freshly observed state for cross-field checks but sends only the explicit patch. It checks future changed start times, end-after-start, external location/end requirements and channel/metadata transitions; creator metadata never becomes part of the outgoing patch. Its native test passed. Source hashes, generated-root review and executable results for all four validators are retained in canonical `discord-scheduled-events-20261022/native-validation.json`. All four builds and native runs passed; no remote event was created or changed.

@@ -1,0 +1,135 @@
+import "scheduled_event_recurrence"
+import "audit_reason"
+import "role_guard"
+
+# Validate only explicitly supplied fields. Cross-field checks use the freshly
+# observed event merged with these changes, never stale caller assumptions.
+define discord_event_changes with fields as List and object as Int and creating as Int returning Int:
+    if discord_rich_keys(fields and object and "|name|description|channel_id|entity_type|scheduled_start_time|scheduled_end_time|entity_metadata|recurrence_rule|image|") equals 0:
+        return 0
+    if discord_rich_text(fields and provider_member(fields and object and "name") and 100 and creating) < 0:
+        return 0
+    set description to provider_member(fields and object and "description")
+    if description >= 0 and also not (provider_kind(fields and description) equals "null"):
+        if discord_rich_text(fields and description and 1000 and 0) < 0:
+            return 0
+    set entity_type to provider_member(fields and object and "entity_type")
+    if entity_type >= 0 or else creating equals 1:
+        if discord_rich_integer(fields and entity_type and 1 and 3) equals 0:
+            return 0
+    set room to provider_member(fields and object and "channel_id")
+    if room >= 0 and also not (provider_kind(fields and room) equals "null"):
+        if not (provider_kind(fields and room) equals "string") or else discord_snowflake(provider_value(fields and room)) equals 0:
+            return 0
+    set start to provider_member(fields and object and "scheduled_start_time")
+    if start >= 0 or else creating equals 1:
+        if not (provider_kind(fields and start) equals "string") or else discord_event_timestamp(provider_value(fields and start)) < 0:
+            return 0
+    set finish to provider_member(fields and object and "scheduled_end_time")
+    if finish >= 0 and also not (provider_kind(fields and finish) equals "null"):
+        if not (provider_kind(fields and finish) equals "string") or else discord_event_timestamp(provider_value(fields and finish)) < 0:
+            return 0
+    set metadata to provider_member(fields and object and "entity_metadata")
+    if metadata >= 0 and also not (provider_kind(fields and metadata) equals "null"):
+        if discord_rich_keys(fields and metadata and "|location|") equals 0 or else discord_rich_text(fields and provider_member(fields and metadata and "location") and 100 and 1) < 0:
+            return 0
+    set recurrence to provider_member(fields and object and "recurrence_rule")
+    if recurrence >= 0 and also not (provider_kind(fields and recurrence) equals "null"):
+        if discord_event_recurrence(fields and recurrence) equals 0:
+            return 0
+    set image to provider_member(fields and object and "image")
+    if image >= 0 and also not (provider_kind(fields and image) equals "null"):
+        if not (provider_kind(fields and image) equals "string"):
+            return 0
+        set value to provider_value(fields and image)
+        if string_length(value) > 10485760:
+            return 0
+        set prefix to ""
+        if substring(value and 0 and 22) equals "data:image/png;base64,":
+            set prefix to "data:image/png;base64,"
+        else if substring(value and 0 and 23) equals "data:image/jpeg;base64,":
+            set prefix to "data:image/jpeg;base64,"
+        else if substring(value and 0 and 22) equals "data:image/gif;base64,":
+            set prefix to "data:image/gif;base64,"
+        if string_length(prefix) equals 0 or else string_length(value) <= string_length(prefix):
+            return 0
+        set index to string_length(prefix)
+        set padding to 0
+        repeat while index < string_length(value):
+            set byte to substring(value and index and 1)
+            if byte equals "=":
+                set padding to padding + 1
+                if padding > 2:
+                    return 0
+            else if padding > 0 or else string_contains("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" and byte) equals 0:
+                return 0
+            set index to index + 1
+        set encoded_size to string_length(value) - string_length(prefix)
+        if encoded_size - encoded_size / 4 * 4 is not equal to 0:
+            return 0
+    if creating equals 0 and also provider_kind(fields and object + 1) equals "}":
+        return 0
+    return 1
+
+define discord_event_options with arguments as Str returning List:
+    set fields to provider_json_tokens(arguments)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else discord_rich_keys(fields and 0 and "|operation|event|reason|observed_sha256|changes|limit|before|after|") equals 0:
+        return history_status("invalid-arguments")
+    set operation to provider_value(fields and provider_member(fields and 0 and "operation"))
+    if not (operation equals "list" or else operation equals "inspect" or else operation equals "users" or else operation equals "create" or else operation equals "edit" or else operation equals "start" or else operation equals "end" or else operation equals "cancel" or else operation equals "delete"):
+        return history_status("invalid-operation")
+    set string_keys to ["operation","event","reason","observed_sha256","before","after"]
+    for each key_pointer in string_keys:
+        set field to provider_member(fields and 0 and ptr_to_str(key_pointer))
+        if field >= 0 and also not (provider_kind(fields and field) equals "string"):
+            return history_status("invalid-string")
+    set event_id to provider_value(fields and provider_member(fields and 0 and "event"))
+    if operation equals "list" or else operation equals "create":
+        if provider_member(fields and 0 and "event") >= 0:
+            return history_status("unused-event")
+    else if discord_snowflake(event_id) equals 0:
+        return history_status("event-required")
+    set mutation to not (operation equals "list" or else operation equals "inspect" or else operation equals "users")
+    set reason to provider_value(fields and provider_member(fields and 0 and "reason"))
+    if mutation:
+        if string_length(discord_audit_reason(reason)) equals 0:
+            return history_status("reason-required")
+    else if provider_member(fields and 0 and "reason") >= 0:
+        return history_status("unused-reason")
+    set digest to provider_value(fields and provider_member(fields and 0 and "observed_sha256"))
+    if mutation and also not (operation equals "create"):
+        if string_length(digest) is not equal to 64:
+            return history_status("observed-sha256-required")
+        set index to 0
+        repeat while index < 64:
+            if string_contains("0123456789abcdef" and substring(digest and index and 1)) equals 0:
+                return history_status("invalid-sha256")
+            set index to index + 1
+    else if provider_member(fields and 0 and "observed_sha256") >= 0:
+        return history_status("unused-sha256")
+    set changes to provider_member(fields and 0 and "changes")
+    set payload to "{}"
+    if operation equals "create" or else operation equals "edit":
+        if changes < 0 or else discord_event_changes(fields and changes and operation equals "create") equals 0:
+            return history_status("invalid-event-changes")
+        set payload to agent_json_source(arguments and fields and changes)
+    else if changes >= 0:
+        return history_status("unused-changes")
+    set limit to "100"
+    set limit_field to provider_member(fields and 0 and "limit")
+    set before to provider_value(fields and provider_member(fields and 0 and "before"))
+    set after to provider_value(fields and provider_member(fields and 0 and "after"))
+    if operation equals "users":
+        if limit_field >= 0:
+            if discord_rich_integer(fields and limit_field and 1 and 100) equals 0:
+                return history_status("invalid-limit")
+            set limit to provider_value(fields and limit_field)
+        if provider_member(fields and 0 and "before") >= 0 and also discord_snowflake(before) equals 0:
+            return history_status("invalid-before")
+        if provider_member(fields and 0 and "after") >= 0 and also discord_snowflake(after) equals 0:
+            return history_status("invalid-after")
+        if string_length(before) > 0 and also string_length(after) > 0:
+            return history_status("conflicting-cursors")
+    else if limit_field >= 0 or else provider_member(fields and 0 and "before") >= 0 or else provider_member(fields and 0 and "after") >= 0:
+        return history_status("unused-pagination")
+    return ["valid",operation,event_id,reason,digest,payload,limit,before,after]
