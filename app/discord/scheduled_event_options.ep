@@ -77,7 +77,59 @@ define discord_event_image with fields as List and image as Int returning Int:
             return 0
     return 1
 
+# Flattened model-facing fields avoid provider grammars imposing an order on
+# optional nested JSON keys. Archived nested calls remain supported. Mixing
+# representations is refused, including equal values, rather than guessing.
+define discord_event_normalize with arguments as Str returning Str:
+    set fields to provider_json_tokens(arguments)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else discord_rich_keys(fields and 0 and "|operation|event|reason|observed_sha256|changes|limit|before|after|name|description|entity_type|channel_id|scheduled_start_time|scheduled_end_time|entity_metadata|recurrence_rule|image|clear_fields|") equals 0:
+        return ""
+    set cleared to "|"
+    set clearing to provider_member(fields and 0 and "clear_fields")
+    if clearing >= 0:
+        if not (provider_kind(fields and clearing) equals "["):
+            return ""
+        set items to provider_items(fields and clearing)
+        if length_list(items) < 1 or else length_list(items) > 6:
+            return ""
+        for each item in items:
+            set key to provider_value(fields and item)
+            set marker to concat("|" and concat(key and "|"))
+            if not (provider_kind(fields and item) equals "string") or else string_contains("|description|channel_id|scheduled_end_time|entity_metadata|recurrence_rule|image|" and marker) equals 0 or else string_contains(cleared and marker) > 0:
+                return ""
+            set cleared to concat(cleared and concat(key and "|"))
+    set changes to "{"
+    set count to 0
+    set event_keys to ["name","description","entity_type","channel_id","scheduled_start_time","scheduled_end_time","entity_metadata","recurrence_rule","image"]
+    for each key_pointer in event_keys:
+        set key to ptr_to_str(key_pointer)
+        set field to provider_member(fields and 0 and key)
+        set clear to string_contains(cleared and concat("|" and concat(key and "|"))) > 0
+        if field >= 0 and also clear:
+            return ""
+        if field >= 0 or else clear:
+            if count > 0:
+                set changes to concat(changes and ",")
+            set value to "null"
+            if field >= 0:
+                set value to agent_json_source(arguments and fields and field)
+            set changes to concat(changes and concat(provider_quote(key) and concat(":" and value)))
+            set count to count + 1
+    if count equals 0:
+        return arguments
+    if provider_member(fields and 0 and "changes") >= 0:
+        return ""
+    set output to concat("{\"changes\":" and concat(changes and "}"))
+    set request_keys to ["operation","event","reason","observed_sha256","limit","before","after"]
+    for each key_pointer in request_keys:
+        set key to ptr_to_str(key_pointer)
+        set field to provider_member(fields and 0 and key)
+        if field >= 0:
+            set output to concat(output and concat("," and concat(provider_quote(key) and concat(":" and agent_json_source(arguments and fields and field)))))
+    return concat(output and "}")
+
 define discord_event_options with arguments as Str returning List:
+    set arguments to discord_event_normalize(arguments)
     set fields to provider_json_tokens(arguments)
     if fields equals 0 or else provider_unique_objects(fields) equals 0 or else discord_rich_keys(fields and 0 and "|operation|event|reason|observed_sha256|changes|limit|before|after|") equals 0:
         return history_status("invalid-arguments")
@@ -143,6 +195,7 @@ define discord_event_options with arguments as Str returning List:
 # Rejected input never reached REST. Report the missing paths rather than
 # leaving a model to discover required fields through repeated mutations.
 define discord_event_input_result with arguments as Str and status as Str returning Str:
+    set arguments to discord_event_normalize(arguments)
     set fields to provider_json_tokens(arguments)
     set operation to provider_value(fields and provider_member(fields and 0 and "operation"))
     set changes to provider_member(fields and 0 and "changes")
@@ -157,6 +210,8 @@ define discord_event_input_result with arguments as Str and status as Str return
         if provider_value(fields and provider_member(fields and changes and "entity_type")) equals "3":
             set added to append_list(required and "scheduled_end_time")
             set added to append_list(required and "entity_metadata")
+        else if provider_value(fields and provider_member(fields and changes and "entity_type")) equals "1" or else provider_value(fields and provider_member(fields and changes and "entity_type")) equals "2":
+            set added to append_list(required and "channel_id")
         for each key_pointer in required:
             set key to ptr_to_str(key_pointer)
             set field to provider_member(fields and changes and key)
@@ -173,4 +228,4 @@ define discord_event_input_result with arguments as Str and status as Str return
     if discord_event_image(fields and provider_member(fields and changes and "image")) equals 0:
         set invalid to "[\"changes.image\"]"
     set result to concat(result and concat(",\"invalid_fields\":" and invalid))
-    return concat(result and ",\"recovery\":\"Submit the complete corrected arguments, not a partial patch to the rejected call. For create, changes must contain name, entity_type and scheduled_start_time; external events also need scheduled_end_time and entity_metadata.location. Every mutation needs a top-level reason. Timestamps are explicit RFC3339 strings. If invalid_fields contains changes.image, supply the original complete base64 data URI with data:image/png;base64, or data:image/jpeg;base64, or data:image/gif;base64, exactly; data:image:png is invalid. Do not remove a requested cover image to bypass validation. Preserve the user's supplied values; do not probe invented values. Empty missing_required_fields means a supplied value or operation-specific field is invalid: check the tool schema. No mutation occurred.\"}")
+    return concat(result and ",\"recovery\":\"Submit the complete corrected arguments, not a partial patch to the rejected call. For create, supply name, entity_type and scheduled_start_time at the top level; voice/stage events also need channel_id, and external events need scheduled_end_time and entity_metadata.location. Reported changes paths refer to these event fields. To set null, list the field name in clear_fields; never also supply its value. Archived nested changes are accepted, but never mix nested changes with top-level event fields. Every mutation needs a top-level reason. Timestamps are explicit RFC3339 strings. If invalid_fields contains changes.image, supply the original complete base64 data URI with data:image/png;base64, or data:image/jpeg;base64, or data:image/gif;base64, exactly; data:image:png is invalid. Do not remove a requested cover image to bypass validation. Preserve the user's supplied values; do not probe invented values. Empty missing_required_fields means a supplied value or operation-specific field is invalid: check the tool schema. No mutation occurred.\"}")

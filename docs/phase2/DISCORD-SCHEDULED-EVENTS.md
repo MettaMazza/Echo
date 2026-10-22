@@ -35,8 +35,34 @@ deployed at idle, retaining the qualified Gateway with intent mask 112129,
 execution helper, model services and Warm profile. Evidence lives under
 `discord-scheduled-events-20261022/image-feedback/` and `gateway/E22J-*` /
 `gateway/E22K-readback.json`. The UI test account has subsequently removed its
-interest; actual empty-subscriber follow-up and fixture cleanup are running as
-E22L. Do not report that pending cleanup as already verified.
+interest. E22L completed the actual empty-subscriber read, fresh inspection and
+deletion; independent REST returned 404/code 10070. Gateway USER_REMOVE and
+DELETE markers persisted. The final English reply correctly recalled Friday
+from the preceding conversation. Native Discord reload retained the reply,
+source-attached Thinking thread and Speak button. Evidence:
+`gateway/E22L-delete-readback.json` and `gateway/E22L-ui-reload.json`.
+
+E22M then attempted a separate voice-channel event in the existing Meeting Room.
+The model repeatedly omitted required creation fields, including the name and
+start time, despite precise no-effects feedback. The test was cancelled through
+the actual Discord Cancel control; the archive confirms cancellation and an
+independent guild-event list is empty. No voice event was created, no voice
+connection was opened and no channel was modified. This remains a failed
+model-driven acceptance, retained in `gateway/E22M-failure.json`. Provider-only diagnostics reproduced the omission without Discord mutations.
+The local provider grammar orders optional nested JSON fields; emitting a later
+field prevents an earlier field from appearing afterward. Reordering restored
+the channel in one trial, but another still omitted the requested description.
+The current unqualified candidate exposes event fields independently at the
+top level and normalizes them through the existing validators. Archived nested
+calls remain accepted; mixing both representations is rejected. No permission
+or effective-state validation is relaxed. Native normalization tests and real primary-model voice/external creation
+diagnostics pass. Full deployed Discord lifecycle acceptance remains pending. Streaming trials consistently returned an empty string for the requested
+nullable channel; a separate non-streaming replay
+retained both raw `null` and parsed null. The candidate therefore exposes
+`clear_fields` for explicit clearing and converts those named fields to JSON
+null locally. Setting and clearing the same field is refused; empty strings are
+not silently coerced to null. The server currently has no Stage channel or community
+feature; no configuration has been expanded for testing.
 
 ## Authority and lifecycle foundation
 
@@ -232,11 +258,11 @@ fetched remote trees match. Full Step 15 remains open.
 | External create/list/inspect/edit | Options, effective state, bindings and mutation plan | E22B and E22D, independent values | Covered workflow retained |
 | Start/end/delete | Status-pair guards, fresh hashes and mutation claims | E22E/F/G, independent status 2/3 and 404 | Covered workflow retained |
 | Cancel | Status-pair guards and mutation plan | E22H, independent status 4 | E22I delete independently verified |
-| Interested users | Event binding, profile projection and pagination arguments | E22D empty page | Populated pages and cursors |
-| Recurrence | Timestamp/pattern validation and response projection | Not performed | Real recurring event and nullable removal |
-| Cover image | Data-URI/base64 syntax and explicit null | Not performed | Valid image upload, hash readback and removal |
-| Voice/stage events | Channel type, visibility, permissions and field transitions | Not performed | Supported real channel workflows |
-| Gateway | Five types, deduplication, foreign-guild exclusion, intent migration | Fresh READY mask 112129; E22H create/update | Interested-user add/remove changes |
+| Interested users | Event binding, profile projection and pagination arguments | E22K populated limit-one page and empty next cursor; E22L empty after removal | Covered workflow retained |
+| Recurrence | Timestamp/pattern validation and response projection | E22J weekly Friday; E22K explicit null independently verified | Covered workflow retained |
+| Cover image | Data-URI/base64 syntax and explicit null | E22J PNG/hash readback; E22K removal independently verified | Covered workflow retained |
+| Voice/stage events | Channel type, visibility, permissions and field transitions | E22M failed due to model omission of channel; no event created | Correct argument generation and supported live channel workflow; no Stage channel currently configured |
+| Gateway | Five types, deduplication, foreign-guild exclusion, intent migration | Fresh READY mask 112129; create/update/delete plus E22J USER_ADD and E22K USER_REMOVE | Covered event types retained |
 | Cancellation/revocation while waiting | Actual native wait/cancel/revoke fixture | E22C run cancelled; failed read loop retained | Broader combined races remain at integrated gate |
 
 This table avoids interpreting historical candidate descriptions as current

@@ -1,0 +1,62 @@
+import "../../app/providers/local_json"
+import "../../app/tools/discord_event_schema"
+import "../../app/discord/scheduled_event_effective"
+
+# Provider-only diagnostic: no Discord credential, dispatcher or mutation.
+define main returning Int:
+    if get_argument_count() is not equal to 7 or else file_exists(get_argument(3)):
+        return 1
+    set body to concat("{\"model\":" and provider_quote(get_argument(2)))
+    set body to concat(body and ",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":")
+    set body to concat(body and provider_quote(get_argument(4)))
+    set body to concat(body and concat("}],\"tools\":[" and concat(discord_event_schema() and "]}")))
+    set database to archive_open(get_argument(3))
+    if database equals 0:
+        return 2
+    set payload to concat("{\"run_id\":\"event-arguments\",\"request_body\":" and concat(provider_quote(body) and "}"))
+    if archive_append(database and "event-arguments" and "request" and "model_request" and payload and "live") is not equal to 0:
+        return 2
+    set response to local_chat_generate(database and "event-arguments" and "request" and string_to_int(get_argument(1)) and "/v1/chat/completions" and body and -1 and 65536)
+    if not (archive_list_text(response and 0) equals "complete"):
+        display archive_list_text(response and 0)
+        return 2
+    set state to get_list(response and 1)
+    set choices to get_list(state and 0)
+    if length_list(choices) is not equal to 1:
+        return 3
+    set choice to get_list(choices and 0)
+    set calls to get_list(choice and 3)
+    if length_list(calls) is not equal to 1:
+        return 4
+    set call to get_list(calls and 0)
+    if not (archive_list_text(call and 2) equals "discord_events"):
+        return 4
+    set arguments to archive_list_text(call and 3)
+    display arguments
+    set options to discord_event_options(arguments)
+    if not (archive_list_text(options and 0) equals "valid"):
+        display discord_event_input_result(arguments and archive_list_text(options and 0))
+        return 5
+    set fields to provider_json_tokens(arguments)
+    if not (provider_value(fields and provider_member(fields and 0 and "operation")) equals "create"):
+        return 6
+    set changes to archive_list_text(options and 5)
+    set effective to discord_event_effective("{}" and changes and 1 and discord_event_timestamp(get_argument(6)))
+    if not (archive_list_text(effective and 0) equals "valid"):
+        display archive_list_text(effective and 0)
+        return 7
+    set expected to provider_json_tokens(get_argument(5))
+    set actual to provider_json_tokens(changes)
+    if expected equals 0 or else not (provider_kind(expected and 0) equals "{"):
+        return 8
+    set expected_keys to ["name","description","channel_id","entity_type","scheduled_start_time","scheduled_end_time"]
+    for each key_pointer in expected_keys:
+        set key to ptr_to_str(key_pointer)
+        set wanted to provider_member(expected and 0 and key)
+        if wanted >= 0:
+            set observed to provider_member(actual and 0 and key)
+            if observed < 0 or else not (provider_kind(expected and wanted) equals provider_kind(actual and observed)) or else not (provider_value(expected and wanted) equals provider_value(actual and observed)):
+                display concat("Requested field not preserved: " and key)
+                return 9
+    display "PASS: model creation passes effective-state validation and preserves requested fixture fields; no Discord operation executed."
+    return 0
