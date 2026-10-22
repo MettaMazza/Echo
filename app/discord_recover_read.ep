@@ -21,12 +21,23 @@ define main returning Int:
     set inbox to discord_job_origin(journal and database and run)
     if string_length(inbox) equals 0:
         return 4
-    set job to history_collect_one(checkpoint_prepare(journal and "SELECT inbox FROM discord_agent_jobs WHERE inbox=?1 AND state='claimed' AND NOT EXISTS(SELECT 1 FROM discord_background_runs WHERE run=?2 AND state<>'released');" and [inbox,run]))
+    set job to history_collect_one(checkpoint_prepare(journal and "SELECT inbox FROM discord_agent_jobs WHERE inbox=?1 AND state IN ('claimed','run-recovery-required') AND NOT EXISTS(SELECT 1 FROM discord_background_runs WHERE run=?2 AND state<>'released');" and [inbox,run]))
     if not (archive_list_text(job and 0) equals "found"):
         return 5
     set unsafe to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run=?1 AND t.state<>'observed' AND (t.state NOT IN ('queued','running','uncertain') OR NOT (json_extract(e.payload,'$.name')='discord_message_read' OR (json_extract(e.payload,'$.name')='discord_channels' AND json_extract(json_extract(e.payload,'$.arguments'),'$.operation') IN ('inspect','list'))));" and [run]))
     if not (archive_list_text(unsafe and 1) equals "0"):
         return 6
+    # Reclaim only the known stopped recovery state under the exclusive host lock.
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 14
+    set reclaimed to checkpoint_prepare(journal and "UPDATE discord_agent_jobs SET state='claimed',detail='explicit exited-child read recovery' WHERE inbox=?1 AND state='run-recovery-required';" and [inbox])
+    if archive_finish(reclaimed and 101) is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return 14
+    set recorded to checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'claimed','explicit exited-child read recovery',CAST(?2 AS INTEGER));" and [inbox,int_to_string(ep_time_now_ms())])
+    if archive_finish(recorded and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return 14
     set current to agent_run_read(database and run)
     if current equals 0:
         return 7
