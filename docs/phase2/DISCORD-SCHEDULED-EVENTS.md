@@ -143,3 +143,39 @@ attached to the initiating message. Evidence: `integration-rate/E22D-turn.json`
 and `E22D-readback.json`. This proves the repaired workflow, not populated
 subscriber pagination or the remaining lifecycle operations. E22E is exercising
 start on the same disposable fixture; its result is not yet accepted.
+
+
+## Gateway change markers — candidate
+
+The Gateway previously used intent mask 46593, without scheduled-event bit 16.
+The candidate requests 112129 and records that mask atomically with READY.
+A retained session with an absent or different mask cannot resume as if it had
+the new subscription; it requires a fresh Identify. This is the standard
+[scheduled-event intent](https://docs.discord.com/developers/events/gateway#list-of-intents).
+
+All five [scheduled-event change types](https://docs.discord.com/developers/events/gateway-events#guild-scheduled-event-create)
+retain guild/event references in the durable journal, with replay deduplication.
+Foreign guilds are excluded. Ambient names, descriptions, locations and subscriber
+identities are omitted; retrieval still requires fresh scoped REST checks. These
+markers neither grant visibility nor create conversational runs. They are a
+change stream foundation, not a completed model-facing event-history HUD.
+
+Native acceptance passed all five event types, exact minimal projection, foreign
+guild exclusion, replay, reopen and absent/old intent-profile handling. Evidence:
+`gateway/native.json`. Worker builds and real subscription acceptance are pending.
+
+## 22 October — lifecycle and Gateway deployment update
+
+E22E start and E22F end passed with independent status 2 and 3 readbacks.
+E22G inspected then deleted the same disposable fixture; independent REST
+returned 404 / Discord code 10070 (Unknown Guild Scheduled Event). Final
+cleanup reply is visible in Discord. Its unsolicited language switch is retained
+as a behavioural observation, not a tool failure.
+
+All six Gateway worker builds passed with unchanged application sources.
+The candidate was deployed at idle; fresh READY persisted intent mask 112129
+and all six workers were observed alive. Native protocol, five event markers,
+replay and intent-profile migration checks passed. E22H actual creation/cancel
+acceptance is in progress; live marker delivery is not yet claimed.
+Evidence: integration-rate/E22F-*, E22G-turn.json, E22G-delete-readback.json,
+gateway/build-qualification.json and gateway/live-subscription.json.

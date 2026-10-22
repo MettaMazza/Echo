@@ -5,7 +5,7 @@ import "passive_reactions"
 define discord_gateway_runtime_schema with database as Int returning Int:
     if discord_gateway_schema(database) is not equal to 0 or else discord_interaction_schema(database) is not equal to 0:
         return 1
-    return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_resume(singleton INTEGER PRIMARY KEY CHECK(singleton=1),session TEXT NOT NULL,url TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN (0,1)));")
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_resume(singleton INTEGER PRIMARY KEY CHECK(singleton=1),session TEXT NOT NULL,url TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN (0,1))); CREATE TABLE IF NOT EXISTS discord_gateway_intents(singleton INTEGER PRIMARY KEY CHECK(singleton=1),mask INTEGER NOT NULL);")
 
 define discord_json_original with body as Str and tokens as List and index as Int returning Str:
     if index < 0:
@@ -54,12 +54,18 @@ define discord_gateway_ready_record with database as Int and generation as Str a
     set retained_value_added to append_list(retained_values_1 and ep_sha256(body))
     if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_dispatch(session,sequence,kind,digest) VALUES(?,CAST(? AS INTEGER),'READY',?);" and retained_values_1) and 101) is not equal to 0:
         return migration_fail(database and "receipt-failed")
+    set intent_values to create_list()
+    set added to append_list(intent_values and int_to_string(discord_gateway_intents()))
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO discord_gateway_intents(singleton,mask) VALUES(1,CAST(?1 AS INTEGER)) ON CONFLICT(singleton) DO UPDATE SET mask=excluded.mask;" and intent_values) and 101) is not equal to 0:
+        return migration_fail(database and "intent-profile-write-failed")
     if sql_execute(database and "COMMIT;") is not equal to 0:
         return migration_fail(database and "commit-failed")
     return "recorded"
 
 define discord_gateway_resume_read with database as Int returning List:
-    return history_collect_one(archive_prepare(database and "SELECT g.session,r.url,g.sequence FROM discord_gateway g JOIN discord_resume r ON r.singleton=g.singleton AND r.session=g.session WHERE g.singleton=1 AND r.enabled=1;"))
+    set intents to create_list()
+    set added to append_list(intents and int_to_string(discord_gateway_intents()))
+    return history_collect_one(checkpoint_prepare(database and "SELECT g.session,r.url,g.sequence FROM discord_gateway g JOIN discord_resume r ON r.singleton=g.singleton AND r.session=g.session JOIN discord_gateway_intents i ON i.singleton=g.singleton AND i.mask=CAST(?1 AS INTEGER) WHERE g.singleton=1 AND r.enabled=1;" and intents))
 
 # Resolve an edit/delete against the immutable admitted original. A partial
 # event cannot invent its author, move channels or expose a foreign scope.
@@ -217,6 +223,11 @@ define discord_gateway_intake with database as Int and generation as Str and bot
             if string_length(payload) > 0:
                 set identity to concat("passive-reaction:" and concat(ep_sha256(archive_list_text(current and 1)) and concat(":" and sequence)))
                 set kind to concat("ECHO_" and kind)
+    else if kind equals "GUILD_SCHEDULED_EVENT_CREATE" or else kind equals "GUILD_SCHEDULED_EVENT_UPDATE" or else kind equals "GUILD_SCHEDULED_EVENT_DELETE" or else kind equals "GUILD_SCHEDULED_EVENT_USER_ADD" or else kind equals "GUILD_SCHEDULED_EVENT_USER_REMOVE":
+        set data to provider_member(tokens and 0 and "d")
+        set payload to discord_gateway_event_marker(tokens and data and kind and guilds)
+        if string_length(payload) > 0:
+            set identity to concat("event-change:" and concat(ep_sha256(archive_list_text(current and 1)) and concat(":" and sequence)))
     else if kind equals "MESSAGE_UPDATE" or else kind equals "MESSAGE_DELETE":
         set data to provider_member(tokens and 0 and "d")
         set payload to discord_message_revision(database and kind and discord_json_original(body and tokens and data) and guilds and admins)
@@ -288,3 +299,20 @@ define discord_gateway_role_projection with tokens as List and items as List ret
             set body to concat(body and ",")
         set body to concat(body and concat("{\"role_id\":" and concat(provider_quote(role_id) and concat(",\"permissions\":" and concat(provider_quote(mask) and "}")))))
     return concat("[" and concat(body and "]"))
+
+# These are invalidation/awareness references, not public event details or turns.
+# Names, descriptions, locations and subscriber identities require fresh scoped
+# REST inspection and are never copied from an ambient Gateway payload.
+define discord_gateway_event_marker with tokens as List and data as Int and kind as Str and guilds as List returning Str:
+    set guild to provider_value(tokens and provider_member(tokens and data and "guild_id"))
+    if discord_snowflake(guild) equals 0 or else discord_contains(guilds and guild) equals 0:
+        return ""
+    set identity to provider_value(tokens and provider_member(tokens and data and "id"))
+    if kind equals "GUILD_SCHEDULED_EVENT_USER_ADD" or else kind equals "GUILD_SCHEDULED_EVENT_USER_REMOVE":
+        set identity to provider_value(tokens and provider_member(tokens and data and "guild_scheduled_event_id"))
+        if discord_snowflake(provider_value(tokens and provider_member(tokens and data and "user_id"))) equals 0:
+            return ""
+    if discord_snowflake(identity) equals 0:
+        return ""
+    set result to concat("{\"guild_id\":" and provider_quote(guild))
+    return concat(result and concat(",\"event_id\":" and concat(provider_quote(identity) and "}")))
