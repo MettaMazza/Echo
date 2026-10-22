@@ -1,3 +1,7 @@
+## 22 October — execution helper regression corrected
+
+Rebuilt the isolated execution helper to match the new community tool catalogue; launcher now rejects stale policy/artifact receipts. Native execute/build/database, cancel and revoke checks passed. Two real same-conversation cat/wc turns returned exact stdout, preserved memory/identity and survived reload. Original failure retained. See `DISCORD-EXECUTION-CATALOG.md`. New lessons, temporal grounding and behaviour-specific autonomous moderation requirements are recorded in `LESSONS-TIME-MODERATION-2026-10-22.md`; not yet qualified. Maria requests pause after full original Step 15, not a controller subtask.
+
 ## 22 October — member controller qualification update
 
 Seven real Discord turns completed, final revision restarted idle, fresh member/ban hashes independently matched, normal memory/identity follow-up and reload persistence passed. Exact rate/Unknown User/initial command-timeout failures retained. Native read-permission and absence boundaries passed. No real member was moderated: positive destructive tests require an approved disposable member. Step 15 remains open for the remaining catalogue; Step 16 integrated gate remains open. See `DISCORD-MEMBER-ADMINISTRATION.md` and canonical `discord-member-admin-20261022`. Invite controller work is next; no blanket Phase Two completion claim.
