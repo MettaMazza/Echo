@@ -261,7 +261,7 @@ fetched remote trees match. Full Step 15 remains open.
 | Interested users | Event binding, profile projection and pagination arguments | E22K populated limit-one page and empty next cursor; E22L empty after removal | Covered workflow retained |
 | Recurrence | Timestamp/pattern validation and response projection | E22J weekly Friday; E22K explicit null independently verified | Covered workflow retained |
 | Cover image | Data-URI/base64 syntax and explicit null | E22J PNG/hash readback; E22K removal independently verified | Covered workflow retained |
-| Voice/stage events | Channel type, visibility, permissions and field transitions | E22N voice create/inspect passed with exact independent channel/type/time readback; E22O edit applied after inherited-metadata refusals | Empty-metadata regression fix under native qualification; cleanup/reload pending; no Stage channel configured |
+| Voice/stage events | Channel type, visibility, permissions and field transitions | E22N voice create/inspect passed with exact independent channel/type/time readback; E22O edit applied after inherited-metadata refusals | E22Q minimal edit passed on deployed fix; E22R deletion/continuity/reload passed; no Stage channel configured |
 | Gateway | Five types, deduplication, foreign-guild exclusion, intent migration | Fresh READY mask 112129; create/update/delete plus E22J USER_ADD and E22K USER_REMOVE | Covered event types retained |
 | Cancellation/revocation while waiting | Actual native wait/cancel/revoke fixture | E22C run cancelled; failed read loop retained | Broader combined races remain at integrated gate |
 
@@ -295,3 +295,25 @@ not yet deployed or live-qualified.
 Evidence: `gateway/E22N-readback.json`, `gateway/E22O-raw-state.json`,
 `gateway/E22O-readback.json`, and `gateway/E22O-turn.json`. The disposable event
 remains scheduled pending final reply, cleanup and reload acceptance.
+
+## Deployed empty-metadata repair: final live acceptance
+
+All five rebuilt workers passed with unchanged source; idle deployment retained
+the qualified Gateway, execution helper, models and Warm voice. E22P renamed
+the event but still supplied the explicitly forbidden metadata workaround. That
+instruction-following failure remains recorded and was not counted as proof.
+
+E22Q sent exactly the requested five arguments: edit operation, resource ID,
+fresh observed hash, new name and reason. It applied without a metadata patch
+or refusal. Independent REST readback confirmed the new name and unchanged
+channel/type/times/status. E22R then inspected and deleted that disposable event
+once, using the fresh hash. Independent GET returned 404/code 10070; the
+Gateway retained the DELETE marker. No fixture remains.
+
+The final reply correctly recalled the Meeting Room channel. Actual Discord
+reload retained the replies, source-attached Thinking threads and Speak controls.
+Evidence: `gateway/E22Q-turn.json`, `E22Q-readback.json`, `E22R-turn.json`,
+`E22R-delete-readback.json`, `E22R-delete-markers.json`, `E22R-ui-reload.json`;
+`empty-metadata/` contains native, build and deployment receipts. This qualifies
+the supported voice-event workflow; no Stage channel exists in this server,
+and no Stage-channel live pass is claimed. Other Step 15 catalogue work remains.
