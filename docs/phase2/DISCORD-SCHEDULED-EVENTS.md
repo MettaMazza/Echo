@@ -5,9 +5,38 @@ controller is registered and deployed. Actual Discord turns have passed external
 event creation, inspection, editing, empty subscriber lookup, start, end,
 cancellation and deletion; independent REST reads verify the mutations.
 Gateway create/update markers and intent-aware reconnect are deployed and observed.
-Cover images, recurrence, populated subscriber paging and channel-based event
+Cover creation/removal, weekly recurrence/removal and populated subscriber paging
+now have actual-model and independent REST evidence. Channel-based event
 workflows still need live qualification. The dated development entries below
 preserve earlier failures and intermediate states; they are not the current status.
+
+## 22 October — recurrence, cover and subscriber acceptance
+
+E22J created one disposable external event with the supplied synthetic PNG and
+weekly Friday recurrence. Independent REST readback and the native Discord event
+view confirmed both. Earlier malformed-image calls were refused before REST.
+The model's initial explanation blaming omitted channel_id was incorrect: the
+retained arguments contain an invalid `data:image:png` prefix. Explicit image
+feedback now identifies `changes.image` and the accepted data-URI syntax without
+relaxing validation or dropping the requested image.
+
+The test account subscribed through Discord's Interested control. The real
+Gateway USER_ADD marker persisted without embedding subscriber identity. E22K
+read one subscriber with limit 1 and an empty next page after that account ID.
+Its first edit accidentally omitted recurrence removal; the model then fetched
+a fresh state and submitted the missing edit. Independent readback confirms
+both image and recurrence are null and the event remains scheduled. This is
+successful recovery, not a claim that the first edit fulfilled both requests.
+
+Native feedback and final options regressions passed, including malformed-prefix,
+nullable-image and valid full weekly/PNG cases; generated roots were reviewed.
+Five affected workers built with unchanged application sources. They were
+deployed at idle, retaining the qualified Gateway with intent mask 112129,
+execution helper, model services and Warm profile. Evidence lives under
+`discord-scheduled-events-20261022/image-feedback/` and `gateway/E22J-*` /
+`gateway/E22K-readback.json`. The UI test account has subsequently removed its
+interest; actual empty-subscriber follow-up and fixture cleanup are running as
+E22L. Do not report that pending cleanup as already verified.
 
 ## Authority and lifecycle foundation
 
