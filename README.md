@@ -10,6 +10,8 @@ Echo is a self-hosted conversational agent built in **Ernos**, a plain-English p
 
 > **1.9 is a development update.** “V1” names the future production release, reserved for completion and production readiness of Phase Two. These development labels are not a claim that the V1 milestone has already shipped. [Current status and remaining work](docs/STATUS.md).
 
+> **24 October maintenance handoff:** verified memory, admin-tool isolation and long-speech repairs are deployed. Current work is preserved for an OpenCode rebuild evaluation. [Deployment evidence, limits and rebuild requirements](docs/phase2/PIVOT-HANDOFF.md).
+
 ## Meet Echo
 
 - **Keep the conversation going.** Start fresh sessions without losing authorized cross-session memory. Recall original messages in bounded batches, follow their provenance, and distinguish historical timestamps from the current clock.
