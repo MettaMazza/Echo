@@ -19,6 +19,13 @@ def check(binary, records, directory):
     run = subprocess.run([binary, str(source)], capture_output=True, text=True, check=True)
     encoded = json.loads(run.stdout)
     assert decode(encoded) == records, (records, encoded)
+    if encoded != []:
+        assert not set(['id', 'identity', 'source_event', 'source_digest']) & set(encoded['reference_fields'])
+        for original, entry in zip(records, encoded['records']):
+            visible = {**encoded['shared_fields'], **entry}
+            for key in ['id', 'identity', 'source_event', 'source_digest']:
+                if key in original:
+                    assert visible[key] == original[key], (key, visible, original)
     return encoded
 
 if __name__ == '__main__':
