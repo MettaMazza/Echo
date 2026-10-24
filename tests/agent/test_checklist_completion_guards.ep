@@ -1,0 +1,97 @@
+import "../../app/web/attachments"
+import "fs"
+import "../../app/agent/run_messages"
+import "../../app/archive/history"
+import "../../app/context/session_messages"
+import "../fixtures/generation_fixture"
+
+define main returning Int:
+    if get_argument_count() is not equal to 4:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0 or else web_run_schema(database) is not equal to 0 or else web_attachment_schema(database) is not equal to 0:
+        return 1
+    if web_pairing_invite(database and "invite") is not equal to 0 or else web_device_pair(database and "invite" and "owner" and "Fixture" and "secret") is not equal to 0:
+        return 1
+    set submitted to web_submit_owned(database and "owner" and "request" and "" and "List this session workspace.")
+    set session to ptr_to_str(get_list(submitted and 1))
+    set run to ptr_to_str(get_list(submitted and 2))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_session_open(database and library and "owner" and session and get_argument(2))
+    if root is less than 0:
+        return 1
+    set original_text to "Workspace source: café survives restart."
+    set descriptor to workspace_file_open(library and root and "source.txt" and 1)
+    if descriptor is less than 0 or else file_stage_write(library and descriptor and str_to_ptr(original_text) and string_length(original_text)) is not equal to 0 or else file_stage_finish(library and descriptor) is not equal to 0:
+        return 1
+    set closed to net_close(root)
+    set closed to ep_dlclose(library)
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set initial to session_messages(database and session and run)
+    if not string_contains(initial and "items") or else not string_contains(initial and "no lookup call is needed"):
+        return 5
+    set delta to "{\"choices\": [{\"index\": 0, \"delta\": {\"tool_calls\": [{\"index\": 0, \"id\": \"work-first\", \"function\": {\"name\": \"workspace_create_text\", \"arguments\": \"{\\\"path\\\": \\\"chosen-note.txt\\\", \\\"text\\\": \\\"Observed work without a prior checklist\\\"}\"}}, {\"index\": 1, \"id\": \"plan-same-response\", \"function\": {\"name\": \"task_checklist\", \"arguments\": \"{\\\"items\\\": [{\\\"id\\\": \\\"chosen-by-echo\\\", \\\"requirement\\\": \\\"Save the requested note\\\", \\\"status\\\": \\\"pending\\\", \\\"evidence\\\": \\\"\\\"}]}\"}}]}, \"finish_reason\": \"tool_calls\"}]}"
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set messages to agent_run_messages(database and run)
+    set body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(messages and concat(",\"tools\":" and concat(session_tool_schemas() and "}"))))
+    set generated to agent_generate_local(database and run and "first-request" and body and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set fixture_result to receive from completed
+    if generated is not equal to 0 or else fixture_result is not equal to 0:
+        return 1
+    if agent_tool_step(database and run) is not equal to 0:
+        return 1
+    if agent_tool_step(database and run) is not equal to 0:
+        return 2
+    if agent_tool_step(database and run) is not equal to 0:
+        return 6
+    set row to history_collect_one(archive_prepare(database and "SELECT e.payload FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.call_id='work-first' AND t.state='observed';"))
+    if not (archive_list_text(row and 0) equals "found") or else not string_contains(archive_list_text(row and 1) and "created"):
+        display archive_list_text(row and 1)
+        return 3
+    set current to session_messages(database and session and run)
+    if not string_contains(current and "chosen-by-echo") or else not string_contains(current and "Save the requested note") or else not (task_checklist_state(database and run) equals "pending"):
+        return 7
+    set reply_text to "The requested note is saved. café"
+    set final_args to "{\"updates\":[{\"id\":\"chosen-by-echo\",\"status\":\"done\",\"evidence\":\"work-first result\"}],\"final_response\":\"The requested note is saved. café\"}"
+    set final_delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"finish\",\"function\":{\"name\":\"task_checklist\",\"arguments\":" and concat(provider_quote(final_args) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))
+    set final_listener to local_socket_listen(0)
+    set final_done to channel
+    spawn generation_fixture(final_listener and final_delta and final_done)
+    set final_messages to agent_run_messages(database and run)
+    set final_body to concat("{\"model\":\"fixture\",\"stream\":true,\"messages\":" and concat(final_messages and concat(",\"tools\":" and concat(session_tool_schemas() and "}"))))
+    set generated to agent_generate_local(database and run and "final-request" and final_body and get_list(final_listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set final_fixture to receive from final_done
+    if generated is not equal to 0 or else final_fixture is not equal to 0 or else agent_tool_step(database and run) is not equal to 0:
+        return 8
+    set mode to get_argument(3)
+    if mode equals "guidance":
+        set guidance to concat("{\"run_id\":" and concat(provider_quote(run) and ",\"message\":\"Please include another detail before finishing.\"}"))
+        if archive_append_pending(database and session and "late-guidance" and "guidance_received" and guidance and "fixture") is not equal to 0:
+            return 11
+    else:
+        if mode equals "cancel":
+            if sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_cancel_requests(run TEXT PRIMARY KEY,device TEXT);") is not equal to 0:
+                return 12
+            set cancel to checkpoint_prepare(database and "INSERT INTO echo_cancel_requests(run,device) VALUES(?1,'owner');" and [run])
+            set inserted to ep_sqlite3_step(cancel)
+            set released to ep_sqlite3_finalize(cancel)
+            if inserted is not equal to 101:
+                return 13
+        else:
+            return 14
+    if agent_tool_step(database and run) is not equal to 0:
+        return 15
+    set blocked_final to history_collect_one(archive_prepare(database and "SELECT event FROM echo_events WHERE kind='assistant_final';"))
+    if not (archive_list_text(blocked_final and 0) equals "end"):
+        return 16
+    set held to agent_run_read(database and run)
+    if not (archive_list_text(held and 2) equals "ready"):
+        return 17
+    if archive_verify(database and session) is not equal to 0:
+        return 18
+    display concat("PASS: atomic final response withheld for " and mode)
+    return sql_close(database)

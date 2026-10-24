@@ -1,3 +1,5 @@
+import "../memory/private_bridge"
+import "../discord/voice_tool"
 import "../discord/channel_tool"
 import "../discord/thread_tool"
 import "../discord/role_tool"
@@ -5,6 +7,10 @@ import "../discord/member_tool"
 import "../discord/invite_tool"
 import "../discord/scheduled_event_tool"
 import "../discord/expression_tool"
+import "../discord/audit_tool"
+import "../discord/automod_tool"
+import "../discord/onboarding_tool"
+import "../discord/guild_settings_tool"
 import "../discord/message_moderation_tool"
 import "../discord/pin_tool"
 import "../discord/post_tool"
@@ -59,6 +65,15 @@ define agent_direct_lookup with database as Int and run as Str and name as Str a
         return 1
     if name equals "discord_reaction" or else name equals "discord_message_read":
         return 1
+    if name equals "discord_onboarding" or else name equals "discord_guild_settings":
+        set fields to provider_json_tokens(arguments)
+        return provider_value(fields and provider_member(fields and 0 and "operation")) equals "inspect"
+    if name equals "discord_automod":
+        set fields to provider_json_tokens(arguments)
+        set operation to provider_value(fields and provider_member(fields and 0 and "operation"))
+        return operation equals "list" or else operation equals "inspect"
+    if name equals "discord_audit_log":
+        return 1
     if name equals "discord_expressions":
         set fields to provider_json_tokens(arguments)
         set operation to provider_value(fields and provider_member(fields and 0 and "operation"))
@@ -83,6 +98,9 @@ define agent_direct_lookup with database as Int and run as Str and name as Str a
         set fields to provider_json_tokens(arguments)
         set operation to provider_value(fields and provider_member(fields and 0 and "operation"))
         return operation equals "inspect" or else operation equals "members"
+    if name equals "discord_voice":
+        set fields to provider_json_tokens(arguments)
+        return provider_value(fields and provider_member(fields and 0 and "operation")) equals "status"
     if name equals "discord_channels":
         set fields to provider_json_tokens(arguments)
         set operation to provider_value(fields and provider_member(fields and 0 and "operation"))
@@ -101,6 +119,36 @@ define agent_direct_lookup with database as Int and run as Str and name as Str a
         set fields to provider_json_tokens(arguments)
         set operation to provider_value(fields and provider_member(fields and 0 and "operation"))
         return operation equals "read" or else operation equals "list"
+    return 0
+
+# Final text is model-authored in the exact successful checklist call. Only a
+# sole-call, resolved batch can publish it; external tool text never enters here.
+# Caller holds the writer transaction after recording the observed batch head.
+define agent_checklist_reply_pending with database as Int and run as Str and session as Str and batch as Str and observed as Str returning Int:
+    set query to "SELECT json_extract(c.payload,'$.final_response'),c.event FROM echo_events a JOIN json_each(a.payload,'$.tool_calls') b JOIN echo_tool_calls t ON t.request_event=b.value AND t.run=?1 JOIN echo_events q ON q.event=t.request_event JOIN echo_events c ON c.event=?1||':checklist:'||t.call_id JOIN echo_events z ON z.event=t.result_event WHERE a.event=?2 AND a.kind='assistant_tool_calls' AND json_extract(a.payload,'$.run_id')=?1 AND json_array_length(a.payload,'$.tool_calls')=1 AND json_extract(q.payload,'$.name')='task_checklist' AND t.state='observed' AND json_extract(z.payload,'$.result.status') IN ('saved','already-saved') AND json_type(c.payload,'$.final_response')='text' AND length(trim(json_extract(c.payload,'$.final_response')))>0;"
+    set reply to history_collect_one(checkpoint_prepare(database and query and [run,batch]))
+    if archive_list_text(reply and 0) equals "end":
+        return 0
+    if not (archive_list_text(reply and 0) equals "found"):
+        return 1
+    if not (task_checklist_state(database and run) equals "complete") or else run_authority_allows(database and run and "user") equals 0:
+        return 0
+    set guidance to guidance_pending(database and run)
+    if not (archive_list_text(guidance and 0) equals "end"):
+        return 0
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE name='echo_cancel_requests';"))
+    if archive_list_text(installed and 0) equals "found":
+        set cancelled to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run=?1;" and [run]))
+        if not (archive_list_text(cancelled and 0) equals "end"):
+            return 0
+    set final to concat(observed and ":final")
+    set payload to agent_event_envelope(run and observed)
+    set payload to concat(payload and concat(",\"content\":" and provider_quote(archive_list_text(reply and 1))))
+    set payload to concat(payload and concat(",\"source_event\":" and concat(provider_quote(archive_list_text(reply and 2)) and ",\"finish_reason\":\"stop\",\"tool_calls\":[]}")))
+    if archive_append_pending(database and session and final and "assistant_final" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and "ready" and observed and "completed" and final) is not equal to 0:
+        return 1
+    if autonomy_continue_pending(database and run and final) is not equal to 0:
+        return 1
     return 0
 
 define agent_tool_step_cancellable with database as Int and run as Str and cancellation as Int returning Int:
@@ -142,7 +190,7 @@ define agent_tool_step_cancellable with database as Int and run as Str and cance
         set payload to concat(agent_event_envelope(run and parent) and "}")
         if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
             return 1
-        if archive_append_pending(database and session and event and "agent_observation" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and "tools" and parent and "ready" and event) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        if archive_append_pending(database and session and event and "agent_observation" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else agent_run_transition(database and run and "tools" and parent and "ready" and event) is not equal to 0 or else agent_checklist_reply_pending(database and run and session and parent and event) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
             return archive_rollback(database)
         return 0
     if step is not equal to 100:
@@ -184,8 +232,6 @@ define agent_tool_step_cancellable with database as Int and run as Str and cance
         set observation to interaction_execute(database and run and call_id and provider_value(tokens and name_field) and provider_value(tokens and arguments_field))
     else if not (questions_pending(database and run) equals "null"):
         set observation to "{\"status\":\"not-executed\",\"effects\":\"none\",\"cause\":\"awaiting-user-input\",\"recovery\":\"Reconsider this queued action after the user answers.\"}"
-    else if string_index_of(run and "watch-segment:") is not equal to 0 and (task_checklist_state(database and run) equals "missing" or else task_checklist_state(database and run) equals "revise" or else task_checklist_state(database and run) equals "available") and not (provider_value(tokens and name_field) equals "task_checklist") and not agent_direct_lookup(database and run and provider_value(tokens and name_field) and provider_value(tokens and arguments_field)):
-        set observation to "{\"status\":\"checklist-required\",\"effects\":\"none\",\"recovery\":\"Record the assigned requirements with task_checklist before executing other work. All normal tools remain available after the checklist is recorded.\"}"
     else if task_checklist_state(database and run) equals "complete":
         set observation to "{\"status\":\"task-complete-return-result\",\"effects\":\"none\",\"recovery\":\"All assigned checklist requirements are resolved. Return the final report to your requester now.\"}"
     else if provider_value(tokens and name_field) equals "protected_change_inspect" or else provider_value(tokens and name_field) equals "protected_change_review":
@@ -212,6 +258,14 @@ define agent_tool_step_cancellable with database as Int and run as Str and cance
         set observation to project_tool_execute(database and run and call_id and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "job_control":
         set observation to job_control_execute(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "discord_guild_settings":
+        set observation to discord_guild_settings_execute(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "discord_onboarding":
+        set observation to discord_onboarding_execute(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "discord_automod":
+        set observation to discord_automod_execute(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "discord_audit_log":
+        set observation to discord_audit_execute(database and run and call_id and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "discord_expressions":
         set observation to discord_expressions_execute(database and run and call_id and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "discord_events":
@@ -224,6 +278,8 @@ define agent_tool_step_cancellable with database as Int and run as Str and cance
         set observation to discord_roles_execute(database and run and call_id and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "discord_threads":
         set observation to discord_threads_execute(database and run and call_id and provider_value(tokens and arguments_field))
+    else if provider_value(tokens and name_field) equals "discord_voice":
+        set observation to discord_voice_execute(database and run and call_id and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "discord_channels":
         set observation to discord_channels_execute(database and run and call_id and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "discord_moderate_message":
@@ -240,6 +296,8 @@ define agent_tool_step_cancellable with database as Int and run as Str and cance
         set observation to scratchpad_execute(database and run and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "trace_search" or else provider_value(tokens and name_field) equals "trace_read":
         set observation to trace_execute(database and run and provider_value(tokens and name_field) and provider_value(tokens and arguments_field))
+    else if private_bridge_requested(provider_value(tokens and name_field) and provider_value(tokens and arguments_field)):
+        set observation to private_bridge_read(database and run and provider_value(tokens and name_field) and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "memory_sessions" or else provider_value(tokens and name_field) equals "memory_messages" or else provider_value(tokens and name_field) equals "reasoning_read":
         set observation to continuity_execute(database and run and provider_value(tokens and name_field) and provider_value(tokens and arguments_field))
     else if provider_value(tokens and name_field) equals "memory_search" or else provider_value(tokens and name_field) equals "memory_read":

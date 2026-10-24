@@ -34,9 +34,6 @@ define task_checklist_save with database as Int and run as Str and call_id as St
     set tokens to provider_json_tokens(arguments)
     if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
         return "{\"status\":\"invalid-arguments\"}"
-    set valid to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN json_type(?1)='object' AND json_type(?1,'$.items')='array' AND json_array_length(?1,'$.items')>0 AND NOT EXISTS(SELECT 1 FROM json_each(?1) WHERE key<>'items') AND NOT EXISTS(SELECT 1 FROM json_each(?1,'$.items') i WHERE json_type(i.value)<>'object' OR COALESCE(json_type(i.value,'$.id'),'')<>'text' OR length(trim(json_extract(i.value,'$.id')))=0 OR COALESCE(json_type(i.value,'$.requirement'),'')<>'text' OR length(trim(json_extract(i.value,'$.requirement')))=0 OR COALESCE(json_extract(i.value,'$.status'),'') NOT IN ('pending','done','unresolved') OR COALESCE(json_type(i.value,'$.evidence'),'')<>'text' OR (json_extract(i.value,'$.status')<>'pending' AND length(trim(json_extract(i.value,'$.evidence')))=0) OR EXISTS(SELECT 1 FROM json_each(i.value) WHERE key NOT IN ('id','requirement','status','evidence'))) AND (SELECT COUNT(*) FROM json_each(?1,'$.items'))=(SELECT COUNT(DISTINCT json_extract(value,'$.id')) FROM json_each(?1,'$.items')) THEN 'valid' ELSE 'invalid' END;" and [arguments]))
-    if not (archive_list_text(valid and 1) equals "valid"):
-        return "{\"status\":\"invalid-checklist\",\"recovery\":\"Provide nonempty items with unique id, requirement, pending/done/unresolved status and evidence. Resolved items need observed evidence or an explicit limitation.\"}"
     if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
         return "{\"status\":\"database-busy\"}"
     set identity to concat(run and concat(":checklist:" and call_id))
@@ -46,6 +43,34 @@ define task_checklist_save with database as Int and run as Str and call_id as St
         return "{\"status\":\"already-saved\"}"
     set prior to task_checklist_read(database and run)
     set state to task_checklist_state(database and run)
+    set final_field to provider_member(tokens and 0 and "final_response")
+    set final_text to ""
+    if final_field >= 0:
+        if not (provider_kind(tokens and final_field) equals "string") or else string_length(string_trim(provider_value(tokens and final_field))) equals 0:
+            set ignored to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"invalid-final-response\"}"
+        set final_text to provider_value(tokens and final_field)
+        set stripped to history_collect_one(checkpoint_prepare(database and "SELECT json_remove(?1,'$.final_response');" and [arguments]))
+        if not (archive_list_text(stripped and 0) equals "found"):
+            set ignored to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"database-error\"}"
+        set arguments to archive_list_text(stripped and 1)
+    if provider_member(tokens and 0 and "updates") >= 0:
+        # Merge under the same writer fence as validation and append. Omitted
+        # IDs keep their exact saved requirement, status and evidence.
+        set valid_updates to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN json_type(?1,'$.updates')='array' AND json_array_length(?1,'$.updates')>0 AND NOT EXISTS(SELECT 1 FROM json_each(?1) WHERE key<>'updates') AND NOT EXISTS(SELECT 1 FROM json_each(?1,'$.updates') u WHERE json_type(u.value)<>'object' OR COALESCE(json_type(u.value,'$.id'),'')<>'text' OR COALESCE(json_extract(u.value,'$.status'),'') NOT IN ('pending','done','unresolved') OR COALESCE(json_type(u.value,'$.evidence'),'')<>'text' OR EXISTS(SELECT 1 FROM json_each(u.value) WHERE key NOT IN ('id','status','evidence')) OR NOT EXISTS(SELECT 1 FROM json_each(?2,'$.items') old WHERE json_extract(old.value,'$.id')=json_extract(u.value,'$.id'))) AND (SELECT COUNT(*) FROM json_each(?1,'$.updates'))=(SELECT COUNT(DISTINCT json_extract(value,'$.id')) FROM json_each(?1,'$.updates')) THEN 'valid' ELSE 'invalid' END;" and [arguments,prior]))
+        if string_length(prior) equals 0 or else not (archive_list_text(valid_updates and 1) equals "valid"):
+            set ignored to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"invalid-checklist-update\",\"recovery\":\"Create items first; updates accept unique existing IDs, status and evidence only. Use a full items snapshot for an authorized scope revision.\"}"
+        set merged to history_collect_one(checkpoint_prepare(database and "SELECT json_object('items',json_group_array(json(CASE WHEN u.value IS NULL THEN old.value ELSE json_set(old.value,'$.status',json_extract(u.value,'$.status'),'$.evidence',json_extract(u.value,'$.evidence')) END))) FROM json_each(?1,'$.items') old LEFT JOIN json_each(?2,'$.updates') u ON json_extract(old.value,'$.id')=json_extract(u.value,'$.id');" and [prior,arguments]))
+        if not (archive_list_text(merged and 0) equals "found"):
+            set ignored to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"database-error\"}"
+        set arguments to archive_list_text(merged and 1)
+    set valid to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN json_type(?1)='object' AND json_type(?1,'$.items')='array' AND json_array_length(?1,'$.items')>0 AND NOT EXISTS(SELECT 1 FROM json_each(?1) WHERE key<>'items') AND NOT EXISTS(SELECT 1 FROM json_each(?1,'$.items') i WHERE json_type(i.value)<>'object' OR COALESCE(json_type(i.value,'$.id'),'')<>'text' OR length(trim(json_extract(i.value,'$.id')))=0 OR COALESCE(json_type(i.value,'$.requirement'),'')<>'text' OR length(trim(json_extract(i.value,'$.requirement')))=0 OR COALESCE(json_extract(i.value,'$.status'),'') NOT IN ('pending','done','unresolved') OR COALESCE(json_type(i.value,'$.evidence'),'')<>'text' OR (json_extract(i.value,'$.status')<>'pending' AND length(trim(json_extract(i.value,'$.evidence')))=0) OR EXISTS(SELECT 1 FROM json_each(i.value) WHERE key NOT IN ('id','requirement','status','evidence'))) AND (SELECT COUNT(*) FROM json_each(?1,'$.items'))=(SELECT COUNT(DISTINCT json_extract(value,'$.id')) FROM json_each(?1,'$.items')) THEN 'valid' ELSE 'invalid' END;" and [arguments]))
+    if not (archive_list_text(valid and 1) equals "valid"):
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"invalid-checklist\",\"recovery\":\"Provide nonempty items with unique id, requirement, pending/done/unresolved status and evidence. Resolved items need observed evidence or an explicit limitation.\"}"
     if string_length(prior) > 0 and not (state equals "revise"):
         set removed to history_collect_one(checkpoint_prepare(database and "SELECT (SELECT abs(json_array_length(?1,'$.items')-json_array_length(?2,'$.items'))) + COUNT(*) FROM json_each(?1,'$.items') old WHERE NOT EXISTS(SELECT 1 FROM json_each(?2,'$.items') new WHERE json_extract(new.value,'$.id')=json_extract(old.value,'$.id'));" and [prior,arguments]))
         if not (archive_list_text(removed and 1) equals "0"):
@@ -57,12 +82,24 @@ define task_checklist_save with database as Int and run as Str and call_id as St
             set ignored to sql_execute(database and "ROLLBACK;")
             return "{\"status\":\"database-error\"}"
         set arguments to archive_list_text(retained and 1)
+    if string_length(final_text) > 0:
+        set pending to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM json_each(?1,'$.items') WHERE json_extract(value,'$.status')='pending';" and [arguments]))
+        if not (archive_list_text(pending and 1) equals "0"):
+            set ignored to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"requirements-still-pending\",\"recovery\":\"Resolve the assigned requirements before submitting a final response.\"}"
     set row to agent_run_read(database and run)
     if row equals 0:
         set ignored to sql_execute(database and "ROLLBACK;")
         return "{\"status\":\"run-unavailable\"}"
     set canonical to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,'$.run_id',?2);" and [arguments,run]))
     set payload to archive_list_text(canonical and 1)
+    if string_length(final_text) > 0:
+        set with_reply to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,'$.final_response',?2);" and [payload,final_text]))
+        if not (archive_list_text(with_reply and 0) equals "found"):
+            set ignored to sql_execute(database and "ROLLBACK;")
+            return "{\"status\":\"database-error\"}"
+        set payload to archive_list_text(with_reply and 1)
+
     if archive_append_pending(database and archive_list_text(row and 0) and identity and "task_checklist" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
         set ignored to sql_execute(database and "ROLLBACK;")
         return "{\"status\":\"write-failed\"}"

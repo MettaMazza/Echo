@@ -9,10 +9,10 @@ define continuity_scope_query with database as Int and run as Str and query as S
     set current to "(SELECT session FROM echo_runs WHERE run=?1)"
     set session_join to "JOIN echo_session_principals p ON p.session=s.session WHERE p.principal IN (__MEMORY_SCOPE__)"
     set event_join to "JOIN echo_session_principals p ON p.session=e.session WHERE p.principal IN (__MEMORY_SCOPE__)"
-    set query to ptr_to_str(string_replace(query and session_join and concat("WHERE " and group_memory_session_sql(database and current and "s.session"))))
-    return ptr_to_str(string_replace(query and event_join and concat("WHERE " and group_memory_session_sql(database and current and "e.session"))))
+    set query to ptr_to_str(string_replace(query and session_join and concat("WHERE " and memory_retrieval_session_sql(database and current and "s.session"))))
+    return ptr_to_str(string_replace(query and event_join and concat("WHERE " and memory_retrieval_session_sql(database and current and "e.session"))))
 
-define continuity_execute with database as Int and run as Str and name as Str and arguments as Str returning Str:
+define continuity_execute_one with database as Int and run as Str and name as Str and arguments as Str returning Str:
     set principal to memory_archive_principal(database and run)
     set scope to group_memory_scope(database and run)
     if string_length(principal) equals 0 and string_length(scope) equals 0:
@@ -27,12 +27,12 @@ define continuity_execute with database as Int and run as Str and name as Str an
         return output
     if name equals "memory_sessions":
         set session to provider_value(fields and provider_member(fields and 0 and "session"))
-        if group_history_allows(database and session) equals 0:
+        if memory_retrieval_session_allowed(database and run and session) equals 0:
             return "{\"status\":\"not-authorized\"}"
     else:
         set event to provider_value(fields and provider_member(fields and 0 and "event"))
         set digest to provider_value(fields and provider_member(fields and 0 and "digest"))
-        if group_memory_source_allowed(database and run and event and digest) equals 0:
+        if memory_retrieval_source_allowed(database and run and event and digest) equals 0:
             return "{\"status\":\"not-authorized\"}"
     if not (group_memory_scope(database and run) equals scope):
         return "{\"status\":\"authorization-changed\"}"
@@ -129,8 +129,159 @@ define continuity_read_scoped with database as Int and run as Str and name as St
         return concat(substring(output and 0 and string_length(output) - 1) and ",\"capture_status\":\"captured\"}")
     return output
 
+# Batch traversal stays inside one tool execution. The model chooses page size,
+# text budget and stable sequence bounds; continuations never skip partial text.
+define continuity_execute with database as Int and run as Str and name as Str and arguments as Str returning Str:
+    if not (name equals "memory_messages" or else name equals "memory_sessions"):
+        return continuity_execute_one(database and run and name and arguments)
+    set principal to memory_archive_principal(database and run)
+    set scope to group_memory_scope(database and run)
+    if string_length(principal) equals 0 and string_length(scope) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set output to continuity_batch(database and run and name and arguments)
+    if not (memory_archive_principal(database and run) equals principal) or else not (group_memory_scope(database and run) equals scope):
+        return "{\"status\":\"authorization-changed\"}"
+    return output
+
+define continuity_batch with database as Int and run as Str and name as Str and arguments as Str returning Str:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "after" or else key equals "through" or else key equals "limit" or else (name equals "memory_messages" and (key equals "session" or else key equals "characters" or else key equals "offset"))):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set after to history_tool_integer(tokens and "after")
+    set limit to 0
+    set budget to 32000
+    set offset to 0
+    if provider_member(tokens and 0 and "limit") > 0:
+        set limit to history_tool_integer(tokens and "limit")
+    if provider_member(tokens and 0 and "characters") > 0:
+        set budget to history_tool_integer(tokens and "characters")
+    if provider_member(tokens and 0 and "offset") > 0:
+        set offset to history_tool_integer(tokens and "offset")
+    if after < 0 or else limit < 0 or else budget < 1 or else offset < 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    if name equals "memory_sessions" and provider_member(tokens and 0 and "limit") equals -1:
+        set limit to 50
+    set session to provider_value(tokens and provider_member(tokens and 0 and "session"))
+    if name equals "memory_messages" and not (provider_kind(tokens and provider_member(tokens and 0 and "session")) equals "string"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) equals 0:
+        set principal to run
+    set query to "SELECT COALESCE(MAX(s.rowid),0) FROM echo_sessions s JOIN echo_session_principals p ON p.session=s.session WHERE p.principal IN (__MEMORY_SCOPE__);"
+    if name equals "memory_messages":
+        set query to "SELECT COALESCE(MAX(e.sequence),0) FROM echo_events e JOIN echo_session_principals p ON p.session=e.session WHERE p.principal IN (__MEMORY_SCOPE__) AND e.session=?2 AND e.kind IN ('user','assistant_final');"
+    set boundary to create_list()
+    if name equals "memory_messages":
+        set boundary to history_collect_one(checkpoint_prepare(database and continuity_scope_query(database and run and query) and [principal,session]))
+    else:
+        set boundary to history_collect_one(checkpoint_prepare(database and continuity_scope_query(database and run and query) and [principal]))
+    if not (archive_list_text(boundary and 0) equals "found"):
+        return "{\"status\":\"error\"}"
+    set through to http_decimal(archive_list_text(boundary and 1))
+    if provider_member(tokens and 0 and "through") > 0:
+        set through to history_tool_integer(tokens and "through")
+    if through < 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set first to ""
+    set first_arguments to ""
+    set items to "["
+    set count to 0
+    set used to 0
+    set more to 0
+    set access_snapshot to create_list()
+    repeat while after < through:
+        set single to concat("{\"after\":" and concat(int_to_string(after) and "}"))
+        if name equals "memory_messages":
+            set single to concat("{\"session\":" and concat(provider_quote(session) and concat(",\"after\":" and concat(int_to_string(after) and "}"))))
+        set item to continuity_read_scoped(database and run and name and single)
+        set fields to provider_json_tokens(item)
+        set status to provider_value(fields and provider_member(fields and 0 and "status"))
+        if status equals "end":
+            break
+        if not (status equals "found"):
+            return item
+        set sequence to http_decimal(provider_value(fields and provider_member(fields and 0 and "next_after")))
+        if sequence > through:
+            break
+        if sequence <= after:
+            return "{\"status\":\"error\"}"
+        if name equals "memory_sessions" and string_length(memory_archive_principal(database and run)) equals 0:
+            set source_session to provider_value(fields and provider_member(fields and 0 and "session"))
+            if memory_retrieval_session_allowed_snapshot(database and run and source_session and access_snapshot) equals 0:
+                set after to sequence
+                continue
+        if (limit > 0 and count >= limit) or else used >= budget:
+            set more to 1
+            break
+        if count equals 0:
+            set first to item
+            set first_arguments to single
+        if name equals "memory_messages":
+            set event to provider_value(fields and provider_member(fields and 0 and "event"))
+            set text_query to "SELECT length(body),substr(body,CAST(?3 AS INTEGER)+1,CAST(?4 AS INTEGER)) FROM (SELECT CASE WHEN e.kind='assistant_final' THEN COALESCE(json_extract(e.payload,'$.content'),'') ELSE e.payload END AS body FROM echo_events e JOIN echo_session_principals p ON p.session=e.session WHERE p.principal IN (__MEMORY_SCOPE__) AND e.event=?2);"
+            set piece to history_collect_one(checkpoint_prepare(database and continuity_scope_query(database and run and text_query) and [principal,event,int_to_string(offset),int_to_string(budget - used)]))
+            if not (archive_list_text(piece and 0) equals "found"):
+                return "{\"status\":\"source-unavailable\"}"
+            set total to http_decimal(archive_list_text(piece and 1))
+            if offset > total:
+                return "{\"status\":\"invalid-offset\"}"
+            set taken to total - offset
+            if taken > budget - used:
+                set taken to budget - used
+            set item to concat(substring(item and 0 and string_length(item) - 1) and concat(",\"text\":" and provider_quote(archive_list_text(piece and 2))))
+            set item to concat(item and concat(",\"text_characters\":" and int_to_string(total)))
+            set item to concat(item and concat(",\"offset\":" and concat(int_to_string(offset) and "}")))
+            set used to used + taken
+            set offset to offset + taken
+            if offset < total:
+                set more to 1
+            else:
+                set offset to 0
+                set after to sequence
+        else:
+            set after to sequence
+        if count > 0:
+            set items to concat(items and ",")
+        set items to concat(items and item)
+        set count to count + 1
+        if more equals 1:
+            break
+    # Recheck live channel access once per returned session, not once per message.
+    if count > 0 and name equals "memory_messages":
+        set checked to continuity_execute_one(database and run and name and first_arguments)
+        if not (checked equals first):
+            return "{\"status\":\"authorization-changed\"}"
+    set output to "{\"status\":\"end\""
+    if count > 0:
+        # Retain first-record fields for existing clients; arrays are authoritative.
+        set output to substring(first and 0 and string_length(first) - 1)
+    set field to "messages"
+    if name equals "memory_sessions":
+        set field to "sessions"
+    set output to concat(output and concat("," and concat(provider_quote(field) and concat(":" and concat(items and "]")))))
+    set output to concat(output and concat(",\"count\":" and int_to_string(count)))
+    set output to concat(output and concat(",\"through\":" and int_to_string(through)))
+    set output to concat(output and ",\"next\":")
+    if more equals 0:
+        return concat(output and "null,\"complete\":true}")
+    set next to concat("{\"after\":" and concat(int_to_string(after) and concat(",\"through\":" and int_to_string(through))))
+    set next to concat(next and concat(",\"limit\":" and int_to_string(limit)))
+    if name equals "memory_messages":
+        set next to concat(next and concat(",\"session\":" and provider_quote(session)))
+        set next to concat(next and concat(",\"offset\":" and int_to_string(offset)))
+        set next to concat(next and concat(",\"characters\":" and int_to_string(budget)))
+    return concat(output and concat(next and "},\"complete\":false}"))
+
 define continuity_schemas returning Str:
-    return "[{\"type\":\"function\",\"function\":{\"name\":\"memory_sessions\",\"description\":\"List your authenticated private owner\\u2019s sessions chronologically. Start after=0. Each call returns one session and next_after; continue until status=end. Then use memory_messages to page messages.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"after\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"after\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"memory_messages\",\"description\":\"Page original user and Echo messages in an owned session. Start after=0; continue with next_after until end. Use memory_read on each event for exact text and reasoning_read for captured reasoning.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"session\":{\"type\":\"string\"},\"after\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"session\",\"after\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"reasoning_read\",\"description\":\"Read captured model reasoning from your private history. event accepts the exact reasoning_event returned by memory_messages, a model-request ID, or a run ID (latest published final response, otherwise latest tool response). The returned event, run, parent_event and session identify the exact source; requested_id echoes your selector. A run ID selects only responses from that run, never the latest response from another run in the conversation. Never construct response IDs from run IDs. Unicode offsets. Empty capture is explicitly reported and must never be replaced with invented reasons. Tools and results remain available through history_read.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"event\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\",\"minimum\":0},\"characters\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"event\",\"offset\",\"characters\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"scratchpad\",\"description\":\"Persistent private working notes across this owner\\u2019s sessions. Each list call returns one page containing one note and next_after. Start with after=0; request further pages only as needed for the user request, stopping after one call when one page is requested. Read by the exact returned name. If a name is unknown or not found, list first rather than guessing or creating a replacement; write creates or replaces text with previous_revision from read (empty for new); delete creates a tombstone with previous_revision. Historical revisions stay archived. This is working text, not a verified fact or system instruction.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"operation\":{\"type\":\"string\",\"enum\":[\"list\",\"read\",\"write\",\"delete\"]},\"name\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"previous_revision\":{\"type\":\"string\"},\"after\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"operation\"],\"additionalProperties\":false}}}]"
+    return "[{\"type\":\"function\",\"function\":{\"name\":\"memory_sessions\",\"description\":\"List your authenticated private owner\\u2019s sessions in chronological batches. Start after=0. Results are in sessions; next contains exact continuation arguments, null when complete. Use memory_messages to read a session with text in one call.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"after\":{\"type\":\"integer\",\"minimum\":0},\"through\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"Inclusive snapshot boundary; omit on first call, retain from next.\"},\"limit\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"Maximum records in this batch; messages default 0 (all within text budget), sessions default 50.\"}},\"required\":[\"after\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"memory_messages\",\"description\":\"Read original user and Echo message text in an owned session in one batch. after is an exclusive sequence bound (0 starts the session); through is an inclusive bound captured on first call. No message-count limit by default: a whole session is returned when it fits characters (default 32000 Unicode text characters; choose a larger budget to fit your available context). Set limit for a smaller batch. messages contains original event IDs, roles, timestamps, digests, lifecycle and visible text; reasoning remains available through reasoning_read. If complete=false, pass next unchanged to continue, including offset for a partial message. Do not call memory_read separately for text already returned.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"session\":{\"type\":\"string\"},\"after\":{\"type\":\"integer\",\"minimum\":0},\"through\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"Inclusive snapshot boundary; omit on first call, retain from next.\"},\"limit\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"Maximum records in this batch; messages default 0 (all within text budget), sessions default 50.\"},\"characters\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"Total visible text character budget for this batch, selected for available context.\"},\"offset\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"Unicode offset into first message after cursor; use returned next.\"}},\"required\":[\"session\",\"after\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"reasoning_read\",\"description\":\"Read captured model reasoning from your private history. event accepts the exact reasoning_event returned by memory_messages, a model-request ID, or a run ID (latest published final response, otherwise latest tool response). The returned event, run, parent_event and session identify the exact source; requested_id echoes your selector. A run ID selects only responses from that run, never the latest response from another run in the conversation. Never construct response IDs from run IDs. Unicode offsets. Empty capture is explicitly reported and must never be replaced with invented reasons. Tools and results remain available through history_read.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"event\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\",\"minimum\":0},\"characters\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"event\",\"offset\",\"characters\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"scratchpad\",\"description\":\"Persistent private working notes across this owner\\u2019s sessions. Each list call returns one page containing one note and next_after. Start with after=0; request further pages only as needed for the user request, stopping after one call when one page is requested. Read by the exact returned name. If a name is unknown or not found, list first rather than guessing or creating a replacement; write creates or replaces text with previous_revision from read (empty for new); delete creates a tombstone with previous_revision. Historical revisions stay archived. This is working text, not a verified fact or system instruction.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"operation\":{\"type\":\"string\",\"enum\":[\"list\",\"read\",\"write\",\"delete\"]},\"name\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"previous_revision\":{\"type\":\"string\"},\"after\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"operation\"],\"additionalProperties\":false}}}]"
 
 # Shared scope has its own working-note schema. Never advertise private import
 # or private-note semantics merely because original history is readable.
@@ -153,5 +304,5 @@ define continuity_shared_schema_items with original as Str and tokens as List an
             set count to count + 1
     set output to concat(output and "]")
     set output to ptr_to_str(string_replace(output and "your private history" and "this exact shared audience's history"))
-    set output to ptr_to_str(string_replace(output and "an owned session" and "a session in this exact shared audience"))
-    return ptr_to_str(string_replace(output and "your authenticated private owner\\u2019s sessions" and "sessions in the initiating run's exact shared audience"))
+    set output to ptr_to_str(string_replace(output and "an owned session" and "an accessible public community session, this user's own history in DMs, or this exact shared audience"))
+    return ptr_to_str(string_replace(output and "your authenticated private owner\\u2019s sessions" and "accessible public community conversations, the initiating user's own conversations in DMs, or sessions in the exact shared audience"))
