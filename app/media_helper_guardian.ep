@@ -1,0 +1,53 @@
+import "providers/helper_process"
+import "tools/history_tools"
+import "workspace/directories"
+
+# Native host helper guardian. Only fd 3 carries owner liveness. The runtime
+# child receives neither end of that pipe; owner death therefore cancels it
+# without PID discovery, guessed process names or a maximum job lifetime.
+define main returning Int:
+    if get_argument_count() < 5:
+        return 1
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return 2
+    if provider_helper_cancelled(system and 3) is not equal to 0:
+        set closed to ep_dlclose(system)
+        return 3
+    set database to archive_open(get_argument(1))
+    if database equals 0:
+        set closed to ep_dlclose(system)
+        return 4
+    set cwd_function to ep_dlsym(system and "getcwd")
+    set duplicate to ep_dlsym(system and "dup")
+    set free to ep_dlsym(system and "free")
+    if cwd_function equals 0 or else duplicate equals 0 or else free equals 0:
+        return 5
+    set cwd to ep_dlcall2(cwd_function and 0 and 0)
+    if cwd equals 0:
+        return 5
+    set directory to workspace_root_open(system and ptr_to_str(cwd))
+    set freed to ep_dlcall1(free and cwd)
+    set output to socket_signed_result(ep_dlcall1(duplicate and 1))
+    set errors to socket_signed_result(ep_dlcall1(duplicate and 2))
+    set status to 6
+    if directory >= 0 and output >= 0 and errors >= 0:
+        set arguments to create_list()
+        set index to 5
+        repeat while index < get_argument_count():
+            set added to append_list(arguments and get_argument(index))
+            set index to index + 1
+        set result to provider_helper_run(database and get_argument(2) and get_argument(3) and get_argument(4) and arguments and ["LC_ALL=C","PATH=/usr/bin:/bin"] and directory and output and errors and 3)
+        set receipt to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=?1 AND session=?2 AND kind='provider_helper_result';" and [concat(get_argument(3) and ":result"),get_argument(2)]))
+        if archive_list_text(receipt and 0) equals "found":
+            set status to 0
+    if output >= 0:
+        set closed to net_close(output)
+    if errors >= 0:
+        set closed to net_close(errors)
+    if directory >= 0:
+        set closed to net_close(directory)
+    set closed to net_close(3)
+    set closed to sql_close(database)
+    set closed to ep_dlclose(system)
+    return status

@@ -1,0 +1,89 @@
+import "providers/native_python"
+import "providers/json_access"
+import "providers/archived_stream"
+import "providers/python_scope"
+import "workspace/directories"
+import "fs"
+
+# Installed Chatterbox dependency only; Echo job ownership and transport stay
+# native. This is the exact CPU/nano/reference setup used in the comparison.
+define main returning Int:
+    if get_argument_count() is not equal to 4 and get_argument_count() is not equal to 5:
+        return 1
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set setenv to ep_dlsym(system and "setenv")
+    set utf8 to ep_dlcall3(setenv and str_to_ptr("LC_ALL") and str_to_ptr("en_US.UTF-8") and 1)
+    set locale to ep_dlcall2(ep_dlsym(system and "setlocale") and 0 and str_to_ptr("en_US.UTF-8"))
+    set library to native_python_open(get_argument(1) and get_argument(2))
+    if library equals 0:
+        return 2
+    set torch to native_python_import(library and "torch")
+    set threads to native_python_attribute(library and torch and "set_num_threads")
+    set eight to native_python_json(library and "8")
+    set configured to native_python_call(library and threads and [eight] and 0)
+    set module to native_python_import(library and "chatterbox.tts_turbo")
+    set model_class to native_python_attribute(library and module and "ChatterboxTurboTTS")
+    set load to native_python_attribute(library and model_class and "from_pretrained")
+    set options to native_python_json(library and "{\"device\":\"cpu\",\"nano\":true}")
+    set model to native_python_call(library and load and create_list() and options)
+    if model equals 0:
+        set printed to ep_dlcall0(ep_dlsym(library and "PyErr_Print"))
+        return 3
+    set prepare to native_python_attribute(library and model and "prepare_conditionals")
+    set reference to native_python_string(library and get_argument(3))
+    set prepared to native_python_call(library and prepare and [reference] and 0)
+    if prepared equals 0:
+        set printed to ep_dlcall0(ep_dlsym(library and "PyErr_Print"))
+        return 4
+    set synthesize to native_python_attribute(library and model and "generate")
+    set sample_rate to native_python_attribute(library and model and "sr")
+    set soundfile to native_python_import(library and "soundfile")
+    set write_audio to native_python_attribute(library and soundfile and "write")
+    if get_argument_count() equals 4:
+        return nano_job(library and synthesize and sample_rate and write_audio)
+    set root to workspace_root_open(system and get_argument(4))
+    if root < 0:
+        return 13
+    set change_directory to ep_dlsym(system and "fchdir")
+    set sys to native_python_import(library and "sys")
+    set stdin to native_python_attribute(library and sys and "stdin")
+    set readline to native_python_attribute(library and stdin and "readline")
+    set flush_output to ep_dlsym(system and "fflush")
+    display "tts_resident_ready"
+    set flushed to ep_dlcall1(flush_output and 0)
+    repeat while 1 equals 1:
+        set line to native_python_call(library and readline and create_list() and 0)
+        set job to string_trim(native_python_text(library and line))
+        set released to native_python_release(library and line)
+        if string_length(job) equals 0:
+            break
+        set directory to workspace_directory_open(system and root and job and 0)
+        if directory < 0:
+            display "tts_job_rejected"
+        else:
+            set changed to ep_dlcall1(change_directory and directory)
+            if changed is not equal to 0 or else not file_exists("input.txt"):
+                display "tts_job_rejected"
+            else:
+                set status to nano_job(library and synthesize and sample_rate and write_audio)
+                display concat("tts_job_status=" and int_to_string(status))
+            set closed to net_close(directory)
+        set flushed to ep_dlcall1(flush_output and 0)
+    set closed to net_close(root)
+    return 0
+
+define nano_job with library as Int and synthesize as Int and sample_rate as Int and write_audio as Int returning Int:
+    set scope to create_list()
+    set text to python_scope_string(scope and library and ptr_to_str(read_file("input.txt")))
+    set audio to python_scope_call(scope and library and synthesize and [text] and 0)
+    for each operation in ["squeeze", "cpu", "numpy"]:
+        set transform to python_scope_attribute(scope and library and audio and ptr_to_str(operation))
+        set audio to python_scope_call(scope and library and transform and create_list() and 0)
+    set path to python_scope_string(scope and library and "spoken.wav")
+    set written to python_scope_call(scope and library and write_audio and [path,audio,sample_rate] and 0)
+    set status to 0
+    if written equals 0:
+        set printed to ep_dlcall0(ep_dlsym(library and "PyErr_Print"))
+        set status to 5
+    set released to python_scope_close(scope and library)
+    return status

@@ -1,0 +1,40 @@
+import "helper_process"
+import "../tools/history_tools"
+
+# The host guardian inherits only the cancellation reader as its fd 3. The
+# monitor's writer lives exclusively in this parent. Normal cancellation and
+# parent death both wake the guardian, which owns and reaps the actual runtime.
+# Wait for the guardian without killing it: killing a supervisor before it has
+# reaped its child would recreate the orphan this ownership protocol prevents.
+define provider_helper_run_guarded with database as Int and session as Str and identity as Str and executable as Str and arguments as List and environment as List and directory as Int and output as Int and errors as Int and cancellation as Int returning List:
+    set guardian to ptr_to_str(get_env("ECHO_MEDIA_GUARDIAN"))
+    if string_length(guardian) equals 0 or else get_character(guardian and 0) is not equal to 47 or else cancellation < 0:
+        return provider_helper_result("guardian-not-configured" and -1 and 0)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return provider_helper_result("platform-error" and -1 and 0)
+    set pending to provider_helper_cancelled(library and cancellation)
+    set closed to ep_dlclose(library)
+    if pending is not equal to 0:
+        return provider_helper_result("cancelled-before-launch" and -1 and 0)
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(location and 0) equals "found"):
+        return provider_helper_result("archive-error" and -1 and 0)
+    set invocation to [archive_list_text(location and 1),session,identity,executable]
+    set index to 0
+    repeat while index < length_list(arguments):
+        set added to append_list(invocation and archive_list_text(arguments and index))
+        set index to index + 1
+    set handle to workspace_process_start_owned(guardian and invocation and environment and directory and output and errors and cancellation)
+    if handle equals 0:
+        return provider_helper_result("guardian-launch-failed" and -1 and 0)
+    set terminal to provider_helper_wait_owned(database and session and concat(identity and ":guardian") and handle and -1)
+    if not (archive_list_text(terminal and 0) equals "complete") or else get_list(terminal and 1) is not equal to 0:
+        return provider_helper_result("guardian-failed" and get_list(terminal and 1) and 0)
+    set receipt to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=?1 AND session=?2 AND kind='provider_helper_result';" and [concat(identity and ":result"),session]))
+    if not (archive_list_text(receipt and 0) equals "found"):
+        return provider_helper_result("guardian-receipt-missing" and -1 and 0)
+    set fields to provider_json_tokens(archive_list_text(receipt and 1))
+    if fields equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "dispatch")) equals identity):
+        return provider_helper_result("guardian-receipt-invalid" and -1 and 0)
+    return provider_helper_result(provider_value(fields and provider_member(fields and 0 and "status")) and string_to_int(provider_value(fields and provider_member(fields and 0 and "wait_status"))) and 0)
