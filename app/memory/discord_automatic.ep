@@ -1,0 +1,55 @@
+import "discord_retrieval"
+
+# Authorize once per source channel before inference, outside archive writes.
+# All grants are connection-local and discarded before the next reconstruction.
+define discord_memory_prepare with database as Int and run as Str returning Int:
+    return discord_memory_prepare_snapshot(database and run and create_list())
+
+# Both phases of one capture share REST observations, invalidated by the
+# existing journal permission epoch. A new capture always starts empty.
+define discord_memory_prepare_snapshot with database as Int and run as Str and snapshot as List returning Int:
+    if sql_execute(database and "CREATE TEMP TABLE IF NOT EXISTS echo_discord_memory_access(current_session TEXT NOT NULL,source_session TEXT NOT NULL,PRIMARY KEY(current_session,source_session)); DELETE FROM temp.echo_discord_memory_access;") is not equal to 0:
+        return 1
+    set current to agent_run_read(database and run)
+    if current equals 0 or else string_length(group_memory_scope(database and run)) equals 0:
+        return 0
+    set session to archive_list_text(current and 0)
+    # Existing same-audience history is already governed by the ordinary
+    # group gate. Only additional cross-channel access needs a live REST grant;
+    # checking same-audience sessions here cannot change that existing gate.
+    set extra_scope to concat(memory_retrieval_session_sql(database and "?1" and "s.session") and concat(" AND NOT (" and concat(group_memory_session_sql(database and "?1" and "s.session") and ")")))
+    set query to concat("SELECT s.session,g.channel FROM echo_group_sessions s JOIN echo_groups g ON g.identity=s.group_id WHERE s.session<>?1 AND " and concat(extra_scope and " ORDER BY g.channel,s.session;"))
+    set statement to checkpoint_prepare(database and query and [session])
+    if statement equals 0:
+        return 1
+    set candidates to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return 1
+        set source to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        set room to concat(ptr_to_str(ep_sqlite3_column_text(statement and 1)) and "")
+        set added to append_list(candidates and [source,room])
+    set closed to ep_sqlite3_finalize(statement)
+    set previous_room to ""
+    set permitted to 0
+    for each candidate in candidates:
+        set source to archive_list_text(candidate and 0)
+        set room to archive_list_text(candidate and 1)
+        if not (room equals previous_room):
+            set permitted to discord_memory_live_access_snapshot(database and run and source and snapshot)
+            set previous_room to room
+        if permitted and group_history_allows(database and source) and discord_memory_imports_allowed(database and run and source and snapshot):
+            if archive_finish(checkpoint_prepare(database and "INSERT OR IGNORE INTO temp.echo_discord_memory_access(current_session,source_session) VALUES(?1,?2);" and [session,source]) and 101) is not equal to 0:
+                return 1
+    return 0
+
+define discord_memory_access_revision with database as Int returning Str:
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_temp_master WHERE name='echo_discord_memory_access';"))
+    if not (archive_list_text(installed and 0) equals "found"):
+        return ""
+    set row to history_collect_one(archive_prepare(database and "SELECT COALESCE(json_group_array(json_array(current_session,source_session)),'[]') FROM (SELECT current_session,source_session FROM temp.echo_discord_memory_access ORDER BY current_session,source_session);"))
+    return archive_list_text(row and 1)

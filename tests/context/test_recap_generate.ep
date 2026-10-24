@@ -6,11 +6,15 @@ define recap_fixture_reply with listener as List and method as Str and path as S
     set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " and int_to_string(string_length(response)))
     set wire to concat(wire and concat("\r\n\r\n" and response))
     set completed to channel
-    spawn json_fixture(listener and method and path and body and wire and completed)
+    if string_contains(body and "CURRENT RUNTIME TIME"):
+        spawn temporal_json_fixture(listener and method and path and body and wire and completed)
+    else:
+        spawn json_fixture(listener and method and path and body and wire and completed)
     return receive from completed
 
 define recap_fixture with listener as List and body as Str and candidate as Str and completed as Int returning Int:
-    set failed to recap_fixture_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
+    set media to recap_fixture_reply(listener and "GET" and "/props" and "" and "{}")
+    set failed to media + recap_fixture_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
     set failed to failed + recap_fixture_reply(listener and "GET" and "/props" and "" and "{\"default_generation_settings\":{\"n_ctx\":262144,\"params\":{\"n_predict\":-1}}}")
     set failed to failed + recap_fixture_reply(listener and "POST" and "/v1/chat/completions/input_tokens" and body and "{\"input_tokens\":1000}")
     set data to concat("{\"choices\":[{\"index\":0,\"delta\":{\"content\":" and concat(provider_quote(candidate) and "},\"finish_reason\":\"stop\"}]}"))
@@ -21,7 +25,8 @@ define recap_fixture with listener as List and body as Str and candidate as Str 
     return 0
 
 define acceptance_fixture with listener as List and body as Str and counted as Str and change_path as Str and completed as Int returning Int:
-    set failed to recap_fixture_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
+    set media to recap_fixture_reply(listener and "GET" and "/props" and "" and "{}")
+    set failed to media + recap_fixture_reply(listener and "GET" and "/v1/models" and "" and "{\"data\":[{\"id\":\"fixture\",\"meta\":{\"n_ctx\":262144,\"n_ctx_train\":262144}}]}")
     set failed to failed + recap_fixture_reply(listener and "GET" and "/props" and "" and "{\"default_generation_settings\":{\"n_ctx\":262144,\"params\":{\"n_predict\":-1}}}")
     if string_length(change_path) is greater than 0:
         set changed_database to archive_open(change_path)
@@ -42,8 +47,24 @@ define acceptance_expected_body with database as Int and identity as Str and can
     set recap to concat(recap and concat("\nSource endpoint: original\nSource digest: " and ptr_to_str(get_list(original and 6))))
     set recap to concat(recap and "\nDetailed recap:\nThe user asked to remember café.\nStructured state:\n")
     set recap to concat(recap and agent_json_source(candidate and tokens and provider_member(tokens and 0 and "state")))
-    set messages to concat("[{\"role\":\"user\",\"content\":" and provider_quote(recap))
-    set messages to concat(messages and "},{\"role\":\"user\",\"content\":\"Remember café.\"}]")
+    # Retain current routing/checklist wrappers, but independently construct
+    # the expected recap and require the original objective verbatim.
+    set baseline to session_messages(database and "session" and "run")
+    set fields to provider_json_tokens(baseline)
+    set messages to "["
+    set count to 0
+    set objectives to 0
+    for each item in provider_items(fields and 0):
+        if count > 0:
+            set messages to concat(messages and ",")
+        if provider_value(fields and provider_member(fields and item and "content")) equals "Remember café.":
+            set messages to concat(messages and concat("{\"role\":\"user\",\"content\":" and concat(provider_quote(recap) and "},")))
+            set objectives to objectives + 1
+        set messages to concat(messages and agent_json_source(baseline and fields and item))
+        set count to count + 1
+    if objectives is not equal to 1:
+        return "invalid-test-objective"
+    set messages to concat(messages and "]")
     return session_request_body_owned(database and "run" and "fixture" and messages)
 
 define main returning Int:
@@ -113,10 +134,64 @@ define main returning Int:
         display concat("FAIL: acceptance status " and accepted)
         return 1
     set active to checkpoint_read_active(database and "session")
-    if active equals 0 or else not (ptr_to_str(get_list(active and 0)) equals "accepted") or else not (session_request_body_owned(database and "run" and "fixture" and session_messages(database and "session" and "run")) equals accepted_body):
+    if active equals 0 or else not (ptr_to_str(get_list(active and 0)) equals "accepted") or else not (temporal_stable_body(session_request_body_owned(database and "run" and "fixture" and session_messages(database and "session" and "run"))) equals temporal_stable_body(accepted_body)):
         display "FAIL: active context differs from counted context."
         return 1
     if archive_verify(database and "session") is not equal to 0 or else local_socket_close(listener) is not equal to 0 or else sql_close(database) is not equal to 0:
         return 1
     display "PASS: streamed candidate/review binding; malformed and unreviewed rejection; oversized and concurrently changed contexts rejected; fitting recap activates with exact counted context and verbatim current objective. Scripted judgments do not prove semantic accuracy."
+    return 0
+
+# Only the deliberately fresh final clock is excluded from byte equality.
+# All source messages, schemas and request options must still match exactly.
+define temporal_stable_body with body as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    set messages to provider_items(tokens and provider_member(tokens and 0 and "messages"))
+    if length_list(messages) < 1:
+        return "invalid"
+    set last to get_list(messages and length_list(messages) - 1)
+    set content to provider_member(tokens and last and "content")
+    if string_index_of(provider_value(tokens and content) and "CURRENT RUNTIME TIME") is not equal to 0:
+        return "missing-current-clock"
+    set token to get_list(tokens and content)
+    set start to get_list(token and 1)
+    set finish to get_list(token and 2)
+    return concat(substring(body and 0 and start) and concat(provider_quote("current clock verified separately") and substring(body and finish and string_length(body) - finish)))
+
+define temporal_json_fixture with listener as List and method as Str and path as Str and expected as Str and response as Str and completed as Int returning Int:
+    set descriptor to local_socket_accept(listener)
+    if descriptor < 0:
+        send 1 to completed
+        return 1
+    set reader to http_stream_create(get_list(listener and 0) and descriptor and -1)
+    set head to http_stream_head(reader)
+    set failed to 0
+    if not (archive_list_text(head and 0) equals "ready") or else not (archive_list_text(head and 1) equals method) or else not (archive_list_text(head and 2) equals path):
+        set failed to 1
+    set body to http_body_create(archive_list_text(head and 3) and get_list(head and 4))
+    set builder to create_builder()
+    set copy to ep_dlsym(get_list(listener and 0) and "memcpy")
+    set byte to [0]
+    repeat while 1 equals 1:
+        set piece to http_body_next(reader and body and 4096)
+        if archive_list_text(piece and 0) equals "done":
+            break
+        if not (archive_list_text(piece and 0) equals "data"):
+            set failed to 1
+            break
+        set index to 0
+        repeat while index < get_list(piece and 2):
+            set cleared to set_list(byte and 0 and 0)
+            set copied to ep_dlcall3(copy and get_list_data_ptr(byte) and get_list(piece and 1) + index and 1)
+            set added to builder_append(builder and ptr_to_str(get_list_data_ptr(byte)))
+            set index to index + 1
+    set actual to ptr_to_str(builder_to_string(builder))
+    if temporal_stable_body(actual) equals "missing-current-clock" or else not (temporal_stable_body(actual) equals temporal_stable_body(expected)):
+        set failed to 1
+    set sent to socket_write_all(get_list(listener and 0) and descriptor and -1 and str_to_ptr(response) and string_length(response))
+    if not (archive_list_text(sent and 0) equals "sent"):
+        set failed to 1
+    set released to http_stream_release(reader)
+    set closed to net_close(descriptor)
+    send failed + released + closed to completed
     return 0

@@ -1,4 +1,5 @@
 import "automatic_context"
+import "discord_automatic"
 
 # Freeze a session base and retain exact per-turn additions in history.
 # New turns select fresh evidence without rewriting the retained prefix.
@@ -8,7 +9,8 @@ define memory_context_revision with database as Int and run as Str returning Str
     set scope to group_memory_scope(database and run)
     if string_length(principal) equals 0 and string_length(scope) equals 0:
         return ""
-    set revision to concat("stable-session-v4:" and concat(principal and concat(":" and scope)))
+    set revision to concat("stable-session-v6:" and concat(principal and concat(":" and scope)))
+    set revision to concat(revision and discord_memory_access_revision(database))
     set revision to concat(revision and echo_runtime_binding(database and run))
     set revision to concat(revision and ep_sha256(memory_source_provenance_file()))
     set embedding_path to ptr_to_str(get_env("ECHO_EMBEDDING_PROFILE"))
@@ -97,7 +99,10 @@ define memory_context_revision with database as Int and run as Str returning Str
 
 # Capture outside the session's read transaction. No lock is held during inference.
 define memory_context_capture with database as Int and run as Str returning Int:
+    set access_snapshot to create_list()
     set capture_started to ep_time_now_ms()
+    if discord_memory_prepare_snapshot(database and run and access_snapshot) is not equal to 0:
+        return 1
     set early_revision to memory_context_revision(database and run)
     set context_snapshot_arguments_3 to create_list()
     set rooted_argument_value to concat(run and concat(":memory-context:" and early_revision))
@@ -112,6 +117,8 @@ define memory_context_capture with database as Int and run as Str returning Int:
     set prepare_ms to ep_time_now_ms() - prepare_started
     if prepared is not equal to 0:
         set diagnostic to archive_append(database and archive_list_text(agent_run_read(database and run) and 0) and concat(run and ":semantic-retrieval-unavailable") and "memory_retrieval_status" and "Semantic indexing incomplete; standing context and original memory tools remain available." and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+    if discord_memory_prepare_snapshot(database and run and access_snapshot) is not equal to 0:
+        return 1
     if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
         return 1
     set revision to memory_context_revision(database and run)
@@ -130,11 +137,12 @@ define memory_context_capture with database as Int and run as Str returning Int:
         if archive_list_text(old and 0) equals "end":
             set owner to agent_run_read(database and run)
             set context_started to ep_time_now_ms()
-            set selected to memory_semantic_select(database and run and memory_recall_claims(database and run))
+            set eligible to memory_recall_claims(database and run)
+            set selected to memory_semantic_select(database and run and eligible)
             set content to ""
             set records to ""
             if string_length(memory_archive_principal(database and run)) equals 0:
-                set records to group_memory_records(database and run)
+                set records to selected
                 set content to group_memory_selected_context(records)
             else:
                 set content to memory_context_selected(database and run and selected)
@@ -157,10 +165,11 @@ define memory_context_capture with database as Int and run as Str returning Int:
             set prior_query to "SELECT json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.base') FROM echo_events WHERE session=?1 AND kind='memory_context_snapshot' AND json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.revision')=?2 AND json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.run_id')<>?3 AND json_type(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.base')='text' AND json_type(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.records')='array' ORDER BY sequence LIMIT 1;"
             if string_length(group_memory_scope(database and run)) > 0:
                 # Only verified ancestry, never same-audience siblings. Every
-                # retained record must still match the freshly filtered view.
-                set rooted_argument_value to records
+                # retained passage must still match an authorised source. Ranking
+                # changes select new additions; they do not revoke prior recall.
+                set rooted_argument_value to eligible
                 set rooted_argument_added to append_list(context_snapshot_arguments_5 and rooted_argument_value)
-                set prior_query to concat(session_scope_sql() and "SELECT json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.base') FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary WHERE e.kind='memory_context_snapshot' AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.revision')=?2 AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.run_id')<>?3 AND json_type(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.base')='text' AND json_type(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.records')='array' AND NOT EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.records') old WHERE NOT EXISTS(SELECT 1 FROM json_each(?4) fresh WHERE fresh.value=old.value)) ORDER BY CASE WHEN e.session=?1 THEN 0 ELSE 1 END,s.boundary DESC,e.sequence LIMIT 1;")
+                set prior_query to concat(session_scope_sql() and "SELECT json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.base') FROM scopes s JOIN echo_events e ON e.session=s.session AND e.sequence<=s.boundary WHERE e.kind='memory_context_snapshot' AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.revision')=?2 AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.run_id')<>?3 AND json_type(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.base')='text' AND json_type(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.records')='array' AND NOT EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.records') old WHERE NOT EXISTS(SELECT 1 FROM json_each(?4) fresh WHERE json_remove(fresh.value,'$.quotation')=json_remove(old.value,'$.quotation') AND length(json_extract(old.value,'$.quotation'))>0 AND instr(json_extract(fresh.value,'$.quotation'),json_extract(old.value,'$.quotation'))>0)) ORDER BY CASE WHEN e.session=?1 THEN 0 ELSE 1 END,s.boundary DESC,e.sequence LIMIT 1;")
             set prior to history_collect_one(checkpoint_prepare(database and prior_query and context_snapshot_arguments_5))
             if archive_list_text(prior and 0) equals "found" and string_length(memory_archive_principal(database and run)) > 0:
                 set base to archive_list_text(prior and 1)

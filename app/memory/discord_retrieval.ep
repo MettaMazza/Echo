@@ -1,0 +1,168 @@
+import "group_knowledge"
+import "../discord/access"
+
+# Recall candidates are not grants. Public community recall crosses speakers;
+# one-to-one DMs can recall their own author's other sessions. The bound host
+# must prove both live access and the destination audience before reading.
+define memory_retrieval_session_sql with database as Int and current as Str and source as Str returning Str:
+    set same to group_memory_session_sql(database and current and source)
+    set cross to "EXISTS(SELECT 1 FROM echo_group_sessions mc JOIN echo_groups gc ON gc.identity=mc.group_id JOIN echo_group_sessions ms JOIN echo_groups gs ON gs.identity=ms.group_id WHERE mc.session=__CURRENT__ AND ms.session=__SOURCE__ AND gc.platform='discord' AND gs.platform='discord' AND ((gc.server=gs.server AND gc.server NOT LIKE 'dm:%') OR (gc.server LIKE 'dm:%' AND gc.creator=gs.creator AND gc.origin LIKE 'silo:user-in-channel:%' AND gs.origin LIKE 'silo:user-in-channel:%' AND (SELECT COUNT(*) FROM echo_group_audiences a WHERE a.group_id=mc.group_id AND a.revision=mc.revision)=1 AND (SELECT COUNT(*) FROM echo_group_audiences a WHERE a.group_id=ms.group_id AND a.revision=ms.revision)=1)))"
+    set cross to ptr_to_str(string_replace(cross and "__CURRENT__" and current))
+    set cross to ptr_to_str(string_replace(cross and "__SOURCE__" and source))
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_delegations';"))
+    if archive_list_text(installed and 0) equals "found":
+        set cross to concat(cross and concat(" AND NOT EXISTS(SELECT 1 FROM echo_delegations d WHERE d.session=" and concat(current and concat(" OR d.session=" and concat(source and ")")))))
+    else if not (archive_list_text(installed and 0) equals "end"):
+        return same
+    return concat("(" and concat(same and concat(" OR (" and concat(cross and "))"))))
+
+define memory_retrieval_session_allowed with database as Int and run as Str and session as Str returning Int:
+    return memory_retrieval_session_allowed_snapshot(database and run and session and create_list())
+
+define memory_retrieval_session_allowed_snapshot with database as Int and run as Str and session as Str and snapshot as List returning Int:
+    set current to agent_run_read(database and run)
+    if current equals 0 or else string_length(group_memory_scope(database and run)) equals 0:
+        return 0
+    set values to [archive_list_text(current and 0),session]
+    set same to history_collect_one(checkpoint_prepare(database and concat("SELECT 1 WHERE " and concat(group_memory_session_sql(database and "?1" and "?2") and ";")) and values))
+    if archive_list_text(same and 0) equals "found":
+        return group_history_allows(database and session)
+    set candidate to history_collect_one(checkpoint_prepare(database and concat("SELECT 1 WHERE " and concat(memory_retrieval_session_sql(database and "?1" and "?2") and ";")) and values))
+    if not (archive_list_text(candidate and 0) equals "found") or else group_history_allows(database and session) equals 0:
+        return 0
+    if discord_memory_live_access_snapshot(database and run and session and snapshot) equals 0:
+        return 0
+    return discord_memory_imports_allowed(database and run and session and snapshot)
+
+# Only the bound Discord host process can resolve source-channel permissions.
+# The model supplies an event/session ID, never a credential, actor or route.
+define discord_memory_live_access with database as Int and run as Str and session as Str returning Int:
+    return discord_memory_live_access_snapshot(database and run and session and create_list())
+
+define discord_memory_live_access_snapshot with database as Int and run as Str and session as Str and snapshot as List returning Int:
+    if not ((get_argument_count() equals 15 and get_argument(13) equals "--turn") or else (get_argument_count() equals 16 and get_argument(13) equals "--job")):
+        return 0
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(binding and 1) equals get_argument(7)) or else not (archive_list_text(location and 1) equals get_argument(4)) or else file_exists(get_argument(6)):
+        return 0
+    set source to history_collect_one(checkpoint_prepare(database and "SELECT gs.server,gs.channel,substr(o.device,9),gc.channel,gc.server,gc.creator,gs.creator FROM echo_group_run_origins o JOIN echo_group_sessions c ON c.session=o.session JOIN echo_groups gc ON gc.identity=c.group_id JOIN echo_group_sessions s ON s.session=?2 JOIN echo_groups gs ON gs.identity=s.group_id WHERE o.run=?1 AND o.device LIKE 'discord:%';" and [run,session]))
+    if not (archive_list_text(source and 0) equals "found"):
+        return 0
+    set guilds to create_list()
+    set split to retained_text_split(guilds and get_argument(8) and ",")
+    set source_guild to archive_list_text(source and 1)
+    set target_guild to archive_list_text(source and 5)
+    set private_target to string_index_of(target_guild and "dm:") equals 0
+    if string_index_of(source_guild and "dm:") equals 0:
+        if not private_target or else not (archive_list_text(source and 6) equals archive_list_text(source and 7)):
+            return 0
+        set source_guild to ""
+    else if discord_contains(guilds and source_guild) equals 0:
+        return 0
+    if private_target:
+        if not (archive_list_text(source and 6) equals archive_list_text(source and 7)):
+            return 0
+        set target_guild to ""
+    else if discord_contains(guilds and target_guild) equals 0:
+        return 0
+    set journal to discord_store_open(get_argument(3) and get_argument(7))
+    if journal equals 0:
+        return 0
+    set credential to read_file(get_argument(2))
+    set allowed to 0
+    if credential is not equal to 0:
+        set admins to create_list()
+        set split to retained_text_split(admins and get_argument(9) and ",")
+        set source_access to discord_access_read_snapshot(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and get_argument(5) and get_argument(7) and source_guild and archive_list_text(source and 2) and archive_list_text(source and 3) and admins and snapshot)
+        set public_source to 1
+        if not private_target:
+            set public_source to discord_memory_public_channel(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and get_argument(5) and source_guild and archive_list_text(source and 2) and snapshot)
+        if archive_list_text(source_access and 0) equals "allowed" and public_source:
+            set target_access to discord_access_check_snapshot(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and get_argument(5) and get_argument(7) and target_guild and archive_list_text(source and 4) and archive_list_text(source and 3) and admins and -1 and create_list() and snapshot)
+            set allowed to archive_list_text(target_access and 0) equals "allowed"
+    set closed to sql_close(journal)
+    return allowed
+
+define memory_retrieval_source_allowed with database as Int and run as Str and event as Str and digest as Str returning Int:
+    set source to archive_read_event(database and event)
+    if source equals 0 or else not (archive_list_text(source and 6) equals digest):
+        return 0
+    return memory_retrieval_session_allowed(database and run and archive_list_text(source and 0))
+
+# Public means visible with history to the ordinary guild audience, not merely
+# readable by an administrator. Explicit view/history exclusions make a room
+# restricted. Private threads can never become public through their parent.
+define discord_memory_public_room with room_body as Str and roles as Str and guild as Str returning Int:
+    set fields to provider_json_tokens(room_body)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0:
+        return 0
+    set kind to provider_value(fields and provider_member(fields and 0 and "type"))
+    set room to provider_value(fields and provider_member(fields and 0 and "id"))
+    if not (kind equals "0" or else kind equals "5") or else not (provider_value(fields and provider_member(fields and 0 and "guild_id")) equals guild):
+        return 0
+    set overwrites to provider_member(fields and 0 and "permission_overwrites")
+    if not (provider_kind(fields and overwrites) equals "["):
+        return 0
+    set entries to provider_items(fields and overwrites)
+    for each item in entries:
+        set denied to provider_value(fields and provider_member(fields and item and "deny"))
+        if discord_permission_bit(denied and 10) is not equal to 0 or else discord_permission_bit(denied and 16) is not equal to 0:
+            return 0
+    set server to concat("{\"id\":" and concat(provider_quote(guild) and ",\"owner_id\":\"0\"}"))
+    set member to "{\"user\":{\"id\":\"1\"},\"roles\":[]}"
+    return discord_channel_permission(server and roles and member and room_body and guild and "1" and room and 10) equals 1 and also discord_channel_permission(server and roles and member and room_body and guild and "1" and room and 16) equals 1
+
+define discord_memory_public_channel with library as Str and token as Str and journal as Int and directory_path as Str and guild as Str and room as Str and snapshot as List returning Int:
+    set observed to discord_access_snapshot_get(library and token and journal and directory_path and concat("/channels/" and room) and "GET:channel" and room and snapshot)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return 0
+    set body to archive_list_text(observed and 1)
+    set fields to provider_json_tokens(body)
+    if not (provider_value(fields and provider_member(fields and 0 and "id")) equals room) or else not (provider_value(fields and provider_member(fields and 0 and "guild_id")) equals guild):
+        return 0
+    set kind to provider_value(fields and provider_member(fields and 0 and "type"))
+    if kind equals "10" or else kind equals "11":
+        set parent to provider_value(fields and provider_member(fields and 0 and "parent_id"))
+        if discord_snowflake(parent) equals 0:
+            return 0
+        set observed to discord_access_snapshot_get(library and token and journal and directory_path and concat("/channels/" and parent) and "GET:channel" and parent and snapshot)
+        if not (archive_list_text(observed and 0) equals "observed"):
+            return 0
+        set body to archive_list_text(observed and 1)
+        set fields to provider_json_tokens(body)
+        if not (provider_value(fields and provider_member(fields and 0 and "id")) equals parent):
+            return 0
+    set roles to discord_access_snapshot_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild and "/roles")) and "GET:roles" and guild and snapshot)
+    if not (archive_list_text(roles and 0) equals "observed"):
+        return 0
+    return discord_memory_public_room(body and archive_list_text(roles and 1) and guild)
+
+# A public source can contain historical imports from a restricted room or DM.
+# Validate import ancestry as well as its visible container before sharing any
+# derived replies. Same-session lineage terminates by decreasing sequence.
+define discord_memory_imports_allowed with database as Int and run as Str and session as Str and snapshot as List returning Int:
+    set current to history_collect_one(checkpoint_prepare(database and "SELECT g.server FROM echo_runs r JOIN echo_group_sessions s ON s.session=r.session JOIN echo_groups g ON g.identity=s.group_id WHERE r.run=?1;" and [run]))
+    if not (archive_list_text(current and 0) equals "found"):
+        return 0
+    if string_index_of(archive_list_text(current and 1) and "dm:") equals 0:
+        return 1
+    set query to "WITH RECURSIVE lineage(event,session,sequence,kind,payload) AS (SELECT event,session,sequence,kind,payload FROM echo_events WHERE session=?1 AND kind='source_import' UNION SELECT e.event,e.session,e.sequence,e.kind,e.payload FROM lineage l JOIN echo_events e ON e.event=json_extract(CASE WHEN json_valid(l.payload) THEN l.payload ELSE '{}' END,'$.source_event') AND e.digest=json_extract(CASE WHEN json_valid(l.payload) THEN l.payload ELSE '{}' END,'$.source_digest') AND e.sequence<l.sequence WHERE l.kind='source_import') SELECT DISTINCT session FROM lineage WHERE session<>?1;"
+    set statement to checkpoint_prepare(database and query and [session])
+    if statement equals 0:
+        return 0
+    set sources to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return 0
+        set added to append_list(sources and concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and ""))
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return 0
+    for each source in sources:
+        if discord_memory_live_access_snapshot(database and run and source and snapshot) equals 0:
+            return 0
+    return 1

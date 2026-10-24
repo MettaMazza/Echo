@@ -1,4 +1,4 @@
-import "group_knowledge"
+import "discord_retrieval"
 import "corrections"
 
 # Private recall keeps its original ownership gate. Shared recall uses only the
@@ -9,7 +9,7 @@ define memory_scoped_boundary with database as Int and run as Str returning List
     set scope to group_memory_scope(database and run)
     if string_length(scope) equals 0:
         return history_status("not-authorized")
-    set query to concat("SELECT COALESCE(MAX(e.sequence),0) FROM echo_events e WHERE e.kind IN ('user','assistant_final','source_import') AND " and concat(group_memory_session_sql(database and "(SELECT session FROM echo_runs WHERE run=?1)" and "e.session") and ";"))
+    set query to concat("SELECT COALESCE(MAX(e.sequence),0) FROM echo_events e WHERE e.kind IN ('user','assistant_final','source_import') AND " and concat(memory_retrieval_session_sql(database and "(SELECT session FROM echo_runs WHERE run=?1)" and "e.session") and ";"))
     set row to history_collect_one(checkpoint_prepare(database and query and [run]))
     if not (group_memory_scope(database and run) equals scope):
         return history_status("authorization-changed")
@@ -23,13 +23,24 @@ define memory_scoped_next with database as Int and run as Str and literal as Str
     set scope to group_memory_scope(database and run)
     if string_length(scope) equals 0:
         return history_status("not-authorized")
-    set query to concat("SELECT e.event,e.session,e.sequence,e.kind,e.occurred,e.digest FROM echo_events e WHERE e.kind IN ('user','assistant_final','source_import') AND e.sequence>CAST(?3 AS INTEGER) AND e.sequence<=CAST(?4 AS INTEGER) AND instr(e.payload,?2)>0 AND " and concat(group_memory_session_sql(database and "(SELECT session FROM echo_runs WHERE run=?1)" and "e.session") and " ORDER BY e.sequence LIMIT 1;"))
-    set row to history_collect_one(checkpoint_prepare(database and query and [run,literal,int_to_string(after_sequence),int_to_string(through_sequence)]))
-    if archive_list_text(row and 0) equals "found" and group_memory_source_allowed(database and run and archive_list_text(row and 1) and archive_list_text(row and 6)) equals 0:
-        return history_status("not-authorized")
-    if not (group_memory_scope(database and run) equals scope):
-        return history_status("authorization-changed")
-    return row
+    set query to concat("SELECT e.event,e.session,e.sequence,e.kind,e.occurred,e.digest FROM echo_events e WHERE e.kind IN ('user','assistant_final','source_import') AND e.sequence>CAST(?3 AS INTEGER) AND e.sequence<=CAST(?4 AS INTEGER) AND instr(e.payload,?2)>0 AND " and concat(memory_retrieval_session_sql(database and "(SELECT session FROM echo_runs WHERE run=?1)" and "e.session") and " ORDER BY e.sequence LIMIT 1;"))
+    set cursor to after_sequence
+    set access_snapshot to create_list()
+    repeat while cursor <= through_sequence:
+        set row to history_collect_one(checkpoint_prepare(database and query and [run,literal,int_to_string(cursor),int_to_string(through_sequence)]))
+        if not (group_memory_scope(database and run) equals scope):
+            return history_status("authorization-changed")
+        if not (archive_list_text(row and 0) equals "found"):
+            return row
+        if memory_retrieval_session_allowed_snapshot(database and run and archive_list_text(row and 2) and access_snapshot):
+            if not (group_memory_scope(database and run) equals scope):
+                return history_status("authorization-changed")
+            return row
+        set next to http_decimal(archive_list_text(row and 3))
+        if next <= cursor:
+            return history_status("error")
+        set cursor to next
+    return history_status("end")
 
 define memory_scoped_read with database as Int and run as Str and event as Str and offset as Int and characters as Int returning List:
     if string_length(memory_archive_principal(database and run)) > 0:
@@ -42,7 +53,7 @@ define memory_scoped_read with database as Int and run as Str and event as Str a
     set source to archive_read_event(database and event)
     if source equals 0 or else not (archive_list_text(source and 2) equals "user" or else archive_list_text(source and 2) equals "assistant_final" or else archive_list_text(source and 2) equals "source_import"):
         return history_status("not-authorized")
-    if group_memory_source_allowed(database and run and event and archive_list_text(source and 6)) equals 0:
+    if memory_retrieval_source_allowed(database and run and event and archive_list_text(source and 6)) equals 0:
         return history_status("not-authorized")
     set row to history_read_piece(database and archive_list_text(source and 0) and event and offset and characters)
     if not (group_memory_scope(database and run) equals scope):
@@ -61,4 +72,8 @@ define memory_scoped_wrap with database as Int and run as Str and source as Str 
     set row to history_collect_one(checkpoint_prepare(database and query and [scope,source]))
     if not (archive_list_text(row and 0) equals "found") or else not (group_memory_scope(database and run) equals scope):
         return "{\"status\":\"source-state-unavailable\"}"
+    set attribution to history_collect_one(checkpoint_prepare(database and "SELECT json_object('source_session',e.session,'source_platform',g.platform,'source_channel',g.channel,'source_speaker',CASE WHEN e.kind='assistant_final' THEN 'echo' ELSE COALESCE((SELECT a.principal FROM echo_runs r JOIN echo_run_authority a ON a.run=r.run WHERE r.objective_event=e.event LIMIT 1),g.creator) END,'session_owner',g.creator) FROM echo_events e JOIN echo_group_sessions s ON s.session=e.session JOIN echo_groups g ON g.identity=s.group_id WHERE e.event=?1;" and [source]))
+    if not (archive_list_text(attribution and 0) equals "found"):
+        return "{\"status\":\"source-state-unavailable\"}"
+    set output to concat(substring(output and 0 and string_length(output) - 1) and concat(",\"attribution\":" and concat(archive_list_text(attribution and 1) and "}")))
     return concat(substring(output and 0 and string_length(output) - 1) and concat(",\"historical_source\":true,\"claim_lifecycle\":" and concat(archive_list_text(row and 1) and "}")))

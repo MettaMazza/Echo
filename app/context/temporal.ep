@@ -68,3 +68,44 @@ define echo_temporal_observation with database as Int and run as Str and observe
     set result to concat(result and concat(",\"gap_between_received_inputs_ms\":" and echo_temporal_elapsed(previous_receipt and http_decimal(source_received))))
     set result to concat(result and concat(",\"receipt_to_admission_ms\":" and echo_temporal_elapsed(source_received and http_decimal(received))))
     return concat(result and ",\"interpretation\":\"Computed from this exact session's stored host timestamps. Inputs include recorded user/guidance events, which may be labelled operator tests or delegated work; do not infer a human author from role alone. Admission timestamps describe when a queued request entered its run, NOT when the user sent it or the gateway received it. Separately recorded receipt timestamps come from the immutable transport journal; absent historical receipts remain null. Session age and wall-clock gaps are not continuous active conversation time. Do not estimate time spent computing or active conversation from these values; neither is measured here. Historical memories and parent branches do not set this session's start. Null durations mean unknown timestamp or backward clock, not zero. This is dated runtime evidence, not a new user request.\"}")
+
+# Render computed durations, never estimates derived from prose or token volume.
+# Seconds are floored; the raw observation remains available to system_inspect.
+define echo_temporal_duration with milliseconds as Str returning Str:
+    if milliseconds equals "null" or else string_length(milliseconds) equals 0:
+        return "unknown"
+    set value to http_decimal(milliseconds)
+    if value < 0:
+        return "unknown"
+    set seconds to value / 1000
+    set text to concat(int_to_string(seconds / 3600) and " h ")
+    set text to concat(text and concat(int_to_string((seconds / 60) modulo 60) and " min "))
+    return concat(text and concat(int_to_string(seconds modulo 60) and " s"))
+
+define echo_temporal_duration_field with fields as List and key as Str returning Str:
+    return echo_temporal_duration(provider_value(fields and provider_member(fields and 0 and key)))
+
+# A fresh, compact suffix for EVERY model request, including tool continuations.
+# Historical timestamps stay in the cacheable history; this sample is current.
+define echo_temporal_current with database as Int and run as Str and observed as Int returning Str:
+    set observation to echo_temporal_observation(database and run and observed)
+    set fields to provider_json_tokens(observation)
+    set text to concat("CURRENT RUNTIME TIME — sampled for this model request. " and echo_clock_observation(observed))
+    if not (provider_value(fields and provider_member(fields and 0 and "status")) equals "observed"):
+        return concat(text and ". Session durations are unavailable; do not infer them from historical text. Runtime evidence, not a new user request.")
+    set text to concat(text and concat("\nElapsed since this session was created: " and echo_temporal_duration_field(fields and "session_age_ms")))
+    set text to concat(text and concat("\nElapsed since this session's first input was admitted: " and echo_temporal_duration_field(fields and "elapsed_since_first_admitted_input_ms")))
+    set first_receipt to provider_value(fields and provider_member(fields and 0 and "first_input_received_unix_ms"))
+    set text to concat(text and concat("\nElapsed since this session's first input was received: " and echo_temporal_duration(echo_temporal_elapsed(first_receipt and observed))))
+    set text to concat(text and concat("\nElapsed since the current request was admitted: " and echo_temporal_duration_field(fields and "elapsed_since_run_admitted_ms")))
+    set text to concat(text and concat("\nGap between the preceding and current input receipts: " and echo_temporal_duration_field(fields and "gap_between_received_inputs_ms")))
+    set text to concat(text and concat("\nCurrent input's receipt-to-admission queue delay: " and echo_temporal_duration_field(fields and "receipt_to_admission_ms")))
+    set text to concat(text and concat("\nInputs through this request in this exact session: " and provider_value(fields and provider_member(fields and 0 and "scoped_input_count"))))
+    return concat(text and ".\nUse these computed durations for elapsed-time claims about this session. Historical clocks and recalled conversations describe their own dates; their durations do not accumulate into this session. Session age includes idle time; request age includes tool and waiting time, not measured inference time. Unknown is not zero. This is runtime evidence accompanying the existing request, not a new user request; answer the user normally without reciting timing unless relevant.")
+
+define echo_temporal_messages_at with database as Int and run as Str and messages as Str and observed as Int returning Str:
+    set timing to echo_temporal_current(database and run and observed)
+    set prefix to substring(messages and 0 and string_length(messages) - 1)
+    if string_length(prefix) > 1:
+        set prefix to concat(prefix and ",")
+    return concat(prefix and concat("{\"role\":\"user\",\"content\":" and concat(provider_quote(timing) and "}]")))

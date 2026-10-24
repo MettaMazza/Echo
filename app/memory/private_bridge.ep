@@ -1,0 +1,288 @@
+import "archive_recall"
+import "../security/group_history"
+import "../tools/history_tools"
+
+# Host-installed identity links are separate from roles. A public/group run
+# cannot open a linked archive even when its initiating user is an admin.
+define private_bridge_identity with database as Int and run as Str returning Str:
+    if run_authority_allows(database and run and "user") equals 0:
+        return ""
+    set principal to memory_archive_principal(database and run)
+    if string_length(principal) > 0:
+        return principal
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT a.principal FROM echo_run_authority a JOIN echo_runs r ON r.run=a.run JOIN echo_group_sessions s ON s.session=r.session JOIN echo_groups g ON g.identity=s.group_id WHERE a.run=?1 AND g.platform='discord' AND g.server LIKE 'dm:%' AND g.creator=a.principal AND g.origin LIKE 'silo:user-in-channel:%' AND (SELECT COUNT(*) FROM echo_group_audiences m WHERE m.group_id=s.group_id AND m.revision=s.revision)=1 AND EXISTS(SELECT 1 FROM echo_group_audiences m WHERE m.group_id=s.group_id AND m.revision=s.revision AND m.principal=a.principal);" and [run]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+# Result: source database, permitted principal JSON, configuration digest.
+# The model chooses only the fixed alias 'linked', never a file or account.
+define private_bridge_open with database as Int and run as Str returning List:
+    set principal to private_bridge_identity(database and run)
+    if string_length(principal) equals 0:
+        return create_list()
+    set path to ptr_to_str(get_env("ECHO_PRIVATE_MEMORY_LINKS"))
+    if string_length(path) equals 0 or else not file_exists(path):
+        return create_list()
+    set raw to ptr_to_str(read_file(path))
+    set fields to provider_json_tokens(raw)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0:
+        return create_list()
+    set local to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    set links to provider_items(fields and provider_member(fields and 0 and "links"))
+    for each link in links:
+        set local_path to provider_value(fields and provider_member(fields and link and "local_database"))
+        set active to provider_value(fields and provider_member(fields and link and "enabled"))
+        if active equals "true" and local_path equals archive_list_text(local and 1):
+            set permitted to 0
+            set owners to provider_items(fields and provider_member(fields and link and "local_principals"))
+            for each owner in owners:
+                if provider_value(fields and owner) equals principal:
+                    set permitted to 1
+            if permitted:
+                set source to provider_value(fields and provider_member(fields and link and "remote_database"))
+                set principals to agent_json_source(raw and fields and provider_member(fields and link and "remote_principals"))
+                if not file_exists(source) or else not (provider_kind(fields and provider_member(fields and link and "remote_principals")) equals "["):
+                    return create_list()
+                set library to ep_dlopen("/usr/lib/libsqlite3.dylib")
+                if library equals 0:
+                    return create_list()
+                set handle to [0]
+                set opened to ep_dlcall4(ep_dlsym(library and "sqlite3_open_v2") and str_to_ptr(source) and get_list_data_ptr(handle) and 1 and 0)
+                set closed to ep_dlclose(library)
+                if opened is not equal to 0:
+                    if get_list(handle and 0) is not equal to 0:
+                        set closed to sql_close(get_list(handle and 0))
+                    return create_list()
+                set remote to get_list(handle and 0)
+                if sql_execute(remote and "PRAGMA query_only=ON; BEGIN;") is not equal to 0:
+                    set closed to sql_close(remote)
+                    return create_list()
+                return [remote,principals,ep_sha256(raw)]
+    return create_list()
+
+# Read owned originals without changing either archive or merging identities.
+# Active devices/principals are revalidated in the source database on each read.
+define private_bridge_scope returning Str:
+    return "WITH owners AS (SELECT DISTINCT p.identity FROM echo_principals p JOIN echo_principal_devices b ON b.principal=p.identity JOIN echo_devices d ON d.device=b.device WHERE p.revoked=0 AND d.revoked=0 AND p.identity IN (SELECT value FROM json_each(?1))), permitted AS (SELECT p.session FROM echo_session_principals p JOIN owners o ON o.identity=p.principal UNION SELECT s.session FROM echo_group_sessions s JOIN echo_groups g ON g.identity=s.group_id JOIN owners o ON o.identity=g.creator WHERE g.platform='discord' AND g.origin LIKE 'silo:user-in-channel:%' AND (SELECT COUNT(*) FROM echo_group_audiences a WHERE a.group_id=s.group_id AND a.revision=s.revision)=1 AND EXISTS(SELECT 1 FROM echo_group_audiences a WHERE a.group_id=s.group_id AND a.revision=s.revision AND a.principal=o.identity)) "
+
+define private_bridge_read with database as Int and run as Str and name as Str and arguments as Str returning Str:
+    set fields to provider_json_tokens(arguments)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_kind(fields and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    if not (provider_value(fields and provider_member(fields and 0 and "archive")) equals "linked"):
+        return "{\"status\":\"invalid-archive\"}"
+    set identity to private_bridge_identity(database and run)
+    set opened to private_bridge_open(database and run)
+    if length_list(opened) is not equal to 3:
+        return "{\"status\":\"linked-archive-not-authorized\"}"
+    set remote to get_list(opened and 0)
+    set owners to archive_list_text(opened and 1)
+    set before to private_bridge_owners(remote and owners)
+    set output to private_bridge_read_open(remote and owners and name and arguments)
+    set ended to sql_execute(remote and "COMMIT;")
+    set after to private_bridge_owners(remote and owners)
+    if ended is not equal to 0 or else string_length(before) equals 0 or else not (before equals after):
+        set output to "{\"status\":\"authorization-changed\"}"
+    set closed to sql_close(remote)
+    set path to ptr_to_str(get_env("ECHO_PRIVATE_MEMORY_LINKS"))
+    if closed is not equal to 0 or else not (private_bridge_identity(database and run) equals identity) or else not file_exists(path) or else not (ep_sha256(ptr_to_str(read_file(path))) equals archive_list_text(opened and 2)):
+        return "{\"status\":\"authorization-changed\"}"
+    return output
+
+define private_bridge_owners with remote as Int and owners as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(remote and concat(private_bridge_scope() and "SELECT COALESCE(json_group_array(identity),'[]') FROM (SELECT identity FROM owners ORDER BY identity);") and [owners]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+# Original event text is paged by SQLite Unicode offsets. Boundaries and offsets
+# round-trip in next; a partial message never advances the event cursor.
+define private_bridge_read_open with remote as Int and owners as Str and name as Str and arguments as Str returning Str:
+    set fields to provider_json_tokens(arguments)
+    set index to 1
+    repeat while not (provider_kind(fields and index) equals "}"):
+        set key to provider_value(fields and index)
+        set allowed to key equals "archive"
+        if name equals "memory_sessions" or else name equals "memory_messages" or else name equals "memory_search":
+            set allowed to allowed or else key equals "after" or else key equals "through" or else key equals "limit"
+        if name equals "memory_messages":
+            set allowed to allowed or else key equals "session"
+        if name equals "memory_search":
+            set allowed to allowed or else key equals "query"
+        if name equals "memory_read" or else name equals "reasoning_read":
+            set allowed to allowed or else key equals "event"
+        if not (name equals "memory_sessions"):
+            set allowed to allowed or else key equals "offset" or else key equals "characters"
+        if not allowed:
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(fields and index + 2)
+        if provider_kind(fields and index) equals ",":
+            set index to index + 1
+    set after to 0
+    if provider_member(fields and 0 and "after") >= 0:
+        set after to history_tool_integer(fields and "after")
+    set offset to 0
+    if provider_member(fields and 0 and "offset") >= 0:
+        set offset to history_tool_integer(fields and "offset")
+    set characters to 32000
+    if provider_member(fields and 0 and "characters") >= 0:
+        set characters to history_tool_integer(fields and "characters")
+    set limit to 0
+    if name equals "memory_sessions":
+        set limit to 50
+    if provider_member(fields and 0 and "limit") >= 0:
+        set limit to history_tool_integer(fields and "limit")
+    if after < 0 or else offset < 0 or else characters < 1 or else limit < 0:
+        return "{\"status\":\"invalid-range\"}"
+    set scope to private_bridge_scope()
+    set session to provider_value(fields and provider_member(fields and 0 and "session"))
+    set event to provider_value(fields and provider_member(fields and 0 and "event"))
+    set is_read to name equals "memory_read" or else name equals "reasoning_read"
+    if (name equals "memory_messages" and string_length(session) equals 0) or else (is_read and string_length(event) equals 0):
+        return "{\"status\":\"invalid-arguments\"}"
+    set bound_query to "SELECT COALESCE(MAX(e.sequence),0) FROM echo_events e JOIN permitted p ON p.session=e.session;"
+    if name equals "memory_sessions":
+        set bound_query to "SELECT COALESCE(MAX(s.rowid),0) FROM echo_sessions s JOIN permitted p ON p.session=s.session;"
+    set boundary to history_collect_one(checkpoint_prepare(remote and concat(scope and bound_query) and [owners]))
+    if not (archive_list_text(boundary and 0) equals "found"):
+        return "{\"status\":\"linked-archive-read-error\"}"
+    set through to http_decimal(archive_list_text(boundary and 1))
+    if provider_member(fields and 0 and "through") >= 0:
+        set through to history_tool_integer(fields and "through")
+    if through < after:
+        return "{\"status\":\"invalid-range\"}"
+    set query to ""
+    set values to [owners,int_to_string(after),int_to_string(through)]
+    if name equals "memory_sessions":
+        set query to "SELECT s.session,s.rowid,json_object('session',s.session,'title',s.title,'created',s.created,'next_after',s.rowid,'archive','linked','source_platform',CASE WHEN EXISTS(SELECT 1 FROM echo_group_sessions g WHERE g.session=s.session) THEN 'discord' ELSE 'web' END),'',0 FROM echo_sessions s JOIN permitted p ON p.session=s.session WHERE s.rowid>CAST(?2 AS INTEGER) AND s.rowid<=CAST(?3 AS INTEGER) ORDER BY s.rowid;"
+    else:
+        set body to "CASE WHEN e.kind='assistant_final' THEN COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.content'),'') ELSE e.payload END"
+        if name equals "memory_read":
+            set body to "e.payload"
+        if name equals "reasoning_read":
+            set body to "COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.reasoning_content'),'')"
+        set query to "SELECT e.session,e.sequence,json_object('event',e.event,'session',e.session,'kind',e.kind,'occurred',e.occurred,'digest',e.digest,'archive','linked','source_channel',COALESCE((SELECT g.channel FROM echo_group_sessions s JOIN echo_groups g ON g.identity=s.group_id WHERE s.session=e.session),''),'source_principal',COALESCE((SELECT principal FROM echo_session_principals WHERE session=e.session),(SELECT g.creator FROM echo_group_sessions s JOIN echo_groups g ON g.identity=s.group_id WHERE s.session=e.session))),__BODY__,length(__BODY__) FROM echo_events e JOIN permitted p ON p.session=e.session WHERE "
+        set query to ptr_to_str(string_replace(query and "__BODY__" and body))
+        if is_read:
+            set values to [owners,event]
+            if name equals "reasoning_read":
+                set query to concat(query and "e.kind IN ('assistant_final','assistant_tool_calls') AND (e.event=?2 OR e.event=?2||':response' OR json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.run_id')=?2 OR (substr(?2,-9)=':response' AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.run_id')=substr(?2,1,length(?2)-9))) ORDER BY CASE WHEN e.event=?2 THEN 0 WHEN e.event=?2||':response' THEN 1 ELSE 2 END,CASE WHEN e.kind='assistant_final' THEN 0 ELSE 1 END,e.sequence DESC LIMIT 1;")
+            else:
+                set query to concat(query and "e.event=?2 AND e.kind IN ('user','assistant_final','source_import');")
+        else:
+            set query to concat(query and "e.kind IN ('user','assistant_final','source_import') AND e.sequence>CAST(?2 AS INTEGER) AND e.sequence<=CAST(?3 AS INTEGER) AND ")
+            if name equals "memory_messages":
+                set query to concat(query and "e.session=?4 ORDER BY e.sequence;")
+                set added to append_list(values and session)
+            else if name equals "memory_search":
+                if not (provider_kind(fields and provider_member(fields and 0 and "query")) equals "string"):
+                    return "{\"status\":\"invalid-arguments\"}"
+                set query to concat(query and "instr(e.payload,?4)>0 ORDER BY e.sequence;")
+                set added to append_list(values and provider_value(fields and provider_member(fields and 0 and "query")))
+            else:
+                return "{\"status\":\"unknown-linked-tool\"}"
+    set statement to checkpoint_prepare(remote and concat(scope and query) and values)
+    if statement equals 0:
+        return "{\"status\":\"linked-archive-read-error\"}"
+    set output to "["
+    set count to 0
+    set used to 0
+    set cursor to after
+    set more to 0
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"linked-archive-read-error\"}"
+        set source_session to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        if group_history_allows(remote and source_session) equals 0:
+            continue
+        if (limit > 0 and count >= limit) or else used >= characters:
+            set more to 1
+            break
+        set sequence to http_decimal(ptr_to_str(ep_sqlite3_column_text(statement and 1)))
+        set item to concat(ptr_to_str(ep_sqlite3_column_text(statement and 2)) and "")
+        if not (name equals "memory_sessions"):
+            set body to concat(ptr_to_str(ep_sqlite3_column_text(statement and 3)) and "")
+            set total to http_decimal(ptr_to_str(ep_sqlite3_column_text(statement and 4)))
+            if offset > total:
+                set closed to ep_sqlite3_finalize(statement)
+                return "{\"status\":\"invalid-offset\"}"
+            set taken to total - offset
+            if taken > characters - used:
+                set taken to characters - used
+            set piece to history_collect_one(checkpoint_prepare(remote and "SELECT substr(?1,CAST(?2 AS INTEGER)+1,CAST(?3 AS INTEGER));" and [body,int_to_string(offset),int_to_string(taken)]))
+            if not (archive_list_text(piece and 0) equals "found"):
+                set closed to ep_sqlite3_finalize(statement)
+                return "{\"status\":\"linked-archive-read-error\"}"
+            set item to concat(substring(item and 0 and string_length(item) - 1) and concat(",\"text\":" and provider_quote(archive_list_text(piece and 1))))
+            set item to concat(item and concat(",\"total_characters\":" and int_to_string(total)))
+            set item to concat(item and concat(",\"offset\":" and concat(int_to_string(offset) and "}")))
+            set used to used + taken
+            set offset to offset + taken
+            if offset < total:
+                set more to 1
+            else if not is_read:
+                set offset to 0
+                set cursor to sequence
+        else:
+            set cursor to sequence
+        if count > 0:
+            set output to concat(output and ",")
+        set output to concat(output and item)
+        set count to count + 1
+        if more:
+            break
+    if ep_sqlite3_finalize(statement) is not equal to 0:
+        return "{\"status\":\"linked-archive-read-error\"}"
+    set output to concat("{\"status\":\"found\",\"archive\":\"linked\",\"records\":" and concat(output and "]"))
+    set output to concat(output and concat(",\"count\":" and int_to_string(count)))
+    if not more:
+        return concat(output and ",\"next\":null,\"complete\":true}")
+    set next to "{\"archive\":\"linked\""
+    if is_read:
+        set next to concat(next and concat(",\"event\":" and provider_quote(event)))
+    else:
+        set next to concat(next and concat(",\"after\":" and int_to_string(cursor)))
+        set next to concat(next and concat(",\"through\":" and int_to_string(through)))
+        set next to concat(next and concat(",\"limit\":" and int_to_string(limit)))
+        if name equals "memory_messages":
+            set next to concat(next and concat(",\"session\":" and provider_quote(session)))
+        if name equals "memory_search":
+            set next to concat(next and concat(",\"query\":" and provider_quote(provider_value(fields and provider_member(fields and 0 and "query")))))
+    if not (name equals "memory_sessions"):
+        set next to concat(next and concat(",\"offset\":" and int_to_string(offset)))
+        set next to concat(next and concat(",\"characters\":" and int_to_string(characters)))
+    return concat(output and concat(",\"complete\":false,\"next\":" and concat(next and "}}")))
+
+# Advertise the fixed linked archive only to the authenticated private owner.
+define private_bridge_schemas with database as Int and run as Str and schemas as Str returning Str:
+    set opened to private_bridge_open(database and run)
+    if length_list(opened) is not equal to 3:
+        return schemas
+    set closed to sql_close(get_list(opened and 0))
+    if closed is not equal to 0:
+        return schemas
+    set query to "SELECT json_group_array(json(CASE WHEN json_extract(value,'$.function.name') IN ('memory_sessions','memory_messages','memory_search','memory_read','reasoning_read') THEN json_set(value,'$.function.parameters.properties.archive',json('{\"type\":\"string\",\"enum\":[\"linked\"],\"description\":\"Select your explicitly linked private archive. Omit for the current archive. Linked results are in records, with exact next continuation arguments.\"}')) ELSE value END)) FROM json_each(?1);"
+    set row to history_collect_one(checkpoint_prepare(database and query and [schemas]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return schemas
+    return archive_list_text(row and 1)
+
+define private_bridge_requested with name as Str and arguments as Str returning Int:
+    if not (name equals "memory_sessions" or else name equals "memory_messages" or else name equals "memory_search" or else name equals "memory_read" or else name equals "reasoning_read"):
+        return 0
+    set fields to provider_json_tokens(arguments)
+    return fields is not equal to 0 and also provider_member(fields and 0 and "archive") >= 0
+
+define private_bridge_context with database as Int and run as Str returning Str:
+    set opened to private_bridge_open(database and run)
+    if length_list(opened) is not equal to 3:
+        return ""
+    set closed to sql_close(get_list(opened and 0))
+    if closed is not equal to 0:
+        return ""
+    return "Private archive availability: this authenticated private conversation has an explicit owner link between Discord and web history. The existing memory_sessions, memory_messages, memory_search, memory_read and reasoning_read tools accept archive=linked to read that owner's other archive. Omit archive to read this archive. The linked archive contains owned originals with source session and author attribution. Results are in records; pass next unchanged for bounded continuation. This record supplies access information, not a new task."

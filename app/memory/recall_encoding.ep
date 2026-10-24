@@ -1,0 +1,17 @@
+# Compact only the inference representation. Canonical records are untouched.
+# Named metadata fields use explicitly keyed references; there are no positional
+# lookups. Common fields appear once. All JSON types and exact text are retained.
+define group_memory_encoded_records with records as Str returning Str:
+    set tokens to provider_json_tokens(records)
+    if tokens equals 0 or else not (provider_kind(tokens and 0) equals "["):
+        return ""
+    if records equals "[]":
+        return records
+    set database to sql_open(":memory:")
+    if database equals 0:
+        return ""
+    set row to history_collect_one(checkpoint_prepare(database and "WITH records AS MATERIALIZED (SELECT CAST(key AS INTEGER) AS row_id,value FROM json_each(?1)), fields AS MATERIALIZED (SELECT r.row_id,j.key,j.type,j.value FROM records r,json_each(r.value) j), refs AS MATERIALIZED (SELECT value,'r'||(ROW_NUMBER() OVER(ORDER BY value)-1) AS name FROM (SELECT DISTINCT value FROM fields WHERE key IN ('id','identity','source_event','source_session','source_digest','occurred','source_recorded_at','source_recorded_utc') AND type='text')), encoded_fields AS MATERIALIZED (SELECT row_id,key,CASE WHEN type='null' THEN 'null' WHEN key IN ('id','identity','source_event','source_session','source_digest','occurred','source_recorded_at','source_recorded_utc') AND type='text' THEN json_quote((SELECT name FROM refs WHERE value=f.value)) WHEN key IN ('id','identity','source_event','source_session','source_digest','occurred','source_recorded_at','source_recorded_utc') THEN json_object('literal',CASE WHEN type IN ('array','object') THEN json(value) WHEN type='true' THEN json('true') WHEN type='false' THEN json('false') ELSE value END) WHEN type IN ('array','object') THEN value WHEN type='true' THEN 'true' WHEN type='false' THEN 'false' ELSE json_quote(value) END AS cell FROM fields f), shared AS MATERIALIZED (SELECT key,MIN(cell) AS cell FROM encoded_fields GROUP BY key HAVING COUNT(*)=(SELECT COUNT(*) FROM records) AND COUNT(DISTINCT cell)=1), encoded_rows AS (SELECT row_id,json_group_object(key,json(cell)) AS cells FROM (SELECT * FROM encoded_fields WHERE key NOT IN (SELECT key FROM shared) ORDER BY row_id,key) GROUP BY row_id) SELECT json_object('reference_fields',json('[\"id\",\"identity\",\"source_event\",\"source_session\",\"source_digest\",\"occurred\",\"source_recorded_at\",\"source_recorded_utc\"]'),'references',json((SELECT json_group_object(name,value) FROM refs)),'shared_fields',json((SELECT json_group_object(key,json(cell)) FROM shared)),'records',json((SELECT json_group_array(json(cells)) FROM (SELECT COALESCE(e.cells,'{}') AS cells FROM records r LEFT JOIN encoded_rows e ON e.row_id=r.row_id ORDER BY r.row_id))));" and [records]))
+    set closed to sql_close(database)
+    if closed is not equal to 0 or else not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)

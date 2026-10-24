@@ -1,0 +1,50 @@
+import "session_messages"
+import "../providers/local_json"
+
+# Startup-only cache preparation, never an agent turn. No conversation, recalled
+# memories or user input is sent, no output is executed, and no event is written.
+# One discarded token completes prefix evaluation; user generation remains
+# unlimited and uses the configured highest reasoning effort unchanged.
+define startup_warm_exchange with port as Int and method as Str and path as Str and body as Str returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return ["platform-error"]
+    set connection to local_socket_connect(library and port and -1)
+    if not (archive_list_text(connection and 0) equals "connected"):
+        set closed to ep_dlclose(library)
+        return ["connect-failed"]
+    set descriptor to get_list(connection and 1)
+    set reader to http_stream_create(library and descriptor and -1)
+    set result to local_json_exchange(reader and method and port and path and body and 65536)
+    set released to http_stream_release(reader)
+    set closed to net_close(descriptor)
+    set closed to ep_dlclose(library)
+    return result
+
+define startup_warm_prefix with database as Int returning Int:
+    if not (ptr_to_str(get_env("ECHO_STARTUP_WARM_PREFIX")) equals "1"):
+        return 0
+    set row to history_collect_one(archive_prepare(database and "SELECT r.run FROM echo_events e JOIN echo_runs r ON r.run=json_extract(e.payload,'$.run_id') WHERE e.kind='model_request' AND json_valid(e.payload) AND COALESCE(json_extract(e.payload,'$.purpose'),'foreground')='foreground' ORDER BY e.sequence DESC LIMIT 1;"))
+    if not (archive_list_text(row and 0) equals "found"):
+        return 0
+    set run to archive_list_text(row and 1)
+    set profile to provider_json_tokens(agent_provider_read(database and run))
+    if not (provider_value(profile and provider_member(profile and 0 and "adapter")) equals "llama.cpp"):
+        return 0
+    set port to string_to_int(provider_value(profile and provider_member(profile and 0 and "port")))
+    set slots to startup_warm_exchange(port and "GET" and "/slots" and "")
+    if not (archive_list_text(slots and 0) equals "ready"):
+        return 1
+    if string_contains(archive_list_text(slots and 2) and "\"is_processing\":true") > 0:
+        return 0
+    set prompt to echo_system_prompt(database and run)
+    if string_length(prompt) equals 0:
+        return 1
+    set body to concat("{\"model\":" and provider_quote(provider_value(profile and provider_member(profile and 0 and "model"))))
+    set body to concat(body and concat(",\"messages\":[{\"role\":\"system\",\"content\":" and concat(provider_quote(prompt) and "}],\"tools\":")))
+    set body to concat(body and concat(session_tool_schemas_owned(database and run) and ",\"stream\":false,\"echo_background\":true,\"max_tokens\":1}"))
+    set warmed to startup_warm_exchange(port and "POST" and "/v1/chat/completions" and body)
+    if not (archive_list_text(warmed and 0) equals "ready") or else get_list(warmed and 1) is not equal to 200:
+        return 1
+    display "Static model prefix warmed before accepting requests."
+    return 0
