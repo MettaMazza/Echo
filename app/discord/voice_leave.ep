@@ -1,0 +1,101 @@
+import "voice_intents"
+
+# Separate leave attempts preserve the original join claim and its uncertainty.
+define discord_voice_leave_schema with journal as Int returning Int:
+    if discord_voice_intent_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_leave_attempts(identity TEXT PRIMARY KEY REFERENCES discord_voice_intents(identity),claim TEXT NOT NULL,generation TEXT NOT NULL,gateway_session TEXT NOT NULL,after_sequence INTEGER NOT NULL,state TEXT NOT NULL CHECK(state IN ('claimed','sent','uncertain','confirmed')),confirmed_sequence INTEGER); CREATE TABLE IF NOT EXISTS discord_voice_leave_confirmations(identity TEXT PRIMARY KEY REFERENCES discord_voice_intents(identity),session TEXT NOT NULL,sequence INTEGER NOT NULL,kind TEXT NOT NULL);")
+
+define discord_voice_leave_claim with journal as Int and identity as Str and generation as Str returning List:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("voice-leave-store-busy")
+    set keys to create_list()
+    set keys to [identity]
+    set intent to history_collect_one(checkpoint_prepare(journal and "SELECT guild,state FROM discord_voice_intents WHERE identity=?1;" and keys))
+    set current to history_collect_one(archive_prepare(journal and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(intent and 0) equals "found") or else not (archive_list_text(intent and 2) equals "leave-required") or else not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 1) equals generation):
+        set rolled_back to migration_fail(journal and "voice-leave-not-claimable")
+        return history_status("voice-leave-not-claimable")
+    set existing to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_leave_attempts WHERE identity=?1;" and keys))
+    if not (archive_list_text(existing and 0) equals "end"):
+        set rolled_back to migration_fail(journal and "voice-leave-already-attempted")
+        return history_status("voice-leave-already-attempted")
+    set claim to ptr_to_str(ep_uuid_v4())
+    set values to create_list()
+    set retained_voice_added to append_list(values and identity)
+    set retained_voice_added to append_list(values and claim)
+    set retained_voice_added to append_list(values and generation)
+    set retained_voice_added to append_list(values and archive_list_text(current and 2))
+    set retained_voice_added to append_list(values and archive_list_text(current and 3))
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_leave_attempts(identity,claim,generation,gateway_session,after_sequence,state) VALUES(?1,?2,?3,?4,CAST(?5 AS INTEGER),'claimed');" and values) and 101) is not equal to 0:
+        set rolled_back to migration_fail(journal and "voice-leave-claim-failed")
+        return history_status("voice-leave-claim-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled_back to migration_fail(journal and "voice-leave-commit-failed")
+        return history_status("voice-leave-commit-failed")
+    set result to history_status("leave-claimed")
+    set added to append_list(result and claim)
+    set added to append_list(result and archive_list_text(intent and 1))
+    return result
+
+define discord_voice_leave_written with journal as Int and identity as Str and claim as Str and complete as Int returning Str:
+    if string_length(claim) equals 0 or else (complete is not equal to 0 and also complete is not equal to 1):
+        return "invalid-voice-leave-result"
+    set disposition to "uncertain"
+    if complete equals 1:
+        set disposition to "sent"
+    set values to create_list()
+    set values to [identity,claim,disposition]
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_leave_attempts SET state=?3 WHERE identity=?1 AND claim=?2 AND state='claimed';" and values) and 101) is not equal to 0:
+        return "voice-leave-result-failed"
+    set changed to history_collect_one(archive_prepare(journal and "SELECT changes();"))
+    if not (archive_list_text(changed and 1) equals "1"):
+        return "voice-leave-result-not-applied"
+    return disposition
+
+# Shared by the bounded Gateway poll and transactional confirmation. Selection
+# is only a hint: reconciliation repeats this query under the writer lock.
+define discord_voice_leave_confirmation_query returning Str:
+    return "SELECT l.identity,e.sequence,e.kind FROM discord_voice_leave_attempts l JOIN discord_voice_intents i ON i.identity=l.identity JOIN discord_voice_membership_events e ON e.session=?2 WHERE (?1='' OR l.identity=?1) AND l.state IN ('sent','uncertain') AND i.state='leave-required' AND ((l.gateway_session=?2 AND e.sequence>l.after_sequence AND e.kind='VOICE_STATE_UPDATE' AND json_extract(e.payload,'$.guild_id')=i.guild AND json_extract(e.payload,'$.user_id')=?3 AND json_type(e.payload,'$.channel_id')='null') OR (l.gateway_session<>?2 AND e.kind='GUILD_CREATE' AND json_extract(e.payload,'$.id')=i.guild AND json_type(e.payload,'$.voice_states')='array' AND NOT EXISTS(SELECT 1 FROM json_each(e.payload,'$.voice_states') member WHERE json_extract(member.value,'$.user_id')=?3))) AND NOT EXISTS(SELECT 1 FROM discord_voice_membership_events later WHERE later.session=e.session AND later.sequence>e.sequence AND COALESCE(json_extract(later.payload,'$.guild_id'),json_extract(later.payload,'$.id'))=i.guild AND (later.kind<>'VOICE_STATE_UPDATE' OR json_extract(later.payload,'$.user_id')=?3 OR json_extract(later.payload,'$.invalid')=1)) ORDER BY e.sequence DESC LIMIT 1;"
+
+# Reconciliation uses the trusted journal, never a model-supplied success flag.
+# A later bot null-channel event confirms within the same Gateway session.
+# After Identify, a fresh validated guild snapshot without the bot can confirm
+# an older session's completed/uncertain leave; missing snapshots never do.
+# A still-claimed attempt is not released: its writer might not have finished.
+define discord_voice_leave_reconcile with journal as Int and identity as Str and generation as Str and bot as Str returning Str:
+    if discord_snowflake(bot) equals 0:
+        return "invalid-voice-bot"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "voice-leave-store-busy"
+    set current to history_collect_one(archive_prepare(journal and "SELECT generation,session FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 1) equals generation):
+        return migration_fail(journal and "stale-voice-leave-reconcile")
+    set values to create_list()
+    set retained_voice_added to append_list(values and identity)
+    set retained_voice_added to append_list(values and archive_list_text(current and 2))
+    set retained_voice_added to append_list(values and bot)
+    set observed to history_collect_one(checkpoint_prepare(journal and discord_voice_leave_confirmation_query() and values))
+    if archive_list_text(observed and 0) equals "end":
+        return migration_fail(journal and "await-voice-leave-confirmation")
+    if not (archive_list_text(observed and 0) equals "found"):
+        return migration_fail(journal and "voice-leave-read-failed")
+    set receipt to create_list()
+    set retained_voice_added to append_list(receipt and identity)
+    set retained_voice_added to append_list(receipt and archive_list_text(current and 2))
+    set retained_voice_added to append_list(receipt and archive_list_text(observed and 2))
+    set retained_voice_added to append_list(receipt and archive_list_text(observed and 3))
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_leave_confirmations(identity,session,sequence,kind) VALUES(?1,?2,CAST(?3 AS INTEGER),?4);" and receipt) and 101) is not equal to 0:
+        return migration_fail(journal and "voice-leave-confirm-failed")
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and identity)
+    set retained_voice_added to append_list(keys and archive_list_text(observed and 2))
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_leave_attempts SET state='confirmed',confirmed_sequence=CAST(?2 AS INTEGER) WHERE identity=?1;" and keys) and 101) is not equal to 0:
+        return migration_fail(journal and "voice-leave-confirm-failed")
+    set keys to create_list()
+    set keys to [identity]
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_intents SET state='closed' WHERE identity=?1 AND state='leave-required';" and keys) and 101) is not equal to 0:
+        return migration_fail(journal and "voice-leave-release-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "voice-leave-commit-failed")
+    return "voice-left-confirmed"

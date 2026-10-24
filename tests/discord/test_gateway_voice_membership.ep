@@ -1,0 +1,64 @@
+import "../../app/discord/gateway_intake"
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set database to discord_store_open(get_argument(1) and "300")
+    if database equals 0 or else discord_gateway_runtime_schema(database) is not equal to 0:
+        return 2
+    set ready to "{\"op\":0,\"s\":0,\"t\":\"READY\",\"d\":{\"user\":{\"id\":\"300\"},\"session_id\":\"session-a\",\"resume_gateway_url\":\"wss://gateway.discord.gg\"}}"
+    if not (discord_gateway_ready_record(database and "generation-a" and "300" and ready) equals "recorded"):
+        return 14
+    # The previously deployed mask lacked voice-state events. It must not Resume.
+    if sql_execute(database and "UPDATE discord_gateway_intents SET mask=112137;") is not equal to 0 or else not (archive_list_text(discord_gateway_resume_read(database) and 0) equals "end"):
+        return 15
+    set fresh_ready to string_replace(ready and "session-a" and "session-b")
+    if not (discord_gateway_ready_record(database and "generation-b" and "300" and fresh_ready) equals "recorded") or else not (archive_list_text(discord_gateway_resume_read(database) and 0) equals "found"):
+        return 16
+    set bound to discord_gateway_bind(database and "generation-a" and "session-a")
+    set guilds to create_list()
+    set guilds to ["100"]
+    set body to "{\"d\":{\"guild_id\":\"100\",\"user_id\":\"400\",\"channel_id\":\"200\",\"session_id\":\"voice-session\",\"member\":{\"private\":\"omit-this\"},\"token\":\"never-retain-this\"}}"
+    set tokens to provider_json_tokens(body)
+    set projection to discord_gateway_voice_projection(tokens and "VOICE_STATE_UPDATE" and guilds)
+    if string_length(projection) equals 0 or else string_index_of(projection and "omit-this") >= 0 or else string_index_of(projection and "never-retain-this") >= 0:
+        return 3
+    set flag_body to "{\"d\":{\"guild_id\":\"100\",\"user_id\":\"400\",\"channel_id\":\"200\",\"session_id\":\"voice-session\",\"self_mute\":false,\"self_deaf\":true,\"mute\":false,\"suppress\":false}}"
+    set flags to provider_json_tokens(discord_gateway_voice_projection(provider_json_tokens(flag_body) and "VOICE_STATE_UPDATE" and guilds))
+    if not (provider_kind(flags and provider_member(flags and 0 and "self_mute")) equals "false") or else not (provider_kind(flags and provider_member(flags and 0 and "self_deaf")) equals "true"):
+        return 12
+    set bad_body to "{\"d\":{\"guild_id\":\"100\",\"user_id\":\"400\",\"channel_id\":\"200\",\"session_id\":\"voice-session\",\"self_mute\":\"false\"}}"
+    set flags to provider_json_tokens(discord_gateway_voice_projection(provider_json_tokens(bad_body) and "VOICE_STATE_UPDATE" and guilds))
+    if not (provider_kind(flags and provider_member(flags and 0 and "invalid")) equals "true"):
+        return 13
+    set digest to ep_sha256(body)
+    set result to discord_gateway_dispatch_voice(database and "generation-a" and "session-a" and 1 and "VOICE_STATE_UPDATE" and digest and "" and "" and projection)
+    if not (result equals "recorded"):
+        return 4
+    set row to history_collect_one(archive_prepare(database and "SELECT (SELECT COUNT(*) FROM discord_voice_membership_events),(SELECT COUNT(*) FROM discord_inbox),sequence FROM discord_gateway;"))
+    if not (archive_list_text(row and 1) equals "1") or else not (archive_list_text(row and 2) equals "0") or else not (archive_list_text(row and 3) equals "1"):
+        return 5
+    set result to discord_gateway_dispatch_voice(database and "generation-a" and "session-a" and 1 and "VOICE_STATE_UPDATE" and digest and "" and "" and projection)
+    if not (result equals "already-recorded"):
+        return 6
+    set result to discord_gateway_dispatch_voice(database and "stale" and "session-a" and 2 and "VOICE_STATE_UPDATE" and digest and "" and "" and projection)
+    if not (result equals "stale-connection"):
+        return 7
+    set injected to sql_execute(database and "CREATE TRIGGER fixture_receipt_failure BEFORE INSERT ON discord_dispatch WHEN NEW.sequence=2 BEGIN SELECT RAISE(ABORT,'fixture'); END;")
+    set result to discord_gateway_dispatch_voice(database and "generation-a" and "session-a" and 2 and "VOICE_STATE_UPDATE" and digest and "" and "" and projection)
+    if not (result equals "receipt-failed"):
+        return 8
+    set row to history_collect_one(archive_prepare(database and "SELECT (SELECT COUNT(*) FROM discord_voice_membership_events),sequence FROM discord_gateway;"))
+    if not (archive_list_text(row and 1) equals "1") or else not (archive_list_text(row and 2) equals "1"):
+        return 9
+    set event_body to concat("{\"op\":0,\"s\":3,\"t\":\"VOICE_STATE_UPDATE\"," and substring(body and 1 and string_length(body) - 1))
+    set admins to create_list()
+    set result to discord_gateway_intake(database and "generation-a" and "300" and guilds and admins and event_body)
+    if not (result equals "recorded"):
+        return 10
+    set row to history_collect_one(archive_prepare(database and "SELECT (SELECT COUNT(*) FROM discord_voice_membership_events),(SELECT COUNT(*) FROM discord_inbox),sequence FROM discord_gateway;"))
+    if not (archive_list_text(row and 1) equals "2") or else not (archive_list_text(row and 2) equals "0") or else not (archive_list_text(row and 3) equals "3"):
+        return 11
+    set closed to sql_close(database)
+    display "PASS: private voice projection omits extra data; dispatch atomically persists membership and cursor; duplicates/stale workers/receipt failure cannot alter state."
+    return 0

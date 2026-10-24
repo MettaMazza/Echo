@@ -1,0 +1,86 @@
+import "voice_recording_proof"
+import "voice_membership_reader"
+
+define discord_voice_recording_control with body as Str returning List:
+    set fields to provider_json_tokens(body)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "type")) equals "3"):
+        return history_status("recording-control-denied")
+    set custom to provider_value(fields and provider_member(fields and provider_member(fields and 0 and "data") and "custom_id"))
+    if string_length(custom) < 82 or else string_length(custom) > 83 or else not (substring(custom and 0 and 12) equals "echo:record:") or else not (substring(custom and 76 and 1) equals ":"):
+        return history_status("recording-control-denied")
+    set decision to substring(custom and 77 and string_length(custom) - 77)
+    if not (decision equals "grant" or else decision equals "revoke"):
+        return history_status("recording-control-denied")
+    return ["recording-control",substring(custom and 12 and 64),decision]
+
+# Native interaction path only; never an inference turn or model tool. Grants
+# require live visibility and the independent recording request. Revocation
+# does not depend on REST availability or continued visibility of the notice.
+define discord_voice_recording_action with library as Str and token as Str and journal as Int and database as Int and inbox as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    if discord_voice_recording_offer_schema(journal) is not equal to 0:
+        return "store-failed"
+    set original to history_collect_one(checkpoint_prepare(journal and "SELECT payload FROM discord_inbox WHERE identity=?1 AND kind='INTERACTION_CREATE';" and [inbox]))
+    if not (archive_list_text(original and 0) equals "found"):
+        return "recording-control-denied"
+    set control to discord_voice_recording_control(archive_list_text(original and 1))
+    if not (archive_list_text(control and 0) equals "recording-control"):
+        return "recording-control-denied"
+    set offer to archive_list_text(control and 1)
+    set decision to archive_list_text(control and 2)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT o.recording,o.actor,r.origin,i.guild,i.channel,i.generation,i.gateway_session,m.message,i.identity FROM discord_voice_recording_offers o JOIN discord_voice_recordings r ON r.identity=o.recording JOIN discord_voice_intents i ON i.identity=r.intent JOIN discord_voice_recording_offer_messages m ON m.offer=o.identity WHERE o.identity=?1 AND r.state='active' AND i.state IN ('sent','connected');" and [offer]))
+    if not (archive_list_text(row and 0) equals "found") or else discord_contains(guilds and archive_list_text(row and 4)) equals 0:
+        return "recording-control-denied"
+    set fields to provider_json_tokens(archive_list_text(original and 1))
+    set actor to provider_value(fields and provider_member(fields and provider_member(fields and provider_member(fields and 0 and "member") and "user") and "id"))
+    if not (actor equals archive_list_text(row and 2)) or else not (provider_value(fields and provider_member(fields and 0 and "application_id")) equals bot):
+        return "recording-control-denied"
+    set proof to create_list()
+    if decision equals "grant":
+        set before to history_collect_one(archive_prepare(journal and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+        if not (archive_list_text(before and 0) equals "found"):
+            return "recording-control-denied"
+        set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(row and 4) and archive_list_text(row and 3) and actor and admins)
+        if not (archive_list_text(access and 0) equals "allowed"):
+            return "recording-control-denied"
+        set route to concat("/channels/" and concat(archive_list_text(row and 3) and concat("/messages/" and archive_list_text(row and 8))))
+        set observed to discord_access_get(library and token and journal and directory_path and route and "GET:message" and archive_list_text(row and 3))
+        if not (archive_list_text(observed and 0) equals "observed"):
+            return "recording-control-denied"
+        if not (discord_voice_recording_offer_observed(journal and offer and archive_list_text(observed and 1) and archive_list_text(observed and 2)) equals "recording-offer-bound"):
+            return "recording-control-denied"
+        set proof to discord_voice_recording_proof(library and token and journal and database and archive_list_text(row and 1) and bot and guilds and admins and directory_path and stop_file)
+        if not (archive_list_text(proof and 0) equals "recording-proof"):
+            if archive_list_text(proof and 0) equals "voice-authorization-refresh-required":
+                return "recording-membership-refresh-required"
+            return "recording-control-denied"
+        set transport to get_list(proof and 5)
+        if not (archive_list_text(before and 1) equals archive_list_text(transport and 1)) or else not (archive_list_text(before and 2) equals archive_list_text(transport and 2)) or else string_to_int(archive_list_text(before and 3)) is not equal to get_list(transport and 3):
+            return "recording-membership-refresh-required"
+    # This finite snapshot has a local generation owned only by this action.
+    # Consent is tied to actual participant session IDs, not this local counter.
+    set snapshot to discord_voice_membership_read_intent(journal and archive_list_text(row and 6) and archive_list_text(row and 7) and 1 and archive_list_text(row and 4) and archive_list_text(row and 5) and bot and archive_list_text(row and 9))
+    if not (archive_list_text(snapshot and 0) equals "voice-membership-ready"):
+        return "recording-control-denied"
+    if decision equals "grant":
+        if get_list(snapshot and 2) is not equal to get_list(get_list(proof and 5) and 3):
+            return "recording-membership-refresh-required"
+        set checked to discord_voice_recording_proof_check(journal and database and archive_list_text(row and 1) and proof and bot and guilds and admins and stop_file)
+        if not (checked equals "allowed"):
+            if checked equals "voice-authorization-refresh-required":
+                return "recording-membership-refresh-required"
+            return "recording-control-denied"
+    if file_exists(stop_file):
+        return "stopped"
+    set recorded to discord_voice_recording_consent_at(journal and offer and inbox and get_list(get_list(snapshot and 1) and 0) and 1 and archive_list_text(row and 6) and archive_list_text(row and 7) and get_list(snapshot and 2))
+    if recorded equals "recording-membership-refresh-required" or else recorded equals "recording-store-busy":
+        return recorded
+    if not (recorded equals "consent-recorded" or else recorded equals "existing-consent-receipt"):
+        return "recording-control-denied"
+    set latest to history_collect_one(checkpoint_prepare(journal and "SELECT receipt,decision FROM discord_voice_recording_consents WHERE recording=?1 AND actor=?2 ORDER BY length(interaction) DESC,interaction DESC LIMIT 1;" and [archive_list_text(row and 1),actor]))
+    if not (archive_list_text(latest and 1) equals inbox):
+        return "recording-consent-superseded"
+    if archive_list_text(latest and 2) equals "revoke":
+        return "recording-consent-revoked"
+    return "recording-consent-granted"

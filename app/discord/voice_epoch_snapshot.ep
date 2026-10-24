@@ -1,0 +1,99 @@
+import "voice_media_epoch"
+
+# Pending transition owns a native ratchet and authenticator captured together,
+# plus retained library/session/user identity. Later MLS commits cannot replace
+# these keys. The transition controller must enforce execute ordering.
+define discord_voice_snapshot_close with snapshot as List returning Int:
+    if snapshot equals 0 or else length_list(snapshot) is not equal to 5:
+        return 0
+    set library to get_list(snapshot and 0)
+    if library equals 0:
+        return 1
+    if get_list(snapshot and 1) is not equal to 0:
+        set destroyed to ep_dlcall1(ep_dlsym(library and "daveKeyRatchetDestroy") and get_list(snapshot and 1))
+    set released to discord_voice_blob_release(get_list(snapshot and 2))
+    set changed to set_list(snapshot and 0 and 0)
+    set changed to set_list(snapshot and 1 and 0)
+    set changed to set_list(snapshot and 2 and 0)
+    set closed to ep_dlclose(library)
+    return 1
+
+define discord_voice_snapshot_capture with session as List and path as Str and user as Str and roster as List returning List:
+    if discord_dave_users_valid(roster) equals 0 or else discord_dave_failures(session) is not equal to 0 or else get_list(session and 1) equals 0:
+        return 0
+    set found to 0
+    for each member in roster:
+        if ptr_to_str(member) equals user:
+            set found to 1
+    if found equals 0:
+        return 0
+    set library to ep_dlopen(path)
+    if library equals 0:
+        return 0
+    if library is not equal to get_list(session and 0):
+        set closed to ep_dlclose(library)
+        return 0
+    set auth to discord_voice_epoch_authenticator(session)
+    if auth equals 0:
+        set closed to ep_dlclose(library)
+        return 0
+    set ratchet to ep_dlcall2(ep_dlsym(library and "daveSessionGetKeyRatchet") and get_list(session and 1) and str_to_ptr(user))
+    set snapshot to create_list()
+    set snapshot to [library,ratchet,auth,session,user]
+    if ratchet equals 0 or else discord_dave_failures(session) is not equal to 0:
+        set closed to discord_voice_snapshot_close(snapshot)
+        return 0
+    return snapshot
+
+# 1 installed, 2 already installed, 0 failed. Native setters copy the ratchet;
+# the caller still owns the snapshot and may dispose it after the transition.
+# Failure closes the target rather than allowing media with a revoked member.
+define discord_voice_snapshot_apply with epoch as List and snapshot as List and roster as List returning Int:
+    if epoch equals 0 or else length_list(epoch) is not equal to 3:
+        return 0
+    set media to get_list(epoch and 0)
+    if media equals 0 or else length_list(media) is not equal to 5 or else get_list(media and 0) equals 0:
+        return 0
+    set valid to 0
+    if discord_dave_users_valid(roster) equals 1:
+        for each member in roster:
+            if ptr_to_str(member) equals archive_list_text(epoch and 1):
+                set valid to 1
+    if snapshot equals 0 or else length_list(snapshot) is not equal to 5:
+        set closed to discord_voice_epoch_close(epoch)
+        return 0
+    set session to get_list(media and 2)
+    if valid equals 0 or else get_list(snapshot and 0) is not equal to get_list(media and 0) or else get_list(snapshot and 1) equals 0 or else get_list(snapshot and 3) is not equal to session or else not (archive_list_text(snapshot and 4) equals archive_list_text(epoch and 1)) or else discord_dave_failures(session) is not equal to 0 or else get_list(session and 1) equals 0:
+        set closed to discord_voice_epoch_close(epoch)
+        return 0
+    set auth to get_list(snapshot and 2)
+    set old to get_list(epoch and 2)
+    set same to get_list(auth and 1) equals get_list(old and 1)
+    set index to 0
+    repeat while same equals 1 and also index < get_list(auth and 1):
+        if peek_byte(get_list(auth and 0) and index) is not equal to peek_byte(get_list(old and 0) and index):
+            set same to 0
+        set index to index + 1
+    if same equals 1:
+        return 2
+    set count to get_list(auth and 1)
+    set pointer to alloc_bytes(count)
+    if pointer equals 0:
+        set closed to discord_voice_epoch_close(epoch)
+        return 0
+    set index to 0
+    repeat while index < count:
+        set copied to poke_byte(pointer and index and peek_byte(get_list(auth and 0) and index))
+        set index to index + 1
+    set retained to create_list()
+    set retained to [pointer,count]
+    set name to "daveDecryptorTransitionToKeyRatchet"
+    if get_list(media and 3) equals 1:
+        set name to "daveEncryptorSetKeyRatchet"
+    set changed to ep_dlcall2(ep_dlsym(get_list(media and 0) and name) and get_list(media and 1) and get_list(snapshot and 1))
+    set released to discord_voice_blob_release(old)
+    set changed to set_list(epoch and 2 and retained)
+    if discord_dave_failures(session) is not equal to 0:
+        set closed to discord_voice_epoch_close(epoch)
+        return 0
+    return 1

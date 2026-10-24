@@ -1,0 +1,137 @@
+import "../providers/archived_stream"
+import "voice_recording_store"
+import "voice_pcm_reader"
+import "../archive/file_stage"
+import "../research/vector_controls"
+
+external define sqlite3_column_blob with statement as Int and position as Int returning Int
+external define sqlite3_column_bytes with statement as Int and position as Int returning Int
+external define sqlite3_get_autocommit with database as Int returning Int
+
+# Install once on the archive worker's writable journal connection, before
+# opening read snapshots. Track/cursor scans must not sort whole recordings.
+define discord_voice_recording_export_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE INDEX IF NOT EXISTS discord_voice_recording_frames_track ON discord_voice_recording_frames(recording,actor,voice_session,ssrc,nonce);")
+
+define discord_recording_wave_word with pointer as Int and offset as Int and value as Int and bytes as Int returning Int:
+    set index to 0
+    repeat while index < bytes:
+        set written to poke_byte(pointer and offset + index and value modulo 256)
+        set value to value / 256
+        set index to index + 1
+    return 0
+
+define discord_recording_wave_header with system as Int and descriptor as Int and bytes as Int returning Int:
+    set storage to research_native_words(6)
+    set pointer to get_list_data_ptr(storage)
+    set copy to ep_dlsym(system and "memcpy")
+    set copied to ep_dlcall3(copy and pointer and str_to_ptr("RIFF") and 4)
+    set copied to ep_dlcall3(copy and pointer + 8 and str_to_ptr("WAVEfmt ") and 8)
+    set copied to ep_dlcall3(copy and pointer + 36 and str_to_ptr("data") and 4)
+    set written to discord_recording_wave_word(pointer and 4 and bytes + 36 and 4)
+    set written to discord_recording_wave_word(pointer and 16 and 16 and 4)
+    set written to discord_recording_wave_word(pointer and 20 and 1 and 2)
+    set written to discord_recording_wave_word(pointer and 22 and 2 and 2)
+    set written to discord_recording_wave_word(pointer and 24 and 48000 and 4)
+    set written to discord_recording_wave_word(pointer and 28 and 192000 and 4)
+    set written to discord_recording_wave_word(pointer and 32 and 4 and 2)
+    set written to discord_recording_wave_word(pointer and 34 and 16 and 2)
+    set written to discord_recording_wave_word(pointer and 40 and bytes and 4)
+    if ep_dlcall3(ep_dlsym(system and "lseek") and descriptor and 0 and 0) is not equal to 0:
+        return 1
+    return file_stage_write(system and descriptor and pointer and 44)
+
+# Host-only staging, not publication or permission to disclose. Caller owns a
+# stable journal read transaction and an empty exclusive private staging file.
+# Terminal recordings cannot grow. Tracks are split at exact consent changes or
+# RTP discontinuities, never silently compacted across missing audio. The host
+# continues last_nonce until end; 60 seconds/3000 packets bounds one export job,
+# not total recording retention. Packet blobs are borrowed only until next step.
+define discord_voice_recording_export with journal as Int and system as Int and descriptor as Int and recording as Str and actor as Str and voice_session as Str and ssrc as Int and after_nonce as Int returning List:
+    if sqlite3_get_autocommit(journal) is not equal to 0 or else system equals 0 or else descriptor < 0 or else after_nonce < -1 or else after_nonce > 4294967295 or else ssrc < 1 or else ssrc > 4294967295:
+        return history_status("recording-export-invalid")
+    set source to history_collect_one(checkpoint_prepare(journal and "SELECT r.origin,r.request,i.guild FROM discord_voice_recordings r JOIN discord_voice_intents i ON i.identity=r.intent WHERE r.identity=?1 AND r.state IN ('stopped','interrupted');" and [recording]))
+    if not (archive_list_text(source and 0) equals "found"):
+        return history_status("recording-export-not-terminal")
+    if workspace_regular_file(system and descriptor) equals 0 or else ep_dlcall3(ep_dlsym(system and "lseek") and descriptor and 0 and 2) is not equal to 0:
+        return history_status("recording-export-file-not-empty")
+    set query to "SELECT f.identity,f.nonce,f.rtp_timestamp,f.frames,f.consent,f.digest,f.pcm,CASE WHEN c.recording=f.recording AND c.actor=f.actor AND c.voice_session=f.voice_session AND c.decision='grant' AND f.sample_rate=48000 AND f.channels=2 AND length(f.authority_evidence)=64 AND f.nonce BETWEEN 0 AND 4294967295 AND f.rtp_timestamp BETWEEN 0 AND 4294967295 THEN 1 ELSE 0 END,json_object('frame',f.identity,'nonce',f.nonce,'rtp_sequence',f.packet_sequence,'rtp_timestamp',f.rtp_timestamp,'samples',f.frames,'sha256',f.digest,'consent',f.consent,'gateway_session',f.gateway_session,'gateway_sequence',f.gateway_sequence,'authority_evidence',f.authority_evidence,'captured_ms',f.captured_ms) FROM discord_voice_recording_frames f INDEXED BY discord_voice_recording_frames_track LEFT JOIN discord_voice_recording_consents c ON c.receipt=f.consent WHERE f.recording=?1 AND f.actor=?2 AND f.voice_session=?3 AND f.ssrc=CAST(?4 AS INTEGER) AND f.nonce>CAST(?5 AS INTEGER) ORDER BY f.nonce LIMIT 3001;"
+    set statement to checkpoint_prepare(journal and query and [recording,actor,voice_session,int_to_string(ssrc),int_to_string(after_nonce)])
+    if statement equals 0:
+        return history_status("recording-export-store-failed")
+    set total to 0
+    set count to 0
+    set last_nonce to after_nonce
+    set next_timestamp to -1
+    set consent to ""
+    set reason to "end"
+    set records to create_builder()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(statement)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set reason to "recording-export-store-failed"
+            break
+        set identity to ptr_to_str(ep_sqlite3_column_text(statement and 0))
+        set nonce to string_to_int(ptr_to_str(ep_sqlite3_column_text(statement and 1)))
+        set timestamp to string_to_int(ptr_to_str(ep_sqlite3_column_text(statement and 2)))
+        set frames to string_to_int(ptr_to_str(ep_sqlite3_column_text(statement and 3)))
+        set receipt to ptr_to_str(ep_sqlite3_column_text(statement and 4))
+        if nonce <= last_nonce or else frames < 1 or else frames > 5760 or else not (ptr_to_str(ep_sqlite3_column_text(statement and 7)) equals "1"):
+            set reason to "recording-export-provenance-failed"
+            break
+        if count > 0:
+            if not (receipt equals consent):
+                set reason to "consent-boundary"
+                break
+            if timestamp is not equal to next_timestamp:
+                set reason to "rtp-discontinuity"
+                break
+            if total + frames > 2880000 or else count >= 3000:
+                set reason to "chunk-limit"
+                break
+        set key to concat(provider_quote(recording) and concat(provider_quote(actor) and provider_quote(voice_session)))
+        set key to concat(key and concat(provider_quote(receipt) and concat(provider_quote(int_to_string(ssrc)) and provider_quote(int_to_string(nonce)))))
+        set pointer to sqlite3_column_blob(statement and 6)
+        set bytes to sqlite3_column_bytes(statement and 6)
+        set digest to ptr_to_str(ep_sqlite3_column_text(statement and 5))
+        if not (ep_sha256(key) equals identity) or else pointer equals 0 or else bytes is not equal to frames * 4 or else not (research_memory_digest(system and pointer and bytes) equals digest):
+            set reason to "recording-export-integrity-failed"
+            break
+        if count equals 0:
+            if discord_recording_wave_header(system and descriptor and 0) is not equal to 0:
+                set reason to "recording-export-write-failed"
+                break
+        if file_stage_write(system and descriptor and pointer and bytes) is not equal to 0:
+            set reason to "recording-export-write-failed"
+            break
+        if count > 0:
+            set added to builder_append(records and ",")
+        set added to builder_append(records and ptr_to_str(ep_sqlite3_column_text(statement and 8)))
+        set total to total + frames
+        set count to count + 1
+        set last_nonce to nonce
+        set next_timestamp to (timestamp + frames) modulo 4294967296
+        set consent to concat(receipt and "")
+    set closed to ep_sqlite3_finalize(statement)
+    if closed is not equal to 0:
+        return history_status("recording-export-store-failed")
+    if not (reason equals "end" or else reason equals "consent-boundary" or else reason equals "rtp-discontinuity" or else reason equals "chunk-limit"):
+        return history_status(reason)
+    if count equals 0:
+        return history_status("recording-export-end")
+    if discord_recording_wave_header(system and descriptor and total * 4) is not equal to 0:
+        return history_status("recording-export-write-failed")
+    set manifest to concat("{\"recording\":" and provider_quote(recording))
+    set manifest to concat(manifest and concat(",\"actor\":" and provider_quote(actor)))
+    set manifest to concat(manifest and concat(",\"voice_session\":" and provider_quote(voice_session)))
+    set manifest to concat(manifest and concat(",\"ssrc\":" and int_to_string(ssrc)))
+    set manifest to concat(manifest and concat(",\"origin\":" and provider_quote(archive_list_text(source and 1))))
+    set manifest to concat(manifest and concat(",\"request\":" and provider_quote(archive_list_text(source and 2))))
+    set manifest to concat(manifest and concat(",\"guild\":" and provider_quote(archive_list_text(source and 3))))
+    set manifest to concat(manifest and concat(",\"last_nonce\":" and int_to_string(last_nonce)))
+    set manifest to concat(manifest and concat(",\"boundary\":" and provider_quote(reason)))
+    set manifest to concat(manifest and concat(",\"samples\":" and int_to_string(total)))
+    set manifest to concat(manifest and concat(",\"packets\":[" and concat(ptr_to_str(builder_to_string(records)) and "]}")))
+    return ["recording-audio-staged",manifest]

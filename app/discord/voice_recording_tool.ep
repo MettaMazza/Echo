@@ -1,0 +1,50 @@
+import "voice_recording_authority"
+import "pin_tool"
+import "voice_recording_status"
+
+# Called after the voice tool's current administrative/source/channel checks.
+# No path, credential, transcript, other user's request or consent is returned.
+define discord_voice_recording_tool with journal as Int and database as Int and run as Str and call_id as Str and options as List and actor as Str and origin as Str and guild as Str and bot as Str and guilds as List and admins as List and stop_file as Str returning Str:
+    if discord_voice_recording_runtime_schema(journal) is not equal to 0:
+        return discord_pin_result("recording-store-unavailable" and "none" and "")
+    set operation to archive_list_text(options and 1)
+    set intent to archive_list_text(options and 2)
+    set identity to archive_list_text(options and 4)
+    if operation equals "record":
+        set enabled to history_collect_one(archive_prepare(journal and "SELECT enabled FROM discord_voice_recording_runtime WHERE singleton=1;"))
+        if not (archive_list_text(enabled and 1) equals "1"):
+            return discord_pin_result("recording-runtime-unavailable" and "none" and "")
+        set identity to ep_sha256(concat(run and concat(":" and call_id)))
+        set request to history_collect_one(checkpoint_prepare(database and "SELECT request_event FROM echo_tool_calls WHERE run=?1 AND call_id=?2;" and [run,call_id]))
+        if not (archive_list_text(request and 0) equals "found"):
+            return discord_pin_result("recording-request-unavailable" and "none" and "")
+        set created to discord_voice_recording_request(journal and identity and intent and actor and origin and archive_list_text(request and 1))
+        if not (created equals "pending-notice" or else string_index_of(created and "existing:") equals 0):
+            return discord_pin_result(created and "none" and "")
+        # This guard verifies the admitted record tool event independently of
+        # join authority; a join call can never authorize a recording request.
+        if created equals "pending-notice":
+            set guarded to discord_voice_recording_guard(journal and database and identity and bot and guilds and admins and stop_file)
+            if not (archive_list_text(guarded and 0) equals "recording-native-current"):
+                set stopped to discord_voice_recording_stop(journal and identity)
+                return discord_pin_result(archive_list_text(guarded and 0) and "none" and "")
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT r.state,r.request FROM discord_voice_recordings r JOIN discord_voice_intents i ON i.identity=r.intent WHERE r.identity=?1 AND r.intent=?2 AND r.actor=?3 AND r.origin=?4 AND i.guild=?5;" and [identity,intent,actor,origin,guild]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return discord_pin_result("recording-unavailable" and "none" and "")
+    if operation equals "stop":
+        if discord_voice_recording_stop(journal and identity) is not equal to 0:
+            return discord_pin_result("recording-stop-failed" and "none" and "")
+        set row to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_recordings WHERE identity=?1;" and [identity]))
+    set state to archive_list_text(row and 1)
+    set effects to "capture has not started; awaiting a visible notice and participant consent"
+    if state equals "active":
+        set effects to "notice active; capture is separately authorized for each current consenting participant; this is not transcription completion"
+    else if state equals "stopped" or else state equals "interrupted":
+        set effects to "no further capture for this recording; retained records are not erased; terminal notice cleanup is independent"
+    set output to concat("{\"status\":" and provider_quote(state))
+    set output to concat(output and concat(",\"intent\":" and provider_quote(intent)))
+    set output to concat(output and concat(",\"recording\":" and provider_quote(identity)))
+    if operation equals "status":
+        set assets to discord_recording_status_assets(journal and database and run and call_id and identity and archive_list_text(row and 2) and state and archive_list_text(options and 5) and string_to_int(archive_list_text(options and 6)))
+        set output to concat(output and concat(",\"processing\":" and assets))
+    return concat(output and concat(",\"effects\":" and concat(provider_quote(effects) and "}")))

@@ -1,0 +1,132 @@
+import "socket"
+import "voice_dave"
+
+# Only authenticated VOICE_SERVER_UPDATE endpoints enter here. Reject URL
+# credentials, paths, query strings and non-Discord origins before opening TLS.
+define discord_voice_endpoint with endpoint as Str returning Str:
+    set host to endpoint
+    if string_index_of(host and "wss://") equals 0:
+        set host to substring(host and 6 and string_length(host) - 6)
+    # Discord supplies the voice endpoint, including its TLS port. Retain a
+    # canonical explicit port instead of treating every non-443 port as a host.
+    set port_suffix to ""
+    set separator to string_index_of(host and ":")
+    if separator >= 0:
+        set port_text to substring(host and separator + 1 and string_length(host) - separator - 1)
+        if string_length(port_text) < 1 or else string_length(port_text) > 5:
+            return ""
+        set digit_index to 0
+        repeat while digit_index < string_length(port_text):
+            set digit to peek_byte(str_to_ptr(port_text) and digit_index)
+            if digit < 48 or else digit > 57:
+                return ""
+            set digit_index to digit_index + 1
+        set port to string_to_int(port_text)
+        if port < 1 or else port > 65535 or else not (int_to_string(port) equals port_text):
+            return ""
+        if port is not equal to 443:
+            set port_suffix to concat(":" and port_text)
+        set host to substring(host and 0 and separator)
+    set size to string_length(host)
+    if size < 12 or else size > 253:
+        return ""
+    set allowed to 0
+    set suffixes to create_list()
+    set suffixes to [".discord.media",".discord.gg"]
+    for each suffix in suffixes:
+        set text to ptr_to_str(suffix)
+        set count to string_length(text)
+        if size > count and also substring(host and size - count and count) equals text:
+            set allowed to 1
+    if allowed equals 0:
+        return ""
+    set index to 0
+    set label to 0
+    set previous to 0
+    repeat while index < size:
+        set code to peek_byte(str_to_ptr(host) and index)
+        if code equals 46:
+            if label equals 0 or else previous equals 45:
+                return ""
+            set label to 0
+        else:
+            if not ((code >= 97 and also code <= 122) or else (code >= 48 and also code <= 57) or else code equals 45):
+                return ""
+            if label equals 0 and also code equals 45:
+                return ""
+            set label to label + 1
+            if label > 63:
+                return ""
+        set previous to code
+        set index to index + 1
+    if label equals 0 or else previous equals 45:
+        return ""
+    return concat("wss://" and concat(host and concat(port_suffix and "/?v=8")))
+
+define discord_voice_socket_open with library_path as Str and endpoint as Str returning List:
+    set url to discord_voice_endpoint(endpoint)
+    if string_length(url) equals 0:
+        set result to create_list()
+        set added to append_list(result and "invalid-voice-origin")
+        return result
+    return discord_socket_connect_url(library_path and url)
+
+# Sends a complete binary MLS frame or UTF-8 JSON frame. A partial write is
+# uncertain: reconnect/reconcile instead of replaying an MLS commit blindly.
+define discord_voice_socket_send with socket as List and pointer as Int and count as Int and binary as Int returning Int:
+    if socket equals 0 or else not (archive_list_text(socket and 0) equals "connected") or else pointer equals 0 or else count < 1 or else count > 16777216 or else not (binary equals 0 or else binary equals 1):
+        return 0
+    set sent to research_native_words(1)
+    set flag to 1
+    if binary equals 1:
+        set flag to 2
+    set library to get_list(socket and 1)
+    set status to ep_dlcall6(ep_dlsym(library and "curl_ws_send") and get_list(socket and 2) and pointer and count and get_list_data_ptr(sent) and 0 and flag)
+    return status equals 0 and also get_list(sent and 0) equals count
+
+# Row: [status, owned binary blob, flags, frame offset, bytes remaining].
+# Both JSON and MLS remain binary here, including embedded zero bytes. Caller
+# assembles complete messages and releases each chunk, even on rejection.
+define discord_voice_socket_read with socket as List returning List:
+    set row to create_list()
+    if socket equals 0 or else not (archive_list_text(socket and 0) equals "connected"):
+        set added to append_list(row and "not-connected")
+        return row
+    set buffer to alloc_bytes(65536)
+    if buffer equals 0:
+        set added to append_list(row and "allocation-failed")
+        return row
+    set received to research_native_words(1)
+    set metadata to research_native_words(1)
+    set library to get_list(socket and 1)
+    set status to ep_dlcall5(ep_dlsym(library and "curl_ws_recv") and get_list(socket and 2) and buffer and 65536 and get_list_data_ptr(received) and get_list_data_ptr(metadata))
+    if status equals 81:
+        free_bytes(buffer)
+        set added to append_list(row and "again")
+        return row
+    if status is not equal to 0 or else get_list(metadata and 0) equals 0:
+        free_bytes(buffer)
+        set added to append_list(row and "receive-failed")
+        return row
+    set count to get_list(received and 0)
+    if count < 0 or else count > 65536:
+        free_bytes(buffer)
+        set added to append_list(row and "invalid-receive-size")
+        return row
+    set meta to get_list(metadata and 0)
+    set flags to peek_byte(meta and 4)
+    set offset to research_native_word(meta + 8)
+    set remaining to research_native_word(meta + 16)
+    if flags equals 16 or else flags equals 64:
+        free_bytes(buffer)
+        set added to append_list(row and "control")
+        return row
+    set blob to create_list()
+    set added to append_list(blob and buffer)
+    set added to append_list(blob and count)
+    set added to append_list(row and "chunk")
+    set added to append_list(row and blob)
+    set added to append_list(row and flags)
+    set added to append_list(row and offset)
+    set added to append_list(row and remaining)
+    return row

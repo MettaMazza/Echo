@@ -1,0 +1,110 @@
+import "voice_membership_events"
+import "voice_socket"
+
+# Private, ephemeral state for one serialized authorized join attempt per guild.
+# Controller creates this only after current permission/audience/cancel checks,
+# before writing Gateway OP4. No model arguments can construct a handoff.
+# Fields: guild, channel, bot, Gateway generation, request cursor, voice session,
+# token, endpoint, last own-state cursor, last server cursor, lifecycle (0/-1/1).
+define discord_voice_handoff_new with guild as Str and channel_id as Str and bot as Str and generation as Str and after_sequence as Int returning List:
+    set ids to create_list()
+    set ids to [guild,channel_id,bot]
+    if discord_dave_users_valid(ids) equals 0 or else string_length(generation) < 1 or else after_sequence < 0 or else after_sequence > 9007199254740991:
+        return 0
+    set state to create_list()
+    set added to append_list(state and guild)
+    set added to append_list(state and channel_id)
+    set added to append_list(state and bot)
+    set added to append_list(state and generation)
+    set added to append_list(state and after_sequence)
+    set added to append_list(state and "")
+    set added to append_list(state and "")
+    set added to append_list(state and "")
+    set added to append_list(state and after_sequence)
+    set added to append_list(state and after_sequence)
+    set added to append_list(state and 0)
+    return state
+
+define discord_voice_handoff_clear with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 11:
+        return 0
+    set changed to set_list(state and 5 and "")
+    set changed to set_list(state and 6 and "")
+    set changed to set_list(state and 7 and "")
+    set changed to set_list(state and 10 and -1)
+    return 1
+
+define discord_voice_handoff_ready with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 11 or else get_list(state and 10) is not equal to 0:
+        return 0
+    return string_length(archive_list_text(state and 5)) > 0 and also string_length(archive_list_text(state and 6)) > 0 and also string_length(archive_list_text(state and 7)) > 0
+
+# Takes only authenticated Gateway data, never message/attachment text. Caller
+# enforces one active join attempt so late responses cannot cross join intents.
+define discord_voice_handoff_event with state as List and generation as Str and sequence as Int and kind as Str and body as Str returning Str:
+    if state equals 0 or else length_list(state) is not equal to 11 or else get_list(state and 10) is not equal to 0:
+        return "voice-handoff-closed"
+    if not (generation equals archive_list_text(state and 3)) or else sequence <= get_list(state and 4) or else sequence > 9007199254740991:
+        return "stale-voice-handoff-event"
+    if not (kind equals "VOICE_STATE_UPDATE" or else kind equals "VOICE_SERVER_UPDATE"):
+        return "unrelated-voice-handoff-event"
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        set cleared to discord_voice_handoff_clear(state)
+        return "invalid-voice-handoff-event"
+    set guild_index to provider_member(tokens and 0 and "guild_id")
+    if not (provider_kind(tokens and guild_index) equals "string") or else not (provider_value(tokens and guild_index) equals archive_list_text(state and 0)):
+        return "other-voice-guild"
+    if kind equals "VOICE_STATE_UPDATE":
+        set user_index to provider_member(tokens and 0 and "user_id")
+        if not (provider_kind(tokens and user_index) equals "string") or else not (provider_value(tokens and user_index) equals archive_list_text(state and 2)):
+            return "other-voice-user"
+        if sequence <= get_list(state and 8):
+            return "stale-voice-handoff-event"
+        set row to discord_voice_membership_row(tokens and 0)
+        if row equals 0 or else not (archive_list_text(row and 1) equals archive_list_text(state and 1)):
+            set cleared to discord_voice_handoff_clear(state)
+            return "voice-join-target-changed"
+        set session to archive_list_text(row and 2)
+        if string_length(archive_list_text(state and 5)) > 0 and also not (session equals archive_list_text(state and 5)):
+            # A new own voice session needs a fresh serialized join attempt.
+            set cleared to discord_voice_handoff_clear(state)
+            return "voice-session-changed"
+        set changed to set_list(state and 5 and session)
+        set changed to set_list(state and 8 and sequence)
+    else:
+        if sequence <= get_list(state and 9):
+            return "stale-voice-handoff-event"
+        set endpoint_index to provider_member(tokens and 0 and "endpoint")
+        set token_index to provider_member(tokens and 0 and "token")
+        if provider_kind(tokens and endpoint_index) equals "null":
+            set changed to set_list(state and 6 and "")
+            set changed to set_list(state and 7 and "")
+            set changed to set_list(state and 9 and sequence)
+            return "await-voice-endpoint"
+        set endpoint to provider_value(tokens and endpoint_index)
+        set token to provider_value(tokens and token_index)
+        if not (provider_kind(tokens and endpoint_index) equals "string") or else not (provider_kind(tokens and token_index) equals "string") or else discord_voice_endpoint(endpoint) equals "" or else string_length(token) < 1 or else string_length(token) > 16384:
+            set cleared to discord_voice_handoff_clear(state)
+            return "invalid-voice-server"
+        set changed to set_list(state and 6 and token)
+        set changed to set_list(state and 7 and endpoint)
+        set changed to set_list(state and 9 and sequence)
+    if discord_voice_handoff_ready(state) equals 1:
+        return "voice-handoff-ready"
+    return "await-voice-handoff"
+
+# Single-use transfer to the native connection owner. This result is private
+# credential material: never put it in tool output, journals or progress logs.
+define discord_voice_handoff_take with state as List returning List:
+    if discord_voice_handoff_ready(state) equals 0:
+        return 0
+    set credentials to create_list()
+    set added to append_list(credentials and archive_list_text(state and 0))
+    set added to append_list(credentials and archive_list_text(state and 2))
+    set added to append_list(credentials and archive_list_text(state and 5))
+    set added to append_list(credentials and archive_list_text(state and 6))
+    set added to append_list(credentials and archive_list_text(state and 7))
+    set cleared to discord_voice_handoff_clear(state)
+    set changed to set_list(state and 10 and 1)
+    return credentials

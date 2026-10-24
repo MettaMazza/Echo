@@ -1,0 +1,87 @@
+import "access"
+
+# Complete current REST snapshots; authority is checked for both requester and
+# bot. Voice does not require SEND_MESSAGES/READ_MESSAGE_HISTORY. Recording and
+# transcription consent are separate gates and cannot be inferred from CONNECT.
+define discord_voice_access_snapshots with journal as Int and guild_body as Str and roles_body as Str and actor_body as Str and bot_body as Str and room_body as Str and guild as Str and room as Str and actor as Str and bot as Str and guilds as List and admins as List and playback as Int and now as Int returning Str:
+    if discord_contains(guilds and guild) equals 0 or else discord_contains(admins and actor) equals 0:
+        return "voice-admin-origin-denied"
+    if playback is not equal to 0 and also playback is not equal to 1:
+        return "invalid-voice-operation"
+    set channel_data to provider_json_tokens(room_body)
+    if channel_data equals 0 or else provider_unique_objects(channel_data) equals 0 or else not (provider_value(channel_data and provider_member(channel_data and 0 and "id")) equals room) or else not (provider_value(channel_data and provider_member(channel_data and 0 and "guild_id")) equals guild):
+        return "voice-channel-binding-invalid"
+    if not (provider_index(channel_data and provider_member(channel_data and 0 and "type")) equals "2"):
+        return "unsupported-voice-channel-type"
+    set people to create_list()
+    set people to [actor,bot]
+    set bodies to create_list()
+    set bodies to [actor_body,bot_body]
+    set index to 0
+    repeat while index < 2:
+        set person to archive_list_text(people and index)
+        set member_body to archive_list_text(bodies and index)
+        if discord_member_timeout(journal and member_body and now) is not equal to 0:
+            return "voice-member-timeout-or-invalid"
+        if discord_channel_permission(guild_body and roles_body and member_body and room_body and guild and person and room and 10) is not equal to 1:
+            return "voice-view-denied"
+        if discord_channel_permission(guild_body and roles_body and member_body and room_body and guild and person and room and 20) is not equal to 1:
+            return "voice-connect-denied"
+        if playback equals 1 and also person equals bot:
+            if discord_channel_permission(guild_body and roles_body and member_body and room_body and guild and person and room and 21) is not equal to 1:
+                return "voice-speak-denied"
+        set index to index + 1
+    return "allowed"
+
+# Fresh observations per invocation. The calling controller must also fence
+# permission-change events, cancellation and source identity before committing.
+define discord_voice_access_check with library as Str and token as Str and journal as Int and directory_path as Str and guild as Str and room as Str and actor as Str and bot as Str and guilds as List and admins as List and playback as Int returning List:
+    return discord_voice_access_check_capture(library and token and journal and directory_path and guild and room and actor and bot and guilds and admins and playback and create_list())
+
+define discord_voice_access_check_capture with library as Str and token as Str and journal as Int and directory_path as Str and guild as Str and room as Str and actor as Str and bot as Str and guilds as List and admins as List and playback as Int and capture as List returning List:
+    if discord_contains(guilds and guild) equals 0 or else discord_contains(admins and actor) equals 0 or else discord_snowflake(room) equals 0 or else discord_snowflake(bot) equals 0:
+        return history_status("voice-admin-origin-denied")
+    set routes to create_list()
+    set added to append_list(routes and concat("/guilds/" and guild))
+    set added to append_list(routes and concat("/guilds/" and concat(guild and "/roles")))
+    set added to append_list(routes and concat("/guilds/" and concat(guild and concat("/members/" and actor))))
+    set added to append_list(routes and concat("/guilds/" and concat(guild and concat("/members/" and bot))))
+    set added to append_list(routes and concat("/channels/" and room))
+    set buckets to create_list()
+    set buckets to ["GET:guild","GET:roles","GET:member","GET:member","GET:channel"]
+    set bodies to create_list()
+    set evidence to ""
+    set index to 0
+    repeat while index < 5:
+        set major to guild
+        if index equals 4:
+            set major to room
+        set observed to discord_access_get(library and token and journal and directory_path and archive_list_text(routes and index) and archive_list_text(buckets and index) and major)
+        if not (archive_list_text(observed and 0) equals "observed"):
+            return observed
+        set added to append_list(bodies and archive_list_text(observed and 1))
+        set evidence to concat(evidence and archive_list_text(observed and 2))
+        set index to index + 1
+    set disposition to discord_voice_access_snapshots(journal and archive_list_text(bodies and 0) and archive_list_text(bodies and 1) and archive_list_text(bodies and 2) and archive_list_text(bodies and 3) and archive_list_text(bodies and 4) and guild and room and actor and bot and guilds and admins and playback and ep_time_now_ms())
+    set result to history_status(disposition)
+    if disposition equals "allowed":
+        set captured to append_list(capture and archive_list_text(bodies and 4))
+        set added to append_list(result and ep_sha256(evidence))
+    return result
+
+# Gateway OP4 changes only the bot's state. Empty channel means leave. Controller
+# keeps one durable intent per guild and rechecks access before any join/unmute.
+define discord_voice_gateway_state_body with guild as Str and room as Str and muted as Int and deafened as Int returning Str:
+    if discord_snowflake(guild) equals 0 or else (string_length(room) > 0 and also discord_snowflake(room) equals 0) or else (muted is not equal to 0 and also muted is not equal to 1) or else (deafened is not equal to 0 and also deafened is not equal to 1):
+        return ""
+    set channel_value to "null"
+    if string_length(room) > 0:
+        set channel_value to provider_quote(room)
+    set mute_value to "false"
+    set deaf_value to "false"
+    if muted equals 1:
+        set mute_value to "true"
+    if deafened equals 1:
+        set deaf_value to "true"
+    set body to concat("{\"op\":4,\"d\":{\"guild_id\":" and provider_quote(guild))
+    return concat(body and concat(",\"channel_id\":" and concat(channel_value and concat(",\"self_mute\":" and concat(mute_value and concat(",\"self_deaf\":" and concat(deaf_value and "}}")))))))

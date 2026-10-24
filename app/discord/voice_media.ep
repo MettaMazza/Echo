@@ -1,0 +1,104 @@
+import "voice_mls"
+
+# Worker-owned audio media state: retained library, native handle, session owner,
+# sending flag and SSRC. No passthrough; caller gates membership and consent.
+define discord_voice_media_close with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 5:
+        return 0
+    set library to get_list(state and 0)
+    if library equals 0:
+        return 1
+    set name to "daveDecryptorDestroy"
+    if get_list(state and 3) equals 1:
+        set name to "daveEncryptorDestroy"
+    if get_list(state and 1) is not equal to 0:
+        set destroyed to ep_dlcall1(ep_dlsym(library and name) and get_list(state and 1))
+    set changed to set_list(state and 0 and 0)
+    set changed to set_list(state and 1 and 0)
+    set changed to set_list(state and 2 and 0)
+    set closed to ep_dlclose(library)
+    return 1
+
+define discord_voice_media_open with session as List and path as Str and user as Str and roster as List and ssrc as Int and sending as Int returning List:
+    if discord_dave_failures(session) is not equal to 0 or else get_list(session and 1) equals 0 or else discord_dave_users_valid(roster) equals 0 or else ssrc < 0 or else ssrc > 4294967295 or else (sending is not equal to 0 and also sending is not equal to 1):
+        return 0
+    set found to 0
+    for each member in roster:
+        if ptr_to_str(member) equals user:
+            set found to 1
+    if found equals 0:
+        return 0
+    set library to ep_dlopen(path)
+    if library equals 0:
+        return 0
+    if library is not equal to get_list(session and 0):
+        set closed to ep_dlclose(library)
+        return 0
+    set names to create_list()
+    set names to ["daveSessionGetKeyRatchet","daveKeyRatchetDestroy","daveEncryptorCreate","daveEncryptorDestroy","daveEncryptorSetKeyRatchet","daveEncryptorSetPassthroughMode","daveEncryptorAssignSsrcToCodec","daveEncryptorHasKeyRatchet","daveEncryptorIsPassthroughMode","daveEncryptorGetMaxCiphertextByteSize","daveEncryptorEncrypt","daveDecryptorCreate","daveDecryptorDestroy","daveDecryptorTransitionToKeyRatchet","daveDecryptorTransitionToPassthroughMode","daveDecryptorGetMaxPlaintextByteSize","daveDecryptorDecrypt"]
+    for each name in names:
+        if ep_dlsym(library and ptr_to_str(name)) equals 0:
+            set closed to ep_dlclose(library)
+            return 0
+    set ratchet to ep_dlcall2(ep_dlsym(library and "daveSessionGetKeyRatchet") and get_list(session and 1) and str_to_ptr(user))
+    if ratchet equals 0:
+        set closed to ep_dlclose(library)
+        return 0
+    set name to "daveDecryptorCreate"
+    if sending equals 1:
+        set name to "daveEncryptorCreate"
+    set handle to ep_dlcall0(ep_dlsym(library and name))
+    set state to create_list()
+    set state to [library,handle,session,sending,ssrc]
+    if handle equals 0:
+        set released to ep_dlcall1(ep_dlsym(library and "daveKeyRatchetDestroy") and ratchet)
+        set closed to discord_voice_media_close(state)
+        return 0
+    if sending equals 1:
+        set assigned to ep_dlcall3(ep_dlsym(library and "daveEncryptorAssignSsrcToCodec") and handle and ssrc and 1)
+        set disabled to ep_dlcall2(ep_dlsym(library and "daveEncryptorSetPassthroughMode") and handle and 0)
+        set assigned to ep_dlcall2(ep_dlsym(library and "daveEncryptorSetKeyRatchet") and handle and ratchet)
+    else:
+        set disabled to ep_dlcall2(ep_dlsym(library and "daveDecryptorTransitionToPassthroughMode") and handle and 0)
+        set assigned to ep_dlcall2(ep_dlsym(library and "daveDecryptorTransitionToKeyRatchet") and handle and ratchet)
+    set released to ep_dlcall1(ep_dlsym(library and "daveKeyRatchetDestroy") and ratchet)
+    if discord_dave_failures(session) is not equal to 0:
+        set closed to discord_voice_media_close(state)
+        return 0
+    if sending equals 1:
+        if ep_dlcall1(ep_dlsym(library and "daveEncryptorHasKeyRatchet") and handle) equals 0 or else ep_dlcall1(ep_dlsym(library and "daveEncryptorIsPassthroughMode") and handle) is not equal to 0:
+            set closed to discord_voice_media_close(state)
+            return 0
+    return state
+
+# Failure never returns partially decrypted or plaintext input bytes.
+define discord_voice_media_frame with state as List and pointer as Int and count as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 5 or else get_list(state and 0) equals 0 or else pointer equals 0 or else count < 1 or else count > 65475:
+        return 0
+    set session to get_list(state and 2)
+    if discord_dave_failures(session) is not equal to 0 or else get_list(session and 1) equals 0:
+        return 0
+    set library to get_list(state and 0)
+    set handle to get_list(state and 1)
+    set name to "daveDecryptorGetMaxPlaintextByteSize"
+    if get_list(state and 3) equals 1:
+        set name to "daveEncryptorGetMaxCiphertextByteSize"
+    set capacity to ep_dlcall3(ep_dlsym(library and name) and handle and 0 and count)
+    if capacity < 1 or else capacity > 65475:
+        return 0
+    set output to alloc_bytes(capacity)
+    if output equals 0:
+        return 0
+    set written to research_native_words(1)
+    set status to -1
+    if get_list(state and 3) equals 1:
+        set status to ep_dlcall8(ep_dlsym(library and "daveEncryptorEncrypt") and handle and 0 and get_list(state and 4) and pointer and count and output and capacity and get_list_data_ptr(written))
+    else:
+        set status to ep_dlcall7(ep_dlsym(library and "daveDecryptorDecrypt") and handle and 0 and pointer and count and output and capacity and get_list_data_ptr(written))
+    if status is not equal to 0 or else get_list(written and 0) < 1 or else get_list(written and 0) > capacity:
+        free_bytes(output)
+        return 0
+    set blob to create_list()
+    set retained_voice_added to append_list(blob and output)
+    set retained_voice_added to append_list(blob and get_list(written and 0))
+    return blob

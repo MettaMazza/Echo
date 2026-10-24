@@ -1,0 +1,97 @@
+import "voice_wire"
+
+# Per-connection state: interval, due monotonic ms, outstanding monotonic ms,
+# outstanding wire timestamp, last wire timestamp, accepted server sequence,
+# last monotonic observation, generation. Wall time never drives deadlines.
+define discord_voice_heartbeat_new with generation as Int returning List:
+    if generation < 1:
+        return 0
+    set state to create_list()
+    set state to [0,0,-1,-1,-1,-1,-1,generation]
+    return state
+
+define discord_voice_heartbeat_clock with state as List and now as Int returning Int:
+    if state equals 0 or else length_list(state) is not equal to 8 or else now < 0 or else now < get_list(state and 6):
+        return 0
+    set changed to set_list(state and 6 and now)
+    return 1
+
+# Voice v8 permits the client to heartbeat faster than HELLO's interval. The
+# pinned reference uses min(interval,5000). Reject duplicate HELLO so it cannot
+# erase an outstanding heartbeat or reset its deadline on an existing socket.
+define discord_voice_heartbeat_hello with state as List and interval as Int and now as Int returning Int:
+    if discord_voice_heartbeat_clock(state and now) equals 0 or else interval < 1 or else interval > 86400000 or else get_list(state and 0) is not equal to 0:
+        return 0
+    if interval > 5000:
+        set interval to 5000
+    set changed to set_list(state and 0 and interval)
+    set changed to set_list(state and 1 and now)
+    return 1
+
+define discord_voice_heartbeat_action with state as List and now as Int returning Str:
+    if discord_voice_heartbeat_clock(state and now) equals 0:
+        return "reconnect-clock-anomaly"
+    if get_list(state and 0) equals 0:
+        return "await-hello"
+    if get_list(state and 2) >= 0 and also now - get_list(state and 2) >= get_list(state and 0):
+        return "reconnect-missing-ack"
+    if now >= get_list(state and 1):
+        return "send"
+    return "wait"
+
+# Prepare has no delivery side effect. Pass its exact timestamp to sent only
+# after a complete socket write. A failed/partial write requires reconnect.
+define discord_voice_heartbeat_timestamp with state as List and wall_ms as Int returning Int:
+    if state equals 0 or else length_list(state) is not equal to 8 or else wall_ms < 0 or else wall_ms > 9007199254740990:
+        return -1
+    if wall_ms <= get_list(state and 4):
+        return get_list(state and 4) + 1
+    return wall_ms
+
+define discord_voice_heartbeat_sent with state as List and now as Int and timestamp as Int returning Int:
+    if discord_voice_heartbeat_clock(state and now) equals 0 or else get_list(state and 0) equals 0 or else timestamp < 0 or else timestamp > 9007199254740991 or else timestamp <= get_list(state and 4) or else get_list(state and 2) >= 0:
+        return 0
+    set changed to set_list(state and 2 and now)
+    set changed to set_list(state and 3 and timestamp)
+    set changed to set_list(state and 4 and timestamp)
+    set changed to set_list(state and 1 and now + get_list(state and 0))
+    return 1
+
+# The event loop passes its owning socket generation. ACK payload shape may
+# vary; an ACK from a previous socket must never clear this socket's deadline.
+define discord_voice_heartbeat_ack with state as List and now as Int and generation as Int returning Int:
+    if state equals 0 or else length_list(state) is not equal to 8 or else generation is not equal to get_list(state and 7) or else get_list(state and 2) < 0:
+        return 0
+    if discord_voice_heartbeat_clock(state and now) equals 0:
+        return 0
+    if now - get_list(state and 2) >= get_list(state and 0):
+        return 0
+    set changed to set_list(state and 2 and -1)
+    set changed to set_list(state and 3 and -1)
+    return 1
+
+# Sequence is shared by JSON and binary dispatch. Call only after the event is
+# accepted. Wire sequence is uint16 and may wrap; do not compare numerically.
+define discord_voice_heartbeat_sequence with state as List and sequence as Int and generation as Int returning Int:
+    if state equals 0 or else length_list(state) is not equal to 8 or else generation is not equal to get_list(state and 7) or else sequence < 0 or else sequence > 65535:
+        return 0
+    set changed to set_list(state and 5 and sequence)
+    return 1
+
+# Resume gets a fresh heartbeat schedule while retaining only the accepted
+# sequence and timestamp monotonicity. The caller still waits for new HELLO.
+define discord_voice_heartbeat_resume with old as List and generation as Int returning List:
+    if old equals 0 or else length_list(old) is not equal to 8 or else generation <= get_list(old and 7):
+        return 0
+    set state to discord_voice_heartbeat_new(generation)
+    set changed to set_list(state and 4 and get_list(old and 4))
+    set changed to set_list(state and 5 and get_list(old and 5))
+    return state
+
+# Build only from an internal timestamp and accepted sequence; no credentials
+# are involved. Preparing this body alone never marks a heartbeat as sent.
+define discord_voice_heartbeat_body with state as List and timestamp as Int returning Str:
+    if state equals 0 or else length_list(state) is not equal to 8 or else get_list(state and 0) equals 0 or else timestamp < 0 or else timestamp > 9007199254740991 or else timestamp <= get_list(state and 4):
+        return ""
+    set prefix to concat("{\"op\":3,\"d\":{\"t\":" and int_to_string(timestamp))
+    return concat(prefix and concat(",\"seq_ack\":" and concat(int_to_string(get_list(state and 5)) and "}}")))

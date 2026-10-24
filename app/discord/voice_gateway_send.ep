@@ -1,0 +1,85 @@
+import "voice_recording_gate_store"
+import "voice_leave"
+import "voice_access"
+import "socket"
+
+define discord_voice_gateway_send_schema with journal as Int returning Int:
+    if discord_voice_playback_gate_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_gateway_writes(claim TEXT PRIMARY KEY,identity TEXT NOT NULL,leave_operation INTEGER NOT NULL CHECK(leave_operation IN (0,1)));")
+
+# Runs only on the active Gateway socket owner. Fresh permission/source checks
+# precede this function; authorized is a trusted controller result, not a tool
+# argument. The short, nonblocking socket write is fenced by the journal writer
+# lock so cancellation and duplicate dispatch cannot race past the state check.
+# Join starts muted/deafened; playback/recording need their separate later gates.
+define discord_voice_gateway_send with journal as Int and socket as List and identity as Str and claim as Str and generation as Str and leave as Int and authorized as Int and cancelled as Int and stop_file as Str returning Str:
+    if string_length(claim) equals 0 or else (leave is not equal to 0 and also leave is not equal to 1):
+        return "invalid-voice-dispatch"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "voice-dispatch-store-busy"
+    set keys to create_list()
+    set keys to [identity]
+    set query to "SELECT guild,channel,state,claim,generation,gateway_session,after_sequence FROM discord_voice_intents WHERE identity=?1;"
+    if leave equals 1:
+        set query to "SELECT i.guild,'',l.state,l.claim,l.generation,l.gateway_session,l.after_sequence FROM discord_voice_leave_attempts l JOIN discord_voice_intents i ON i.identity=l.identity WHERE l.identity=?1 AND i.state='leave-required';"
+    set intent to history_collect_one(checkpoint_prepare(journal and query and keys))
+    if not (archive_list_text(intent and 0) equals "found") or else not (archive_list_text(intent and 3) equals "claimed") or else not (archive_list_text(intent and 4) equals claim):
+        return migration_fail(journal and "voice-dispatch-not-owned")
+    set current to history_collect_one(archive_prepare(journal and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 1) equals generation) or else not (archive_list_text(intent and 5) equals generation) or else not (archive_list_text(current and 2) equals archive_list_text(intent and 6)):
+        return migration_fail(journal and "stale-voice-dispatch")
+    if leave equals 0:
+        if authorized is not equal to 1 or else cancelled is not equal to 0 or else file_exists(stop_file) or else not (archive_list_text(current and 3) equals archive_list_text(intent and 7)):
+            # No write occurred. Conservatively retain the reservation for a
+            # leave barrier rather than allowing another join to overlap it.
+            if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_intents SET state='leave-required' WHERE identity=?1 AND state='claimed';" and keys) and 101) is not equal to 0:
+                return migration_fail(journal and "voice-dispatch-cancel-failed")
+            if sql_execute(journal and "COMMIT;") is not equal to 0:
+                return migration_fail(journal and "voice-dispatch-commit-failed")
+            return "voice-dispatch-revoked"
+    set attempt_keys to create_list()
+    set attempt_keys to [claim]
+    set attempted to history_collect_one(checkpoint_prepare(journal and "SELECT claim FROM discord_voice_gateway_writes WHERE claim=?1;" and attempt_keys))
+    if not (archive_list_text(attempted and 0) equals "end"):
+        return migration_fail(journal and "voice-dispatch-already-attempted")
+    set attempt_values to create_list()
+    set retained_voice_added to append_list(attempt_values and claim)
+    set retained_voice_added to append_list(attempt_values and identity)
+    set retained_voice_added to append_list(attempt_values and int_to_string(leave))
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_gateway_writes(claim,identity,leave_operation) VALUES(?1,?2,CAST(?3 AS INTEGER));" and attempt_values) and 101) is not equal to 0:
+        return migration_fail(journal and "voice-dispatch-marker-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "voice-dispatch-marker-failed")
+    # The attempt marker survives any failure after this point. Reacquire the
+    # writer lock and revalidate in case cancellation/reconnect won the gap.
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "voice-dispatch-marked-not-written"
+    set intent to history_collect_one(checkpoint_prepare(journal and query and keys))
+    set current to history_collect_one(archive_prepare(journal and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(intent and 0) equals "found") or else not (archive_list_text(intent and 3) equals "claimed") or else not (archive_list_text(intent and 4) equals claim) or else not (archive_list_text(current and 1) equals generation) or else not (archive_list_text(current and 2) equals archive_list_text(intent and 6)):
+        return migration_fail(journal and "voice-dispatch-marked-not-written")
+    if leave equals 0 and also (file_exists(stop_file) or else not (archive_list_text(current and 3) equals archive_list_text(intent and 7))):
+        return migration_fail(journal and "voice-dispatch-marked-not-written")
+    set room to archive_list_text(intent and 2)
+    set body to discord_voice_gateway_state_body(archive_list_text(intent and 1) and room and 1 and 1)
+    if string_length(body) equals 0:
+        return migration_fail(journal and "invalid-voice-dispatch-body")
+    set complete to discord_socket_send(socket and body)
+    set written to ""
+    if leave equals 1:
+        set written to discord_voice_leave_written(journal and identity and claim and complete)
+    else:
+        set written to discord_voice_intent_written(journal and identity and claim and complete)
+    if not (written equals "sent" or else written equals "uncertain"):
+        return migration_fail(journal and "voice-dispatch-outcome-unrecorded")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        # Durable original claim survives rollback, so recovery cannot resend.
+        return migration_fail(journal and "voice-dispatch-outcome-unrecorded")
+    return written
+
+define discord_voice_playback_gate_schema with journal as Int returning Int:
+    if discord_voice_recording_gate_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_playback_gates(identity TEXT PRIMARY KEY REFERENCES discord_voice_intents(identity),generation TEXT NOT NULL,gateway_session TEXT NOT NULL,after_sequence INTEGER NOT NULL,evidence TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('pending','attempted','sent','uncertain','revoked')));")
+

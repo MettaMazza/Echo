@@ -4,6 +4,7 @@ import "interaction_ack"
 import "interaction_recovery"
 import "command_execution"
 import "question_execution"
+import "voice_recording_action"
 
 define discord_action_worker_schema with journal as Int returning Int:
     if discord_interaction_schema(journal) is not equal to 0 or else discord_message_actions_schema(journal) is not equal to 0 or else discord_command_schema(journal) is not equal to 0:
@@ -58,11 +59,24 @@ define discord_action_worker_tick_scoped with library as Str and token as Str an
         if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_action_retry VALUES(?1,CAST(?2 AS INTEGER)) ON CONFLICT(identity) DO UPDATE SET next_ms=excluded.next_ms;" and retry) and 101) is not equal to 0:
             return "store-failed"
         return recovered
+    set recording_control to discord_voice_recording_control(body)
+    # Withdrawing an existing recording consent is a privacy control, never a
+    # conversation with Echo. Testing mode must not disable that withdrawal.
+    set recording_revoke to archive_list_text(recording_control and 0) equals "recording-control" and also archive_list_text(recording_control and 2) equals "revoke"
+    if recording_revoke equals 0 and also discord_testing_inbox_allows(journal and discord_testing_actor(body) and identity) equals 0:
+        set delivered to discord_action_status(library and token and journal and identity and bot and directory_path and "Echo is currently unavailable for this account.")
+        if delivered equals "observed" or else delivered equals "response-expired":
+            if archive_finish(checkpoint_prepare(journal and "UPDATE discord_interaction_jobs SET state='denied',detail='account-unavailable' WHERE identity=?1 AND state='acknowledged';" and [identity]) and 101) is not equal to 0:
+                return "store-failed"
+            return "denied"
+        return delivered
     set resolved to discord_message_action_resolve(journal and body and bot and admins)
     set result to archive_list_text(resolved and 0)
     set envelope to provider_json_tokens(body)
     if provider_value(envelope and provider_member(envelope and 0 and "type")) equals "2":
         set result to discord_command_tick(library and token and journal and database and identity and body and bot and guilds and admins and directory_path and stop_file)
+    else if archive_list_text(recording_control and 0) equals "recording-control":
+        set result to discord_voice_recording_action(library and token and journal and database and identity and bot and guilds and admins and directory_path and stop_file)
     else if string_length(provider_value(envelope and provider_member(envelope and provider_member(envelope and 0 and "data") and "custom_id"))) >= 11 and also substring(provider_value(envelope and provider_member(envelope and provider_member(envelope and 0 and "data") and "custom_id")) and 0 and 11) equals "echocancel:":
         set result to discord_cancel_button_tick(library and token and journal and database and identity and body and bot and guilds and admins and directory_path and stop_file)
     else if string_length(provider_value(envelope and provider_member(envelope and provider_member(envelope and 0 and "data") and "custom_id"))) >= 7 and also substring(provider_value(envelope and provider_member(envelope and provider_member(envelope and 0 and "data") and "custom_id")) and 0 and 7) equals "echoqc:":
@@ -75,7 +89,26 @@ define discord_action_worker_tick_scoped with library as Str and token as Str an
     set terminal to ""
     set message to ""
     set delay to 1000
-    if result equals "queue-cancelled":
+    if result equals "recording-consent-granted":
+        set terminal to "completed"
+        set message to "Your permission for voice transcription is saved for this voice session. You can use Decline / revoke to stop further capture. Leaving or reconnecting requires new consent."
+    else if result equals "recording-consent-revoked":
+        set terminal to "completed"
+        set message to "Your voice transcription permission is withdrawn. Further audio capture is disabled for you; previously retained audio and transcripts are unchanged."
+    else if result equals "recording-consent-superseded":
+        set terminal to "completed"
+        set message to "A newer consent decision is already saved. This older click did not replace it."
+    else if result equals "recording-control-denied":
+        set terminal to "denied"
+        set message to "This recording control could not be verified for your account and current voice session. No new recording permission was granted."
+    else if result equals "recording-membership-refresh-required" or else result equals "recording-store-busy":
+        set delay to 1000
+    else if result equals "testing-enabled" or else result equals "testing-disabled":
+        set terminal to "completed"
+        set message to "Testing mode is OFF. Normal Discord access is restored."
+        if result equals "testing-enabled":
+            set message to "Testing mode is ON. Only configured admins can communicate with Echo through Discord."
+    else if result equals "queue-cancelled":
         set terminal to "completed"
         set message to "Your queued message was cancelled. Its original text remains saved."
     else if result equals "cancel-requested" or else result equals "already-cancel-requested":
@@ -229,9 +262,20 @@ define discord_action_worker_tick_scoped with library as Str and token as Str an
     else if result equals "private-activity-retired":
         set terminal to "completed"
         set message to "This old control has been removed. Reasoning and tool activity remain in the thinking thread attached to the prompting message."
-    else if result equals "admin-required" or else result equals "action-binding-denied" or else result equals "run-source-denied" or else result equals "run-authority-revoked" or else result equals "source-access-denied" or else result equals "source-changed" or else result equals "not-trace-action" or else result equals "foreign-application" or else result equals "invalid-component" or else result equals "not-button" or else result equals "invalid-actor-or-message" or else result equals "invalid-guild" or else result equals "final-unavailable" or else result equals "source-unavailable" or else result equals "speech-response-expired" or else result equals "speech-access-changed" or else result equals "attachment-too-large-or-empty" or else result equals "speech:not-configured" or else result equals "speech:invalid-speech-profile" or else result equals "speech:not-authorized" or else result equals "speech-attachment-denied":
+    else if result equals "attachment-too-large-or-empty" or else result equals "speech-attachment-too-large":
+        set terminal to "denied"
+        set message to "The complete recording exceeds Discord's attachment size limit. Your access is valid; no audio was attached."
+    else if string_index_of(result and "speech-encoding:") equals 0:
+        set terminal to "denied"
+        set message to "Speech was generated, but preparing the audio for Discord failed. No audio was attached."
+    else if result equals "admin-required" or else result equals "action-binding-denied" or else result equals "run-source-denied" or else result equals "run-authority-revoked" or else result equals "source-access-denied" or else result equals "source-changed" or else result equals "not-trace-action" or else result equals "foreign-application" or else result equals "invalid-component" or else result equals "not-button" or else result equals "invalid-actor-or-message" or else result equals "invalid-guild" or else result equals "final-unavailable" or else result equals "source-unavailable" or else result equals "speech-response-expired" or else result equals "speech-access-changed" or else result equals "speech:not-configured" or else result equals "speech:invalid-speech-profile" or else result equals "speech:not-authorized" or else result equals "speech-attachment-denied":
         set terminal to "denied"
         set message to "This control is not available for your account or the original message is no longer accessible."
+    else if string_length(result) >= 7 and also substring(result and 0 and 7) equals "speech:" and also not (result equals "speech:busy" or else result equals "speech:speech-in-progress-or-interrupted"):
+        # A saved synthesis failure is terminal for this click. Re-reading it
+        # cannot generate audio; leaving it queued hides failure for 15 minutes.
+        set terminal to "denied"
+        set message to "Speech generation failed. No audio was attached."
     else if not (result equals "advanced" or else result equals "part-sent" or else result equals "waiting" or else result equals "revision-prompt-pending"):
         set delay to 30000
     if terminal equals "denied":

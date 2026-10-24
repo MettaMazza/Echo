@@ -1,0 +1,87 @@
+import "voice_playback_permission"
+import "voice_worker_step"
+import "voice_file_playback"
+import "voice_audio_proof"
+
+define discord_voice_worker_audio_close with journal as Int and worker as List and player as List and reason as Str returning Str:
+    set closed to discord_voice_file_playback_fail(player and reason)
+    return discord_voice_worker_step_close(journal and worker and reason)
+
+# Native caller supplies explicit playback consent. The player must borrow this
+# worker's controller. Never read another PCM frame while permission is pending.
+# The journal writer fence covers Gateway ownership and the actual frame write;
+# archive request revocation is independently rechecked immediately before it.
+define discord_voice_worker_audio_tick with journal as Int and reader as Int and database as Int and worker as List and player as List and now as Int and wall_ms as Int and consented as Int returning Str:
+    return discord_voice_worker_audio_tick_scoped(journal and reader and database and worker and player and now and wall_ms and consented and 0 and 0)
+
+# A queued player supplies its immutable claim and independently refreshed audio
+# proof. Existing native transport fixtures use the unqueued wrapper above.
+define discord_voice_worker_audio_tick_scoped with journal as Int and reader as Int and database as Int and worker as List and player as List and now as Int and wall_ms as Int and consented as Int and claim as List and audio_proof as List returning Str:
+    if worker equals 0 or else length_list(worker) is not equal to 11 or else get_list(worker and 10) is not equal to 0:
+        return discord_voice_worker_audio_close(journal and worker and player and "voice-worker-closed")
+    if player equals 0 or else length_list(player) is not equal to 7 or else get_list(player and 6) is not equal to 0:
+        return "file-playback-closed"
+    if consented is not equal to 1:
+        return discord_voice_worker_audio_close(journal and worker and player and "file-playback-revoked")
+    set engine to get_list(worker and 0)
+    set playback to get_list(player and 1)
+    if playback equals 0 or else length_list(playback) is not equal to 8 or else get_list(playback and 0) is not equal to get_list(engine and 3) or else get_list(engine and 3) equals 0:
+        return discord_voice_worker_audio_close(journal and worker and player and "voice-playback-owner-denied")
+    set polled to discord_voice_worker_step(journal and reader and database and worker and now and wall_ms)
+    if get_list(worker and 10) is not equal to 0:
+        return discord_voice_worker_audio_close(journal and worker and player and polled)
+    if polled equals "voice-awaiting-permission-proof":
+        return polled
+    set owner to get_list(engine and 0)
+    set proof to discord_voice_permission_mailbox_proof(get_list(worker and 1))
+    if claim is not equal to 0:
+        if audio_proof equals 0:
+            return "voice-awaiting-audio-proof"
+        set audio_checked to discord_voice_audio_proof_check(journal and database and archive_list_text(owner and 1) and claim and audio_proof and archive_list_text(worker and 2) and get_list(worker and 3) and get_list(worker and 4) and archive_list_text(worker and 5))
+        if audio_checked equals "voice-authorization-refresh-required":
+            return "voice-awaiting-audio-proof"
+        if not (audio_checked equals "allowed"):
+            return discord_voice_worker_audio_close(journal and worker and player and audio_checked)
+        set proof to get_list(audio_proof and 3)
+    set gate to discord_voice_playback_gate_request(journal and database and engine and proof and archive_list_text(worker and 2) and get_list(worker and 3) and get_list(worker and 4) and archive_list_text(worker and 5) and consented)
+    if not (gate equals "voice-playback-gate-requested"):
+        if gate equals "voice-authorization-refresh-required":
+            set refreshed to discord_voice_permission_mailbox_refresh(get_list(worker and 1))
+            return "voice-awaiting-permission-proof"
+        return discord_voice_worker_audio_close(journal and worker and player and gate)
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return discord_voice_worker_audio_close(journal and worker and player and "voice-session-store-unavailable")
+    set checked to discord_voice_worker_check(journal and database and archive_list_text(owner and 1) and proof and archive_list_text(worker and 2) and get_list(worker and 3) and get_list(worker and 4) and archive_list_text(worker and 5) and 1)
+    if not (checked equals "allowed"):
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        if checked equals "voice-authorization-refresh-required":
+            set refreshed to discord_voice_permission_mailbox_refresh(get_list(worker and 1))
+            return "voice-awaiting-permission-proof"
+        return discord_voice_worker_audio_close(journal and worker and player and checked)
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and archive_list_text(owner and 1))
+    set retained_voice_added to append_list(keys and archive_list_text(owner and 2))
+    set durable to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_connections WHERE identity=?1 AND generation=?2;" and keys))
+    if discord_voice_session_current(journal and owner and get_list(proof and 3)) equals 0 or else not (archive_list_text(durable and 1) equals "identified"):
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        return discord_voice_worker_audio_close(journal and worker and player and "voice-session-not-owned")
+    if claim is not equal to 0:
+        set audio_checked to discord_voice_audio_proof_check(journal and database and archive_list_text(owner and 1) and claim and audio_proof and archive_list_text(worker and 2) and get_list(worker and 3) and get_list(worker and 4) and archive_list_text(worker and 5))
+        if not (audio_checked equals "allowed"):
+            set rolled_back to sql_execute(journal and "ROLLBACK;")
+            if audio_checked equals "voice-authorization-refresh-required":
+                return "voice-awaiting-audio-proof"
+            return discord_voice_worker_audio_close(journal and worker and player and audio_checked)
+    set confirmed to discord_voice_playback_gate_confirmed(journal and owner)
+    if confirmed is not equal to 1:
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        if confirmed equals 0:
+            return "voice-awaiting-playback-confirmation"
+        return discord_voice_worker_audio_close(journal and worker and player and "voice-playback-state-revoked")
+    set result to discord_voice_file_playback_tick(player and now and 1 and consented and 0)
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        return discord_voice_worker_audio_close(journal and worker and player and "voice-audio-commit-uncertain")
+    if result equals "source-frame-sent" or else result equals "silence-sent" or else result equals "wait" or else result equals "await-media" or else result equals "file-playback-complete":
+        return result
+    return discord_voice_worker_audio_close(journal and worker and player and result)

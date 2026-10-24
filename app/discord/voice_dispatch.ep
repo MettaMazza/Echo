@@ -1,0 +1,102 @@
+import "voice_audio_jobs"
+import "process"
+import "../archive/file_digest"
+
+# Operator configuration pins the executable and all three native libraries.
+# An absent setting disables scheduling; no generic host path is a fallback.
+define discord_voice_launch_config returning List:
+    set config to create_list()
+    for each suffix in ["RUNTIME","SODIUM","DAVE","CALLBACKS"]:
+        set name to concat("ECHO_DISCORD_VOICE_" and ptr_to_str(suffix))
+        set path to ptr_to_str(get_env(name))
+        set expected to ptr_to_str(get_env(concat(name and "_SHA256")))
+        if string_length(path) equals 0 or else string_length(expected) is not equal to 64:
+            return 0
+        set digest to file_digest(path and 1048576)
+        if not (archive_list_text(digest and 0) equals "verified") or else not (archive_list_text(digest and 1) equals expected):
+            return 0
+        set added to append_list(config and path)
+    set added to append_list(config and "1000")
+    set opus_path to ptr_to_str(get_env("ECHO_DISCORD_VOICE_OPUS"))
+    if string_length(opus_path) > 0:
+        set expected to ptr_to_str(get_env("ECHO_DISCORD_VOICE_OPUS_SHA256"))
+        set digest to file_digest(opus_path and 1048576)
+        if string_length(expected) is not equal to 64 or else not (archive_list_text(digest and 0) equals "verified") or else not (archive_list_text(digest and 1) equals expected):
+            return 0
+        set added to append_list(config and opus_path)
+    return config
+
+define discord_voice_launch_schema with journal as Int returning Int:
+    if discord_voice_audio_jobs_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_audio_runtime(singleton INTEGER PRIMARY KEY CHECK(singleton=1),enabled INTEGER NOT NULL CHECK(enabled IN (0,1))); CREATE TABLE IF NOT EXISTS discord_voice_runtime(singleton INTEGER PRIMARY KEY CHECK(singleton=1),enabled INTEGER NOT NULL CHECK(enabled IN (0,1))); CREATE TABLE IF NOT EXISTS discord_voice_processes(identity TEXT PRIMARY KEY REFERENCES discord_voice_intents(identity),state TEXT NOT NULL CHECK(state IN ('launching','running','finished','failed','orphaned')),process INTEGER NOT NULL DEFAULT 0);")
+
+# Controller restart cancels its prior reservations; it never replays a launch.
+# Surviving children see the revoked intent and close under their own lock.
+define discord_voice_launch_recover with journal as Int returning Int:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 1
+    if sql_execute(journal and "UPDATE discord_voice_audio_jobs SET state=CASE WHEN state='attempted' THEN 'uncertain' ELSE 'cancelled' END WHERE state IN ('queued','attempted') AND intent IN (SELECT identity FROM discord_voice_processes WHERE state IN ('launching','running')); UPDATE discord_voice_intents SET state=CASE WHEN state='queued' THEN 'cancelled' ELSE 'leave-required' END WHERE state NOT IN ('closed','cancelled') AND identity IN (SELECT identity FROM discord_voice_processes WHERE state IN ('launching','running')); UPDATE discord_voice_processes SET state='orphaned' WHERE state IN ('launching','running');") is not equal to 0:
+        set failed to migration_fail(journal and "voice-launch-recovery-failed")
+        return 1
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(journal and "voice-launch-recovery-failed")
+        return 1
+    return 0
+
+# arguments are the first nine existing Discord host arguments. The native
+# service rechecks admitted source, actor authority and REST before OP4 claim.
+define discord_voice_launch_next with journal as Int and arguments as List and config as List returning List:
+    if config equals 0 or else not (length_list(config) equals 5 or else length_list(config) equals 6):
+        return history_status("voice-launch-disabled")
+    if length_list(arguments) is not equal to 9:
+        return history_status("voice-launch-invalid-config")
+    if file_exists(archive_list_text(arguments and 5)):
+        return history_status("voice-stopped")
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("voice-launch-store-busy")
+    set row to history_collect_one(archive_prepare(journal and "SELECT identity FROM discord_voice_intents i WHERE state='queued' AND NOT EXISTS(SELECT 1 FROM discord_voice_processes p WHERE p.identity=i.identity) ORDER BY rowid LIMIT 1;"))
+    if not (archive_list_text(row and 0) equals "found"):
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        return history_status(archive_list_text(row and 0))
+    set identity to archive_list_text(row and 1)
+    set keys to create_list()
+    set keys to [identity]
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_processes(identity,state) VALUES(?1,'launching');" and keys) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(journal and "voice-launch-marker-failed")
+        return history_status("voice-launch-marker-failed")
+    set command to create_list()
+    for each argument in arguments:
+        set added to append_list(command and ptr_to_str(argument))
+    set added to append_list(command and identity)
+    set index to 1
+    repeat while index < length_list(config):
+        set added to append_list(command and get_list(config and index))
+        set index to index + 1
+    set process to discord_process_start_executable(archive_list_text(config and 0) and command and -1)
+    if process < 0:
+        set cancelled to discord_voice_intent_cancel(journal and identity)
+        set recorded to archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_processes SET state='failed' WHERE identity=?1;" and keys) and 101)
+        return history_status("voice-launch-failed")
+    set values to create_list()
+    set retained_voice_added to append_list(values and identity)
+    set retained_voice_added to append_list(values and int_to_string(process))
+    set recorded to archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_processes SET state='running',process=CAST(?2 AS INTEGER) WHERE identity=?1 AND state='launching';" and values) and 101)
+    # A successful spawn is always returned for waitpid tracking even when its
+    # receipt fails. The durable pre-spawn marker already prohibits replay.
+    set result to history_status("voice-worker-started")
+    set added to append_list(result and process)
+    set added to append_list(result and identity)
+    set added to append_list(result and recorded)
+    return result
+
+define discord_voice_launch_settle with journal as Int and identity as Str and result as Int returning Int:
+    set cancelled to discord_voice_intent_cancel(journal and identity)
+    if discord_voice_audio_jobs_recover(journal and identity) is not equal to 0:
+        return 1
+    set state to "failed"
+    if result equals 1:
+        set state to "finished"
+    set keys to create_list()
+    set keys to [identity,state]
+    return archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_processes SET state=?2 WHERE identity=?1;" and keys) and 101)

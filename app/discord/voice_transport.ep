@@ -1,0 +1,141 @@
+import "voice_handshake"
+import "voice_socket"
+import "voice_udp"
+import "voice_packet_encryption"
+import "voice_mls_wire"
+
+# Owns handshake, WebSocket, UDP, transport cipher, DAVE, pinned native paths,
+# channel/group and bot user. Caller supplies already authenticated socket and
+# fresh authorization; neither native paths nor credentials are model inputs.
+define discord_voice_transport_new with socket as List and paths as List and group as Int and user as Str and generation as Int returning List:
+    if not (archive_list_text(socket and 0) equals "connected") or else paths equals 0 or else length_list(paths) is not equal to 3 or else group < 1:
+        return 0
+    set users to create_list()
+    set users to [user]
+    if discord_dave_users_valid(users) equals 0:
+        return 0
+    set handshake to discord_voice_handshake_new(generation)
+    if handshake equals 0:
+        return 0
+    set state to create_list()
+    set state to [handshake,socket,0,0,0,paths,group,user]
+    return state
+
+define discord_voice_transport_close with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 8:
+        return 0
+    set failed to discord_voice_handshake_fail(get_list(state and 0) and "voice-transport-closed")
+    if get_list(state and 2) is not equal to 0:
+        set closed to discord_voice_udp_close(get_list(state and 2))
+    if get_list(state and 3) is not equal to 0:
+        set closed to discord_voice_crypto_close(get_list(state and 3))
+    if get_list(state and 4) is not equal to 0:
+        set closed to discord_dave_close(get_list(state and 4))
+    if get_list(state and 1) is not equal to 0:
+        set closed to discord_socket_close(get_list(state and 1))
+    set index to 1
+    repeat while index < 5:
+        set changed to set_list(state and index and 0)
+        set index to index + 1
+    return 1
+
+define discord_voice_transport_discover with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 8:
+        return 0
+    set handshake to get_list(state and 0)
+    if get_list(handshake and 0) is not equal to 1 or else get_list(state and 2) is not equal to 0:
+        return 0
+    set udp to discord_voice_udp_open(archive_list_text(handshake and 3) and get_list(handshake and 4))
+    set changed to set_list(state and 2 and udp)
+    if udp equals 0:
+        set closed to discord_voice_transport_close(state)
+        return 0
+    set packet to discord_voice_discovery_request(get_list(handshake and 2))
+    set sent to 0
+    if packet is not equal to 0:
+        set sent to discord_voice_udp_send(udp and get_list(packet and 0) and get_list(packet and 1))
+        set released to discord_voice_blob_release(packet)
+    if sent equals 0:
+        set closed to discord_voice_transport_close(state)
+    return sent
+
+# Nonblocking discovery tick; heartbeat and cancellation remain the worker's
+# responsibility between calls. Invalid peer data closes instead of retrying.
+define discord_voice_transport_discovery_tick with state as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 8:
+        return "invalid-voice-transport"
+    set handshake to get_list(state and 0)
+    if get_list(handshake and 0) is not equal to 1 or else get_list(state and 2) equals 0:
+        return "invalid-discovery-state"
+    set row to discord_voice_udp_read(get_list(state and 2))
+    if archive_list_text(row and 0) equals "again":
+        return "wait"
+    set response to create_list()
+    set response to 0
+    if archive_list_text(row and 0) equals "packet":
+        set packet to get_list(row and 1)
+        set response to discord_voice_discovery_response(get_list(packet and 0) and get_list(packet and 1) and get_list(handshake and 2))
+        set released to discord_voice_blob_release(packet)
+    if response equals 0:
+        set closed to discord_voice_transport_close(state)
+        return "invalid-discovery-response"
+    set body to discord_voice_select_body(archive_list_text(response and 0) and get_list(response and 1))
+    if string_length(body) equals 0 or else discord_voice_socket_send(get_list(state and 1) and str_to_ptr(body) and string_length(body) and 0) equals 0:
+        set closed to discord_voice_transport_close(state)
+        return "protocol-select-write-failed"
+    set heart to get_list(handshake and 1)
+    if discord_voice_handshake_selected(handshake and get_list(heart and 7)) equals 0:
+        set closed to discord_voice_transport_close(state)
+        return "protocol-select-state-failed"
+    return "protocol-selected"
+
+# Consumes the decoded key bytes by wiping them after copying into the native
+# cipher. No cipher or DAVE state survives a failed key-package transmission.
+define discord_voice_transport_install with state as List and values as List returning Int:
+    if values equals 0 or else length_list(values) is not equal to 2:
+        return 0
+    set key to get_list(values and 1)
+    if key equals 0 or else length_list(key) is not equal to 4:
+        return 0
+    set valid to state is not equal to 0 and also length_list(state) equals 8 and also get_list(values and 0) equals 1
+    if valid equals 1:
+        set handshake to get_list(state and 0)
+        set valid to get_list(handshake and 0) equals 3 and also get_list(state and 3) equals 0 and also get_list(state and 4) equals 0
+    set cipher to create_list()
+    set cipher to 0
+    if valid equals 1:
+        set paths to get_list(state and 5)
+        set cipher to discord_voice_crypto_open(archive_list_text(paths and 0) and get_list_data_ptr(key) and 32)
+    set index to 0
+    repeat while index < 4:
+        set changed to set_list(key and index and 0)
+        set index to index + 1
+    if valid equals 0:
+        return 0
+    set changed to set_list(state and 3 and cipher)
+    if cipher equals 0:
+        set closed to discord_voice_transport_close(state)
+        return 0
+    set session to discord_dave_open(archive_list_text(paths and 1) and archive_list_text(paths and 2) and 1 and get_list(state and 6) and archive_list_text(state and 7))
+    set changed to set_list(state and 4 and session)
+    if session equals 0:
+        set closed to discord_voice_transport_close(state)
+        return 0
+    set package to discord_dave_key_package(session)
+    set wire to create_list()
+    set wire to 0
+    if package is not equal to 0:
+        set wire to discord_voice_mls_outbound(26 and get_list(package and 0) and get_list(package and 1))
+        set released to discord_voice_blob_release(package)
+    set sent to 0
+    if wire is not equal to 0:
+        set sent to discord_voice_socket_send(get_list(state and 1) and get_list(wire and 0) and get_list(wire and 1) and 1)
+        set released to discord_voice_blob_release(wire)
+    if sent equals 0:
+        set closed to discord_voice_transport_close(state)
+        return 0
+    set heart to get_list(handshake and 1)
+    if discord_voice_handshake_installed(handshake and get_list(heart and 7)) equals 0:
+        set closed to discord_voice_transport_close(state)
+        return 0
+    return 1

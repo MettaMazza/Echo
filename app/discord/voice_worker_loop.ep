@@ -1,0 +1,49 @@
+import "voice_worker_audio"
+import "gateway_connection"
+
+# Runs an activated worker on the owning thread. SQLite handles are borrowed;
+# worker, player and their native resources remain exclusively owned here.
+# Stop messages are native host signals, never model arguments. Any stop value
+# terminates immediately, without flushing PCM. The caller joins the permission
+# observer through its completion channel before releasing process resources.
+define discord_voice_worker_loop with journal as Int and reader as Int and database as Int and worker as List and player as List and consented as Int and stop as Int returning Str:
+    if worker equals 0 or else length_list(worker) is not equal to 11 or else get_list(worker and 10) is not equal to 0:
+        return discord_voice_worker_audio_close(journal and worker and player and "voice-worker-closed")
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return discord_voice_worker_audio_close(journal and worker and player and "voice-worker-clock-unavailable")
+    set mailbox to get_list(worker and 1)
+    set stop_wait to create_list()
+    set added to append_list(stop_wait and stop)
+    set waits to create_list()
+    set added to append_list(waits and stop)
+    set added to append_list(waits and get_list(mailbox and 1))
+    set added to append_list(waits and get_list(mailbox and 2))
+    set outcome to "voice-worker-closed"
+    set active_player to player
+    repeat while get_list(worker and 10) equals 0:
+        if select(stop_wait and 0) >= 0:
+            set signal to receive from stop
+            set outcome to "voice-worker-stopped"
+            break
+        set now to discord_monotonic_ms(system)
+        if now < 0:
+            set outcome to "voice-worker-clock-unavailable"
+            break
+        if active_player is not equal to 0:
+            set outcome to discord_voice_worker_audio_tick(journal and reader and database and worker and active_player and now and ep_time_now_ms() and consented)
+            if outcome equals "file-playback-complete":
+                # Completion stops Speaking and the codec; continue servicing
+                # heartbeats and membership until the host asks to leave.
+                set active_player to 0
+            else if outcome equals "file-playback-closed":
+                break
+        else:
+            set outcome to discord_voice_worker_step(journal and reader and database and worker and now and ep_time_now_ms())
+        if get_list(worker and 10) equals 0:
+            # At most 5 ms idle latency for 20 ms media and heartbeat deadlines.
+            # Network permission requests execute only in the observer thread.
+            set ready to select(waits and 5)
+    set closed to discord_voice_worker_audio_close(journal and worker and active_player and outcome)
+    set closed to ep_dlclose(system)
+    return outcome

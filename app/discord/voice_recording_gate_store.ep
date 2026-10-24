@@ -1,0 +1,32 @@
+import "voice_recording_store"
+
+# Only the native recording controller creates an undeafen request after its
+# independent proof checks. Gateway owns every marked OP4 attempt. A sent write
+# is not server confirmation, and an uncertain write is never replayed.
+define discord_voice_recording_gate_schema with journal as Int returning Int:
+    if discord_voice_recording_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_recording_gates(recording TEXT PRIMARY KEY REFERENCES discord_voice_recordings(identity),intent TEXT NOT NULL,generation TEXT NOT NULL,gateway_session TEXT NOT NULL,after_sequence INTEGER NOT NULL,evidence TEXT NOT NULL,bot TEXT NOT NULL,voice_session TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('pending','attempted','sent','uncertain','revoked','close-pending','close-attempted','close-sent','close-uncertain','closed')));")
+
+# Playback preserves a previously sent undeafen until its explicit closing
+# write. This controls socket flags only; it never authorizes audio decoding.
+define discord_voice_recording_gate_open with journal as Int and intent as Str and generation as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_voice_recording_gates p JOIN discord_voice_recordings r ON r.identity=p.recording WHERE p.intent=?1 AND p.generation=?2 AND p.state='sent' AND r.state='active';" and [intent,generation]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return -1
+    return archive_list_text(row and 1) is not equal to "0"
+
+# All prior records must be settled before a new recording can open this same
+# connection. Closing confirmation is based on a later authenticated own state.
+define discord_voice_recording_gate_reconcile with journal as Int returning Int:
+    return sql_execute(journal and "UPDATE discord_voice_recording_gates SET state='close-pending' WHERE state='sent' AND recording IN (SELECT identity FROM discord_voice_recordings WHERE state IN ('stopped','interrupted')); UPDATE discord_voice_recording_gates AS p SET state='closed' WHERE p.state='close-sent' AND EXISTS(SELECT 1 FROM discord_voice_intents i JOIN discord_gateway g ON g.singleton=1 JOIN discord_voice_membership_events e ON e.session=g.session WHERE i.identity=p.intent AND g.generation=p.generation AND g.session=p.gateway_session AND e.sequence>p.after_sequence AND e.kind='VOICE_STATE_UPDATE' AND json_extract(e.payload,'$.guild_id')=i.guild AND json_extract(e.payload,'$.user_id')=p.bot AND json_extract(e.payload,'$.session_id')=p.voice_session AND json_extract(e.payload,'$.channel_id')=i.channel AND json_type(e.payload,'$.self_deaf')='true' AND NOT EXISTS(SELECT 1 FROM discord_voice_membership_events later WHERE later.session=e.session AND later.sequence>e.sequence AND COALESCE(json_extract(later.payload,'$.guild_id'),json_extract(later.payload,'$.id'))=i.guild AND (later.kind<>'VOICE_STATE_UPDATE' OR json_extract(later.payload,'$.user_id')=p.bot OR json_extract(later.payload,'$.invalid')=1)));")
+
+# One media-state write in flight per connection. Historical authenticated own
+# acknowledgement settles the prior write; a later manual mute must not erase
+# that receipt or block a separately authorized recording. Native/current-owner
+# checks still fence each new write. Uncertain attempts remain unreplayable.
+define discord_voice_media_gate_ready with journal as Int and intent as Str and bot as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM (SELECT p.identity FROM discord_voice_playback_gates p JOIN discord_voice_intents i ON i.identity=p.identity WHERE p.identity=?1 AND (p.state IN ('attempted','uncertain') OR (p.state='sent' AND NOT EXISTS(SELECT 1 FROM discord_voice_membership_events e WHERE e.session=p.gateway_session AND e.sequence>p.after_sequence AND e.kind='VOICE_STATE_UPDATE' AND json_extract(e.payload,'$.guild_id')=i.guild AND json_extract(e.payload,'$.user_id')=?2 AND json_extract(e.payload,'$.channel_id')=i.channel AND json_type(e.payload,'$.self_mute')='false'))) UNION ALL SELECT p.intent FROM discord_voice_recording_gates p JOIN discord_voice_intents i ON i.identity=p.intent WHERE p.intent=?1 AND (p.state IN ('attempted','uncertain','close-attempted','close-uncertain') OR (p.state IN ('sent','close-pending','close-sent') AND NOT EXISTS(SELECT 1 FROM discord_voice_membership_events e WHERE e.session=p.gateway_session AND e.sequence>p.after_sequence AND e.kind='VOICE_STATE_UPDATE' AND json_extract(e.payload,'$.guild_id')=i.guild AND json_extract(e.payload,'$.user_id')=p.bot AND json_extract(e.payload,'$.session_id')=p.voice_session AND json_extract(e.payload,'$.channel_id')=i.channel AND json_type(e.payload,'$.self_deaf')=CASE WHEN p.state='close-sent' THEN 'true' ELSE 'false' END))));" and [intent,bot]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return -1
+    return archive_list_text(row and 1) equals "0"

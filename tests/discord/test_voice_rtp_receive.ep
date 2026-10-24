@@ -1,0 +1,135 @@
+import "../../app/discord/voice_rtp_receive"
+
+# Native test encryption for arbitrary authenticated RTP headers. Production
+# outbound packets use the fixed 12-byte sender; receive accepts CSRC/extension.
+define receive_fixture_packet with cipher as List and nonce_number as Int and extended as Int and padding as Int returning List:
+    set header to 12
+    set clear_count to 3
+    if extended equals 1:
+        set header to 20
+        set clear_count to clear_count + 4
+    if padding >= 0:
+        set clear_count to clear_count + 2
+    set pointer to alloc_bytes(header + clear_count + 20)
+    set clear to alloc_bytes(clear_count)
+    set index to 0
+    repeat while index < header + clear_count + 20:
+        set written to poke_byte(pointer and index and 0)
+        set index to index + 1
+    set flags to 128
+    if extended equals 1:
+        set flags to flags + 17
+    if padding >= 0:
+        set flags to flags + 32
+    set written to poke_byte(pointer and 0 and flags)
+    set written to poke_byte(pointer and 1 and 248)
+    set written to discord_voice_put_u16(pointer and 2 and 65535)
+    set written to discord_voice_put_u32(pointer and 4 and 4294967000)
+    set written to discord_voice_put_u32(pointer and 8 and 12345)
+    set offset to 0
+    if extended equals 1:
+        set written to discord_voice_put_u32(pointer and 12 and 54321)
+        set written to discord_voice_put_u16(pointer and 16 and 48862)
+        set written to discord_voice_put_u16(pointer and 18 and 1)
+        set offset to 4
+    set index to 0
+    repeat while index < clear_count:
+        set written to poke_byte(clear and index and 0)
+        set index to index + 1
+    set written to poke_byte(clear and offset and 11)
+    set written to poke_byte(clear and offset + 1 and 22)
+    set written to poke_byte(clear and offset + 2 and 33)
+    if padding >= 0:
+        set written to poke_byte(clear and clear_count - 1 and padding)
+    set nonce to research_native_words(3)
+    set written to discord_voice_put_u32(get_list_data_ptr(nonce) and 0 and nonce_number)
+    set size to research_native_words(1)
+    set encrypted to ep_dlcall9(ep_dlsym(get_list(cipher and 0) and "crypto_aead_xchacha20poly1305_ietf_encrypt") and pointer + header and get_list_data_ptr(size) and clear and clear_count and pointer and header and 0 and get_list_data_ptr(nonce) and get_list(cipher and 1))
+    free_bytes(clear)
+    if encrypted is not equal to 0 or else get_list(size and 0) is not equal to clear_count + 16:
+        free_bytes(pointer)
+        return 0
+    set written to discord_voice_put_u32(pointer and header + clear_count + 16 and nonce_number)
+    return [pointer,header + clear_count + 20]
+
+define main returning Int:
+    if get_argument_count() is not equal to 2:
+        return 1
+    set key to research_native_words(4)
+    set cipher to discord_voice_crypto_open(get_argument(1) and get_list_data_ptr(key) and 32)
+    set replay to discord_voice_replay_new(12345)
+    set extended to 0
+    repeat while extended < 2:
+        set packet to receive_fixture_packet(cipher and extended and extended and 2)
+        set result to discord_voice_rtp_unwrap(cipher and replay and get_list(packet and 0) and get_list(packet and 1))
+        if not (archive_list_text(result and 0) equals "rtp-audio") or else get_list(result and 1) is not equal to 12345 or else get_list(result and 2) is not equal to 65535 or else get_list(result and 3) is not equal to 4294967000:
+            display archive_list_text(result and 0)
+            return 2
+        set payload to get_list(result and 4)
+        if get_list(payload and 1) is not equal to 3 or else peek_byte(get_list(payload and 0) and 0) is not equal to 11 or else peek_byte(get_list(payload and 0) and 2) is not equal to 33:
+            return 3
+        set released to discord_voice_blob_release(payload)
+        set duplicate to discord_voice_rtp_unwrap(cipher and replay and get_list(packet and 0) and get_list(packet and 1))
+        if not (archive_list_text(duplicate and 0) equals "audio-replay-denied"):
+            return 4
+        set released to discord_voice_blob_release(packet)
+        set extended to extended + 1
+    set packet to receive_fixture_packet(cipher and 100 and 0 and -1)
+    set written to poke_byte(get_list(packet and 0) and 4 and 0)
+    set bad to discord_voice_rtp_unwrap(cipher and replay and get_list(packet and 0) and get_list(packet and 1))
+    if not (archive_list_text(bad and 0) equals "audio-authentication-failed") or else get_list(replay and 1) is not equal to 1:
+        return 5
+    set released to discord_voice_blob_release(packet)
+    set packet to receive_fixture_packet(cipher and 100 and 1 and 0)
+    set bad to discord_voice_rtp_unwrap(cipher and replay and get_list(packet and 0) and get_list(packet and 1))
+    if not (archive_list_text(bad and 0) equals "invalid-audio-padding") or else get_list(replay and 1) is not equal to 1:
+        return 6
+    set released to discord_voice_blob_release(packet)
+    set packet to receive_fixture_packet(cipher and 100 and 1 and -1)
+    set original to get_list(packet and 1)
+    set written to discord_voice_put_u16(get_list(packet and 0) and 18 and 65535)
+    if discord_voice_rtp_parse(get_list(packet and 0) and original) is not equal to 0:
+        return 7
+    set written to discord_voice_put_u16(get_list(packet and 0) and 18 and 1)
+    set other to discord_voice_replay_new(54321)
+    set bad to discord_voice_rtp_unwrap(cipher and other and get_list(packet and 0) and original)
+    if not (archive_list_text(bad and 0) equals "audio-identity-mismatch"):
+        return 8
+    set accepted to discord_voice_rtp_unwrap(cipher and replay and get_list(packet and 0) and original)
+    if not (archive_list_text(accepted and 0) equals "rtp-audio"):
+        return 9
+    set released to discord_voice_blob_release(get_list(accepted and 4))
+    set released to discord_voice_blob_release(packet)
+    if discord_voice_replay_available(replay and 36) is not equal to 0 or else discord_voice_replay_commit(replay and 37) is not equal to 1 or else discord_voice_replay_commit(replay and 99) is not equal to 1 or else discord_voice_replay_commit(replay and 99) is not equal to 0:
+        return 10
+    if discord_voice_replay_commit(replay and 4294967295) is not equal to 1 or else discord_voice_replay_available(replay and 0) is not equal to 0 or else discord_voice_replay_available(replay and 4294967296) is not equal to 0:
+        return 11
+    set packet to receive_fixture_packet(cipher and 101 and 0 and -1)
+    set pointer to get_list(packet and 0)
+    set count to get_list(packet and 1)
+    set size to 0
+    repeat while size < 33:
+        if discord_voice_rtp_parse(pointer and size) is not equal to 0:
+            return 12
+        set size to size + 1
+    set written to poke_byte(pointer and 0 and 64)
+    if discord_voice_rtp_parse(pointer and count) is not equal to 0:
+        return 13
+    set written to poke_byte(pointer and 0 and 128)
+    set written to poke_byte(pointer and 1 and 200)
+    if discord_voice_rtp_parse(pointer and count) is not equal to 0:
+        return 14
+    set written to poke_byte(pointer and 1 and 120)
+    set written to discord_voice_put_u32(pointer and 8 and 0)
+    if discord_voice_rtp_parse(pointer and count) is not equal to 0:
+        return 15
+    set released to discord_voice_blob_release(packet)
+    set packet to receive_fixture_packet(cipher and 102 and 1 and 255)
+    set fresh to discord_voice_replay_new(12345)
+    set bad to discord_voice_rtp_unwrap(cipher and fresh and get_list(packet and 0) and get_list(packet and 1))
+    if not (archive_list_text(bad and 0) equals "invalid-audio-padding") or else get_list(fresh and 1) is not equal to -1:
+        return 16
+    set released to discord_voice_blob_release(packet)
+    set closed to discord_voice_crypto_close(cipher)
+    display "PASS: authenticated RTP strips bounded extensions/CSRC/padding, preserves identity/sequence, rejects tampering and malformed padding without poisoning replay, and allows bounded reordering without counter wrap."
+    return 0

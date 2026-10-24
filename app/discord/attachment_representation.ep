@@ -1,0 +1,70 @@
+import "../network/media_type"
+import "../archive/file_base64"
+
+# Only explicitly declared raster transformations can explain different CDN
+# bytes. SVG and arbitrary MIME claims never acquire this exception.
+define discord_attachment_raster with media as Str returning Int:
+    return media equals "image/png" or else media equals "image/jpeg" or else media equals "image/gif" or else media equals "image/webp"
+
+# Inspect a bounded binary prefix; this identifies a container, not a complete
+# image decode. Consumers still validate their required dimensions/encoding.
+define discord_attachment_magic with pointer as Int and count as Int returning Str:
+    if count >= 8:
+        if peek_byte(pointer and 0) equals 137 and peek_byte(pointer and 1) equals 80 and peek_byte(pointer and 2) equals 78 and peek_byte(pointer and 3) equals 71 and peek_byte(pointer and 4) equals 13 and peek_byte(pointer and 5) equals 10 and peek_byte(pointer and 6) equals 26 and peek_byte(pointer and 7) equals 10:
+            return "image/png"
+    if count >= 3:
+        if peek_byte(pointer and 0) equals 255 and peek_byte(pointer and 1) equals 216 and peek_byte(pointer and 2) equals 255:
+            return "image/jpeg"
+    if count >= 6:
+        if peek_byte(pointer and 0) equals 71 and peek_byte(pointer and 1) equals 73 and peek_byte(pointer and 2) equals 70 and peek_byte(pointer and 3) equals 56 and (peek_byte(pointer and 4) equals 55 or else peek_byte(pointer and 4) equals 57) and peek_byte(pointer and 5) equals 97:
+            return "image/gif"
+    if count >= 12:
+        if peek_byte(pointer and 0) equals 82 and peek_byte(pointer and 1) equals 73 and peek_byte(pointer and 2) equals 70 and peek_byte(pointer and 3) equals 70 and peek_byte(pointer and 8) equals 87 and peek_byte(pointer and 9) equals 69 and peek_byte(pointer and 10) equals 66 and peek_byte(pointer and 11) equals 80:
+            return "image/webp"
+    return ""
+
+define discord_attachment_file_magic with path as Str returning Str:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return ""
+    set open_function to ep_dlsym(library and "open")
+    set read_function to ep_dlsym(library and "read")
+    if open_function equals 0 or else read_function equals 0:
+        set closed to ep_dlclose(library)
+        return ""
+    # O_RDONLY | O_NOFOLLOW | O_CLOEXEC, matching the digest reader.
+    set descriptor to socket_signed_result(ep_dlcall2(open_function and str_to_ptr(path) and 16777472))
+    if descriptor < 0:
+        set closed to ep_dlclose(library)
+        return ""
+    set buffer to [0,0]
+    set count to socket_signed_result(ep_dlcall3(read_function and descriptor and get_list_data_ptr(buffer) and 12))
+    set closed to net_close(descriptor)
+    set media to ""
+    if closed equals 0 and count >= 0 and count <= 12:
+        set media to discord_attachment_magic(get_list_data_ptr(buffer) and count)
+    set released to ep_dlclose(library)
+    return media
+
+# Caller must already have a complete, authenticated, nonredirected HTTP 200
+# transfer and a digest of the staged bytes. This pure decision grants neither
+# source authority nor registration. A matching length alone never explains a
+# changed image type; rendition acceptance requires all three type witnesses.
+define discord_attachment_representation with declared as Str and original as Str and expected_bytes as Str and received as Str and signature as Str and actual_bytes as Int returning Str:
+    if actual_bytes < 0 or else string_length(expected_bytes) equals 0:
+        return "invalid-size"
+    set index to 0
+    repeat while index < string_length(expected_bytes):
+        set digit to get_character(expected_bytes and index)
+        if digit < 48 or else digit > 57:
+            return "invalid-size"
+        set index to index + 1
+    set actual to int_to_string(actual_bytes)
+    set observed to network_media_type(received)
+    if actual equals expected_bytes and (observed equals declared or else observed equals "application/octet-stream"):
+        return "exact"
+    if discord_attachment_raster(declared) equals 1 and discord_attachment_raster(original) equals 1 and not (declared equals original) and observed equals original and signature equals observed and actual_bytes > 0:
+        return "declared-image-rendition"
+    if not (actual equals expected_bytes):
+        return "attachment-size-mismatch"
+    return "attachment-media-mismatch"

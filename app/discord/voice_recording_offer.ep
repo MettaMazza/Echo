@@ -1,0 +1,47 @@
+import "voice_recording_store"
+import "../providers/archived_stream"
+
+# Each member/session has its own bot-authored challenge. A forwarded or other
+# bot message must not serve as the receipt for this challenge.
+define discord_voice_recording_offer_schema with journal as Int returning Int:
+    if discord_voice_recording_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_recording_offer_messages(offer TEXT PRIMARY KEY REFERENCES discord_voice_recording_offers(identity),message TEXT NOT NULL UNIQUE,receipt TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_voice_recording_offer_messages_no_update BEFORE UPDATE ON discord_voice_recording_offer_messages BEGIN SELECT RAISE(ABORT,'Voice challenge messages are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_voice_recording_offer_messages_no_delete BEFORE DELETE ON discord_voice_recording_offer_messages BEGIN SELECT RAISE(ABORT,'Voice challenge receipts persist'); END;")
+
+define discord_voice_recording_offer_text with actor as Str returning Str:
+    return concat("<@" and concat(actor and "> Voice transcription is requested for your current voice session. Allow permits Echo to retain your audio and an attributed transcript in this channel's audience. Decline / revoke stops further capture. Leaving or reconnecting requires new consent."))
+
+define discord_voice_recording_offer_body with journal as Int and offer as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT o.actor FROM discord_voice_recording_offers o JOIN discord_voice_recordings r ON r.identity=o.recording WHERE o.identity=?1 AND r.state='active';" and [offer]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    set actor to archive_list_text(row and 1)
+    set prefix to concat("echo:record:" and concat(offer and ":"))
+    set body to concat("{\"content\":" and provider_quote(discord_voice_recording_offer_text(actor)))
+    set body to concat(body and concat(",\"allowed_mentions\":{\"parse\":[],\"users\":[" and concat(provider_quote(actor) and "]},\"components\":[{\"type\":1,\"components\":[{\"type\":2,\"style\":3,\"label\":\"Allow transcription\",\"custom_id\":")))
+    set body to concat(body and provider_quote(concat(prefix and "grant")))
+    set body to concat(body and ",\"disabled\":false},{\"type\":2,\"style\":4,\"label\":\"Decline / revoke\",\"custom_id\":")
+    return concat(body and concat(provider_quote(concat(prefix and "revoke")) and ",\"disabled\":false}]}]}"))
+
+# The native REST controller supplies the observed message and immutable GET or
+# send receipt. This validates its target and visible controls before binding.
+define discord_voice_recording_offer_observed with journal as Int and offer as Str and body as Str and receipt as Str returning Str:
+    if string_length(receipt) equals 0 or else discord_voice_recording_offer_schema(journal) is not equal to 0:
+        return "recording-offer-observation-invalid"
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return "recording-offer-observation-invalid"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT o.actor,r.origin,d.bot FROM discord_voice_recording_offers o JOIN discord_voice_recordings r ON r.identity=o.recording JOIN discord_identity d ON d.singleton=1 WHERE o.identity=?1 AND r.state='active';" and [offer]))
+    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    if not (archive_list_text(row and 0) equals "found") or else discord_snowflake(message) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "channel_id")) equals archive_list_text(row and 2)) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id")) equals archive_list_text(row and 3)) or else not (provider_value(tokens and provider_member(tokens and 0 and "content")) equals discord_voice_recording_offer_text(archive_list_text(row and 1))):
+        return "recording-offer-observation-invalid"
+    set expected to discord_voice_recording_offer_body(journal and offer)
+    set fields to history_collect_one(checkpoint_prepare(journal and "SELECT CASE WHEN json_extract(?1,'$.components[0].type')=1 AND json_array_length(?1,'$.components')=1 AND json_array_length(?1,'$.components[0].components')=2 AND json_extract(?1,'$.components[0].components[0].type')=2 AND json_extract(?1,'$.components[0].components[1].type')=2 AND json_extract(?1,'$.components[0].components[0].custom_id')=json_extract(?2,'$.components[0].components[0].custom_id') AND json_extract(?1,'$.components[0].components[1].custom_id')=json_extract(?2,'$.components[0].components[1].custom_id') AND json_extract(?1,'$.components[0].components[0].label')=json_extract(?2,'$.components[0].components[0].label') AND json_extract(?1,'$.components[0].components[1].label')=json_extract(?2,'$.components[0].components[1].label') AND COALESCE(json_extract(?1,'$.components[0].components[0].disabled'),0)=0 AND COALESCE(json_extract(?1,'$.components[0].components[1].disabled'),0)=0 THEN 1 ELSE 0 END;" and [body,expected]))
+    if not (archive_list_text(fields and 1) equals "1"):
+        return "recording-offer-controls-invalid"
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_recording_offer_messages(offer,message,receipt) VALUES(?1,?2,?3) ON CONFLICT DO NOTHING;" and [offer,message,receipt]) and 101) is not equal to 0:
+        return "recording-offer-binding-failed"
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT message FROM discord_voice_recording_offer_messages WHERE offer=?1 AND message=?2;" and [offer,message]))
+    if not (archive_list_text(prior and 0) equals "found"):
+        return "recording-offer-binding-conflict"
+    return "recording-offer-bound"

@@ -1,0 +1,60 @@
+import "voice_gateway_send"
+
+# One unmute attempt per native connection. Preserve an independently enabled
+# recording gate; playback itself grants no recording permission. A write is never called server confirmation.
+define discord_voice_playback_gate_current with journal as Int and identity as Str and generation as Str returning List:
+    set keys to create_list()
+    set keys to [identity,generation]
+    return history_collect_one(checkpoint_prepare(journal and "SELECT i.guild,i.channel FROM discord_voice_playback_gates p JOIN discord_voice_intents i ON i.identity=p.identity JOIN discord_voice_connections c ON c.identity=i.identity JOIN discord_gateway g ON g.singleton=1 WHERE p.identity=?1 AND p.generation=?2 AND i.generation=p.generation AND i.gateway_session=p.gateway_session AND i.state='sent' AND c.state='identified' AND c.generation=p.generation AND g.generation=p.generation AND g.session=p.gateway_session AND g.sequence=p.after_sequence;" and keys))
+
+# Gateway owner only; marker commits before the one potentially uncertain write.
+define discord_voice_playback_gate_send with journal as Int and socket as List and identity as Str and generation as Str and stop_file as Str returning Str:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "voice-playback-gate-store-busy"
+    set keys to create_list()
+    set keys to [identity]
+    set gateway to history_collect_one(archive_prepare(journal and "SELECT generation FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(gateway and 1) equals generation):
+        return migration_fail(journal and "stale-voice-playback-gateway")
+    set gate to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_playback_gates WHERE identity=?1;" and keys))
+    if not (archive_list_text(gate and 1) equals "pending"):
+        return migration_fail(journal and "voice-playback-gate-already-attempted")
+    set current to discord_voice_playback_gate_current(journal and identity and generation)
+    if file_exists(stop_file) or else not (archive_list_text(current and 0) equals "found"):
+        set changed to archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_playback_gates SET state='revoked' WHERE identity=?1;" and keys) and 101)
+        # No write was marked: a changed Gateway cursor revokes only this
+        # proof, not the independently owned voice connection. The native
+        # controller may refresh it; stop still cancels the whole intent.
+        if file_exists(stop_file):
+            set cancelled to discord_voice_intent_cancel(journal and identity)
+        if changed is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+            return migration_fail(journal and "voice-playback-gate-store-failed")
+        return "voice-playback-gate-revoked"
+    set identity_row to history_collect_one(archive_prepare(journal and "SELECT bot FROM discord_identity WHERE singleton=1;"))
+    if not (archive_list_text(identity_row and 0) equals "found"):
+        return migration_fail(journal and "voice-playback-gate-store-failed")
+    set ready to discord_voice_media_gate_ready(journal and identity and archive_list_text(identity_row and 1))
+    if ready < 0:
+        return migration_fail(journal and "voice-playback-gate-store-failed")
+    if ready equals 0:
+        return migration_fail(journal and "voice-media-awaiting-confirmation")
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_playback_gates SET state='attempted' WHERE identity=?1;" and keys) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "voice-playback-gate-marker-failed")
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "voice-playback-gate-marked-not-written"
+    set current to discord_voice_playback_gate_current(journal and identity and generation)
+    if file_exists(stop_file) or else not (archive_list_text(current and 0) equals "found"):
+        return migration_fail(journal and "voice-playback-gate-marked-not-written")
+    set receiving to discord_voice_recording_gate_open(journal and identity and generation)
+    if receiving < 0:
+        return migration_fail(journal and "voice-playback-gate-store-failed")
+    set body to discord_voice_gateway_state_body(archive_list_text(current and 1) and archive_list_text(current and 2) and 0 and 1 - receiving)
+    set complete to discord_socket_send(socket and body)
+    set disposition to "uncertain"
+    if complete equals 1:
+        set disposition to "sent"
+    set values to create_list()
+    set values to [identity,disposition]
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_playback_gates SET state=?2 WHERE identity=?1 AND state='attempted';" and values) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "voice-playback-gate-outcome-unrecorded")
+    return disposition

@@ -1,0 +1,31 @@
+import "worker_store"
+import "../agent/run_state"
+
+# Called only by the parent after obtaining the exclusive runtime lock, before
+# starting children. Terminal failures/cancellations cannot be replayed; retire
+# their transport claims so later messages are not blocked after a restart.
+define discord_terminal_claims_reconcile with journal as Int and database as Int returning Int:
+    set rows to archive_prepare(journal and "SELECT inbox FROM discord_agent_jobs WHERE state='claimed' AND inbox LIKE 'message:create:%' ORDER BY rowid;")
+    if rows equals 0:
+        return 1
+    set claims to create_list()
+    repeat while 1 equals 1:
+        set step to ep_sqlite3_step(rows)
+        if step equals 101:
+            break
+        if step is not equal to 100:
+            set closed to ep_sqlite3_finalize(rows)
+            return 1
+        set added to append_list(claims and ptr_to_str(ep_sqlite3_column_text(rows and 0)))
+    if ep_sqlite3_finalize(rows) is not equal to 0:
+        return 1
+    for each claim in claims:
+        set inbox to ptr_to_str(claim)
+        set run to concat("discord-message:" and substring(inbox and 15 and string_length(inbox) - 15))
+        set current to agent_run_read(database and run)
+        if current is not equal to 0:
+            set state to archive_list_text(current and 2)
+            if state equals "cancelled" or else state equals "failed":
+                if not (discord_worker_finish(journal and inbox and state) equals "recorded"):
+                    return 1
+    return 0

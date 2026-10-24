@@ -1,0 +1,115 @@
+import "voice_options"
+import "voice_audio_status"
+import "voice_play_tool"
+import "voice_recording_tool"
+import "voice_access"
+import "voice_intents"
+import "pin_tool"
+import "run_barrier"
+
+define discord_voice_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    set options to discord_voice_options(arguments)
+    if not (archive_list_text(options and 0) equals "valid"):
+        return discord_pin_result(archive_list_text(options and 0) and "none" and "")
+    if tool_policy_allows(database and run and call_id and "discord_voice") equals 0:
+        return discord_pin_result("not-authorized" and "none" and "")
+    if not ((get_argument_count() equals 15 and also get_argument(13) equals "--turn") or else (get_argument_count() equals 16 and also get_argument(13) equals "--job")):
+        return discord_pin_result("discord-runtime-unavailable" and "none" and "")
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(binding and 0) equals "found") or else not (archive_list_text(binding and 1) equals get_argument(7)) or else not (archive_list_text(location and 1) equals get_argument(4)):
+        return discord_pin_result("discord-binding-denied" and "none" and "")
+    set journal to discord_store_open(get_argument(3) and get_argument(7))
+    if journal equals 0:
+        return discord_pin_result("discord-journal-unavailable" and "none" and "")
+    set source to discord_run_source(journal and database and run)
+    if not (archive_list_text(source and 0) equals "found"):
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-origin-denied" and "none" and "")
+    set credential to read_file(get_argument(2))
+    if credential equals 0:
+        set closed to sql_close(journal)
+        return discord_pin_result("discord-credential-unavailable" and "none" and "")
+    set guilds to create_list()
+    set split_count to retained_text_split(guilds and get_argument(8) and ",")
+    set admins to create_list()
+    set split_count to retained_text_split(admins and get_argument(9) and ",")
+    set result to discord_voice_perform(get_argument(1) and string_trim(ptr_to_str(credential)) and journal and database and run and call_id and source and options and get_argument(7) and guilds and admins and get_argument(5) and get_argument(6))
+    set closed to sql_close(journal)
+    return result
+
+define discord_voice_perform with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and options as List and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set actor to archive_list_text(source and 3)
+    set origin to archive_list_text(source and 4)
+    set guild to archive_list_text(source and 5)
+    if discord_pin_admin(database and run and call_id) equals 0 or else discord_contains(admins and actor) equals 0 or else discord_contains(guilds and guild) equals 0:
+        return discord_pin_result("voice-admin-origin-denied" and "none" and "")
+    if file_exists(stop_file) or else tool_policy_allows(database and run and call_id and "discord_voice") equals 0:
+        return discord_pin_result("not-authorized-or-stopped" and "none" and "")
+    set operation to archive_list_text(options and 1)
+    if operation equals "play":
+        return discord_voice_play_perform(library and token and journal and database and run and call_id and source and options and bot and guilds and admins and directory_path and stop_file)
+    if operation equals "record":
+        if discord_voice_recording_runtime_schema(journal) is not equal to 0:
+            return discord_pin_result("recording-store-unavailable" and "none" and "")
+        set recording_runtime to history_collect_one(archive_prepare(journal and "SELECT enabled FROM discord_voice_recording_runtime WHERE singleton=1;"))
+        if not (archive_list_text(recording_runtime and 1) equals "1"):
+            return discord_pin_result("recording-runtime-unavailable" and "none" and "")
+    set room to archive_list_text(options and 2)
+    set identity to concat("voice:" and ep_sha256(concat(run and concat(":" and call_id))))
+    if not (operation equals "join"):
+        set identity to room
+        set keys to create_list()
+        set keys to [identity,guild]
+        set prior to history_collect_one(checkpoint_prepare(journal and "SELECT channel FROM discord_voice_intents WHERE identity=?1 AND guild=?2;" and keys))
+        if not (archive_list_text(prior and 0) equals "found"):
+            return discord_pin_result("voice-intent-unavailable" and "none" and "")
+        set room to archive_list_text(prior and 1)
+    else:
+        set runtime to history_collect_one(archive_prepare(journal and "SELECT enabled FROM discord_voice_runtime WHERE singleton=1;"))
+        if not (archive_list_text(runtime and 1) equals "1"):
+            return discord_pin_result("voice-runtime-unavailable" and "none" and "")
+    set audience_epoch to discord_access_snapshot_epoch(journal)
+    set access to discord_access_check_bit(library and token and journal and directory_path and bot and guild and origin and actor and admins and -1)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_pin_result(archive_list_text(access and 0) and "none" and "")
+    set inbox to discord_job_origin(journal and database and run)
+    set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if not (current equals "current"):
+        return discord_pin_result(current and "none" and "")
+    # Recording stop/status must remain usable after voice CONNECT is revoked.
+    # Fresh text-source/admin checks above and exact owner/origin binding below
+    # still apply; these operations cannot grant capture or reveal transcripts.
+    set voice_access to create_list()
+    if not (operation equals "stop" or else (operation equals "status" and also length_list(options) >= 5)):
+        set voice_access to discord_voice_access_check(library and token and journal and directory_path and guild and room and actor and bot and guilds and admins and 0)
+        if not (archive_list_text(voice_access and 0) equals "allowed"):
+            return discord_pin_result(archive_list_text(voice_access and 0) and "none" and "")
+    if file_exists(stop_file) or else tool_policy_allows(database and run and call_id and "discord_voice") equals 0 or else discord_pin_admin(database and run and call_id) equals 0 or else not (discord_job_origin(journal and database and run) equals inbox) or else discord_run_barrier(journal and inbox and string_to_int(archive_list_text(source and 7)) and archive_list_text(source and 6) and origin and guild) is not equal to 0:
+        return discord_pin_result("voice-source-or-authority-changed" and "none" and "")
+    if operation equals "record" or else operation equals "stop" or else (operation equals "status" and also length_list(options) >= 5 and also archive_list_text(options and 3) equals "recording"):
+        if operation equals "status" and not (discord_access_snapshot_epoch(journal) equals audience_epoch):
+            return discord_pin_result("voice-audience-changed" and "none" and "")
+        return discord_voice_recording_tool(journal and database and run and call_id and options and actor and origin and guild and bot and guilds and admins and stop_file)
+    if operation equals "status" and also length_list(options) equals 4:
+        return discord_voice_audio_status(journal and database and archive_list_text(options and 3) and identity and actor and origin and guild)
+    set status to ""
+    set effects to "none"
+    if operation equals "join":
+        set status to discord_voice_intent_request(journal and identity and guild and room and actor and run and call_id and archive_list_text(voice_access and 1))
+        if status equals "queued":
+            set effects to "queued; not joined or audible"
+    else if operation equals "leave":
+        set status to discord_voice_intent_cancel(journal and identity)
+        if status equals "leave-required":
+            set effects to "leave requested; await Gateway confirmation"
+        else if status equals "cancelled":
+            set effects to "queued join cancelled locally; no Gateway leave needed"
+    else:
+        set keys to create_list()
+        set keys to [identity,guild]
+        set state to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_intents WHERE identity=?1 AND guild=?2;" and keys))
+        set status to archive_list_text(state and 1)
+    set output to concat("{\"status\":" and provider_quote(status))
+    set output to concat(output and concat(",\"intent\":" and provider_quote(identity)))
+    return concat(output and concat(",\"effects\":" and concat(provider_quote(effects) and "}")))

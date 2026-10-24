@@ -2,6 +2,7 @@ import "action_speech"
 import "interaction_ack"
 import "multipart_audio"
 import "speech_toggle"
+import "audio_decode"
 
 # Edit only the bound bot reply in its original channel. PATCH retries are
 # idempotent; no extra public or ephemeral audio messages are created.
@@ -40,7 +41,7 @@ define discord_speech_deliver with library as Str and token as Str and journal a
     set retained_count to 0
     repeat while file_index < length_list(original_files):
         set file_item to get_list(original_files and file_index)
-        if not (provider_value(original_tokens and provider_member(original_tokens and file_item and "filename")) equals "Echo-reply.wav"):
+        if not (provider_value(original_tokens and provider_member(original_tokens and file_item and "filename")) equals "Echo-reply.wav" or else provider_value(original_tokens and provider_member(original_tokens and file_item and "filename")) equals "Echo-reply.m4a"):
             if retained_count > 0:
                 set retained to concat(retained and ",")
             set retained to concat(retained and concat("{\"id\":" and concat(provider_quote(provider_value(original_tokens and provider_member(original_tokens and file_item and "id"))) and "}")))
@@ -64,15 +65,41 @@ define discord_speech_deliver with library as Str and token as Str and journal a
         set parsed to http_decimal(reported)
         if parsed > 0 and parsed <= 4294967295:
             set maximum to parsed
+    set upload_path to archive_list_text(prepared and 2)
+    set upload_digest to archive_list_text(prepared and 3)
+    set upload_size to archive_list_text(prepared and 4)
+    set upload_name to "Echo-reply.wav"
+    set upload_media to "audio/wav"
+    # Keep the original WAV; encode the complete recording only when needed
+    # for the actual Discord ceiling. No text or audio is truncated.
+    if string_to_int(upload_size) > maximum:
+        set final to archive_read_event(database and archive_list_text(action and 2))
+        set device to concat("discord:" and archive_list_text(action and 4))
+        set converted to discord_audio_decode_format(database and device and archive_list_text(final and 0) and archive_list_text(prepared and 1) and directory_path and 2)
+        if not (archive_list_text(converted and 0) equals "decoded"):
+            return concat("speech-encoding:" and archive_list_text(converted and 0))
+        set encoded to web_attachment_owned(database and device and archive_list_text(converted and 1))
+        if not (archive_list_text(encoded and 0) equals "found") or else not (archive_list_text(encoded and 3) equals "audio/mp4"):
+            return "speech-encoding:attachment-unavailable"
+        set upload_path to archive_list_text(encoded and 1)
+        set upload_digest to archive_list_text(encoded and 4)
+        set upload_size to archive_list_text(encoded and 5)
+        set upload_name to "Echo-reply.m4a"
+        set upload_media to "audio/mp4"
+    if string_to_int(upload_size) > maximum:
+        return "speech-attachment-too-large"
     if retained_count > 0:
         set retained to concat(retained and ",")
-    set payload to concat("{\"attachments\":" and concat(retained and "{\"id\":0,\"filename\":\"Echo-reply.wav\"}],\"allowed_mentions\":{\"parse\":[]}}"))
-    set multipart to discord_audio_multipart(archive_list_text(prepared and 2) and archive_list_text(prepared and 3) and string_to_int(archive_list_text(prepared and 4)) and maximum and payload)
+    set payload to concat("{\"attachments\":" and concat(retained and concat("{\"id\":0,\"filename\":" and concat(provider_quote(upload_name) and "}],\"allowed_mentions\":{\"parse\":[]}}"))))
+    set multipart to discord_file_multipart(upload_path and upload_digest and string_to_int(upload_size) and maximum and payload and upload_name and upload_media)
     if not (archive_list_text(multipart and 0) equals "multipart-ready"):
         return archive_list_text(multipart and 0)
     # Refresh the original source after slow synthesis, immediately before
     # exposing audio. This also rechecks the authenticated channel audience.
     set current to discord_speech_action_prepare(library and token and journal and database and body and bot and admins and directory_path and stop_file)
+    if archive_list_text(current and 0) equals "rate-limited":
+        set released to discord_audio_multipart_release(multipart)
+        return "rate-limited"
     if not (archive_list_text(current and 0) equals "speech-prepared") or else not (archive_list_text(current and 3) equals archive_list_text(prepared and 3)) or else file_exists(stop_file):
         set released to discord_audio_multipart_release(multipart)
         return "speech-access-changed"
@@ -95,11 +122,11 @@ define discord_speech_deliver with library as Str and token as Str and journal a
     set file_index to 0
     repeat while file_index < length_list(attachments):
         set candidate to get_list(attachments and file_index)
-        if provider_value(saved and provider_member(saved and candidate and "filename")) equals "Echo-reply.wav":
+        if provider_value(saved and provider_member(saved and candidate and "filename")) equals upload_name:
             set item to candidate
         set file_index to file_index + 1
     if item < 0:
         return "speech-upload-unconfirmed"
-    if not (provider_value(saved and provider_member(saved and item and "filename")) equals "Echo-reply.wav") or else not (provider_value(saved and provider_member(saved and item and "size")) equals archive_list_text(prepared and 4)):
+    if not (provider_value(saved and provider_member(saved and item and "filename")) equals upload_name) or else not (provider_value(saved and provider_member(saved and item and "size")) equals upload_size):
         return "speech-upload-unconfirmed"
     return discord_speech_toggle_finish(journal and interaction and ep_time_now_ms())

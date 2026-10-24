@@ -1,0 +1,191 @@
+import "voice_recording_frames"
+import "voice_recording_gate_permission"
+import "voice_permission_observer"
+import "voice_worker_step"
+
+# One recording job, with an independently owned permission observer. The
+# receiver slot belongs to the voice connection so replay history survives
+# recording stop/restart until the transport key is retired.
+# State: identity, mailbox, receiver slot, stream, next refresh, wait deadline,
+# lifecycle (active/draining/closed), outcome, last monotonic time, engine.
+define discord_voice_recording_job_start with journal as Int and database as Int and worker as List and config as List and receiver_slot as List and now as Int returning List:
+    if worker equals 0 or else length_list(worker) is not equal to 11 or else config equals 0 or else length_list(config) is not equal to 11 or else receiver_slot equals 0 or else length_list(receiver_slot) is not equal to 1 or else now < 0:
+        return history_status("invalid-recording-job")
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_voice_recordings WHERE intent=?1 AND state='active';" and [archive_list_text(config and 4)]))
+    if archive_list_text(row and 0) equals "end":
+        return history_status("recording-idle")
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("recording-job-store-failed")
+    set identity to archive_list_text(row and 1)
+    if discord_voice_recording_runtime_enabled(journal) equals 0:
+        set changed to archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recordings SET state='interrupted' WHERE identity=?1 AND state='active';" and [identity]) and 101)
+        if changed is not equal to 0:
+            return history_status("recording-job-store-failed")
+        return history_status("recording-runtime-unavailable")
+    set guarded to discord_voice_recording_guard(journal and database and identity and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 9))
+    if not (archive_list_text(guarded and 0) equals "recording-native-current"):
+        set changed to archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recordings SET state='interrupted' WHERE identity=?1 AND state='active';" and [identity]) and 101)
+        if changed is not equal to 0:
+            return history_status("recording-job-store-failed")
+        return guarded
+    if discord_voice_recording_gate_schema(journal) is not equal to 0:
+        return history_status("recording-job-store-failed")
+    set observed_config to create_list()
+    set index to 0
+    repeat while index < 10:
+        set added to append_list(observed_config and get_list(config and index))
+        set index to index + 1
+    set added to append_list(observed_config and 0)
+    set claim to ["recording",identity]
+    set added to append_list(observed_config and claim)
+    set mailbox to discord_voice_permission_start(observed_config)
+    if mailbox equals 0:
+        return history_status("recording-observer-unavailable")
+    set state to create_list()
+    set added to append_list(state and identity)
+    set added to append_list(state and mailbox)
+    set added to append_list(state and receiver_slot)
+    set added to append_list(state and 0)
+    set added to append_list(state and now)
+    set added to append_list(state and now + 30000)
+    set added to append_list(state and 0)
+    set added to append_list(state and "")
+    set added to append_list(state and now)
+    set added to append_list(state and get_list(worker and 0))
+    set result to history_status("recording-job-started")
+    set added to append_list(result and state)
+    return result
+
+define discord_voice_recording_job_drain with state as List returning Int:
+    set observed to discord_voice_permission_mailbox_poll(get_list(state and 1))
+    set phase to get_list(get_list(state and 1) and 6)
+    if get_list(state and 6) equals 1 and also (phase equals 2 or else phase equals 4):
+        set changed to set_list(state and 6 and 2)
+        return 1
+    return 0
+
+define discord_voice_recording_job_finish with journal as Int and state as List and outcome as Str returning Str:
+    if state equals 0 or else length_list(state) is not equal to 10:
+        return outcome
+    if get_list(state and 6) equals 0:
+        set identity to archive_list_text(state and 0)
+        set changed to archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recordings SET state='interrupted' WHERE identity=?1 AND state IN ('pending-notice','active');" and [identity]) and 101)
+        set recorded to archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_voice_recording_capture_outcomes VALUES(?1,?2,CAST(?3 AS INTEGER));" and [identity,outcome,int_to_string(ep_time_now_ms())]) and 101)
+        if changed is not equal to 0 or else recorded is not equal to 0:
+            set outcome to "recording-job-store-failed"
+        set engine to get_list(state and 9)
+        set receiver to get_list(get_list(state and 2) and 0)
+        set revoked to discord_voice_receiver_refresh(receiver and get_list(engine and 5) and get_list(engine and 2) and 0)
+        set stopped to discord_voice_permission_mailbox_stop(get_list(state and 1))
+        set changed to set_list(state and 6 and 1)
+        set changed to set_list(state and 7 and outcome)
+    set drained to discord_voice_recording_job_drain(state)
+    return archive_list_text(state and 7)
+
+# Waiting cannot indefinitely leave a media-state write unconfirmed. Close this
+# voice connection on expiry so Gateway's existing leave cleanup resolves it.
+define discord_voice_recording_job_wait with journal as Int and worker as List and state as List and now as Int and reason as Str returning Str:
+    if get_list(state and 5) equals 0:
+        set changed to set_list(state and 5 and now + 30000)
+    if now >= get_list(state and 5):
+        set closed to discord_voice_worker_step_close(journal and worker and "recording-readiness-deadline")
+        return discord_voice_recording_job_finish(journal and state and closed)
+    return reason
+
+# Called after the normal voice/heartbeat tick. REST runs only on the observer.
+# At most eight datagrams share one journal transaction; all owned PCM is freed
+# before return. Commit failure interrupts recording, never blindly retries it.
+define discord_voice_recording_job_tick with journal as Int and database as Int and system as Int and worker as List and state as List and opus_path as Str and now as Int and wall_ms as Int returning Str:
+    set drained to discord_voice_recording_job_drain(state)
+    if get_list(state and 6) is not equal to 0:
+        return archive_list_text(state and 7)
+    if now < get_list(state and 8):
+        return discord_voice_recording_job_finish(journal and state and "recording-clock-anomaly")
+    set changed to set_list(state and 8 and now)
+    set identity to archive_list_text(state and 0)
+    set engine to get_list(state and 9)
+    if get_list(worker and 10) is not equal to 0 or else get_list(engine and 4) is not equal to 0:
+        return discord_voice_recording_job_finish(journal and state and "recording-owner-closed")
+    set mailbox to get_list(state and 1)
+    if get_list(mailbox and 6) is not equal to 0:
+        return discord_voice_recording_job_finish(journal and state and "recording-observer-stopped")
+    if discord_voice_recording_runtime_enabled(journal) equals 0:
+        return discord_voice_recording_job_finish(journal and state and "recording-runtime-unavailable")
+    set guarded to discord_voice_recording_guard(journal and database and identity and archive_list_text(worker and 2) and get_list(worker and 3) and get_list(worker and 4) and archive_list_text(worker and 5))
+    if not (archive_list_text(guarded and 0) equals "recording-native-current"):
+        return discord_voice_recording_job_finish(journal and state and archive_list_text(guarded and 0))
+    if now >= get_list(state and 4):
+        if discord_voice_permission_mailbox_refresh(mailbox) > 0:
+            set changed to set_list(state and 4 and now + get_list(worker and 7))
+    set proof to discord_voice_permission_mailbox_proof(mailbox)
+    if proof equals 0 or else archive_list_text(proof and 0) equals "voice-authorization-refresh-required":
+        set refreshed to discord_voice_permission_mailbox_refresh(mailbox)
+        return discord_voice_recording_job_wait(journal and worker and state and now and "recording-awaiting-proof")
+    if not (archive_list_text(proof and 0) equals "recording-proof"):
+        return discord_voice_recording_job_finish(journal and state and archive_list_text(proof and 0))
+    set checked to discord_voice_recording_proof_check(journal and database and identity and proof and archive_list_text(worker and 2) and get_list(worker and 3) and get_list(worker and 4) and archive_list_text(worker and 5))
+    if checked equals "voice-authorization-refresh-required":
+        set refreshed to discord_voice_permission_mailbox_refresh(mailbox)
+        return discord_voice_recording_job_wait(journal and worker and state and now and "recording-awaiting-proof")
+    if not (checked equals "allowed"):
+        return discord_voice_recording_job_finish(journal and state and checked)
+    if get_list(engine and 6) is not equal to get_list(get_list(proof and 5) and 3):
+        return discord_voice_recording_job_wait(journal and worker and state and now and "recording-awaiting-owner-view")
+    set slot to get_list(state and 2)
+    if get_list(slot and 0) equals 0:
+        set changed to set_list(slot and 0 and discord_voice_receiver_new(get_list(engine and 3) and opus_path))
+    set receiver to get_list(slot and 0)
+    if receiver equals 0:
+        return discord_voice_recording_job_wait(journal and worker and state and now and "recording-awaiting-media")
+    if get_list(state and 3) equals 0:
+        set changed to set_list(state and 3 and discord_voice_recording_capture_stream(engine and receiver))
+    set gate to history_collect_one(checkpoint_prepare(journal and "SELECT state,after_sequence FROM discord_voice_recording_gates WHERE recording=?1;" and [identity]))
+    if not (archive_list_text(gate and 0) equals "found" or else archive_list_text(gate and 0) equals "end"):
+        return discord_voice_recording_job_finish(journal and state and "recording-gate-store-failed")
+    set requested to "recording-gate-requested"
+    if archive_list_text(gate and 0) equals "end" or else archive_list_text(gate and 1) equals "revoked" or else (archive_list_text(gate and 1) equals "pending" and also string_to_int(archive_list_text(gate and 2)) is not equal to get_list(get_list(proof and 5) and 3)):
+        set requested to discord_voice_recording_gate_request(journal and database and engine and identity and proof and archive_list_text(worker and 2) and get_list(worker and 3) and get_list(worker and 4) and archive_list_text(worker and 5))
+    if requested equals "recording-awaiting-prior-close" or else requested equals "recording-gate-store-busy":
+        return discord_voice_recording_job_wait(journal and worker and state and now and requested)
+    if requested equals "voice-authorization-refresh-required":
+        set refreshed to discord_voice_permission_mailbox_refresh(mailbox)
+        return discord_voice_recording_job_wait(journal and worker and state and now and "recording-awaiting-proof")
+    if not (requested equals "recording-gate-requested"):
+        return discord_voice_recording_job_finish(journal and state and requested)
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return discord_voice_recording_job_wait(journal and worker and state and now and "recording-store-busy")
+    # Fence operator disablement before any PCM decode, not just before storage.
+    if discord_voice_recording_runtime_enabled(journal) equals 0:
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        return discord_voice_recording_job_finish(journal and state and "recording-runtime-unavailable")
+    set discardable to ["recording-capture-draining","invalid-audio-rtp","audio-participant-unavailable","audio-participant-not-consented","audio-replay-denied","audio-authentication-failed","invalid-audio-padding","invalid-audio-payload","audio-awaiting-member-epoch","audio-member-authentication-failed","audio-decode-failed"]
+    set outcome to "again"
+    set index to 0
+    repeat while index < 8:
+        set index to index + 1
+        set decoded to discord_voice_recording_capture_poll(journal and database and get_list(state and 3) and identity and proof and archive_list_text(worker and 2) and get_list(worker and 3) and get_list(worker and 4) and archive_list_text(worker and 5))
+        set outcome to archive_list_text(decoded and 0)
+        if outcome equals "voice-pcm":
+            set staged to discord_voice_recording_frame_stage(journal and database and system and engine and receiver and identity and proof and archive_list_text(worker and 2) and get_list(worker and 3) and get_list(worker and 4) and archive_list_text(worker and 5) and decoded and wall_ms)
+            set released to discord_voice_blob_release(get_list(decoded and 5))
+            set outcome to archive_list_text(staged and 0)
+            if not (outcome equals "recording-frame-staged"):
+                break
+        else if outcome equals "again":
+            break
+        else if discord_contains(discardable and outcome) equals 0:
+            break
+    set accepted to outcome equals "again" or else outcome equals "recording-frame-staged" or else discord_contains(discardable and outcome) equals 1
+    if accepted equals 0:
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        if outcome equals "recording-awaiting-gateway-confirmation" or else outcome equals "voice-authorization-refresh-required":
+            set refreshed to discord_voice_permission_mailbox_refresh(mailbox)
+            return discord_voice_recording_job_wait(journal and worker and state and now and outcome)
+        return discord_voice_recording_job_finish(journal and state and outcome)
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        return discord_voice_recording_job_finish(journal and state and "recording-frame-commit-failed")
+    if get_list(get_list(state and 3) and 3) equals 0:
+        return discord_voice_recording_job_wait(journal and worker and state and now and "recording-capture-draining")
+    set changed to set_list(state and 5 and 0)
+    return "recording-capture-current"

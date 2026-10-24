@@ -1,0 +1,117 @@
+import "voice_control_decode"
+import "voice_heartbeat"
+
+# Handshake state: phase, heartbeat owner, SSRC, remote address, remote port.
+# 0 awaiting READY; 1 discovering UDP; 2 SELECT_PROTOCOL fully written;
+# 3 installing session keys; 4 established; 5 awaiting RESUMED; -1 terminal.
+# Cryptographic/socket owners live in the connection worker, not this object.
+define discord_voice_handshake_new with generation as Int returning List:
+    set heart to discord_voice_heartbeat_new(generation)
+    if heart equals 0:
+        return 0
+    set state to create_list()
+    set added to append_list(state and 0)
+    set added to append_list(state and heart)
+    set added to append_list(state and 0)
+    set added to append_list(state and "")
+    set added to append_list(state and 0)
+    return state
+
+define discord_voice_handshake_fail with state as List and reason as Str returning List:
+    if state is not equal to 0 and also length_list(state) equals 5:
+        set changed to set_list(state and 0 and -1)
+    return history_status(reason)
+
+define discord_voice_handshake_current with state as List and generation as Int returning Int:
+    if state equals 0 or else length_list(state) is not equal to 5 or else get_list(state and 0) < 0:
+        return 0
+    set heart to get_list(state and 1)
+    return get_list(heart and 7) equals generation
+
+# Called only after UDP discovery validated SSRC and a complete protocol-select
+# write succeeded. A partial/uncertain write must terminate the connection.
+define discord_voice_handshake_selected with state as List and generation as Int returning Int:
+    if discord_voice_handshake_current(state and generation) equals 0 or else get_list(state and 0) is not equal to 1:
+        return 0
+    set changed to set_list(state and 0 and 2)
+    return 1
+
+# Native crypto and DAVE session creation must both succeed before this commit.
+# Established transport alone does not grant playback or transcription consent.
+define discord_voice_handshake_installed with state as List and generation as Int returning Int:
+    if discord_voice_handshake_current(state and generation) equals 0 or else get_list(state and 0) is not equal to 3:
+        return 0
+    set changed to set_list(state and 0 and 4)
+    return 1
+
+# Caller has already stopped the previous socket and paused media. Retain
+# crypto/SSRC for resume but require a new socket generation and HELLO schedule.
+define discord_voice_handshake_resume with state as List and generation as Int returning Int:
+    if state equals 0 or else length_list(state) is not equal to 5 or else get_list(state and 0) is not equal to 4:
+        return 0
+    set heart to discord_voice_heartbeat_resume(get_list(state and 1) and generation)
+    if heart equals 0:
+        return 0
+    set changed to set_list(state and 1 and heart)
+    set changed to set_list(state and 0 and 5)
+    return 1
+
+# The caller executes returned actions and owns all returned data. Unknown
+# controls remain explicit and unacknowledged until their handler accepts them.
+define discord_voice_handshake_receive with state as List and body as Str and now as Int and generation as Int returning List:
+    if discord_voice_handshake_current(state and generation) equals 0:
+        return history_status("stale-or-closed-voice-socket")
+    set decoded to discord_voice_control_decode(body)
+    set disposition to archive_list_text(decoded and 0)
+    if length_list(decoded) is not equal to 4:
+        return discord_voice_handshake_fail(state and disposition)
+    set heart to get_list(state and 1)
+    set values to get_list(decoded and 3)
+    set phase to get_list(state and 0)
+    set action to "unhandled-voice-control"
+    if disposition equals "hello":
+        if discord_voice_heartbeat_hello(heart and get_list(values and 0) and now) equals 0:
+            return discord_voice_handshake_fail(state and "invalid-voice-hello-order")
+        set action to "heartbeat-ready"
+    if disposition equals "heartbeat-ack":
+        if discord_voice_heartbeat_ack(heart and now and generation) equals 0:
+            return history_status("ignored-heartbeat-ack")
+        set action to "heartbeat-acknowledged"
+    if disposition equals "ready":
+        if phase is not equal to 0:
+            return discord_voice_handshake_fail(state and "invalid-voice-ready-order")
+        set changed to set_list(state and 2 and get_list(values and 0))
+        set changed to set_list(state and 3 and archive_list_text(values and 1))
+        set changed to set_list(state and 4 and get_list(values and 2))
+        set changed to set_list(state and 0 and 1)
+        set action to "discover-udp"
+    if disposition equals "session-description":
+        if phase is not equal to 2:
+            # The decoder's native key buffer is transient. Explicitly clear it
+            # on this failure path before returning an unprivileged error.
+            set key to get_list(values and 1)
+            set index to 0
+            repeat while index < 4:
+                set changed to set_list(key and index and 0)
+                set index to index + 1
+            return discord_voice_handshake_fail(state and "invalid-session-description-order")
+        set changed to set_list(state and 0 and 3)
+        set action to "install-session-keys"
+    if disposition equals "resumed":
+        if phase is not equal to 5:
+            return discord_voice_handshake_fail(state and "unexpected-voice-resumed")
+        set changed to set_list(state and 0 and 4)
+        set action to "voice-resumed"
+    if disposition equals "prepare-transition" or else disposition equals "execute-transition" or else disposition equals "prepare-epoch":
+        if phase is not equal to 4:
+            return discord_voice_handshake_fail(state and "dave-control-before-session")
+        # The DAVE transition controller must apply this event before acking it.
+        return decoded
+    if action equals "unhandled-voice-control":
+        return decoded
+    set sequence to get_list(decoded and 2)
+    if sequence >= 0:
+        set accepted to discord_voice_heartbeat_sequence(heart and sequence and generation)
+    set result to history_status(action)
+    set added to append_list(result and values)
+    return result

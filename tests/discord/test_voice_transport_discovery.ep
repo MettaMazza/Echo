@@ -1,0 +1,96 @@
+import "../../app/discord/voice_transport"
+# Test-only loopback fixture. Production open has no private-address bypass.
+define fixture_udp returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set fd to ep_dlcall3(ep_dlsym(library and "socket") and 2 and 2 and 17)
+    if fd < 0 or else fd > 2147483647:
+        return 0
+    set address to research_native_words(2)
+    set pointer to get_list_data_ptr(address)
+    set written to poke_byte(pointer and 0 and 16)
+    set written to poke_byte(pointer and 1 and 2)
+    set written to poke_byte(pointer and 4 and 127)
+    set written to poke_byte(pointer and 7 and 1)
+    if ep_dlcall3(ep_dlsym(library and "bind") and fd and pointer and 16) is not equal to 0:
+        return 0
+    set size to research_native_words(1)
+    set changed to set_list(size and 0 and 16)
+    if ep_dlcall3(ep_dlsym(library and "getsockname") and fd and pointer and get_list_data_ptr(size)) is not equal to 0:
+        return 0
+    set state to create_list()
+    set added to append_list(state and library)
+    set added to append_list(state and fd)
+    set fixture to create_list()
+    set added to append_list(fixture and state)
+    set added to append_list(fixture and address)
+    return fixture
+
+define fixture_udp_connect with fixture as List and peer as List returning Int:
+    set state to get_list(fixture and 0)
+    set address to get_list(peer and 1)
+    return ep_dlcall3(ep_dlsym(get_list(state and 0) and "connect") and get_list(state and 1) and get_list_data_ptr(address) and 16) equals 0
+
+define fixture_udp_wait with state as List returning List:
+    set attempts to 0
+    set row to discord_voice_udp_read(state)
+    repeat while archive_list_text(row and 0) equals "again" and also attempts < 100:
+        set waited to ep_dlcall1(ep_dlsym(get_list(state and 0) and "usleep") and 1000)
+        set row to discord_voice_udp_read(state)
+        set attempts to attempts + 1
+    return row
+
+define main returning Int:
+    if get_argument_count() is not equal to 2:
+        return 90
+    set fixture to ep_dlopen(get_argument(1))
+    set round to 0
+    repeat while round < 2:
+        set reset to ep_dlcall1(ep_dlsym(fixture and "fixture_reset") and round)
+        set left to fixture_udp()
+        set right to fixture_udp()
+        if fixture_udp_connect(left and right) equals 0 or else fixture_udp_connect(right and left) equals 0:
+            return 1
+        set socket to create_list()
+        set added to append_list(socket and "connected")
+        set added to append_list(socket and ep_dlopen(get_argument(1)))
+        set added to append_list(socket and 1)
+        set paths to create_list()
+        set paths to ["unused","unused","unused"]
+        set state to discord_voice_transport_new(socket and paths and 1234 and "5678" and 1)
+        set handshake to get_list(state and 0)
+        set changed to set_list(handshake and 0 and 1)
+        set changed to set_list(handshake and 2 and 12345)
+        set changed to set_list(state and 2 and get_list(left and 0))
+        set packet to discord_voice_discovery_request(12345)
+        set pointer to get_list(packet and 0)
+        set written to discord_voice_put_u16(pointer and 0 and 2)
+        set address to "192.168.1.2"
+        set index to 0
+        repeat while index < string_length(address):
+            set written to poke_byte(pointer and 8 + index and peek_byte(str_to_ptr(address) and index))
+            set index to index + 1
+        set written to discord_voice_put_u16(pointer and 72 and 5555)
+        if discord_voice_udp_send(get_list(right and 0) and pointer and 74) equals 0:
+            return 2
+        set released to discord_voice_blob_release(packet)
+        set status to "wait"
+        set attempts to 0
+        repeat while status equals "wait" and also attempts < 100:
+            set status to discord_voice_transport_discovery_tick(state)
+            set waited to ep_dlcall1(ep_dlsym(get_list(get_list(right and 0) and 0) and "usleep") and 1000)
+            set attempts to attempts + 1
+        if round equals 0:
+            if not (status equals "protocol-selected") or else get_list(handshake and 0) is not equal to 2:
+                return 3
+        else:
+            if not (status equals "protocol-select-write-failed") or else get_list(handshake and 0) is not equal to -1:
+                return 4
+        set body to ptr_to_str(ep_dlcall0(ep_dlsym(fixture and "fixture_text")))
+        if not (body equals discord_voice_select_body(address and 5555)) or else ep_dlcall0(ep_dlsym(fixture and "fixture_calls")) is not equal to 1:
+            return 5
+        set closed to discord_voice_transport_close(state)
+        set closed to discord_voice_udp_close(get_list(right and 0))
+        set round to round + 1
+    set closed to ep_dlclose(fixture)
+    display "PASS: actual UDP discovery response drives validated SELECT_PROTOCOL write and handshake commit; partial write closes without retry."
+    return 0

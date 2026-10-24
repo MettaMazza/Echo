@@ -1,0 +1,83 @@
+import "voice_recording_job"
+import "voice_audio_job_worker"
+import "gateway_connection"
+
+# Continuous voice owner with one queued audio attempt at a time. Completing a
+# file keeps the connection alive. A draining observer/loader must finish before
+# another job starts, keeping both background work and resource ownership bounded.
+define discord_voice_job_loop with journal as Int and reader as Int and database as Int and worker as List and config as List and opus_path as Str and stop as Int returning Str:
+    if worker equals 0 or else length_list(worker) is not equal to 11 or else get_list(worker and 10) is not equal to 0 or else discord_voice_audio_jobs_schema(journal) is not equal to 0 or else discord_voice_recording_frames_schema(journal) is not equal to 0:
+        return discord_voice_worker_step_close(journal and worker and "invalid-voice-job-loop")
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return discord_voice_worker_step_close(journal and worker and "voice-worker-clock-unavailable")
+    set stream to create_list()
+    set stream to [0,0]
+    set active to 0
+    set next_job to 0
+    set recording_job to 0
+    set receiver_slot to [0]
+    set next_recording to 0
+    set waits to create_list()
+    set added to append_list(waits and stop)
+    set outcome to "voice-worker-closed"
+    repeat while get_list(worker and 10) equals 0:
+        if select(waits and 0) >= 0:
+            set signal to receive from stop
+            set outcome to "voice-worker-stopped"
+            break
+        set now to discord_monotonic_ms(system)
+        if now < 0:
+            set outcome to "voice-worker-clock-unavailable"
+            break
+        if active equals 0 and also now >= next_job:
+            set next_job to now + 100
+            set started to discord_voice_audio_job_start(journal and database and config and opus_path and now)
+            if archive_list_text(started and 0) equals "voice-audio-started":
+                set active to get_list(started and 1)
+        if active is not equal to 0:
+            set outcome to discord_voice_audio_job_tick(journal and reader and database and worker and active and stream and now and ep_time_now_ms())
+            if get_list(active and 6) equals 2:
+                set active to 0
+        else:
+            set outcome to discord_voice_worker_step(journal and reader and database and worker and now and ep_time_now_ms())
+        if get_list(worker and 10) equals 0:
+            if recording_job equals 0 and also now >= next_recording:
+                set next_recording to now + 100
+                set started_recording to discord_voice_recording_job_start(journal and database and worker and config and receiver_slot and now)
+                if archive_list_text(started_recording and 0) equals "recording-job-started":
+                    set recording_job to get_list(started_recording and 1)
+                else if discord_contains(["invalid-recording-job","recording-job-store-failed","recording-observer-unavailable"] and archive_list_text(started_recording and 0)) equals 1:
+                    set outcome to discord_voice_worker_step_close(journal and worker and archive_list_text(started_recording and 0))
+            if recording_job is not equal to 0:
+                set recording_outcome to discord_voice_recording_job_tick(journal and database and system and worker and recording_job and opus_path and now and ep_time_now_ms())
+                if get_list(worker and 10) is not equal to 0:
+                    set outcome to recording_outcome
+                if get_list(recording_job and 6) equals 2:
+                    set recording_job to 0
+            if get_list(worker and 10) equals 0:
+                set ready to select(waits and 5)
+    # Close voice immediately. Only then join background work; no permission or
+    # file operation delays cancellation of the socket or release of pending PCM.
+    set closed to discord_voice_worker_step_close(journal and worker and outcome)
+    if recording_job is not equal to 0:
+        set settled_recording to discord_voice_recording_job_finish(journal and recording_job and outcome)
+    set closed_receiver to discord_voice_receiver_close(get_list(receiver_slot and 0))
+    if active is not equal to 0:
+        set settled to discord_voice_audio_job_finish(journal and active and outcome)
+        set joins to create_list()
+        set added to append_list(joins and get_list(active and 2))
+        set added to append_list(joins and get_list(get_list(active and 1) and 2))
+        repeat while get_list(active and 6) is not equal to 2:
+            set drained to discord_voice_audio_job_drain(active)
+            if get_list(active and 6) is not equal to 2:
+                set ready to select(joins and 20)
+    if recording_job is not equal to 0:
+        set recording_joins to create_list()
+        set added to append_list(recording_joins and get_list(get_list(recording_job and 1) and 2))
+        repeat while get_list(recording_job and 6) is not equal to 2:
+            set drained_recording to discord_voice_recording_job_drain(recording_job)
+            if get_list(recording_job and 6) is not equal to 2:
+                set ready to select(recording_joins and 20)
+    set closed to ep_dlclose(system)
+    return outcome

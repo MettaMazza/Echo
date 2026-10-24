@@ -1,0 +1,101 @@
+import "store"
+
+# One live intent per guild, including uncertain writes. No credentials/audio.
+# Only the authorized native controller creates intents after source/access gates.
+define discord_voice_intent_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_intents(identity TEXT PRIMARY KEY,guild TEXT NOT NULL,channel TEXT NOT NULL,actor TEXT NOT NULL,run TEXT NOT NULL,call_id TEXT NOT NULL,evidence TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('queued','claimed','sent','connected','uncertain','leave-required','closed','cancelled')),claim TEXT NOT NULL DEFAULT '',generation TEXT NOT NULL DEFAULT '',gateway_session TEXT NOT NULL DEFAULT '',after_sequence INTEGER NOT NULL DEFAULT -1); CREATE UNIQUE INDEX IF NOT EXISTS discord_voice_one_active_guild ON discord_voice_intents(guild) WHERE state NOT IN ('closed','cancelled');")
+
+define discord_voice_intent_request with journal as Int and identity as Str and guild as Str and room as Str and actor as Str and run as Str and call_id as Str and evidence as Str returning Str:
+    if string_length(identity) < 1 or else discord_snowflake(guild) equals 0 or else discord_snowflake(room) equals 0 or else discord_snowflake(actor) equals 0 or else string_length(run) < 1 or else string_length(call_id) < 1 or else string_length(evidence) is not equal to 64:
+        return "invalid-voice-intent"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "voice-intent-store-busy"
+    set keys to create_list()
+    set keys to [identity,guild,room,actor,run,call_id]
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT state,CASE WHEN guild=?2 AND channel=?3 AND actor=?4 AND run=?5 AND call_id=?6 THEN 1 ELSE 0 END FROM discord_voice_intents WHERE identity=?1;" and keys))
+    if archive_list_text(prior and 0) equals "found":
+        if archive_list_text(prior and 2) equals "1":
+            return migration_fail(journal and concat("existing:" and archive_list_text(prior and 1)))
+        return migration_fail(journal and "voice-intent-identity-conflict")
+    if not (archive_list_text(prior and 0) equals "end"):
+        return migration_fail(journal and "voice-intent-read-failed")
+    set guild_key to create_list()
+    set guild_key to [guild]
+    set active to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_voice_intents WHERE guild=?1 AND state NOT IN ('closed','cancelled') LIMIT 1;" and guild_key))
+    if archive_list_text(active and 0) equals "found":
+        return migration_fail(journal and "voice-guild-busy")
+    if not (archive_list_text(active and 0) equals "end"):
+        return migration_fail(journal and "voice-intent-read-failed")
+    set added to append_list(keys and evidence)
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_intents(identity,guild,channel,actor,run,call_id,evidence,state) VALUES(?1,?2,?3,?4,?5,?6,?7,'queued');" and keys) and 101) is not equal to 0:
+        return migration_fail(journal and "voice-intent-write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "voice-intent-commit-failed")
+    return "queued"
+
+# Caller performs fresh authorization/source/cancel checks before claiming. The
+# exact Gateway cursor observed by those checks must still be current. Claim is
+# durable BEFORE OP4; restart never converts claimed/uncertain back to queued.
+define discord_voice_intent_claim with journal as Int and identity as Str and generation as Str and through_sequence as Int and evidence as Str returning List:
+    if through_sequence < 0 or else string_length(evidence) is not equal to 64:
+        return history_status("invalid-voice-claim")
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("voice-intent-store-busy")
+    set current to history_collect_one(archive_prepare(journal and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 1) equals generation) or else string_to_int(archive_list_text(current and 3)) is not equal to through_sequence:
+        set rolled_back to migration_fail(journal and "stale-voice-claim")
+        return history_status("stale-voice-claim")
+    set keys to create_list()
+    set keys to [identity]
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_intents WHERE identity=?1;" and keys))
+    if not (archive_list_text(prior and 0) equals "found") or else not (archive_list_text(prior and 1) equals "queued"):
+        set rolled_back to migration_fail(journal and "voice-intent-not-queued")
+        return history_status("voice-intent-not-queued")
+    set claim to ptr_to_str(ep_uuid_v4())
+    set values to create_list()
+    set retained_voice_added to append_list(values and identity)
+    set retained_voice_added to append_list(values and claim)
+    set retained_voice_added to append_list(values and generation)
+    set retained_voice_added to append_list(values and archive_list_text(current and 2))
+    set retained_voice_added to append_list(values and int_to_string(through_sequence))
+    set retained_voice_added to append_list(values and evidence)
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_intents SET state='claimed',claim=?2,generation=?3,gateway_session=?4,after_sequence=CAST(?5 AS INTEGER),evidence=?6 WHERE identity=?1 AND state='queued';" and values) and 101) is not equal to 0:
+        set rolled_back to migration_fail(journal and "voice-claim-write-failed")
+        return history_status("voice-claim-write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled_back to migration_fail(journal and "voice-claim-commit-failed")
+        return history_status("voice-claim-commit-failed")
+    set result to history_status("claimed")
+    set added to append_list(result and claim)
+    set added to append_list(result and archive_list_text(current and 2))
+    set added to append_list(result and through_sequence)
+    return result
+
+# A successful socket write means sent, not joined. An uncertain result retains
+# the guild reservation. A cancellation racing the write remains leave-required.
+define discord_voice_intent_written with journal as Int and identity as Str and claim as Str and complete as Int returning Str:
+    if string_length(claim) equals 0 or else (complete is not equal to 0 and also complete is not equal to 1):
+        return "invalid-voice-write-result"
+    set disposition to "uncertain"
+    if complete equals 1:
+        set disposition to "sent"
+    set keys to create_list()
+    set keys to [identity,claim,disposition]
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_intents SET state=?3 WHERE identity=?1 AND claim=?2 AND state='claimed';" and keys) and 101) is not equal to 0:
+        return "voice-write-result-failed"
+    set changed to history_collect_one(archive_prepare(journal and "SELECT changes();"))
+    if not (archive_list_text(changed and 0) equals "found") or else not (archive_list_text(changed and 1) equals "1"):
+        return "voice-write-result-not-applied"
+    return disposition
+
+# Unclaimed work can cancel outright. Once claimed, a leave/reconcile step is
+# mandatory before another join can acquire the guild reservation.
+define discord_voice_intent_cancel with journal as Int and identity as Str returning Str:
+    set keys to create_list()
+    set keys to [identity]
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_intents SET state=CASE WHEN state='queued' THEN 'cancelled' ELSE 'leave-required' END WHERE identity=?1 AND state NOT IN ('closed','cancelled');" and keys) and 101) is not equal to 0:
+        return "voice-cancel-write-failed"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_intents WHERE identity=?1;" and keys))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "voice-intent-not-found"
+    return archive_list_text(row and 1)

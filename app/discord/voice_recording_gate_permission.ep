@@ -1,0 +1,32 @@
+import "voice_recording_proof"
+import "voice_gateway_recording"
+
+# Native media owner only. A gate grants transport reception, never participant
+# consent. The exact recording proof and current connection are checked together.
+define discord_voice_recording_gate_request with journal as Int and database as Int and engine as List and identity as Str and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str returning Str:
+    if engine equals 0 or else length_list(engine) is not equal to 7 or else get_list(engine and 4) is not equal to 0:
+        return "recording-gate-owner-denied"
+    if discord_voice_recording_gate_schema(journal) is not equal to 0 or else sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "recording-gate-store-busy"
+    set checked to discord_voice_recording_proof_check(journal and database and identity and proof and bot and guilds and admins and stop_file)
+    if not (checked equals "allowed"):
+        return migration_fail(journal and checked)
+    set owner to get_list(engine and 0)
+    set transport to get_list(proof and 5)
+    if not (archive_list_text(owner and 1) equals archive_list_text(proof and 2)) or else not (archive_list_text(owner and 2) equals archive_list_text(transport and 1)) or else not (archive_list_text(owner and 3) equals bot) or else get_list(engine and 6) is not equal to get_list(transport and 3) or else discord_voice_session_current(journal and owner and get_list(transport and 3)) equals 0:
+        return migration_fail(journal and "recording-gate-owner-denied")
+    set intent to archive_list_text(owner and 1)
+    set generation to archive_list_text(owner and 2)
+    set owned to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_connections WHERE identity=?1 AND generation=?2;" and [intent,generation]))
+    if not (archive_list_text(owned and 1) equals "identified"):
+        return migration_fail(journal and "recording-gate-owner-denied")
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_voice_recording_gates WHERE intent=?1 AND recording<>?2 AND state NOT IN ('closed','revoked');" and [intent,identity]))
+    if not (archive_list_text(prior and 0) equals "found"):
+        return migration_fail(journal and "recording-gate-store-failed")
+    if not (archive_list_text(prior and 1) equals "0"):
+        return migration_fail(journal and "recording-awaiting-prior-close")
+    set voice_session to archive_list_text(get_list(get_list(owner and 0) and 1) and 2)
+    set values to [identity,intent,generation,archive_list_text(transport and 2),int_to_string(get_list(transport and 3)),archive_list_text(proof and 6),bot,voice_session]
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_recording_gates(recording,intent,generation,gateway_session,after_sequence,evidence,bot,voice_session,state) VALUES(?1,?2,?3,?4,CAST(?5 AS INTEGER),?6,?7,?8,'pending') ON CONFLICT(recording) DO UPDATE SET after_sequence=excluded.after_sequence,evidence=excluded.evidence,state='pending' WHERE discord_voice_recording_gates.state IN ('pending','revoked') AND discord_voice_recording_gates.intent=excluded.intent AND discord_voice_recording_gates.generation=excluded.generation AND discord_voice_recording_gates.gateway_session=excluded.gateway_session AND discord_voice_recording_gates.bot=excluded.bot AND discord_voice_recording_gates.voice_session=excluded.voice_session;" and values) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "recording-gate-store-failed")
+    return "recording-gate-requested"

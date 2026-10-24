@@ -1,0 +1,119 @@
+import "voice_recording_export"
+import "../archive/runtime_lock"
+
+# Durable native staging receipts. A receipt is not a published attachment;
+# canonical publication must independently validate original-channel access.
+define discord_voice_recording_artifact_schema with journal as Int returning Int:
+    if discord_voice_recording_export_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_recording_artifact_recordings(recording TEXT PRIMARY KEY REFERENCES discord_voice_recordings(identity)); CREATE TABLE IF NOT EXISTS discord_voice_recording_artifact_tracks(recording TEXT NOT NULL REFERENCES discord_voice_recordings(identity),actor TEXT NOT NULL,voice_session TEXT NOT NULL,ssrc INTEGER NOT NULL,last_nonce INTEGER NOT NULL DEFAULT -1,done INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(recording,actor,voice_session,ssrc)); CREATE TABLE IF NOT EXISTS discord_voice_recording_artifacts(identity TEXT PRIMARY KEY,recording TEXT NOT NULL REFERENCES discord_voice_recordings(identity),actor TEXT NOT NULL,voice_session TEXT NOT NULL,ssrc INTEGER NOT NULL,after_nonce INTEGER NOT NULL,last_nonce INTEGER NOT NULL CHECK(last_nonce>after_nonce),manifest TEXT NOT NULL CHECK(json_valid(manifest)),manifest_digest TEXT NOT NULL,wav_path TEXT NOT NULL UNIQUE,wav_digest TEXT NOT NULL,wav_bytes INTEGER NOT NULL,manifest_path TEXT NOT NULL UNIQUE,UNIQUE(recording,actor,voice_session,ssrc,after_nonce)); CREATE TRIGGER IF NOT EXISTS discord_voice_recording_artifacts_no_update BEFORE UPDATE ON discord_voice_recording_artifacts BEGIN SELECT RAISE(ABORT,'Recording artifact provenance is immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_voice_recording_artifacts_no_delete BEFORE DELETE ON discord_voice_recording_artifacts BEGIN SELECT RAISE(ABORT,'Recording artifact provenance persists'); END;")
+
+# Bounded cursor lookup, one track at a time. No model turn is used to walk
+# packets. The staged ledger is the restart cursor; files without a committed
+# receipt remain private and cannot be mistaken for publication candidates.
+define discord_voice_recording_artifact_next with journal as Int returning List:
+    return history_collect_one(archive_prepare(journal and "SELECT recording,actor,voice_session,ssrc,last_nonce FROM discord_voice_recording_artifact_tracks WHERE done=0 ORDER BY recording,actor,voice_session,ssrc LIMIT 1;"))
+
+# Discover each terminal recording once. Indexed track grouping is performed
+# only at discovery, never once per packet or on every cursor advance.
+define discord_voice_recording_artifact_discover with journal as Int returning Str:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "recording-artifact-store-busy"
+    set row to history_collect_one(archive_prepare(journal and "SELECT identity FROM discord_voice_recordings r WHERE state IN ('stopped','interrupted') AND NOT EXISTS(SELECT 1 FROM discord_voice_recording_artifact_recordings a WHERE a.recording=r.identity) ORDER BY identity LIMIT 1;"))
+    if archive_list_text(row and 0) equals "end":
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return "recording-artifact-idle"
+    if not (archive_list_text(row and 0) equals "found"):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return "recording-artifact-store-failed"
+    set identity to archive_list_text(row and 1)
+    set tracks to archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_recording_artifact_tracks(recording,actor,voice_session,ssrc) SELECT recording,actor,voice_session,ssrc FROM discord_voice_recording_frames INDEXED BY discord_voice_recording_frames_track WHERE recording=?1 GROUP BY recording,actor,voice_session,ssrc;" and [identity]) and 101)
+    set marked to archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_recording_artifact_recordings VALUES(?1);" and [identity]) and 101)
+    if tracks is not equal to 0 or else marked is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return "recording-artifact-store-failed"
+    return "recording-artifact-discovered"
+
+# Stages one segment in a read snapshot. Slow file IO never owns the journal's
+# writer lock. A short subsequent transaction commits the immutable receipt.
+# A crash before that commit may leave an unregistered private candidate; retry
+# uses a fresh exclusive file and the same logical identity, never overwrites it.
+define discord_voice_recording_artifact_step with journal as Int and system as Int and anchor as Str and root_path as Str returning List:
+    if system equals 0 or else string_length(anchor) equals 0 or else sqlite3_get_autocommit(journal) is not equal to 1:
+        return history_status("recording-artifact-invalid")
+    if sql_execute(journal and "BEGIN;") is not equal to 0:
+        return history_status("recording-artifact-store-busy")
+    set next to discord_voice_recording_artifact_next(journal)
+    if not (archive_list_text(next and 0) equals "found"):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        if archive_list_text(next and 0) equals "end":
+            return history_status(discord_voice_recording_artifact_discover(journal))
+        return history_status("recording-artifact-store-failed")
+    set key to provider_quote(anchor)
+    set index to 1
+    repeat while index <= 5:
+        set key to concat(key and provider_quote(archive_list_text(next and index)))
+        set index to index + 1
+    set identity to concat("voice-recording:" and ep_sha256(key))
+    set root to workspace_root_open(system and root_path)
+    if root < 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("recording-artifact-storage-unavailable")
+    set filename to ptr_to_str(ep_uuid_v4())
+    set wav_name to concat(filename and ".wav")
+    set manifest_name to concat(filename and ".json")
+    set descriptor to workspace_file_open(system and root and wav_name and 1)
+    set staged to history_status("recording-artifact-storage-unavailable")
+    if descriptor >= 0:
+        set staged to discord_voice_recording_export(journal and system and descriptor and archive_list_text(next and 1) and archive_list_text(next and 2) and archive_list_text(next and 3) and string_to_int(archive_list_text(next and 4)) and string_to_int(archive_list_text(next and 5)))
+        if file_stage_finish(system and descriptor) is not equal to 0:
+            set staged to history_status("recording-artifact-flush-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        set staged to history_status("recording-artifact-store-failed")
+    if not (archive_list_text(staged and 0) equals "recording-audio-staged"):
+        set closed to net_close(root)
+        return staged
+    set manifest to archive_list_text(staged and 1)
+    set descriptor to workspace_file_open(system and root and manifest_name and 1)
+    set failed to 1
+    if descriptor >= 0:
+        set failed to file_stage_write(system and descriptor and str_to_ptr(manifest) and string_length(manifest))
+        if file_stage_finish(system and descriptor) is not equal to 0:
+            set failed to 1
+    if ep_dlcall1(ep_dlsym(system and "fsync") and root) is not equal to 0:
+        set failed to 1
+    set closed to net_close(root)
+    if failed is not equal to 0:
+        return history_status("recording-artifact-flush-failed")
+    set wav_path to concat(root_path and concat("/" and wav_name))
+    set manifest_path to concat(root_path and concat("/" and manifest_name))
+    set verified to file_digest(wav_path and 65536)
+    set verified_manifest to file_digest(manifest_path and 65536)
+    if not (archive_list_text(verified and 0) equals "verified") or else not (archive_list_text(verified_manifest and 0) equals "verified") or else not (archive_list_text(verified_manifest and 1) equals ep_sha256(manifest)):
+        return history_status("recording-artifact-integrity-failed")
+    set fields to provider_json_tokens(manifest)
+    set last_nonce to provider_value(fields and provider_member(fields and 0 and "last_nonce"))
+    set values to [identity,archive_list_text(next and 1),archive_list_text(next and 2),archive_list_text(next and 3),archive_list_text(next and 4),archive_list_text(next and 5),last_nonce,manifest,ep_sha256(manifest),wav_path,archive_list_text(verified and 1),int_to_string(get_list(verified and 2)),manifest_path]
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("recording-artifact-store-busy")
+    set stored to archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_recording_artifacts VALUES(?1,?2,?3,?4,CAST(?5 AS INTEGER),CAST(?6 AS INTEGER),CAST(?7 AS INTEGER),?8,?9,?10,?11,CAST(?12 AS INTEGER),?13) ON CONFLICT DO NOTHING;" and values) and 101)
+    set match_values to create_list()
+    set match_index to 0
+    repeat while match_index < 12:
+        set added to append_list(match_values and archive_list_text(values and match_index))
+        set match_index to match_index + 1
+    set matched to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_voice_recording_artifacts WHERE identity=?1 AND recording=?2 AND actor=?3 AND voice_session=?4 AND ssrc=CAST(?5 AS INTEGER) AND after_nonce=CAST(?6 AS INTEGER) AND last_nonce=CAST(?7 AS INTEGER) AND manifest=?8 AND manifest_digest=?9 AND wav_digest=?11 AND wav_bytes=CAST(?12 AS INTEGER);" and match_values))
+    if stored is not equal to 0 or else not (archive_list_text(matched and 0) equals "found"):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("recording-artifact-conflict")
+    set cursor_values to [archive_list_text(next and 1),archive_list_text(next and 2),archive_list_text(next and 3),archive_list_text(next and 4),archive_list_text(next and 5),last_nonce,provider_value(fields and provider_member(fields and 0 and "boundary"))]
+    set advanced to archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recording_artifact_tracks SET last_nonce=CAST(?6 AS INTEGER),done=CASE WHEN ?7='end' THEN 1 ELSE 0 END WHERE recording=?1 AND actor=?2 AND voice_session=?3 AND ssrc=CAST(?4 AS INTEGER) AND last_nonce=CAST(?5 AS INTEGER);" and cursor_values) and 101)
+    set current to history_collect_one(checkpoint_prepare(journal and "SELECT last_nonce FROM discord_voice_recording_artifact_tracks WHERE recording=?1 AND actor=?2 AND voice_session=?3 AND ssrc=CAST(?4 AS INTEGER);" and [archive_list_text(next and 1),archive_list_text(next and 2),archive_list_text(next and 3),archive_list_text(next and 4)]))
+    if advanced is not equal to 0 or else not (archive_list_text(current and 0) equals "found") or else string_to_int(archive_list_text(current and 1)) < string_to_int(last_nonce):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("recording-artifact-cursor-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("recording-artifact-commit-failed")
+    return ["recording-artifact-staged",identity]

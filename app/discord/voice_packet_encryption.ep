@@ -1,0 +1,108 @@
+import "voice_wire"
+
+# Worker-owned crypto state: pinned library, copied 32-byte key, next nonce.
+# It is never shared between threads. A new negotiated secret creates new state.
+define discord_voice_crypto_close with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 3:
+        return 0
+    set library to get_list(state and 0)
+    if library equals 0:
+        return 1
+    set key to get_list(state and 1)
+    set wiped to ep_dlcall2(ep_dlsym(library and "sodium_memzero") and key and 32)
+    free_bytes(key)
+    set changed to set_list(state and 0 and 0)
+    set changed to set_list(state and 1 and 0)
+    set changed to set_list(state and 2 and 4294967296)
+    set closed to ep_dlclose(library)
+    return 1
+
+define discord_voice_crypto_open with path as Str and key as Int and count as Int returning List:
+    if key equals 0 or else count is not equal to 32:
+        return 0
+    set library to ep_dlopen(path)
+    if library equals 0:
+        return 0
+    set names to create_list()
+    set names to ["sodium_init","sodium_memzero","crypto_aead_xchacha20poly1305_ietf_encrypt","crypto_aead_xchacha20poly1305_ietf_decrypt"]
+    for each name in names:
+        if ep_dlsym(library and ptr_to_str(name)) equals 0:
+            set closed to ep_dlclose(library)
+            return 0
+    set initialized to ep_dlcall0(ep_dlsym(library and "sodium_init"))
+    if initialized is not equal to 0 and also initialized is not equal to 1:
+        set closed to ep_dlclose(library)
+        return 0
+    set copied to alloc_bytes(32)
+    if copied equals 0:
+        set closed to ep_dlclose(library)
+        return 0
+    set index to 0
+    repeat while index < 32:
+        set written to poke_byte(copied and index and peek_byte(key and index))
+        set index to index + 1
+    set state to create_list()
+    set added to append_list(state and library)
+    set added to append_list(state and copied)
+    set added to append_list(state and 0)
+    return state
+
+# Outbound aead_xchacha20_poly1305_rtpsize packet. The Opus frame must already
+# have passed through the negotiated DAVE state. No plaintext downgrade here.
+# Counter is consumed before encryption, including failure, and never wraps.
+define discord_voice_crypto_packet with state as List and header as List and frame as Int and count as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 3 or else get_list(state and 0) equals 0 or else header equals 0 or else length_list(header) is not equal to 2 or else get_list(header and 0) equals 0 or else get_list(header and 1) is not equal to 12 or else frame equals 0 or else count < 1 or else count > 65475:
+        return 0
+    set nonce_number to get_list(state and 2)
+    if nonce_number < 0 or else nonce_number > 4294967295:
+        return 0
+    set nonce to research_native_words(3)
+    set written to discord_voice_put_u32(get_list_data_ptr(nonce) and 0 and nonce_number)
+    set changed to set_list(state and 2 and nonce_number + 1)
+    set pointer to alloc_bytes(count + 32)
+    if pointer equals 0:
+        return 0
+    set index to 0
+    repeat while index < 12:
+        set written to poke_byte(pointer and index and peek_byte(get_list(header and 0) and index))
+        set index to index + 1
+    set written_size to research_native_words(1)
+    set library to get_list(state and 0)
+    set status to ep_dlcall9(ep_dlsym(library and "crypto_aead_xchacha20poly1305_ietf_encrypt") and pointer + 12 and get_list_data_ptr(written_size) and frame and count and pointer and 12 and 0 and get_list_data_ptr(nonce) and get_list(state and 1))
+    if status is not equal to 0 or else get_list(written_size and 0) is not equal to count + 16:
+        free_bytes(pointer)
+        return 0
+    set written to discord_voice_put_u32(pointer and count + 28 and nonce_number)
+    set packet to create_list()
+    set added to append_list(packet and pointer)
+    set added to append_list(packet and count + 32)
+    return packet
+
+# Inbound rtpsize authentication primitive. The RTP parser supplies the bounded
+# clear header length; this function returns the authenticated encrypted region
+# unchanged, including any encrypted RTP extension/padding bytes. It does not
+# grant participant consent, suppress replay or decode DAVE/Opus.
+# Input is borrowed; output is an owned blob. Never touches the outbound nonce.
+define discord_voice_crypto_unwrap with state as List and pointer as Int and count as Int and header_bytes as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 3 or else get_list(state and 0) equals 0 or else pointer equals 0 or else header_bytes < 12 or else header_bytes > 76 or else count <= header_bytes + 20 or else count > 65507:
+        return 0
+    set nonce to research_native_words(3)
+    set index to 0
+    repeat while index < 4:
+        set written to poke_byte(get_list_data_ptr(nonce) and index and peek_byte(pointer and count - 4 + index))
+        set index to index + 1
+    set clear_bytes to count - header_bytes - 20
+    set output to alloc_bytes(clear_bytes)
+    if output equals 0:
+        return 0
+    set written_size to research_native_words(1)
+    set library to get_list(state and 0)
+    set status to ep_dlcall9(ep_dlsym(library and "crypto_aead_xchacha20poly1305_ietf_decrypt") and output and get_list_data_ptr(written_size) and 0 and pointer + header_bytes and count - header_bytes - 4 and pointer and header_bytes and get_list_data_ptr(nonce) and get_list(state and 1))
+    if status is not equal to 0 or else get_list(written_size and 0) is not equal to clear_bytes:
+        set wiped to ep_dlcall2(ep_dlsym(library and "sodium_memzero") and output and clear_bytes)
+        free_bytes(output)
+        return 0
+    set result to create_list()
+    set added to append_list(result and output)
+    set added to append_list(result and clear_bytes)
+    return result

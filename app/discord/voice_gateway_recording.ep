@@ -1,0 +1,58 @@
+import "voice_gateway_send"
+
+# Same identified connection, Gateway generation/session and latest own voice
+# session. Enabling also requires its exact proof cursor and active notice.
+# Closing is cleanup: it needs current connection ownership, not record authority.
+define discord_voice_recording_gate_current with journal as Int and recording as Str and generation as Str returning List:
+    return history_collect_one(checkpoint_prepare(journal and "SELECT i.guild,i.channel,e.payload,g.sequence,p.state FROM discord_voice_recording_gates p JOIN discord_voice_recordings r ON r.identity=p.recording AND r.intent=p.intent JOIN discord_voice_intents i ON i.identity=p.intent JOIN discord_voice_connections c ON c.identity=i.identity JOIN discord_gateway g ON g.singleton=1 JOIN discord_voice_membership_events e ON e.session=g.session WHERE p.recording=?1 AND p.generation=?2 AND i.generation=p.generation AND i.gateway_session=p.gateway_session AND i.state='sent' AND c.state='identified' AND c.generation=p.generation AND g.generation=p.generation AND g.session=p.gateway_session AND ((p.state IN ('pending','attempted') AND r.state='active' AND r.notice<>'' AND r.notice_receipt<>'' AND g.sequence=p.after_sequence) OR (p.state IN ('close-pending','close-attempted') AND r.state IN ('stopped','interrupted'))) AND e.kind='VOICE_STATE_UPDATE' AND json_extract(e.payload,'$.guild_id')=i.guild AND json_extract(e.payload,'$.user_id')=p.bot AND json_extract(e.payload,'$.channel_id')=i.channel AND json_extract(e.payload,'$.session_id')=p.voice_session AND NOT EXISTS(SELECT 1 FROM discord_voice_membership_events later WHERE later.session=e.session AND later.sequence>e.sequence AND COALESCE(json_extract(later.payload,'$.guild_id'),json_extract(later.payload,'$.id'))=i.guild AND (later.kind<>'VOICE_STATE_UPDATE' OR json_extract(later.payload,'$.user_id')=p.bot OR json_extract(later.payload,'$.invalid')=1));" and [recording,generation]))
+
+# Sole Gateway owner. Mark before writing; recheck after the durable marker.
+# Preserve the observed self-mute bit so recording cannot unmute a quiet bot.
+define discord_voice_recording_gate_send with journal as Int and socket as List and recording as Str and generation as Str and stop_file as Str returning Str:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "recording-gate-store-busy"
+    set gateway to history_collect_one(archive_prepare(journal and "SELECT generation FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(gateway and 1) equals generation):
+        return migration_fail(journal and "stale-recording-gateway")
+    set gate to history_collect_one(checkpoint_prepare(journal and "SELECT state,intent,bot FROM discord_voice_recording_gates WHERE recording=?1;" and [recording]))
+    set state to archive_list_text(gate and 1)
+    if not (state equals "pending" or else state equals "close-pending"):
+        return migration_fail(journal and "recording-gate-already-attempted")
+    set closing to state equals "close-pending"
+    set current to discord_voice_recording_gate_current(journal and recording and generation)
+    if not (archive_list_text(current and 0) equals "found") or else (closing equals 0 and also file_exists(stop_file)):
+        if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recording_gates SET state='revoked' WHERE recording=?1;" and [recording]) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+            return migration_fail(journal and "recording-gate-store-failed")
+        return "recording-gate-revoked"
+    set ready to discord_voice_media_gate_ready(journal and archive_list_text(gate and 2) and archive_list_text(gate and 3))
+    if ready < 0:
+        return migration_fail(journal and "recording-gate-store-failed")
+    if ready equals 0:
+        return migration_fail(journal and "voice-media-awaiting-confirmation")
+    set marked to "attempted"
+    if closing equals 1:
+        set marked to "close-attempted"
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recording_gates SET state=?2,after_sequence=CAST(?3 AS INTEGER) WHERE recording=?1;" and [recording,marked,archive_list_text(current and 4)]) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "recording-gate-marker-failed")
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "recording-gate-marked-not-written"
+    set current to discord_voice_recording_gate_current(journal and recording and generation)
+    if not (archive_list_text(current and 0) equals "found") or else (closing equals 0 and also file_exists(stop_file)):
+        return migration_fail(journal and "recording-gate-marked-not-written")
+    set fields to provider_json_tokens(archive_list_text(current and 3))
+    set muted_kind to provider_kind(fields and provider_member(fields and 0 and "self_mute"))
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (muted_kind equals "true" or else muted_kind equals "false"):
+        return migration_fail(journal and "recording-gate-own-state-invalid")
+    set muted to muted_kind equals "true"
+    set body to discord_voice_gateway_state_body(archive_list_text(current and 1) and archive_list_text(current and 2) and muted and closing)
+    set complete to discord_socket_send(socket and body)
+    set disposition to "uncertain"
+    if closing equals 1:
+        set disposition to "close-uncertain"
+    if complete equals 1:
+        set disposition to "sent"
+        if closing equals 1:
+            set disposition to "close-sent"
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recording_gates SET state=?2,after_sequence=CAST(?3 AS INTEGER) WHERE recording=?1 AND state=?4;" and [recording,disposition,archive_list_text(current and 4),marked]) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "recording-gate-outcome-unrecorded")
+    return disposition

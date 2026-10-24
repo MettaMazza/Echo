@@ -1,0 +1,74 @@
+import "../../app/discord/foreground_release"
+import "../../app/archive/snapshot"
+import "../../app/discord/final_stream"
+
+# A gated extractor simulates inference still in flight. After foreground release
+# it uses the real extraction validator/store to persist exact source quotations.
+define delayed_memory with path as Str and gate as Int and done as Int returning Int:
+    set release to receive from gate
+    set database to archive_open(path)
+    set response to "{\"memories\":[{\"source_event\":\"discord-message:100:user\",\"kind\":\"semantic\",\"category\":\"preference\",\"quote\":\"I prefer green tea.\",\"event_time\":\"\",\"time_quote\":\"\"}]}"
+    set result to memory_extract_save(database and "discord-message:101" and ["discord-message:100:user"] and 0 and 1 and response)
+    set closed to sql_close(database)
+    send result to done
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)):
+        return 1
+    set journal to discord_store_open(get_argument(1) and "900")
+    set database to discord_agent_open(get_argument(2) and "900")
+    if journal equals 0 or else database equals 0 or else discord_worker_schema(journal) is not equal to 0 or else discord_foreground_release_schema(journal) is not equal to 0 or else not (delegation_schema(database) equals "applied"):
+        return 2
+    set body to "{\"id\":\"100\",\"channel_id\":\"300\",\"guild_id\":\"200\",\"flags\":0,\"type\":0,\"author\":{\"id\":\"500\"},\"mentions\":[{\"id\":\"900\"}],\"content\":\"I prefer green tea.\"}"
+    if not (discord_inbox_record(journal and "message:create:100" and "MESSAGE_CREATE" and body) equals "recorded") or else not (archive_list_text(discord_worker_claim(journal) and 1) equals "message:create:100"):
+        return 3
+    set submitted to discord_agent_submit(journal and database and "message:create:100" and "900" and ["200"] and ["400"])
+    if not (archive_list_text(submitted and 0) equals "accepted"):
+        return 4
+    set session to archive_list_text(submitted and 1)
+    set next_body to "{\"id\":\"101\",\"channel_id\":\"300\",\"guild_id\":\"200\",\"flags\":0,\"type\":0,\"author\":{\"id\":\"500\"},\"mentions\":[{\"id\":\"900\"}],\"content\":\"Follow up\"}"
+    if not (discord_inbox_record(journal and "message:create:101" and "MESSAGE_CREATE" and next_body) equals "recorded"):
+        return 5
+    if discord_foreground_release(journal and database and "message:create:100") is not equal to 0 or else not (archive_list_text(discord_worker_claim(journal) and 0) equals "end"):
+        return 6
+    if archive_append(database and session and "fixture-request" and "model_request" and "{\"run_id\":\"discord-message:100\",\"parent_event\":\"discord-message:100:user\",\"fixture\":true}" and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "ready" and "discord-message:100:user" and "generating" and "fixture-request") is not equal to 0:
+        return 7
+    if archive_append(database and session and "fixture-final" and "assistant_final" and "{\"run_id\":\"discord-message:100\",\"parent_event\":\"fixture-request\",\"content\":\"Remembered.\"}" and "fixture") is not equal to 0 or else agent_run_transition(database and "discord-message:100" and "generating" and "fixture-request" and "completed" and "fixture-final") is not equal to 0:
+        return 8
+    # A final event alone does not prove that autonomy/foreground work exited.
+    if discord_foreground_release(journal and database and "message:create:100") is not equal to 0:
+        return 9
+    set gate to channel
+    set done to channel
+    set memory_path to concat(get_argument(2) and "")
+    spawn delayed_memory(memory_path and gate and done)
+    if agent_foreground_complete(database and "discord-message:100") is not equal to 0 or else discord_foreground_release(journal and database and "message:create:100") is not equal to 1:
+        return 10
+    if discord_foreground_release(journal and database and "message:create:100") is not equal to 1:
+        return 11
+    set counts to history_collect_one(archive_prepare(journal and "SELECT (SELECT COUNT(*) FROM discord_outbox),(SELECT COUNT(*) FROM discord_foreground_releases);"))
+    if not (archive_list_text(counts and 1) equals "1") or else not (archive_list_text(counts and 2) equals "1"):
+        return 12
+    # The memory worker is still blocked at the gate when the follow-up claims.
+    if not (archive_list_text(discord_worker_claim(journal) and 1) equals "message:create:101"):
+        return 13
+    set followup to discord_agent_submit(journal and database and "message:create:101" and "900" and ["200"] and ["400"])
+    if not (archive_list_text(followup and 0) equals "accepted"):
+        return 14
+    send 1 to gate
+    set saved to receive from done
+    if not (ptr_to_str(saved) equals "ready"):
+        display ptr_to_str(saved)
+        return 15
+    set receipts to history_collect_one(archive_prepare(database and "SELECT (SELECT COUNT(*) FROM echo_events WHERE kind='group_memory_claim' AND json_extract(payload,'$.object')='I prefer green tea.'),(SELECT COUNT(*) FROM echo_events WHERE kind='memory_indexed' AND json_extract(payload,'$.source_event')='discord-message:100:user');"))
+    if not (archive_list_text(receipts and 1) equals "1") or else not (archive_list_text(receipts and 2) equals "1"):
+        return 16
+    set closed to sql_close(journal)
+    set journal to discord_store_open(get_argument(1) and "900")
+    if discord_foreground_released(journal and "message:create:100") is not equal to 1 or else discord_foreground_release(journal and database and "message:create:100") is not equal to 1:
+        return 17
+    if archive_verify_all(database) is not equal to 0:
+        return 18
+    display "PASS: active/intermediate foreground blocks; explicit completed handoff releases follow-up while extractor remains alive; exact memory and receipt persist afterwards; idempotent output and release survive reopen."
+    return 0

@@ -1,12 +1,14 @@
 import "interaction_intake"
 import "store"
 import "gateway_roles"
+import "gateway_voice_membership"
+import "voice_handoff_store"
 
 # A generation fences old socket workers after reconnect. Sequence advances
 # only in the transaction which records the dispatch receipt and admitted work.
 # Ignored messages retain only an envelope digest, never their message content.
 define discord_gateway_schema with database as Int returning Int:
-    if discord_gateway_role_schema(database) is not equal to 0:
+    if discord_gateway_role_schema(database) is not equal to 0 or else discord_gateway_voice_schema(database) is not equal to 0 or else discord_voice_handoff_schema(database) is not equal to 0:
         return 1
     return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_gateway(singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation TEXT NOT NULL,session TEXT NOT NULL,sequence INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS discord_dispatch(session TEXT NOT NULL,sequence INTEGER NOT NULL,kind TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(session,sequence)); CREATE TRIGGER IF NOT EXISTS discord_dispatch_no_update BEFORE UPDATE ON discord_dispatch BEGIN SELECT RAISE(ABORT,'Dispatch receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_dispatch_no_delete BEFORE DELETE ON discord_dispatch BEGIN SELECT RAISE(ABORT,'Dispatch receipts are immutable'); END;")
 
@@ -37,6 +39,12 @@ define discord_gateway_bind with database as Int and generation as Str and sessi
 # Input identity/payload are supplied only after trusted routing/access checks.
 # Empty identity is a deliberately ignored dispatch; payload must then be empty.
 define discord_gateway_dispatch with database as Int and generation as Str and session as Str and sequence as Int and kind as Str and original_digest as Str and identity as Str and payload as Str returning Str:
+    return discord_gateway_dispatch_voice(database and generation and session and sequence and kind and original_digest and identity and payload and "")
+
+define discord_gateway_dispatch_voice with database as Int and generation as Str and session as Str and sequence as Int and kind as Str and original_digest as Str and identity as Str and payload as Str and voice_payload as Str returning Str:
+    return discord_gateway_dispatch_private_voice(database and generation and session and sequence and kind and original_digest and identity and payload and voice_payload and "" and "")
+
+define discord_gateway_dispatch_private_voice with database as Int and generation as Str and session as Str and sequence as Int and kind as Str and original_digest as Str and identity as Str and payload as Str and voice_payload as Str and private_body as Str and bot as Str returning Str:
     if sequence < 0 or else string_length(kind) equals 0 or else string_length(original_digest) is not equal to 64:
         return "invalid-dispatch"
     if string_length(identity) equals 0 and string_length(payload) > 0:
@@ -58,6 +66,10 @@ define discord_gateway_dispatch with database as Int and generation as Str and s
         return migration_fail(database and "read-failed")
     if sequence <= string_to_int(archive_list_text(live and 3)):
         return migration_fail(database and "sequence-regressed")
+    if discord_gateway_voice_record(database and session and sequence and kind and voice_payload) is not equal to 0:
+        return migration_fail(database and "voice-membership-record-failed")
+    if discord_voice_handoff_record(database and generation and session and sequence and kind and private_body and bot and ep_time_now_ms()) is not equal to 0:
+        return migration_fail(database and "voice-handoff-record-failed")
     set retained_identity to identity
     # Classification and its prior permission observation commit with the cursor.
     # A duplicate, stale connection or failed transaction cannot erase a barrier.

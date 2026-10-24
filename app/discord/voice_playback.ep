@@ -1,0 +1,84 @@
+import "voice_media_controller"
+import "voice_opus"
+
+# Owns codec, borrows controller. Sequence/timestamp seeds are native worker
+# inputs. One PCM frame is 960 stereo samples (20 ms). No PCM is retained here.
+# State: controller, codec, sequence, timestamp, due, last clock, closed, speaking.
+define discord_voice_playback_new with controller as List and codec as List and sequence as Int and timestamp as Int and now as Int returning List:
+    if controller equals 0 or else length_list(controller) is not equal to 9 or else get_list(controller and 6) is not equal to 0 or else codec equals 0 or else length_list(codec) is not equal to 3 or else sequence < 0 or else sequence > 65535 or else timestamp < 0 or else timestamp > 4294967295 or else now < 0 or else now > 9007199254740971:
+        return 0
+    set state to create_list()
+    set state to [controller,codec,sequence,timestamp,now,now,0,0]
+    return state
+
+define discord_voice_playback_fail with state as List and reason as Str returning Str:
+    if state is not equal to 0 and also length_list(state) equals 8:
+        set closed to discord_voice_opus_close(get_list(state and 1))
+        set changed to set_list(state and 6 and 1)
+        set closed to discord_voice_media_controller_close(get_list(state and 0) and reason)
+    return reason
+
+# wait/await-media leave the caller's PCM frame unconsumed. sent consumes exactly
+# one frame. An error terminates playback; no UDP write is automatically retried.
+define discord_voice_playback_tick with state as List and pcm as Int and count as Int and now as Int and authorized as Int and consented as Int and cancelled as Int returning Str:
+    if state equals 0 or else length_list(state) is not equal to 8 or else get_list(state and 6) is not equal to 0:
+        return "playback-closed"
+    if authorized is not equal to 1 or else consented is not equal to 1 or else cancelled is not equal to 0:
+        return discord_voice_playback_fail(state and "playback-revoked")
+    if now < get_list(state and 5) or else now > 9007199254740971:
+        return discord_voice_playback_fail(state and "playback-clock-anomaly")
+    set changed to set_list(state and 5 and now)
+    set controller to get_list(state and 0)
+    if get_list(controller and 6) is not equal to 0:
+        return discord_voice_playback_fail(state and "playback-controller-closed")
+    set transport to get_list(get_list(controller and 0) and 0)
+    set media to discord_voice_media_controller_media(controller and archive_list_text(transport and 7) and authorized and consented)
+    if media equals 0:
+        return "await-media"
+    if now < get_list(state and 4):
+        return "wait"
+    set ssrc to get_list(get_list(transport and 0) and 2)
+    if get_list(media and 3) is not equal to 1 or else get_list(media and 4) is not equal to ssrc or else pcm equals 0 or else count is not equal to 3840:
+        return discord_voice_playback_fail(state and "invalid-playback-frame")
+    if get_list(state and 7) equals 0:
+        set body to discord_voice_speaking_body(ssrc and 1)
+        if string_length(body) equals 0 or else discord_voice_socket_send(get_list(transport and 1) and str_to_ptr(body) and string_length(body) and 0) equals 0:
+            return discord_voice_playback_fail(state and "speaking-write-uncertain")
+        set changed to set_list(state and 7 and 1)
+    set opus to discord_voice_opus_encode(get_list(state and 1) and pcm and count)
+    if opus equals 0:
+        return discord_voice_playback_fail(state and "playback-opus-failed")
+    set encrypted to discord_voice_media_frame(media and get_list(opus and 0) and get_list(opus and 1))
+    set released to discord_voice_blob_release(opus)
+    if encrypted equals 0:
+        return discord_voice_playback_fail(state and "playback-dave-failed")
+    set header to discord_voice_rtp_header(get_list(state and 2) and get_list(state and 3) and ssrc)
+    # Consume sequence/timestamp before transport encryption or UDP write.
+    # Its separate AEAD nonce is consumed by crypto_packet and never wraps.
+    set changed to set_list(state and 2 and (get_list(state and 2) + 1) % 65536)
+    set changed to set_list(state and 3 and (get_list(state and 3) + 960) % 4294967296)
+    set packet to discord_voice_crypto_packet(get_list(transport and 3) and header and get_list(encrypted and 0) and get_list(encrypted and 1))
+    set released to discord_voice_blob_release(header)
+    set released to discord_voice_blob_release(encrypted)
+    if packet equals 0:
+        return discord_voice_playback_fail(state and "playback-transport-encryption-failed")
+    set sent to discord_voice_udp_send(get_list(transport and 2) and get_list(packet and 0) and get_list(packet and 1))
+    set released to discord_voice_blob_release(packet)
+    if sent equals 0:
+        return discord_voice_playback_fail(state and "playback-udp-write-uncertain")
+    # A late worker sends once and resumes at 20 ms, never a catch-up burst.
+    set changed to set_list(state and 4 and now + 20)
+    return "sent"
+
+define discord_voice_playback_stop with state as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 8 or else get_list(state and 6) is not equal to 0:
+        return "playback-closed"
+    set controller to get_list(state and 0)
+    if get_list(state and 7) equals 1 and also get_list(controller and 6) equals 0:
+        set transport to get_list(get_list(controller and 0) and 0)
+        set body to discord_voice_speaking_body(get_list(get_list(transport and 0) and 2) and 0)
+        if discord_voice_socket_send(get_list(transport and 1) and str_to_ptr(body) and string_length(body) and 0) equals 0:
+            return discord_voice_playback_fail(state and "speaking-stop-write-uncertain")
+    set closed to discord_voice_opus_close(get_list(state and 1))
+    set changed to set_list(state and 6 and 1)
+    return "playback-stopped"

@@ -1,0 +1,75 @@
+import "voice_intents"
+import "voice_participants"
+
+# Journal storage only. Native adapters must check admin/source/audience before
+# requesting recording and verify the visible notice before activating it.
+# Consent is a human component interaction, never a model-supplied boolean.
+define discord_voice_recording_schema with journal as Int returning Int:
+    if discord_voice_intent_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_recordings(identity TEXT PRIMARY KEY,intent TEXT NOT NULL REFERENCES discord_voice_intents(identity),actor TEXT NOT NULL,origin TEXT NOT NULL,request TEXT NOT NULL UNIQUE,state TEXT NOT NULL CHECK(state IN ('pending-notice','active','stopped','interrupted')),notice TEXT NOT NULL DEFAULT '',notice_receipt TEXT NOT NULL DEFAULT ''); CREATE UNIQUE INDEX IF NOT EXISTS discord_voice_recording_one_active ON discord_voice_recordings(intent) WHERE state IN ('pending-notice','active'); CREATE TABLE IF NOT EXISTS discord_voice_recording_offers(identity TEXT PRIMARY KEY,recording TEXT NOT NULL REFERENCES discord_voice_recordings(identity),actor TEXT NOT NULL,voice_session TEXT NOT NULL,UNIQUE(recording,actor,voice_session)); CREATE TABLE IF NOT EXISTS discord_voice_recording_consents(receipt TEXT PRIMARY KEY REFERENCES discord_inbox(identity),interaction TEXT NOT NULL UNIQUE,recording TEXT NOT NULL REFERENCES discord_voice_recordings(identity),actor TEXT NOT NULL,voice_session TEXT NOT NULL,decision TEXT NOT NULL CHECK(decision IN ('grant','revoke'))); CREATE TRIGGER IF NOT EXISTS discord_voice_recording_offers_no_update BEFORE UPDATE ON discord_voice_recording_offers BEGIN SELECT RAISE(ABORT,'Voice consent offers are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_voice_recording_offers_no_delete BEFORE DELETE ON discord_voice_recording_offers BEGIN SELECT RAISE(ABORT,'Voice consent offers persist'); END; CREATE TRIGGER IF NOT EXISTS discord_voice_recording_consents_no_update BEFORE UPDATE ON discord_voice_recording_consents BEGIN SELECT RAISE(ABORT,'Voice consent receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_voice_recording_consents_no_delete BEFORE DELETE ON discord_voice_recording_consents BEGIN SELECT RAISE(ABORT,'Voice consent receipts persist'); END;")
+
+define discord_voice_recording_request with journal as Int and identity as Str and intent as Str and actor as Str and origin as Str and request as Str returning Str:
+    if string_length(identity) < 1 or else string_length(identity) > 64 or else discord_snowflake(actor) equals 0 or else discord_snowflake(origin) equals 0 or else string_length(request) equals 0:
+        return "invalid-recording-request"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "recording-store-busy"
+    set keys to [identity,intent,actor,origin,request]
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT state,CASE WHEN identity=?1 AND intent=?2 AND actor=?3 AND origin=?4 AND request=?5 THEN 1 ELSE 0 END FROM discord_voice_recordings WHERE identity=?1 OR request=?5 LIMIT 1;" and keys))
+    if archive_list_text(prior and 0) equals "found":
+        if archive_list_text(prior and 2) equals "1":
+            return migration_fail(journal and concat("existing:" and archive_list_text(prior and 1)))
+        return migration_fail(journal and "recording-identity-conflict")
+    if not (archive_list_text(prior and 0) equals "end"):
+        return migration_fail(journal and "recording-read-failed")
+    set owner to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_voice_intents WHERE identity=?1 AND actor=?2 AND state IN ('sent','connected');" and [intent,actor]))
+    if not (archive_list_text(owner and 0) equals "found"):
+        return migration_fail(journal and "recording-intent-unavailable")
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_recordings(identity,intent,actor,origin,request,state) VALUES(?1,?2,?3,?4,?5,'pending-notice');" and keys) and 101) is not equal to 0:
+        return migration_fail(journal and "recording-write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "recording-commit-failed")
+    return "pending-notice"
+
+# Notice must be an observed bot-authored message in this request's origin.
+# A second or late notice cannot activate a stopped/recovered recording.
+define discord_voice_recording_notice with journal as Int and identity as Str and message as Str and receipt as Str returning Str:
+    if discord_snowflake(message) equals 0 or else string_length(receipt) equals 0:
+        return "invalid-recording-notice"
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recordings SET notice=?2,notice_receipt=?3,state='active' WHERE identity=?1 AND state='pending-notice' AND EXISTS(SELECT 1 FROM discord_voice_intents i WHERE i.identity=discord_voice_recordings.intent AND i.state IN ('sent','connected'));" and [identity,message,receipt]) and 101) is not equal to 0:
+        return "recording-notice-failed"
+    set changed to history_collect_one(archive_prepare(journal and "SELECT changes();"))
+    if not (archive_list_text(changed and 1) equals "1"):
+        return "recording-notice-not-applied"
+    return "active"
+
+# Per-member challenge prevents a delayed click from granting a later voice
+# session. A shared recording notice alone cannot serve as this challenge.
+define discord_voice_recording_offer with journal as Int and identity as Str and recording as Str and actor as Str and session as Str returning Str:
+    if string_length(identity) is not equal to 64 or else discord_snowflake(actor) equals 0 or else string_length(session) equals 0:
+        return "invalid-recording-offer"
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_recording_offers(identity,recording,actor,voice_session) SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM discord_voice_recordings WHERE identity=?2 AND state='active') ON CONFLICT DO NOTHING;" and [identity,recording,actor,session]) and 101) is not equal to 0:
+        return "recording-offer-failed"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_voice_recording_offers WHERE identity=?1 AND recording=?2 AND actor=?3 AND voice_session=?4;" and [identity,recording,actor,session]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "recording-offer-conflict"
+    return "offered"
+
+define discord_voice_recording_stop with journal as Int and identity as Str returning Int:
+    return archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recordings SET state='stopped' WHERE identity=?1 AND state IN ('pending-notice','active');" and [identity]) and 101)
+
+# Exclusive owner recovery never resumes recording automatically after restart.
+define discord_voice_recording_recover with journal as Int and intent as Str returning Int:
+    return archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recordings SET state='interrupted' WHERE intent=?1 AND state IN ('pending-notice','active');" and [intent]) and 101)
+
+# Operator-owned enablement remains off until the complete capture/transcription
+# workflow is qualified. Model arguments cannot enable it. Stop/status continue
+# to work after it is disabled so existing requests are not stranded.
+define discord_voice_recording_runtime_schema with journal as Int returning Int:
+    if discord_voice_recording_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_recording_runtime(singleton INTEGER PRIMARY KEY CHECK(singleton=1),enabled INTEGER NOT NULL CHECK(enabled IN (0,1)));")
+
+define discord_voice_recording_runtime_enabled with journal as Int returning Int:
+    set row to history_collect_one(archive_prepare(journal and "SELECT enabled FROM discord_voice_recording_runtime WHERE singleton=1;"))
+    return archive_list_text(row and 0) equals "found" and also archive_list_text(row and 1) equals "1"

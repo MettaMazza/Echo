@@ -1,0 +1,318 @@
+import "../../app/discord/voice_file_playback"
+
+# Server fixture constructs actual binary framing, including embedded NULs.
+define fixture_receive with session as List and sequence as Int and opcode as Int and transition as Int and payload as List and users as List returning List:
+    set prefix to 3
+    if opcode equals 29 or else opcode equals 30:
+        set prefix to 5
+    set count to get_list(payload and 1)
+    set pointer to alloc_bytes(count + prefix)
+    set written to discord_voice_put_u16(pointer and 0 and sequence)
+    set written to poke_byte(pointer and 2 and opcode)
+    if prefix equals 5:
+        set written to discord_voice_put_u16(pointer and 3 and transition)
+    set index to 0
+    repeat while index < count:
+        set written to poke_byte(pointer and prefix + index and peek_byte(get_list(payload and 0) and index))
+        set index to index + 1
+    set result to discord_voice_mls_receive(session and pointer and count + prefix and users)
+    free_bytes(pointer)
+    return result
+
+# Test-only loopback fixture. Production open has no private-address bypass.
+define fixture_udp returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set fd to ep_dlcall3(ep_dlsym(library and "socket") and 2 and 2 and 17)
+    if fd < 0 or else fd > 2147483647:
+        return 0
+    set address to research_native_words(2)
+    set pointer to get_list_data_ptr(address)
+    set written to poke_byte(pointer and 0 and 16)
+    set written to poke_byte(pointer and 1 and 2)
+    set written to poke_byte(pointer and 4 and 127)
+    set written to poke_byte(pointer and 7 and 1)
+    if ep_dlcall3(ep_dlsym(library and "bind") and fd and pointer and 16) is not equal to 0:
+        return 0
+    set size to research_native_words(1)
+    set changed to set_list(size and 0 and 16)
+    if ep_dlcall3(ep_dlsym(library and "getsockname") and fd and pointer and get_list_data_ptr(size)) is not equal to 0:
+        return 0
+    set state to create_list()
+    set added to append_list(state and library)
+    set added to append_list(state and fd)
+    set fixture to create_list()
+    set added to append_list(fixture and state)
+    set added to append_list(fixture and address)
+    return fixture
+
+define fixture_udp_connect with fixture as List and peer as List returning Int:
+    set state to get_list(fixture and 0)
+    set address to get_list(peer and 1)
+    return ep_dlcall3(ep_dlsym(get_list(state and 0) and "connect") and get_list(state and 1) and get_list_data_ptr(address) and 16) equals 0
+
+define fixture_udp_wait with state as List returning List:
+    set attempts to 0
+    set row to discord_voice_udp_read(state)
+    repeat while archive_list_text(row and 0) equals "again" and also attempts < 100:
+        set waited to ep_dlcall1(ep_dlsym(get_list(state and 0) and "usleep") and 1000)
+        set row to discord_voice_udp_read(state)
+        set attempts to attempts + 1
+    return row
+
+define fixture_packet_clear with cipher as List and packet as List returning List:
+    set pointer to get_list(packet and 0)
+    set count to get_list(packet and 1)
+    if count < 33:
+        return 0
+    set nonce to research_native_words(3)
+    set written to discord_voice_put_u32(get_list_data_ptr(nonce) and 0 and discord_voice_u32(pointer and count - 4))
+    set output to alloc_bytes(count)
+    set size to research_native_words(1)
+    set status to ep_dlcall9(ep_dlsym(get_list(cipher and 0) and "crypto_aead_xchacha20poly1305_ietf_decrypt") and output and get_list_data_ptr(size) and 0 and pointer + 12 and count - 16 and pointer and 12 and get_list_data_ptr(nonce) and get_list(cipher and 1))
+    if status is not equal to 0:
+        free_bytes(output)
+        return 0
+    set blob to create_list()
+    set blob to [output,get_list(size and 0)]
+    return blob
+
+define main returning Int:
+    if get_argument_count() is not equal to 8:
+        return 90
+    set fixture to ep_dlopen(get_argument(3))
+    if fixture equals 0:
+        return 1
+    set round to 0
+    repeat while round < 2:
+        set left to discord_dave_open(get_argument(1) and get_argument(2) and 1 and 1234567890 and "1234123412341234")
+        set right to discord_dave_open(get_argument(1) and get_argument(2) and 1 and 1234567890 and "5678567856785678")
+        if left equals 0 or else right equals 0:
+            return 2
+        set library to get_list(left and 0)
+        set sender to ep_dlcall1(ep_dlsym(fixture and "daveExternalSenderCreate") and 1234567890)
+        if sender equals 0:
+            return 3
+        set raw to research_native_words(1)
+        set size to research_native_words(1)
+        set fetched to ep_dlcall3(ep_dlsym(fixture and "daveExternalSenderGetMarshalledExternalSender") and sender and get_list_data_ptr(raw) and get_list_data_ptr(size))
+        set sender_bytes to discord_dave_owned_copy(library and get_list(raw and 0) and get_list(size and 0))
+        set users to create_list()
+        set users to ["1234123412341234","5678567856785678"]
+        set external_a to fixture_receive(left and 65535 and 25 and -1 and sender_bytes and users)
+        set external_b to fixture_receive(right and 65535 and 25 and -1 and sender_bytes and users)
+        if not (archive_list_text(external_a and 0) equals "external-sender") or else not (archive_list_text(external_b and 0) equals "external-sender") or else get_list(external_a and 1) is not equal to 65535:
+            return 4
+        set released to discord_voice_blob_release(sender_bytes)
+        set package to discord_dave_key_package(right)
+        if package equals 0:
+            return 5
+        set raw to research_native_words(1)
+        set size to research_native_words(1)
+        set key_wire to discord_voice_mls_outbound(26 and get_list(package and 0) and get_list(package and 1))
+        if key_wire equals 0 or else get_list(key_wire and 1) is not equal to get_list(package and 1) + 1 or else peek_byte(get_list(key_wire and 0) and 0) is not equal to 26:
+            return 25
+        set byte_index to 0
+        repeat while byte_index < get_list(package and 1):
+            if peek_byte(get_list(key_wire and 0) and byte_index + 1) is not equal to peek_byte(get_list(package and 0) and byte_index):
+                return 26
+            set byte_index to byte_index + 1
+        set released to discord_voice_blob_release(key_wire)
+        set proposed to ep_dlcall6(ep_dlsym(fixture and "daveExternalSenderProposeAdd") and sender and 0 and get_list(package and 0) and get_list(package and 1) and get_list_data_ptr(raw) and get_list_data_ptr(size))
+        set proposal to discord_dave_owned_copy(library and get_list(raw and 0) and get_list(size and 0))
+        set released to discord_voice_blob_release(package)
+        if proposal equals 0:
+            return 6
+        set users to create_list()
+        set users to ["1234123412341234","5678567856785678"]
+        set processed to fixture_receive(left and 0 and 27 and -1 and proposal and users)
+        set released to discord_voice_blob_release(proposal)
+        if not (archive_list_text(processed and 0) equals "send-commit-welcome"):
+            display archive_list_text(processed and 0)
+            return 7
+        set combined to get_list(processed and 3)
+        if get_list(processed and 1) is not equal to 0 or else get_list(processed and 2) is not equal to -1 or else peek_byte(get_list(combined and 0) and 0) is not equal to 28:
+            return 20
+        set commit_pointer to research_native_words(1)
+        set commit_size to research_native_words(1)
+        set welcome_pointer to research_native_words(1)
+        set welcome_size to research_native_words(1)
+        set split to ep_dlcall7(ep_dlsym(fixture and "daveExternalSenderSplitCommitWelcome") and sender and get_list(combined and 0) + 1 and get_list(combined and 1) - 1 and get_list_data_ptr(commit_pointer) and get_list_data_ptr(commit_size) and get_list_data_ptr(welcome_pointer) and get_list_data_ptr(welcome_size))
+        set commit to discord_dave_owned_copy(library and get_list(commit_pointer and 0) and get_list(commit_size and 0))
+        set welcome to discord_dave_owned_copy(library and get_list(welcome_pointer and 0) and get_list(welcome_size and 0))
+        set released to discord_voice_blob_release(combined)
+        if commit equals 0 or else welcome equals 0:
+            return 8
+        set current_users to create_list()
+        set current_users to users
+        if round equals 1:
+            set current_users to ["1234123412341234"]
+        set commit_wire to fixture_receive(left and 1 and 29 and 512 and commit and current_users)
+        set committed to get_list(commit_wire and 3)
+        set welcome_wire to fixture_receive(right and 1 and 30 and 512 and welcome and current_users)
+        set joined to get_list(welcome_wire and 3)
+        if get_list(commit_wire and 2) is not equal to 512 or else get_list(welcome_wire and 2) is not equal to 512:
+            return 21
+        set released to discord_voice_blob_release(commit)
+        set released to discord_voice_blob_release(welcome)
+        if round equals 0:
+            if not (archive_list_text(committed and 0) equals "committed") or else not (archive_list_text(joined and 0) equals "joined"):
+                return 9
+            set roster to get_list(committed and 1)
+            set other_roster to get_list(joined and 1)
+            if length_list(roster) is not equal to 2 or else length_list(other_roster) is not equal to 2 or else not (archive_list_text(roster and 0) equals archive_list_text(other_roster and 0)) or else not (archive_list_text(roster and 1) equals archive_list_text(other_roster and 1)):
+                return 10
+            set auth_a to research_native_words(1)
+            set auth_b to research_native_words(1)
+            set size_a to research_native_words(1)
+            set size_b to research_native_words(1)
+            set fetched to ep_dlcall3(ep_dlsym(library and "daveSessionGetLastEpochAuthenticator") and get_list(left and 1) and get_list_data_ptr(auth_a) and get_list_data_ptr(size_a))
+            set fetched to ep_dlcall3(ep_dlsym(library and "daveSessionGetLastEpochAuthenticator") and get_list(right and 1) and get_list_data_ptr(auth_b) and get_list_data_ptr(size_b))
+            if get_list(size_a and 0) < 1 or else get_list(size_a and 0) is not equal to get_list(size_b and 0):
+                return 11
+            set index to 0
+            repeat while index < get_list(size_a and 0):
+                if peek_byte(get_list(auth_a and 0) and index) is not equal to peek_byte(get_list(auth_b and 0) and index):
+                    return 12
+                set index to index + 1
+            set released to ep_dlcall1(ep_dlsym(library and "daveFree") and get_list(auth_a and 0))
+            set released to ep_dlcall1(ep_dlsym(library and "daveFree") and get_list(auth_b and 0))
+            set socket_library to ep_dlopen(get_argument(4))
+            set socket to create_list()
+            set added to append_list(socket and "connected")
+            set added to append_list(socket and socket_library)
+            set added to append_list(socket and 1)
+            set handshake to discord_voice_handshake_new(1)
+            set changed to set_list(handshake and 0 and 4)
+            set changed to set_list(handshake and 2 and 12345)
+            set transport to create_list()
+            set added to append_list(transport and handshake)
+            set added to append_list(transport and socket)
+            set added to append_list(transport and 0)
+            set added to append_list(transport and 0)
+            set added to append_list(transport and left)
+            set added to append_list(transport and create_list())
+            set added to append_list(transport and 1234567890)
+            set added to append_list(transport and "1234123412341234")
+            set io_state to discord_voice_io_new(transport and 100)
+            set controller to discord_voice_media_controller_new(io_state and get_argument(1) and 1)
+            if controller equals 0 or else discord_voice_media_controller_media(controller and "1234123412341234" and 1 and 1) is not equal to 0:
+                return 30
+            set reset to ep_dlcall1(ep_dlsym(socket_library and "fixture_reset") and 0)
+            if not (discord_voice_media_controller_dispatch(controller and commit_wire and roster) equals "media-transition-prepared") or else ep_dlcall0(ep_dlsym(socket_library and "fixture_calls")) is not equal to 1:
+                return 31
+            if discord_voice_media_controller_media(controller and "1234123412341234" and 1 and 1) is not equal to 0:
+                return 32
+            set execute_action to discord_voice_handshake_receive(handshake and "{\"op\":22,\"seq\":2,\"d\":{\"transition_id\":512}}" and 101 and 1)
+            if not (discord_voice_media_controller_dispatch(controller and execute_action and roster) equals "media-transition-executed"):
+                return 33
+            set media to discord_voice_media_controller_media(controller and "1234123412341234" and 1 and 1)
+            if media equals 0 or else get_list(media and 3) is not equal to 1 or else discord_voice_media_controller_media(controller and "1234123412341234" and 1 and 0) is not equal to 0 or else discord_voice_media_controller_media(controller and "1234123412341234" and 0 and 1) is not equal to 0:
+                return 34
+            set remote_media to discord_voice_media_controller_media(controller and "5678567856785678" and 1 and 1)
+            if remote_media equals 0 or else get_list(remote_media and 3) is not equal to 0:
+                return 35
+            set udp_sender to fixture_udp()
+            set udp_receiver to fixture_udp()
+            if fixture_udp_connect(udp_sender and udp_receiver) equals 0 or else fixture_udp_connect(udp_receiver and udp_sender) equals 0:
+                return 39
+            set changed to set_list(transport and 2 and get_list(udp_sender and 0))
+            set key to research_native_words(4)
+            set cipher to discord_voice_crypto_open(get_argument(6) and get_list_data_ptr(key) and 32)
+            set changed to set_list(transport and 3 and cipher)
+            set codec to discord_voice_opus_open(get_argument(5))
+            set playback to discord_voice_playback_new(controller and codec and 65535 and 4294967000 and 100)
+            set digest to file_digest(get_argument(7) and 65536)
+            set reader to discord_voice_pcm_open(get_argument(7) and archive_list_text(digest and 1) and get_list(digest and 2))
+            set file_playback to discord_voice_file_playback_new(reader and playback)
+            if file_playback equals 0:
+                return 52
+            set reset to ep_dlcall1(ep_dlsym(socket_library and "fixture_reset") and 0)
+            if not (discord_voice_file_playback_tick(file_playback and 100 and 1 and 1 and 0) equals "source-frame-sent"):
+                return 40
+            set received to fixture_udp_wait(get_list(udp_receiver and 0))
+            if not (archive_list_text(received and 0) equals "packet"):
+                return 41
+            set packet to get_list(received and 1)
+            if discord_voice_u16(get_list(packet and 0) and 2) is not equal to 65535 or else discord_voice_u32(get_list(packet and 0) and 4) is not equal to 4294967000 or else discord_voice_u32(get_list(packet and 0) and get_list(packet and 1) - 4) is not equal to 0:
+                return 42
+            set dave_frame to discord_voice_crypto_unwrap(cipher and get_list(packet and 0) and get_list(packet and 1) and 12)
+            set receiving to discord_voice_media_open(right and get_argument(1) and "1234123412341234" and other_roster and 0 and 0)
+            if dave_frame equals 0 or else receiving equals 0:
+                return 43
+            set opus_frame to discord_voice_media_frame(receiving and get_list(dave_frame and 0) and get_list(dave_frame and 1))
+            if opus_frame equals 0:
+                return 44
+            set decoded to discord_voice_opus_decode(codec and get_list(opus_frame and 0) and get_list(opus_frame and 1))
+            if decoded equals 0 or else get_list(decoded and 1) is not equal to 3840:
+                return 45
+            set released to discord_voice_blob_release(decoded)
+            set released to discord_voice_blob_release(opus_frame)
+            set released to discord_voice_blob_release(dave_frame)
+            set released to discord_voice_blob_release(packet)
+            if not (discord_voice_file_playback_tick(file_playback and 119 and 1 and 1 and 0) equals "wait") or else get_list(cipher and 2) is not equal to 1:
+                return 46
+            if get_list(file_playback and 2) equals 0 or else get_list(file_playback and 3) is not equal to 160 or else get_list(file_playback and 4) is not equal to 3840:
+                return 53
+            if not (discord_voice_file_playback_tick(file_playback and 120 and 1 and 1 and 0) equals "source-frame-sent"):
+                return 47
+            set received to fixture_udp_wait(get_list(udp_receiver and 0))
+            set packet to get_list(received and 1)
+            if not (archive_list_text(received and 0) equals "packet") or else discord_voice_u16(get_list(packet and 0) and 2) is not equal to 0 or else discord_voice_u32(get_list(packet and 0) and 4) is not equal to 664 or else discord_voice_u32(get_list(packet and 0) and get_list(packet and 1) - 4) is not equal to 1:
+                return 48
+            set released to discord_voice_blob_release(packet)
+            if get_list(file_playback and 4) is not equal to 4000:
+                return 54
+            set tail_time to 140
+            repeat while tail_time <= 220:
+                if not (discord_voice_file_playback_tick(file_playback and tail_time and 1 and 1 and 0) equals "silence-sent"):
+                    return 55
+                set received to fixture_udp_wait(get_list(udp_receiver and 0))
+                if not (archive_list_text(received and 0) equals "packet"):
+                    return 56
+                set released to discord_voice_blob_release(get_list(received and 1))
+                set tail_time to tail_time + 20
+            if not (discord_voice_file_playback_tick(file_playback and 239 and 1 and 1 and 0) equals "wait") or else not (discord_voice_file_playback_tick(file_playback and 240 and 1 and 1 and 0) equals "file-playback-complete") or else get_list(file_playback and 4) is not equal to 4000 or else get_list(reader and 5) is not equal to 1 or else get_list(playback and 6) is not equal to 1:
+                return 57
+            if get_list(playback and 5) is not equal to 240:
+                return 58
+            if ep_dlcall0(ep_dlsym(socket_library and "fixture_calls")) is not equal to 2 or else not (ptr_to_str(ep_dlcall0(ep_dlsym(socket_library and "fixture_text"))) equals discord_voice_speaking_body(12345 and 0)):
+                return 50
+            set codec to discord_voice_opus_open(get_argument(5))
+            set playback to discord_voice_playback_new(controller and codec and 4 and 4000 and 600)
+            set reader to discord_voice_pcm_open(get_argument(7) and archive_list_text(digest and 1) and get_list(digest and 2))
+            set file_playback to discord_voice_file_playback_new(reader and playback)
+            if not (discord_voice_file_playback_tick(file_playback and 600 and 1 and 0 and 0) equals "file-playback-revoked") or else get_list(controller and 6) is not equal to 1 or else get_list(reader and 5) is not equal to 1 or else get_list(reader and 4) is not equal to 0:
+                return 51
+            set closed to discord_voice_media_close(receiving)
+            set closed to discord_voice_udp_close(get_list(udp_receiver and 0))
+            set closed to discord_voice_media_controller_close(controller and "fixture-complete")
+        else:
+            if not (archive_list_text(committed and 0) equals "unexpected-mls-roster") or else discord_dave_failures(left) < 1 or else discord_dave_key_package(left) is not equal to 0:
+                return 13
+            if archive_list_text(joined and 0) equals "joined":
+                return 14
+        set destroyed to ep_dlcall1(ep_dlsym(fixture and "daveExternalSenderDestroy") and sender)
+        set closed to discord_dave_close(left)
+        set closed to discord_dave_close(right)
+        set round to round + 1
+    set state to discord_dave_open(get_argument(1) and get_argument(2) and 1 and 100 and "200")
+    set invalid to research_native_words(1)
+    set written to poke_byte(get_list_data_ptr(invalid) and 2 and 29)
+    set truncated_frame to discord_voice_mls_receive(state and get_list_data_ptr(invalid) and 5 and 0)
+    if not (archive_list_text(truncated_frame and 0) equals "invalid-mls-frame") or else discord_dave_failures(state) is not equal to 0:
+        return 22
+    set written to poke_byte(get_list_data_ptr(invalid) and 2 and 26)
+    set unsupported to discord_voice_mls_receive(state and get_list_data_ptr(invalid) and 6 and 0)
+    if not (archive_list_text(unsupported and 0) equals "invalid-mls-frame"):
+        return 23
+    set written to poke_byte(get_list_data_ptr(invalid) and 2 and 27)
+    set written to poke_byte(get_list_data_ptr(invalid) and 3 and 2)
+    set bad_operation to discord_voice_mls_receive(state and get_list_data_ptr(invalid) and 6 and 0)
+    if not (archive_list_text(bad_operation and 0) equals "invalid-mls-frame"):
+        return 24
+    if discord_dave_external_sender(state and get_list_data_ptr(invalid) and 1) is not equal to 0 or else discord_dave_failures(state) < 1:
+        return 15
+    set closed to discord_dave_close(state)
+    set closed to ep_dlclose(fixture)
+    display "PASS: verified file streams through Opus/DAVE/AEAD and real UDP; wait retains pending frame, final padding preserves source byte count, paced silence precedes stop, revocation closes reader before reading."
+    return 0

@@ -1,0 +1,168 @@
+import "voice_connection_owner"
+import "voice_handoff_store"
+
+# Durable activation marker contains no credential or audio. Identity is never
+# retried once activation starts; failure closes transport and requests OP4 leave.
+define discord_voice_session_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_connections(identity TEXT PRIMARY KEY REFERENCES discord_voice_intents(identity),generation TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('starting','identified','closed')));")
+
+define discord_voice_session_abandon with journal as Int and identity as Str returning Int:
+    set cancelled to discord_voice_intent_cancel(journal and identity)
+    set keys to create_list()
+    set keys to [identity]
+    set marked to archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_connections SET state='closed' WHERE identity=?1;" and keys) and 101)
+    set pruned to discord_voice_handoff_prune(journal and ep_time_now_ms())
+    return cancelled equals "leave-required" and also marked equals 0 and also pruned equals 0
+
+# Private binding [prepared TLS socket, intent identity, Gateway generation, bot].
+# The controller rechecks REST permissions and source/cancel gates after this
+# potentially blocking TLS call; preparation performs no Identify write.
+define discord_voice_session_prepare with journal as Int and identity as Str and generation as Str and bot as Str and curl_path as Str and authorized as Int and cancelled as Int returning List:
+    set handoff to discord_voice_handoff_claim(journal and identity and generation and bot and ep_time_now_ms() and authorized and cancelled)
+    if handoff equals 0:
+        return 0
+    set prepared to discord_voice_connection_prepare(handoff and curl_path)
+    if prepared equals 0:
+        set abandoned to discord_voice_session_abandon(journal and identity)
+        return 0
+    set binding to create_list()
+    set added to append_list(binding and prepared)
+    set added to append_list(binding and identity)
+    set added to append_list(binding and generation)
+    set added to append_list(binding and bot)
+    return binding
+
+# Called under a journal writer lock. Fresh proof cursor ties external access
+# observations to an unchanged Gateway view. Match native credential ownership
+# against the join and latest authenticated own voice state after preparation.
+define discord_voice_session_current with journal as Int and binding as List and through_sequence as Int returning Int:
+    if binding equals 0 or else length_list(binding) is not equal to 4 or else through_sequence < 0:
+        return 0
+    set prepared to get_list(binding and 0)
+    if prepared equals 0 or else length_list(prepared) is not equal to 4 or else get_list(prepared and 3) is not equal to 0:
+        return 0
+    set credentials to get_list(prepared and 1)
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and archive_list_text(binding and 1))
+    set retained_voice_added to append_list(keys and archive_list_text(binding and 2))
+    set retained_voice_added to append_list(keys and archive_list_text(binding and 3))
+    set retained_voice_added to append_list(keys and int_to_string(through_sequence))
+    set retained_voice_added to append_list(keys and archive_list_text(credentials and 0))
+    set retained_voice_added to append_list(keys and archive_list_text(prepared and 2))
+    set retained_voice_added to append_list(keys and archive_list_text(credentials and 2))
+    set current to history_collect_one(checkpoint_prepare(journal and "SELECT i.identity FROM discord_voice_intents i JOIN discord_gateway g ON g.singleton=1 AND g.generation=i.generation AND g.session=i.gateway_session JOIN discord_voice_handoffs h ON h.identity=i.identity WHERE i.identity=?1 AND i.generation=?2 AND i.state='sent' AND h.consumed=1 AND h.bot=?3 AND g.sequence=CAST(?4 AS INTEGER) AND i.guild=?5 AND i.channel=?6 AND EXISTS(SELECT 1 FROM discord_voice_membership_events e WHERE e.session=g.session AND e.sequence>i.after_sequence AND e.kind='VOICE_STATE_UPDATE' AND json_extract(e.payload,'$.guild_id')=i.guild AND json_extract(e.payload,'$.user_id')=?3 AND json_extract(e.payload,'$.channel_id')=i.channel AND json_extract(e.payload,'$.session_id')=?7 AND NOT EXISTS(SELECT 1 FROM discord_voice_membership_events later WHERE later.session=e.session AND later.sequence>e.sequence AND COALESCE(json_extract(later.payload,'$.guild_id'),json_extract(later.payload,'$.id'))=i.guild AND (later.kind<>'VOICE_STATE_UPDATE' OR json_extract(later.payload,'$.user_id')=?3 OR json_extract(later.payload,'$.invalid')=1)));" and keys))
+    return archive_list_text(current and 0) equals "found" and also archive_list_text(credentials and 1) equals archive_list_text(binding and 3)
+
+# Result [native owner, identity, Gateway generation, bot]. The supplied access
+# flags/cursor are native controller observations, never model/tool arguments.
+define discord_voice_session_activate with journal as Int and binding as List and paths as List and local_generation as Int and monotonic_ms as Int and through_sequence as Int and authorized as Int and cancelled as Int returning List:
+    if binding equals 0 or else length_list(binding) is not equal to 4:
+        return 0
+    set prepared to get_list(binding and 0)
+    set identity to archive_list_text(binding and 1)
+    if prepared equals 0 or else length_list(prepared) is not equal to 4 or else get_list(prepared and 3) is not equal to 0:
+        return 0
+    if authorized is not equal to 1 or else cancelled is not equal to 0:
+        set closed to discord_voice_prepared_close(prepared)
+        set abandoned to discord_voice_session_abandon(journal and identity)
+        return 0
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        set closed to discord_voice_prepared_close(prepared)
+        set abandoned to discord_voice_session_abandon(journal and identity)
+        return 0
+    if discord_voice_session_current(journal and binding and through_sequence) equals 0:
+        set failed to migration_fail(journal and "voice-session-stale")
+        set closed to discord_voice_prepared_close(prepared)
+        set abandoned to discord_voice_session_abandon(journal and identity)
+        return 0
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and identity)
+    set retained_voice_added to append_list(keys and archive_list_text(binding and 2))
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_connections(identity,generation,state) VALUES(?1,?2,'starting');" and keys) and 101) is not equal to 0:
+        set failed to migration_fail(journal and "voice-session-already-attempted")
+        set closed to discord_voice_prepared_close(prepared)
+        return 0
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(journal and "voice-session-marker-failed")
+        set closed to discord_voice_prepared_close(prepared)
+        set abandoned to discord_voice_session_abandon(journal and identity)
+        return 0
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        set closed to discord_voice_prepared_close(prepared)
+        set abandoned to discord_voice_session_abandon(journal and identity)
+        return 0
+    if discord_voice_session_current(journal and binding and through_sequence) equals 0:
+        set failed to migration_fail(journal and "voice-session-stale")
+        set closed to discord_voice_prepared_close(prepared)
+        set abandoned to discord_voice_session_abandon(journal and identity)
+        return 0
+    set owner to discord_voice_connection_activate(prepared and paths and local_generation and monotonic_ms and 1 and 0)
+    if owner equals 0:
+        set failed to migration_fail(journal and "voice-session-identify-failed")
+        set abandoned to discord_voice_session_abandon(journal and identity)
+        return 0
+    set keys to create_list()
+    set keys to [identity]
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_connections SET state='identified' WHERE identity=?1 AND state='starting';" and keys) and 101) is not equal to 0:
+        set failed to migration_fail(journal and "voice-session-result-failed")
+        set closed to discord_voice_connection_close(owner)
+        set abandoned to discord_voice_session_abandon(journal and identity)
+        return 0
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(journal and "voice-session-commit-failed")
+        set closed to discord_voice_connection_close(owner)
+        set abandoned to discord_voice_session_abandon(journal and identity)
+        return 0
+    set result to create_list()
+    set added to append_list(result and owner)
+    set added to append_list(result and identity)
+    set added to append_list(result and archive_list_text(binding and 2))
+    set added to append_list(result and archive_list_text(binding and 3))
+    return result
+
+define discord_voice_session_close with journal as Int and session_owner as List returning Int:
+    if session_owner equals 0 or else length_list(session_owner) is not equal to 4:
+        return 0
+    set closed to discord_voice_connection_close(get_list(session_owner and 0))
+    return discord_voice_session_abandon(journal and archive_list_text(session_owner and 1))
+
+# Active native owner has the same [transport,credentials,channel,closed] shape
+# as a preparation. Reuse ownership checks without copying credential strings.
+# Every poll is short/nonblocking; fresh controller authority and exact cursor
+# fence cancellations, participant moves and permission events before media I/O.
+define discord_voice_session_tick with journal as Int and session_owner as List and local_generation as Int and monotonic_ms as Int and wall_ms as Int and through_sequence as Int and authorized as Int and cancelled as Int returning List:
+    if session_owner equals 0 or else length_list(session_owner) is not equal to 4:
+        return history_status("voice-session-closed")
+    set owner to get_list(session_owner and 0)
+    if owner equals 0 or else length_list(owner) is not equal to 4 or else get_list(owner and 3) is not equal to 0:
+        return history_status("voice-session-closed")
+    if authorized is not equal to 1 or else cancelled is not equal to 0:
+        set closed to discord_voice_session_close(journal and session_owner)
+        return history_status("voice-session-revoked")
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        set closed to discord_voice_session_close(journal and session_owner)
+        return history_status("voice-session-store-unavailable")
+    if discord_voice_session_current(journal and session_owner and through_sequence) equals 0:
+        set failed to migration_fail(journal and "voice-session-stale")
+        set closed to discord_voice_session_close(journal and session_owner)
+        return history_status("voice-session-stale")
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and archive_list_text(session_owner and 1))
+    set retained_voice_added to append_list(keys and archive_list_text(session_owner and 2))
+    set durable to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_connections WHERE identity=?1 AND generation=?2;" and keys))
+    if not (archive_list_text(durable and 1) equals "identified"):
+        set failed to migration_fail(journal and "voice-session-not-owned")
+        set closed to discord_voice_session_close(journal and session_owner)
+        return history_status("voice-session-not-owned")
+    set result to discord_voice_connection_tick(owner and monotonic_ms and wall_ms and local_generation and 1 and 0)
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(journal and "voice-session-commit-failed")
+        # A completed binary frame has explicit native ownership even on a
+        # failing commit. Dispose it before discarding the polling result.
+        if archive_list_text(result and 0) equals "binary-mls":
+            set released to discord_voice_blob_release(get_list(result and 1))
+        set closed to discord_voice_session_close(journal and session_owner)
+        return history_status("voice-session-store-unavailable")
+    if get_list(owner and 3) is not equal to 0:
+        set closed to discord_voice_session_close(journal and session_owner)
+    return result

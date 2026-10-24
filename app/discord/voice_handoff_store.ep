@@ -1,0 +1,112 @@
+import "voice_handoff"
+import "voice_intents"
+
+# Mutable private credentials, never discord_inbox, immutable receipts or model
+# results. Clearing is logical deletion; SQLite/WAL secure erasure is not claimed.
+define discord_voice_handoff_schema with journal as Int returning Int:
+    if discord_voice_intent_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_handoffs(identity TEXT PRIMARY KEY REFERENCES discord_voice_intents(identity),bot TEXT NOT NULL,token TEXT NOT NULL,endpoint TEXT NOT NULL,sequence INTEGER NOT NULL,expires_ms INTEGER NOT NULL,consumed INTEGER NOT NULL CHECK(consumed IN (0,1)));")
+
+# Called inside accepted Gateway dispatch transaction, after its generation and
+# replay checks. No active, fully written join means no credential retention.
+define discord_voice_handoff_record with journal as Int and generation as Str and session as Str and sequence as Int and kind as Str and body as Str and bot as Str and now as Int returning Int:
+    if not (kind equals "VOICE_SERVER_UPDATE") or else string_length(body) equals 0:
+        return 0
+    if discord_snowflake(bot) equals 0 or else now < 0:
+        return 1
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return 1
+    set guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and guild)
+    set retained_voice_added to append_list(keys and generation)
+    set retained_voice_added to append_list(keys and session)
+    set retained_voice_added to append_list(keys and int_to_string(sequence))
+    set intent to history_collect_one(checkpoint_prepare(journal and "SELECT identity,channel,after_sequence FROM discord_voice_intents WHERE guild=?1 AND generation=?2 AND gateway_session=?3 AND state='sent' AND after_sequence<CAST(?4 AS INTEGER) LIMIT 1;" and keys))
+    if archive_list_text(intent and 0) equals "end":
+        return 0
+    if not (archive_list_text(intent and 0) equals "found"):
+        return 1
+    set identity to archive_list_text(intent and 1)
+    set state to discord_voice_handoff_new(guild and archive_list_text(intent and 2) and bot and generation and string_to_int(archive_list_text(intent and 3)))
+    set applied to discord_voice_handoff_event(state and generation and sequence and kind and body)
+    if not (applied equals "await-voice-handoff" or else applied equals "await-voice-endpoint"):
+        # Diagnostic enums only: never log the authenticated credential body.
+        display concat("voice-handoff-rejected: " and applied)
+        if applied equals "invalid-voice-server":
+            set endpoint_field to provider_member(tokens and 0 and "endpoint")
+            set token_field to provider_member(tokens and 0 and "token")
+            display concat("voice-endpoint-type: " and provider_kind(tokens and endpoint_field))
+            display concat("voice-endpoint-valid: " and int_to_string(string_length(discord_voice_endpoint(provider_value(tokens and endpoint_field))) > 0))
+            display concat("voice-token-type: " and provider_kind(tokens and token_field))
+            display concat("voice-token-length: " and int_to_string(string_length(provider_value(tokens and token_field))))
+        set cancelled to discord_voice_intent_cancel(journal and identity)
+        return not (cancelled equals "leave-required")
+    set values to create_list()
+    set retained_voice_added to append_list(values and identity)
+    set retained_voice_added to append_list(values and bot)
+    set retained_voice_added to append_list(values and archive_list_text(state and 6))
+    set retained_voice_added to append_list(values and archive_list_text(state and 7))
+    set retained_voice_added to append_list(values and int_to_string(sequence))
+    set retained_voice_added to append_list(values and int_to_string(now))
+    return archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_handoffs(identity,bot,token,endpoint,sequence,expires_ms,consumed) VALUES(?1,?2,?3,?4,CAST(?5 AS INTEGER),CAST(?6 AS INTEGER)+30000,0) ON CONFLICT(identity) DO UPDATE SET token=excluded.token,endpoint=excluded.endpoint,sequence=excluded.sequence WHERE discord_voice_handoffs.consumed=0 AND discord_voice_handoffs.bot=excluded.bot AND discord_voice_handoffs.sequence<excluded.sequence AND discord_voice_handoffs.expires_ms>CAST(?6 AS INTEGER);" and values) and 101)
+
+# Prune under caller's transaction/lock or as one atomic statement. Tombstones
+# prevent another server event from recreating an already consumed credential.
+define discord_voice_handoff_prune with journal as Int and now as Int returning Int:
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and int_to_string(now))
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_intents SET state='leave-required' WHERE state='sent' AND EXISTS(SELECT 1 FROM discord_voice_handoffs h WHERE h.identity=discord_voice_intents.identity AND h.consumed=0 AND (h.expires_ms<=CAST(?1 AS INTEGER) OR NOT EXISTS(SELECT 1 FROM discord_gateway g WHERE g.singleton=1 AND g.generation=discord_voice_intents.generation AND g.session=discord_voice_intents.gateway_session)));" and keys) and 101) is not equal to 0:
+        return 1
+    return archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_handoffs SET token='',endpoint='',consumed=1 WHERE consumed=0 AND (expires_ms<=CAST(?1 AS INTEGER) OR NOT EXISTS(SELECT 1 FROM discord_voice_intents i JOIN discord_gateway g ON g.singleton=1 AND g.generation=i.generation AND g.session=i.gateway_session WHERE i.identity=discord_voice_handoffs.identity AND i.state='sent'));" and keys) and 101)
+
+# Native controller only: fresh authorization precedes this and is rechecked
+# after TLS preparation. Returned handoff is private memory, never tool output.
+# Committing consumption before TLS prevents restart or competing owners replay.
+define discord_voice_handoff_claim with journal as Int and identity as Str and generation as Str and bot as Str and now as Int and authorized as Int and cancelled as Int returning List:
+    if authorized is not equal to 1 or else cancelled is not equal to 0 or else now < 0 or else discord_snowflake(bot) equals 0:
+        return 0
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 0
+    if discord_voice_handoff_prune(journal and now) is not equal to 0:
+        set failed to migration_fail(journal and "voice-handoff-prune-failed")
+        return 0
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and identity)
+    set retained_voice_added to append_list(keys and generation)
+    set retained_voice_added to append_list(keys and bot)
+    set retained_voice_added to append_list(keys and int_to_string(now))
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT i.guild,i.channel,i.gateway_session,i.after_sequence,h.token,h.endpoint,h.sequence FROM discord_voice_intents i JOIN discord_voice_handoffs h ON h.identity=i.identity JOIN discord_gateway g ON g.singleton=1 AND g.generation=i.generation AND g.session=i.gateway_session WHERE i.identity=?1 AND i.generation=?2 AND i.state='sent' AND h.bot=?3 AND h.consumed=0 AND h.expires_ms>CAST(?4 AS INTEGER) AND length(h.token)>0 AND length(h.endpoint)>0;" and keys))
+    if not (archive_list_text(row and 0) equals "found"):
+        set committed to sql_execute(journal and "COMMIT;")
+        return 0
+    set state to discord_voice_handoff_new(archive_list_text(row and 1) and archive_list_text(row and 2) and bot and generation and string_to_int(archive_list_text(row and 4)))
+    set own_keys to create_list()
+    set retained_voice_added to append_list(own_keys and archive_list_text(row and 3))
+    set retained_voice_added to append_list(own_keys and archive_list_text(row and 1))
+    set retained_voice_added to append_list(own_keys and bot)
+    set retained_voice_added to append_list(own_keys and archive_list_text(row and 4))
+    set own to history_collect_one(checkpoint_prepare(journal and "SELECT sequence,kind,payload FROM discord_voice_membership_events WHERE session=?1 AND sequence>CAST(?4 AS INTEGER) AND COALESCE(json_extract(payload,'$.guild_id'),json_extract(payload,'$.id'))=?2 AND (kind<>'VOICE_STATE_UPDATE' OR json_extract(payload,'$.user_id')=?3 OR json_extract(payload,'$.invalid')=1) ORDER BY sequence DESC LIMIT 1;" and own_keys))
+    if not (archive_list_text(own and 0) equals "found"):
+        set committed to sql_execute(journal and "COMMIT;")
+        return 0
+    set applied to discord_voice_handoff_event(state and generation and string_to_int(archive_list_text(own and 1)) and archive_list_text(own and 2) and archive_list_text(own and 3))
+    if not (applied equals "await-voice-handoff"):
+        set cancelled_intent to discord_voice_intent_cancel(journal and identity)
+        set pruned to discord_voice_handoff_prune(journal and now)
+        set committed to sql_execute(journal and "COMMIT;")
+        return 0
+    set changed to set_list(state and 6 and archive_list_text(row and 5))
+    set changed to set_list(state and 7 and archive_list_text(row and 6))
+    set changed to set_list(state and 9 and string_to_int(archive_list_text(row and 7)))
+    set consume_keys to create_list()
+    set consume_keys to [identity]
+    if discord_voice_handoff_ready(state) is not equal to 1 or else archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_handoffs SET token='',endpoint='',consumed=1 WHERE identity=?1 AND consumed=0;" and consume_keys) and 101) is not equal to 0:
+        set failed to migration_fail(journal and "voice-handoff-consume-failed")
+        return 0
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(journal and "voice-handoff-commit-failed")
+        return 0
+    return state

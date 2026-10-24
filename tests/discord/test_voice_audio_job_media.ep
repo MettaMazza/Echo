@@ -1,0 +1,444 @@
+import "../../app/discord/voice_audio_job_worker"
+import "../../app/discord/voice_worker_audio"
+import "../../app/discord/worker_store"
+import "../../app/discord/gateway_journal"
+import "../fixtures/tool_call_fixture"
+
+# Server fixture constructs actual binary framing, including embedded NULs.
+define fixture_receive with session as List and sequence as Int and opcode as Int and transition as Int and payload as List and users as List returning List:
+    set prefix to 3
+    if opcode equals 29 or else opcode equals 30:
+        set prefix to 5
+    set count to get_list(payload and 1)
+    set pointer to alloc_bytes(count + prefix)
+    set written to discord_voice_put_u16(pointer and 0 and sequence)
+    set written to poke_byte(pointer and 2 and opcode)
+    if prefix equals 5:
+        set written to discord_voice_put_u16(pointer and 3 and transition)
+    set index to 0
+    repeat while index < count:
+        set written to poke_byte(pointer and prefix + index and peek_byte(get_list(payload and 0) and index))
+        set index to index + 1
+    set result to discord_voice_mls_receive(session and pointer and count + prefix and users)
+    free_bytes(pointer)
+    return result
+
+# Test-only loopback fixture. Production open has no private-address bypass.
+define fixture_udp returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set fd to ep_dlcall3(ep_dlsym(library and "socket") and 2 and 2 and 17)
+    if fd < 0 or else fd > 2147483647:
+        return 0
+    set address to research_native_words(2)
+    set pointer to get_list_data_ptr(address)
+    set written to poke_byte(pointer and 0 and 16)
+    set written to poke_byte(pointer and 1 and 2)
+    set written to poke_byte(pointer and 4 and 127)
+    set written to poke_byte(pointer and 7 and 1)
+    if ep_dlcall3(ep_dlsym(library and "bind") and fd and pointer and 16) is not equal to 0:
+        return 0
+    set size to research_native_words(1)
+    set changed to set_list(size and 0 and 16)
+    if ep_dlcall3(ep_dlsym(library and "getsockname") and fd and pointer and get_list_data_ptr(size)) is not equal to 0:
+        return 0
+    set state to create_list()
+    set added to append_list(state and library)
+    set added to append_list(state and fd)
+    set fixture to create_list()
+    set added to append_list(fixture and state)
+    set added to append_list(fixture and address)
+    return fixture
+
+define fixture_udp_connect with fixture as List and peer as List returning Int:
+    set state to get_list(fixture and 0)
+    set address to get_list(peer and 1)
+    return ep_dlcall3(ep_dlsym(get_list(state and 0) and "connect") and get_list(state and 1) and get_list_data_ptr(address) and 16) equals 0
+
+define fixture_udp_wait with state as List returning List:
+    set attempts to 0
+    set row to discord_voice_udp_read(state)
+    repeat while archive_list_text(row and 0) equals "again" and also attempts < 100:
+        set waited to ep_dlcall1(ep_dlsym(get_list(state and 0) and "usleep") and 1000)
+        set row to discord_voice_udp_read(state)
+        set attempts to attempts + 1
+    return row
+
+define fixture_queued_media with transport as List and controller as List returning List:
+    set fixture to ep_dlopen(get_argument(11))
+    set left to discord_dave_open(get_argument(9) and get_argument(10) and 1 and 600 and "900")
+    set right to discord_dave_open(get_argument(9) and get_argument(10) and 1 and 600 and "901")
+    if left equals 0 or else right equals 0:
+        return 0
+    set library to get_list(left and 0)
+    set sender to ep_dlcall1(ep_dlsym(fixture and "daveExternalSenderCreate") and 600)
+    if sender equals 0:
+        return 0
+    set raw to research_native_words(1)
+    set size to research_native_words(1)
+    set fetched to ep_dlcall3(ep_dlsym(fixture and "daveExternalSenderGetMarshalledExternalSender") and sender and get_list_data_ptr(raw) and get_list_data_ptr(size))
+    set sender_bytes to discord_dave_owned_copy(library and get_list(raw and 0) and get_list(size and 0))
+    set users to create_list()
+    set users to ["900","901"]
+    set external_a to fixture_receive(left and 65535 and 25 and -1 and sender_bytes and users)
+    set external_b to fixture_receive(right and 65535 and 25 and -1 and sender_bytes and users)
+    if not (archive_list_text(external_a and 0) equals "external-sender") or else not (archive_list_text(external_b and 0) equals "external-sender") or else get_list(external_a and 1) is not equal to 65535:
+        return 0
+    set released to discord_voice_blob_release(sender_bytes)
+    set package to discord_dave_key_package(right)
+    if package equals 0:
+        return 0
+    set raw to research_native_words(1)
+    set size to research_native_words(1)
+    set key_wire to discord_voice_mls_outbound(26 and get_list(package and 0) and get_list(package and 1))
+    if key_wire equals 0 or else get_list(key_wire and 1) is not equal to get_list(package and 1) + 1 or else peek_byte(get_list(key_wire and 0) and 0) is not equal to 26:
+        return 0
+    set byte_index to 0
+    repeat while byte_index < get_list(package and 1):
+        if peek_byte(get_list(key_wire and 0) and byte_index + 1) is not equal to peek_byte(get_list(package and 0) and byte_index):
+            return 0
+        set byte_index to byte_index + 1
+    set released to discord_voice_blob_release(key_wire)
+    set proposed to ep_dlcall6(ep_dlsym(fixture and "daveExternalSenderProposeAdd") and sender and 0 and get_list(package and 0) and get_list(package and 1) and get_list_data_ptr(raw) and get_list_data_ptr(size))
+    set proposal to discord_dave_owned_copy(library and get_list(raw and 0) and get_list(size and 0))
+    set released to discord_voice_blob_release(package)
+    if proposal equals 0:
+        return 0
+    set users to create_list()
+    set users to ["900","901"]
+    set processed to fixture_receive(left and 0 and 27 and -1 and proposal and users)
+    set released to discord_voice_blob_release(proposal)
+    if not (archive_list_text(processed and 0) equals "send-commit-welcome"):
+        display archive_list_text(processed and 0)
+        return 0
+    set combined to get_list(processed and 3)
+    if get_list(processed and 1) is not equal to 0 or else get_list(processed and 2) is not equal to -1 or else peek_byte(get_list(combined and 0) and 0) is not equal to 28:
+        return 0
+    set commit_pointer to research_native_words(1)
+    set commit_size to research_native_words(1)
+    set welcome_pointer to research_native_words(1)
+    set welcome_size to research_native_words(1)
+    set split to ep_dlcall7(ep_dlsym(fixture and "daveExternalSenderSplitCommitWelcome") and sender and get_list(combined and 0) + 1 and get_list(combined and 1) - 1 and get_list_data_ptr(commit_pointer) and get_list_data_ptr(commit_size) and get_list_data_ptr(welcome_pointer) and get_list_data_ptr(welcome_size))
+    set commit to discord_dave_owned_copy(library and get_list(commit_pointer and 0) and get_list(commit_size and 0))
+    set welcome to discord_dave_owned_copy(library and get_list(welcome_pointer and 0) and get_list(welcome_size and 0))
+    set released to discord_voice_blob_release(combined)
+    if commit equals 0 or else welcome equals 0:
+        return 0
+    set commit_wire to fixture_receive(left and 1 and 29 and 512 and commit and users)
+    set welcome_wire to fixture_receive(right and 1 and 30 and 512 and welcome and users)
+    set released to discord_voice_blob_release(commit)
+    set released to discord_voice_blob_release(welcome)
+    if not (archive_list_text(commit_wire and 0) equals "committed") or else not (archive_list_text(welcome_wire and 0) equals "joined"):
+        return 0
+    set changed to set_list(transport and 4 and left)
+    set changed to set_list(controller and 1 and get_argument(9))
+    set handshake to get_list(transport and 0)
+    set changed to set_list(handshake and 2 and 12345)
+    if not (discord_voice_media_controller_dispatch(controller and commit_wire and users) equals "media-transition-prepared"):
+        return 0
+    set action to discord_voice_handshake_receive(handshake and "{\"op\":22,\"seq\":2,\"d\":{\"transition_id\":512}}" and 101 and 1)
+    if not (discord_voice_media_controller_dispatch(controller and action and users) equals "media-transition-executed"):
+        return 0
+    set receiving to discord_voice_media_open(right and get_argument(9) and "900" and users and 0 and 0)
+    if receiving equals 0:
+        return 0
+    return [right,sender,fixture,receiving]
+
+define main returning Int:
+    if get_argument_count() is not equal to 13 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)):
+        return 1
+    set database to discord_agent_open(get_argument(1) and "900")
+    if database equals 0 or else web_cancel_schema(database) is not equal to 0:
+        return 6
+    if not (delegation_schema(database) equals "applied"):
+        return 26
+    set admin_ids to ["500"]
+    set admin_device to discord_agent_principal(database and "500" and admin_ids)
+    set journal to discord_store_open(get_argument(2) and "900")
+    set source_body to "{\"id\":\"100\",\"channel_id\":\"300\",\"guild_id\":\"200\",\"type\":0,\"author\":{\"id\":\"500\"},\"mentions\":[{\"id\":\"900\"}],\"content\":\"Join authorised voice\"}"
+    if not (discord_inbox_record(journal and "message:create:100" and "MESSAGE_CREATE" and source_body) equals "recorded"):
+        return 12
+    if discord_worker_schema(journal) is not equal to 0:
+        return 21
+    set claimed to discord_worker_claim(journal)
+    if not (archive_list_text(claimed and 1) equals "message:create:100"):
+        return 22
+    set submitted to discord_agent_submit(journal and database and "message:create:100" and "900" and ["200"] and admin_ids)
+    if not (archive_list_text(submitted and 0) equals "accepted"):
+        return 12
+    set listener to local_socket_listen(0)
+    set delta to "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"voice-call\",\"function\":{\"name\":\"discord_voice\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"play-call\",\"function\":{\"name\":\"discord_voice\",\"arguments\":\"{\\\"operation\\\": \\\"play\\\", \\\"intent\\\": \\\"voice-intent\\\", \\\"attachment\\\": \\\"speech\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}"
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set generated to agent_generate_local(database and "discord-message:100" and "voice-request" and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    set closed to local_socket_close(listener)
+    if generated is not equal to 0 or else served is not equal to 0 or else discord_voice_intent_schema(journal) is not equal to 0:
+        return 16
+    set requested to discord_voice_intent_request(journal and "voice-intent" and "200" and "600" and "500" and "discord-message:100" and "voice-call" and ep_sha256("fixture-access"))
+    if not (requested equals "queued"):
+        return 17
+    set allowed to discord_voice_request_guard(journal and database and "voice-intent" and "900" and ["200"] and admin_ids and "/absent-fixture-stop")
+    if not (archive_list_text(allowed and 0) equals "allowed"):
+        display archive_list_text(allowed and 0)
+        return 18
+    if discord_gateway_schema(journal) is not equal to 0:
+        return 27
+    set bound to discord_gateway_bind(journal and "generation" and "session")
+    set recorded to discord_gateway_dispatch(journal and "generation" and "session" and 1 and "IGNORED" and ep_sha256("fixture") and "" and "")
+    set fixture to ep_dlopen(get_argument(3))
+    set mode to 0
+    repeat while mode < 3:
+        set configured to ep_dlcall2(ep_dlsym(fixture and "fixture_configure") and mode and str_to_ptr(get_argument(2)))
+        set proof to discord_voice_request_proof(get_argument(3) and "fixture-token-no-network-123456" and journal and database and "voice-intent" and "900" and ["200"] and admin_ids and get_argument(4) and "/absent-fixture-stop" and 1)
+        if mode equals 0:
+            if not (archive_list_text(proof and 0) equals "allowed") or else get_list(proof and 3) is not equal to 1 or else string_length(archive_list_text(proof and 4)) is not equal to 64:
+                display archive_list_text(proof and 0)
+                return 28
+        if mode equals 0:
+            if not (discord_voice_worker_check(journal and database and "voice-intent" and proof and "900" and ["200"] and admin_ids and "/absent-fixture-stop" and 1) equals "allowed"):
+                return 32
+            set changed to set_list(proof and 5 and "other-intent")
+            if not (discord_voice_worker_check(journal and database and "voice-intent" and proof and "900" and ["200"] and admin_ids and "/absent-fixture-stop" and 1) equals "voice-proof-binding-denied"):
+                return 33
+            set changed to set_list(proof and 5 and "voice-intent")
+            set changed to set_list(proof and 6 and 0)
+            if not (discord_voice_worker_check(journal and database and "voice-intent" and proof and "900" and ["200"] and admin_ids and "/absent-fixture-stop" and 1) equals "voice-proof-operation-denied"):
+                return 34
+            set changed to set_list(proof and 6 and 1)
+            set retained_proof to proof
+        if mode equals 1 and also not (archive_list_text(proof and 0) equals "voice-speak-denied"):
+            display archive_list_text(proof and 0)
+            return 29
+        if mode equals 2 and also not (archive_list_text(proof and 0) equals "voice-authorization-refresh-required"):
+            display archive_list_text(proof and 0)
+            return 30
+        if ep_dlcall0(ep_dlsym(fixture and "fixture_calls")) is not equal to 11:
+            return 31
+        set mode to mode + 1
+    if not (discord_voice_worker_check(journal and database and "voice-intent" and retained_proof and "900" and ["200"] and admin_ids and "/absent-fixture-stop" and 1) equals "voice-authorization-refresh-required"):
+        return 35
+    # Complete the durable join/handoff using fixture-authenticated events.
+    # The socket ABI is local; no TLS or Discord connection is claimed here.
+    if discord_voice_session_schema(journal) is not equal to 0:
+        return 36
+    set baseline to "{\"id\":\"200\",\"voice_states\":[{\"user_id\":\"901\",\"channel_id\":\"600\",\"session_id\":\"peer-session\"}]}"
+    set recorded to discord_gateway_dispatch_voice(journal and "generation" and "session" and 3 and "GUILD_CREATE" and ep_sha256(baseline) and "" and "" and baseline)
+    set rejected_claim to discord_voice_worker_claim(journal and database and "voice-intent" and retained_proof and "900" and ["200"] and admin_ids and "/absent-fixture-stop" and 1)
+    if not (archive_list_text(rejected_claim and 0) equals "voice-authorization-refresh-required"):
+        return 43
+    set configured to ep_dlcall2(ep_dlsym(fixture and "fixture_configure") and 0 and str_to_ptr(get_argument(2)))
+    set claim_proof to discord_voice_request_proof(get_argument(3) and "fixture-token-no-network-123456" and journal and database and "voice-intent" and "900" and ["200"] and admin_ids and get_argument(4) and "/absent-fixture-stop" and 1)
+    set claimed_voice to discord_voice_worker_claim(journal and database and "voice-intent" and claim_proof and "900" and ["200"] and admin_ids and "/absent-fixture-stop" and 1)
+    if not (archive_list_text(claimed_voice and 0) equals "claimed"):
+        return 44
+    set marked to discord_voice_intent_written(journal and "voice-intent" and archive_list_text(claimed_voice and 1) and 1)
+    set own to "{\"guild_id\":\"200\",\"user_id\":\"900\",\"channel_id\":\"600\",\"session_id\":\"voice-session\"}"
+    set recorded to discord_gateway_dispatch_voice(journal and "generation" and "session" and 4 and "VOICE_STATE_UPDATE" and ep_sha256(own) and "" and "" and own)
+    set server to "{\"guild_id\":\"200\",\"token\":\"fixture-token\",\"endpoint\":\"fixture.discord.media:443\"}"
+    set recorded to discord_gateway_dispatch_private_voice(journal and "generation" and "session" and 5 and "VOICE_SERVER_UPDATE" and ep_sha256(server) and "" and "" and "" and server and "900")
+    set handoff to discord_voice_handoff_claim(journal and "voice-intent" and "generation" and "900" and ep_time_now_ms() and 1 and 0)
+    if handoff equals 0:
+        return 37
+    set credentials to discord_voice_handoff_take(handoff)
+    set socket_library to ep_dlopen(get_argument(5))
+    set reset to ep_dlcall1(ep_dlsym(socket_library and "fixture_reset") and 0)
+    set socket to create_list()
+    set added to append_list(socket and "connected")
+    set added to append_list(socket and ep_dlopen(get_argument(5)))
+    set added to append_list(socket and 1)
+    set prepared to create_list()
+    set added to append_list(prepared and socket)
+    set added to append_list(prepared and credentials)
+    set added to append_list(prepared and "600")
+    set added to append_list(prepared and 0)
+    set binding to create_list()
+    set added to append_list(binding and prepared)
+    set added to append_list(binding and "voice-intent")
+    set added to append_list(binding and "generation")
+    set added to append_list(binding and "900")
+    set paths to create_list()
+    set paths to ["unused","unused","unused"]
+    if get_argument(6) equals "stale":
+        set rejected_owner to discord_voice_worker_activate(journal and database and binding and claim_proof and "900" and ["200"] and admin_ids and "/absent-fixture-stop" and 1 and paths and 1 and 100)
+        set terminal to history_collect_one(archive_prepare(journal and "SELECT state FROM discord_voice_intents WHERE identity='voice-intent';"))
+        if rejected_owner is not equal to 0 or else ep_dlcall0(ep_dlsym(socket_library and "fixture_calls")) is not equal to 0 or else ep_dlcall0(ep_dlsym(socket_library and "fixture_cleanups")) is not equal to 1 or else not (archive_list_text(terminal and 1) equals "leave-required") or else string_length(archive_list_text(credentials and 3)) is not equal to 0:
+            return 45
+        display "PASS: stale post-preparation proof prevents Identify, disposes credentials/socket and requires leave."
+        return 0
+    set configured to ep_dlcall2(ep_dlsym(fixture and "fixture_configure") and 0 and str_to_ptr(get_argument(2)))
+    set activation_proof to discord_voice_request_proof(get_argument(3) and "fixture-token-no-network-123456" and journal and database and "voice-intent" and "900" and ["200"] and admin_ids and get_argument(4) and "/absent-fixture-stop" and 1)
+    set owner to discord_voice_worker_activate(journal and database and binding and activation_proof and "900" and ["200"] and admin_ids and "/absent-fixture-stop" and 1 and paths and 1 and 100)
+    set engine to discord_voice_engine_new(owner and "unused" and 1)
+    set reader to discord_store_open(get_argument(2) and "900")
+    if owner equals 0 or else engine equals 0 or else reader equals 0 or else ep_dlcall0(ep_dlsym(socket_library and "fixture_calls")) is not equal to 1:
+        return 38
+    set requests to channel
+    set replies to channel
+    set completed_observer to channel
+    set mailbox to discord_voice_permission_mailbox_new(requests and replies and completed_observer)
+    set changed to set_list(mailbox and 5 and retained_proof)
+    set loop_state to discord_voice_worker_step_new(engine and mailbox and "900" and ["200"] and admin_ids and "/absent-fixture-stop" and 1 and 1000 and 100)
+    if not (discord_voice_worker_step(journal and reader and database and loop_state and 101 and 10001) equals "voice-awaiting-permission-proof") or else get_list(engine and 4) is not equal to 0:
+        return 39
+    set requested_serial to receive from requests
+    if requested_serial is not equal to 1:
+        return 46
+    if get_argument(6) equals "deadline" or else get_argument(6) equals "nohello":
+        set io_state to get_list(get_list(owner and 0) and 0)
+        set handshake to get_list(get_list(io_state and 0) and 0)
+        set deadline_now to 102
+        if get_argument(6) equals "nohello":
+            set changed to set_list(handshake and 0 and 4)
+            set deadline_now to 30100
+        else:
+            set hello to discord_voice_heartbeat_hello(get_list(handshake and 1) and 1000 and 101)
+        if not (discord_voice_worker_step(journal and reader and database and loop_state and deadline_now and 10002) equals "voice-proof-refresh-deadline") or else get_list(engine and 4) is not equal to 1 or else ep_dlcall0(ep_dlsym(socket_library and "fixture_calls")) is not equal to 1:
+            return 47
+        set stop_observer to receive from requests
+        if stop_observer is not equal to 0:
+            return 48
+        display "PASS: pending permission refresh never sends a heartbeat or extends the connection past its deadline."
+        return 0
+    set configured to ep_dlcall2(ep_dlsym(fixture and "fixture_configure") and 0 and str_to_ptr(get_argument(2)))
+    set fresh_proof to discord_voice_request_proof(get_argument(3) and "fixture-token-no-network-123456" and journal and database and "voice-intent" and "900" and ["200"] and admin_ids and get_argument(4) and "/absent-fixture-stop" and 1)
+    set response to create_list()
+    set added to append_list(response and requested_serial)
+    set added to append_list(response and fresh_proof)
+    send response to replies
+    set polled to discord_voice_worker_step(journal and reader and database and loop_state and 102 and 10002)
+    if not (polled equals "pending") or else get_list(engine and 4) is not equal to 0 or else get_list(engine and 6) is not equal to 5:
+        display polled
+        return 40
+    set io_state to get_list(get_list(owner and 0) and 0)
+    set handshake to get_list(get_list(io_state and 0) and 0)
+    set changed to set_list(handshake and 0 and 4)
+    set polled to discord_voice_worker_step(journal and reader and database and loop_state and 103 and 10003)
+    if get_list(engine and 3) equals 0 or else get_list(engine and 4) is not equal to 0:
+        return 49
+    if discord_voice_audio_jobs_schema(journal) is not equal to 0 or else web_attachment_schema(database) is not equal to 0 or else discord_voice_playback_gate_schema(journal) is not equal to 0:
+        return 60
+    set row to history_collect_one(archive_prepare(database and "SELECT session FROM echo_runs WHERE run='discord-message:100';"))
+    set session to archive_list_text(row and 1)
+    set digest to file_digest(get_argument(8) and 65536)
+    set pcm_path to concat(get_argument(4) and "/pcm.wav")
+    if file_copy_verified(get_argument(8) and pcm_path and archive_list_text(digest and 1) and get_list(digest and 2) and 65536) is not equal to 0:
+        return 61
+    if web_attachment_register(database and "discord:500" and session and "speech" and get_argument(8) and "speech.wav" and "audio/wav") is not equal to 0 or else web_attachment_register_decoded_import(database and "discord:500" and session and "speech:voice-pcm-wav" and pcm_path and "speech PCM.wav" and "speech") is not equal to 0:
+        return 62
+    set audio_binding to discord_voice_audio_source_prepare(database and "discord-message:100" and "500" and "speech" and get_argument(4))
+    set request to history_collect_one(archive_prepare(database and "SELECT request_event FROM echo_tool_calls WHERE run='discord-message:100' AND call_id='play-call';"))
+    if not (discord_voice_audio_job_enqueue(journal and "audio" and "voice-intent" and "discord-message:100" and "play-call" and "500" and audio_binding and archive_list_text(request and 1)) equals "queued"):
+        return 63
+    set config to create_list()
+    set added to append_list(config and get_argument(3))
+    set added to append_list(config and "fixture-token-no-network-123456")
+    set added to append_list(config and get_argument(2))
+    set added to append_list(config and get_argument(1))
+    set added to append_list(config and "voice-intent")
+    set added to append_list(config and "900")
+    set scope to create_list()
+    set added to append_list(scope and "200")
+    set added to append_list(config and scope)
+    set added to append_list(config and admin_ids)
+    set added to append_list(config and get_argument(4))
+    set added to append_list(config and "/absent-fixture-stop")
+    set added to append_list(config and 0)
+    set started to discord_voice_audio_job_start(journal and database and config and get_argument(7) and 104)
+    if not (archive_list_text(started and 0) equals "voice-audio-started"):
+        display archive_list_text(started and 0)
+        return 64
+    set job to get_list(started and 1)
+    set stream to create_list()
+    set stream to [0,0]
+    set idle to channel
+    set waits to create_list()
+    set added to append_list(waits and idle)
+    set now to 104
+    set outcome to ""
+    repeat while now < 354 and also not (outcome equals "voice-awaiting-playback-confirmation") and also get_list(loop_state and 10) equals 0:
+        set outcome to discord_voice_audio_job_tick(journal and reader and database and loop_state and job and stream and now and 10000 + now)
+        set ready to select(waits and 5)
+        set now to now + 1
+    set player to get_list(job and 4)
+    if not (outcome equals "voice-awaiting-playback-confirmation") or else player equals 0:
+        display outcome
+        return 65
+    set pcm_reader to get_list(player and 0)
+    if get_list(pcm_reader and 4) is not equal to 0 or else get_list(player and 2) is not equal to 0:
+        return 66
+    if not (discord_voice_playback_gate_send(journal and socket and "voice-intent" and "generation" and "/absent-fixture-stop") equals "sent"):
+        return 67
+    set confirmation to "{\"guild_id\":\"200\",\"user_id\":\"900\",\"channel_id\":\"600\",\"session_id\":\"voice-session\",\"self_mute\":false,\"self_deaf\":true,\"mute\":false,\"suppress\":false}"
+    set recorded to discord_gateway_dispatch_voice(journal and "generation" and "session" and 6 and "VOICE_STATE_UPDATE" and ep_sha256(confirmation) and "" and "" and confirmation)
+    set current to discord_voice_request_proof(get_argument(3) and "fixture-token-no-network-123456" and journal and database and "voice-intent" and "900" and ["200"] and admin_ids and get_argument(4) and "/absent-fixture-stop" and 1)
+    set changed to set_list(mailbox and 5 and current)
+    repeat while now < 604 and also not (outcome equals "await-media") and also get_list(loop_state and 10) equals 0:
+        set outcome to discord_voice_audio_job_tick(journal and reader and database and loop_state and job and stream and now and 10000 + now)
+        set ready to select(waits and 5)
+        set now to now + 1
+    if not (outcome equals "await-media") or else get_list(player and 2) equals 0 or else get_list(pcm_reader and 4) is not equal to 3840 or else get_list(stream and 0) is not equal to 0:
+        display outcome
+        return 68
+    set transport to get_list(io_state and 0)
+    set controller to get_list(engine and 3)
+    set media_fixture to fixture_queued_media(transport and controller)
+    if media_fixture equals 0:
+        return 71
+    set udp_sender to fixture_udp()
+    set udp_receiver to fixture_udp()
+    if fixture_udp_connect(udp_sender and udp_receiver) equals 0 or else fixture_udp_connect(udp_receiver and udp_sender) equals 0:
+        return 72
+    set changed to set_list(transport and 2 and get_list(udp_sender and 0))
+    set key to research_native_words(4)
+    set cipher to discord_voice_crypto_open(get_argument(12) and get_list_data_ptr(key) and 32)
+    set changed to set_list(transport and 3 and cipher)
+    set decode_codec to discord_voice_opus_open(get_argument(7))
+    set packet_count to 0
+    set ticks to 0
+    repeat while get_list(job and 6) equals 0 and also ticks < 200:
+        set outcome to discord_voice_audio_job_tick(journal and reader and database and loop_state and job and stream and now and 10000 + now)
+        if outcome equals "source-frame-sent" or else outcome equals "silence-sent":
+            set received to fixture_udp_wait(get_list(udp_receiver and 0))
+            if not (archive_list_text(received and 0) equals "packet"):
+                return 73
+            set packet to get_list(received and 1)
+            if discord_voice_u16(get_list(packet and 0) and 2) is not equal to packet_count or else discord_voice_u32(get_list(packet and 0) and 4) is not equal to packet_count * 960:
+                return 74
+            set dave_frame to discord_voice_crypto_unwrap(cipher and get_list(packet and 0) and get_list(packet and 1) and 12)
+            if dave_frame equals 0:
+                return 75
+            set opus_frame to discord_voice_media_frame(get_list(media_fixture and 3) and get_list(dave_frame and 0) and get_list(dave_frame and 1))
+            if opus_frame equals 0:
+                return 76
+            set decoded to discord_voice_opus_decode(decode_codec and get_list(opus_frame and 0) and get_list(opus_frame and 1))
+            if decoded equals 0 or else get_list(decoded and 1) is not equal to 3840:
+                return 77
+            set released to discord_voice_blob_release(decoded)
+            set released to discord_voice_blob_release(opus_frame)
+            set released to discord_voice_blob_release(dave_frame)
+            set released to discord_voice_blob_release(packet)
+            set packet_count to packet_count + 1
+        set now to now + 5
+        set ticks to ticks + 1
+    if not (outcome equals "file-playback-complete") or else packet_count is not equal to 7 or else get_list(player and 4) is not equal to 4000 or else get_list(stream and 0) is not equal to 7:
+        display outcome
+        display packet_count
+        return 78
+    set attempts to 0
+    repeat while get_list(job and 6) is not equal to 2 and also attempts < 250:
+        set drained to discord_voice_audio_job_drain(job)
+        set ready to select(waits and 5)
+        set attempts to attempts + 1
+    set terminal to history_collect_one(archive_prepare(journal and "SELECT state FROM discord_voice_audio_jobs WHERE identity='audio';"))
+    if get_list(job and 6) is not equal to 2 or else not (archive_list_text(terminal and 1) equals "completed") or else get_list(pcm_reader and 5) is not equal to 1:
+        return 79
+    if not (archive_list_text(discord_voice_audio_job_claim(journal and "voice-intent") and 0) equals "voice-audio-not-ready"):
+        return 80
+    set closed to discord_voice_opus_close(decode_codec)
+    set closed to discord_voice_media_close(get_list(media_fixture and 3))
+    set closed to discord_voice_udp_close(get_list(udp_receiver and 0))
+    set closed to discord_voice_worker_step_close(journal and loop_state and "fixture-complete")
+    set closed to discord_dave_close(get_list(media_fixture and 0))
+    set destroyed to ep_dlcall1(ep_dlsym(get_list(media_fixture and 2) and "daveExternalSenderDestroy") and get_list(media_fixture and 1))
+    display "PASS: queued job sends seven paced Opus/DAVE/AEAD UDP packets decoded by the peer, preserves source bytes and RTP sequence, records completion, drains resources and cannot replay."
+    return 0

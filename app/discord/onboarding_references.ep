@@ -1,0 +1,110 @@
+import "onboarding_guard"
+import "automod_references"
+
+# Deduplicate observations across prompts: choosing the same channel or role in
+# multiple options must not generate repeated REST reads.
+define discord_onboarding_collect_ids with fields as List and field as Int and identities as List returning Int:
+    if field < 0 or else provider_kind(fields and field) equals "null":
+        return 1
+    if not (provider_kind(fields and field) equals "["):
+        return 0
+    set index to field + 1
+    repeat while not (provider_kind(fields and index) equals "]"):
+        set identity to provider_value(fields and index)
+        if not (provider_kind(fields and index) equals "string") or else discord_snowflake(identity) equals 0:
+            return 0
+        if discord_contains(identities and identity) equals 0:
+            set added to append_list(identities and identity)
+        set index to provider_after(fields and index)
+        if index < 0:
+            return 0
+        if provider_kind(fields and index) equals ",":
+            set index to index + 1
+    return 1
+
+define discord_onboarding_references with candidate as Str returning List:
+    if discord_onboarding_changes(candidate) equals 0:
+        return history_status("invalid-onboarding-candidate")
+    set fields to provider_json_tokens(candidate)
+    set roles to create_list()
+    set channels to create_list()
+    set emojis to create_list()
+    if discord_onboarding_collect_ids(fields and provider_member(fields and 0 and "default_channel_ids") and channels) equals 0:
+        return history_status("invalid-onboarding-channels")
+    set prompts to provider_member(fields and 0 and "prompts")
+    if prompts >= 0 and also provider_kind(fields and prompts) equals "[":
+        set prompt to prompts + 1
+        repeat while not (provider_kind(fields and prompt) equals "]"):
+            set options to provider_member(fields and prompt and "options")
+            set option to options + 1
+            repeat while not (provider_kind(fields and option) equals "]"):
+                if discord_onboarding_collect_ids(fields and provider_member(fields and option and "role_ids") and roles) equals 0 or else discord_onboarding_collect_ids(fields and provider_member(fields and option and "channel_ids") and channels) equals 0:
+                    return history_status("invalid-onboarding-option-references")
+                set emoji to provider_member(fields and option and "emoji_id")
+                if emoji >= 0 and also provider_kind(fields and emoji) equals "string":
+                    set identity to provider_value(fields and emoji)
+                    if discord_contains(emojis and identity) equals 0:
+                        set added to append_list(emojis and identity)
+                set option to provider_after(fields and option)
+                if option < 0:
+                    return history_status("invalid-onboarding-options")
+                if provider_kind(fields and option) equals ",":
+                    set option to option + 1
+            set prompt to provider_after(fields and prompt)
+            if prompt < 0:
+                return history_status("invalid-onboarding-prompts")
+            if provider_kind(fields and prompt) equals ",":
+                set prompt to prompt + 1
+    return ["valid",roles,channels,emojis]
+
+# Candidate settings are used for reference/permission checks only. The request
+# sends the original explicit changes, preserving omission and null semantics.
+define discord_onboarding_effective with changes as Str and previous as Str returning Str:
+    if discord_onboarding_changes(changes) equals 0 or else discord_onboarding_changes(previous) equals 0:
+        return ""
+    set fields to provider_json_tokens(changes)
+    set old to provider_json_tokens(previous)
+    set keys to create_list()
+    set keys to ["prompts","enabled","default_channel_ids","mode"]
+    set output to "{"
+    set count to 0
+    for each item in keys:
+        set key to ptr_to_str(item)
+        set field to provider_member(fields and 0 and key)
+        set value to ""
+        if field >= 0:
+            set value to agent_json_source(changes and fields and field)
+        else:
+            set field to provider_member(old and 0 and key)
+            if field < 0:
+                return ""
+            set value to agent_json_source(previous and old and field)
+        if count > 0:
+            set output to concat(output and ",")
+        set output to concat(output and concat(provider_quote(key) and concat(":" and value)))
+        set count to count + 1
+    return concat(output and "}")
+
+define discord_onboarding_references_current with library as Str and token as Str and journal as Int and directory_path as Str and bundle as List and guild as Str and actor as Str and bot as Str and candidate as Str returning Int:
+    set references to discord_onboarding_references(candidate)
+    if not (archive_list_text(references and 0) equals "valid"):
+        return 0
+    set roles to get_list(references and 1)
+    for each item in roles:
+        if discord_onboarding_role_allowed(bundle and guild and actor and bot and ptr_to_str(item)) equals 0:
+            return 0
+    set channels to get_list(references and 2)
+    for each item in channels:
+        if discord_automod_channel_reference(library and token and journal and directory_path and bundle and guild and actor and bot and ptr_to_str(item)) equals 0:
+            return 0
+    set emojis to get_list(references and 3)
+    for each item in emojis:
+        set identity to ptr_to_str(item)
+        set route to concat("/guilds/" and concat(guild and concat("/emojis/" and identity)))
+        set observed to discord_access_get(library and token and journal and directory_path and route and "GET:onboarding-guild-emoji" and guild)
+        if not (archive_list_text(observed and 0) equals "observed"):
+            return 0
+        set fields to provider_json_tokens(archive_list_text(observed and 1))
+        if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "id")) equals identity) or else provider_kind(fields and provider_member(fields and 0 and "available")) equals "false":
+            return 0
+    return 1

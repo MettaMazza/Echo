@@ -1,0 +1,60 @@
+import "channel_options"
+import "voice_request_guard"
+import "voice_proof_cursor"
+
+# Slow REST work runs outside the audio/heartbeat loop. Its result is native
+# evidence tied to a Gateway view. Only fully receipted message creation may
+# advance that view without repeating permission reads; source and all other
+# authority changes still invalidate it. Native guards remain mandatory.
+# Output: allowed, generation, session, validated-through cursor, evidence digest, intent identity, playback permission.
+define discord_voice_request_proof with library as Str and token as Str and journal as Int and database as Int and identity as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str and playback as Int returning List:
+    set before to history_collect_one(archive_prepare(journal and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(before and 0) equals "found"):
+        return history_status("voice-gateway-unavailable")
+    set guarded to discord_voice_request_guard(journal and database and identity and bot and guilds and admins and stop_file)
+    if not (archive_list_text(guarded and 0) equals "allowed"):
+        return guarded
+    set source to get_list(guarded and 1)
+    set intent to get_list(guarded and 3)
+    set guild to archive_list_text(intent and 1)
+    set actor to archive_list_text(intent and 3)
+    set origin_snapshot to create_list()
+    set voice_snapshot to create_list()
+    set origin_access to discord_access_check_bit_capture(library and token and journal and directory_path and bot and guild and archive_list_text(source and 4) and actor and admins and -1 and origin_snapshot)
+    if not (archive_list_text(origin_access and 0) equals "allowed"):
+        return origin_access
+    set current to discord_run_source_check(library and token and journal and directory_path and archive_list_text(guarded and 2) and source)
+    if not (current equals "current"):
+        return history_status(current)
+    set voice_access to discord_voice_access_check_capture(library and token and journal and directory_path and guild and archive_list_text(intent and 2) and actor and bot and guilds and admins and playback and voice_snapshot)
+    if not (archive_list_text(voice_access and 0) equals "allowed"):
+        return voice_access
+    if playback equals 1:
+        set origin_body to archive_list_text(origin_snapshot and 0)
+        set origin_fields to provider_json_tokens(origin_body)
+        set origin_kind to provider_value(origin_fields and provider_member(origin_fields and 0 and "type"))
+        if not (origin_kind equals "0" or else origin_kind equals "5") or else discord_channel_same_audience(origin_body and archive_list_text(voice_snapshot and 0) and guild) equals 0:
+            return history_status("voice-playback-audience-denied")
+    set checked to discord_voice_request_guard(journal and database and identity and bot and guilds and admins and stop_file)
+    if not (archive_list_text(checked and 0) equals "allowed"):
+        return checked
+    set after to history_collect_one(archive_prepare(journal and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    set index to 0
+    repeat while index < 3:
+        if not (archive_list_text(before and index) equals archive_list_text(after and index)):
+            return history_status("voice-authorization-refresh-required")
+        set index to index + 1
+    set proof_session to archive_list_text(before and 2)
+    set before_cursor to string_to_int(archive_list_text(before and 3))
+    set after_cursor to string_to_int(archive_list_text(after and 3))
+    if discord_voice_proof_messages_only(journal and proof_session and before_cursor and after_cursor) equals 0:
+        return history_status("voice-authorization-refresh-required")
+    set result to history_status("allowed")
+    set added to append_list(result and archive_list_text(before and 1))
+    set added to append_list(result and archive_list_text(before and 2))
+    set added to append_list(result and string_to_int(archive_list_text(after and 3)))
+    set evidence to concat(archive_list_text(voice_access and 1) and ep_sha256(archive_list_text(source and 2)))
+    set added to append_list(result and ep_sha256(concat(evidence and archive_list_text(origin_access and 2))))
+    set added to append_list(result and identity)
+    set added to append_list(result and playback)
+    return result

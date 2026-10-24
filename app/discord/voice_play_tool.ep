@@ -1,0 +1,58 @@
+import "voice_audio_source"
+import "voice_audio_jobs"
+import "voice_request_guard"
+import "channel_options"
+import "pin_tool"
+
+# A playback request selects an owned attachment, never a filesystem path.
+# Preparation may use local generated TTS or another selected audio artifact.
+# Actual sending remains in the independently authorized native voice worker.
+define discord_voice_play_perform with library as Str and token as Str and journal as Int and database as Int and run as Str and call_id as Str and source as List and options as List and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    set runtime to history_collect_one(archive_prepare(journal and "SELECT enabled FROM discord_voice_audio_runtime WHERE singleton=1;"))
+    if not (archive_list_text(runtime and 1) equals "1"):
+        return discord_pin_result("voice-playback-runtime-unavailable" and "none" and "")
+    set intent to archive_list_text(options and 2)
+    set attachment to archive_list_text(options and 3)
+    set actor to archive_list_text(source and 3)
+    set guild to archive_list_text(source and 5)
+    set guarded to discord_voice_request_guard(journal and database and intent and bot and guilds and admins and stop_file)
+    if not (archive_list_text(guarded and 0) equals "allowed"):
+        return discord_pin_result(archive_list_text(guarded and 0) and "none" and "")
+    set join_source to get_list(guarded and 1)
+    if not (actor equals archive_list_text(join_source and 3)) or else not (archive_list_text(source and 4) equals archive_list_text(join_source and 4)) or else not (guild equals archive_list_text(join_source and 5)):
+        return discord_pin_result("voice-playback-origin-denied" and "none" and "")
+    set origin_capture to create_list()
+    set voice_capture to create_list()
+    set access to discord_access_check_bit_capture(library and token and journal and directory_path and bot and guild and archive_list_text(source and 4) and actor and admins and -1 and origin_capture)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_pin_result(archive_list_text(access and 0) and "none" and "")
+    set inbox to discord_job_origin(journal and database and run)
+    set current to discord_run_source_check(library and token and journal and directory_path and inbox and source)
+    if not (current equals "current"):
+        return discord_pin_result(current and "none" and "")
+    set owner to get_list(guarded and 3)
+    set access to discord_voice_access_check_capture(library and token and journal and directory_path and guild and archive_list_text(owner and 2) and actor and bot and guilds and admins and 1 and voice_capture)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return discord_pin_result(archive_list_text(access and 0) and "none" and "")
+    set origin_body to archive_list_text(origin_capture and 0)
+    set fields to provider_json_tokens(origin_body)
+    set kind to provider_value(fields and provider_member(fields and 0 and "type"))
+    if not (kind equals "0" or else kind equals "5") or else discord_channel_same_audience(origin_body and archive_list_text(voice_capture and 0) and guild) equals 0:
+        return discord_pin_result("voice-playback-audience-denied" and "none" and "")
+    set binding to discord_voice_audio_source_prepare(database and run and actor and attachment and directory_path)
+    if not (archive_list_text(binding and 0) equals "voice-audio-ready"):
+        return discord_pin_result(archive_list_text(binding and 0) and "none" and "")
+    if file_exists(stop_file) or else discord_pin_admin(database and run and call_id) equals 0 or else tool_policy_allows(database and run and call_id and "discord_voice") equals 0 or else not (discord_job_origin(journal and database and run) equals inbox) or else discord_run_barrier(journal and inbox and string_to_int(archive_list_text(source and 7)) and archive_list_text(source and 6) and archive_list_text(source and 4) and guild) is not equal to 0:
+        return discord_pin_result("voice-source-or-authority-changed" and "none" and "")
+    set guarded to discord_voice_request_guard(journal and database and intent and bot and guilds and admins and stop_file)
+    if not (archive_list_text(guarded and 0) equals "allowed"):
+        return discord_pin_result(archive_list_text(guarded and 0) and "none" and "")
+    set receipt to history_collect_one(checkpoint_prepare(database and "SELECT t.request_event FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run=?1 AND t.call_id=?2 AND e.kind='tool_call' AND json_extract(e.payload,'$.name')='discord_voice';" and [run,call_id]))
+    if not (archive_list_text(receipt and 0) equals "found") or else discord_voice_audio_jobs_schema(journal) is not equal to 0:
+        return discord_pin_result("voice-playback-request-unavailable" and "none" and "")
+    set identity to concat("voice-audio:" and ep_sha256(concat(run and concat(":" and call_id))))
+    set status to discord_voice_audio_job_enqueue(journal and identity and intent and run and call_id and actor and binding and archive_list_text(receipt and 1))
+    set effects to "none"
+    if status equals "queued":
+        set effects to "queued for independent playback checks; not yet audible"
+    return concat("{\"status\":" and concat(provider_quote(status) and concat(",\"job\":" and concat(provider_quote(identity) and concat(",\"effects\":" and concat(provider_quote(effects) and "}"))))))

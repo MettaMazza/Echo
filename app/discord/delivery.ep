@@ -1,3 +1,4 @@
+import "receipt_spool"
 import "store"
 import "gateway_owner"
 import "string"
@@ -197,6 +198,10 @@ define discord_delivery_send with library_path as Str and token as Str and datab
 # Optional frozen multipart bytes must bind the exact nonce-bearing JSON claimed
 # from the immutable outbox. No retries or reconciliation semantics are changed.
 define discord_delivery_send_prepared with library_path as Str and token as Str and database as Int and identity as Str and directory_path as Str and pointer as Int and size as Int and media as Str and expected as Str returning Str:
+    return discord_delivery_send_policy(library_path and token and database and identity and directory_path and pointer and size and media and expected and 0)
+
+# Quiet is a host delivery policy, evaluated at send time for existing backlog.
+define discord_delivery_send_policy with library_path as Str and token as Str and database as Int and identity as Str and directory_path as Str and pointer as Int and size as Int and media as Str and expected as Str and quiet as Int returning Str:
     set rooted_literal_10 to create_list()
     set retained_value_added to append_list(rooted_literal_10 and identity)
     set row to history_collect_one(checkpoint_prepare(database and "SELECT channel FROM discord_outbox WHERE identity=?;" and rooted_literal_10))
@@ -214,9 +219,12 @@ define discord_delivery_send_prepared with library_path as Str and token as Str 
         set closed to ep_dlclose(system)
         return "private-output-unavailable"
     set attempt to ptr_to_str(ep_uuid_v4())
-    set filename to concat(attempt and ".json")
-    set headerfile to concat(attempt and ".headers")
-    set output to workspace_file_open(system and directory and filename and 1)
+    set receipt_name to discord_receipt_name(system and directory and attempt)
+    set filename to concat(receipt_name and ".json")
+    set headerfile to concat(receipt_name and ".headers")
+    set output to -1
+    if string_length(receipt_name) > 0:
+        set output to workspace_file_open(system and directory and filename and 1)
     set headers to workspace_file_open(system and directory and headerfile and 1)
     set closed to net_close(directory)
     set closed to ep_dlclose(system)
@@ -240,6 +248,16 @@ define discord_delivery_send_prepared with library_path as Str and token as Str 
         set closed to net_close(output)
         set closed to net_close(headers)
         return discord_outbox_finish(database and identity and attempt and "rejected" and "" and "Frozen payload mismatch; no HTTP request made")
+    if quiet equals 1:
+        if pointer is not equal to 0:
+            set closed to net_close(output)
+            set closed to net_close(headers)
+            return discord_outbox_finish(database and identity and attempt and "rejected" and "" and "Quiet delivery requires native JSON; no HTTP request made")
+        set request to discord_delivery_quiet_body(database and request)
+        if string_length(request) equals 0 or else archive_finish(checkpoint_prepare(database and "INSERT INTO discord_delivery_events(identity,attempt,state,detail,observed_ms) VALUES(?1,?2,'sending',?3,CAST(?4 AS INTEGER));" and [identity,attempt,concat("notification-policy:suppressed; request-sha256:" and ep_sha256(request)),int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+            set closed to net_close(output)
+            set closed to net_close(headers)
+            return discord_outbox_finish(database and identity and attempt and "rejected" and "" and "Quiet policy receipt failed; no HTTP request made")
     set result to create_list()
     if pointer equals 0:
         set result to discord_rest_transfer(library_path and token and "POST" and concat("/channels/" and concat(room and "/messages")) and request and output and headers)
@@ -291,3 +309,11 @@ define discord_scope_retry_due with journal as Int and room as Str and guild as 
             if deadline > next:
                 set next to deadline
     return next
+
+# Discord SUPPRESS_NOTIFICATIONS (4096) silences push/desktop notifications.
+# Preserve all existing flags, content, allowed mentions and nonce binding.
+define discord_delivery_quiet_body with database as Int and request as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,'$.flags',COALESCE(json_extract(?1,'$.flags'),0)|4096) WHERE json_valid(?1) AND json_type(?1)='object' AND (json_type(?1,'$.flags') IS NULL OR json_type(?1,'$.flags')='integer');" and [request]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)

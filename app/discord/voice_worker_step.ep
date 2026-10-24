@@ -1,0 +1,68 @@
+import "voice_authorized_worker"
+import "voice_permission_mailbox"
+
+# Owns engine and observer mailbox. Host configuration supplies refresh cadence.
+# Fields: engine, mailbox, bot, guilds, admins, stop file, playback, interval,
+# next refresh, last monotonic observation, closed. One step never waits for REST.
+define discord_voice_worker_step_new with engine as List and mailbox as List and bot as Str and guilds as List and admins as List and stop_file as Str and playback as Int and interval as Int and now as Int returning List:
+    if engine equals 0 or else length_list(engine) is not equal to 7 or else get_list(engine and 4) is not equal to 0 or else mailbox equals 0 or else length_list(mailbox) is not equal to 7 or else get_list(mailbox and 6) is not equal to 0 or else interval < 1 or else interval > 60000 or else now < 0 or else now > 9007199254680991 or else (playback is not equal to 0 and also playback is not equal to 1):
+        return 0
+    set state to create_list()
+    set added to append_list(state and engine)
+    set added to append_list(state and mailbox)
+    set added to append_list(state and bot)
+    set added to append_list(state and guilds)
+    set added to append_list(state and admins)
+    set added to append_list(state and stop_file)
+    set added to append_list(state and playback)
+    set added to append_list(state and interval)
+    set added to append_list(state and now)
+    set added to append_list(state and now)
+    set added to append_list(state and 0)
+    return state
+
+define discord_voice_worker_step_close with journal as Int and state as List and reason as Str returning Str:
+    if state is not equal to 0 and also length_list(state) equals 11 and also get_list(state and 10) equals 0:
+        set changed to set_list(state and 10 and 1)
+        set stopped to discord_voice_permission_mailbox_stop(get_list(state and 1))
+        set closed to discord_voice_engine_close(journal and get_list(state and 0) and reason)
+    return reason
+
+define discord_voice_worker_step with journal as Int and reader as Int and database as Int and state as List and now as Int and wall_ms as Int returning Str:
+    if state equals 0 or else length_list(state) is not equal to 11 or else get_list(state and 10) is not equal to 0:
+        return "voice-worker-closed"
+    if now < get_list(state and 9) or else now > 9007199254680991:
+        return discord_voice_worker_step_close(journal and state and "voice-worker-clock-anomaly")
+    set changed to set_list(state and 9 and now)
+    set engine to get_list(state and 0)
+    set mailbox to get_list(state and 1)
+    set owner to get_list(engine and 0)
+    set guarded to discord_voice_request_guard(journal and database and archive_list_text(owner and 1) and archive_list_text(state and 2) and get_list(state and 3) and get_list(state and 4) and archive_list_text(state and 5))
+    if not (archive_list_text(guarded and 0) equals "allowed"):
+        return discord_voice_worker_step_close(journal and state and archive_list_text(guarded and 0))
+    set observed to discord_voice_permission_mailbox_poll(mailbox)
+    if observed equals "permission-observer-failed" or else observed equals "permission-observer-stopped" or else observed equals "permission-observer-stopping":
+        return discord_voice_worker_step_close(journal and state and observed)
+    if now >= get_list(state and 8):
+        if discord_voice_permission_mailbox_refresh(mailbox) > 0:
+            set changed to set_list(state and 8 and now + get_list(state and 7))
+    set proof to discord_voice_permission_mailbox_proof(mailbox)
+    if proof is not equal to 0:
+        set disposition to archive_list_text(proof and 0)
+        if disposition equals "allowed":
+            set polled to discord_voice_worker_poll(journal and reader and database and engine and proof and archive_list_text(state and 2) and get_list(state and 3) and get_list(state and 4) and archive_list_text(state and 5) and get_list(state and 6) and now and wall_ms)
+            if not (polled equals "voice-authorization-refresh-required"):
+                if get_list(engine and 4) is not equal to 0:
+                    return discord_voice_worker_step_close(journal and state and polled)
+                return polled
+        else if not (disposition equals "voice-authorization-refresh-required"):
+            return discord_voice_worker_step_close(journal and state and disposition)
+    if discord_voice_permission_mailbox_refresh(mailbox) > 0:
+        set changed to set_list(state and 8 and now + get_list(state and 7))
+    # Keep transport liveness separate from media authorization. Pending full
+    # proofs pause MLS/media; denial still closes above. Maintenance is bounded
+    # and fenced against native cancellation, source and ownership changes.
+    set maintained to discord_voice_worker_refresh_transport(journal and database and engine and archive_list_text(state and 2) and get_list(state and 3) and get_list(state and 4) and archive_list_text(state and 5) and now and wall_ms)
+    if get_list(engine and 4) is not equal to 0:
+        return discord_voice_worker_step_close(journal and state and maintained)
+    return maintained

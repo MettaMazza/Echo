@@ -1,0 +1,137 @@
+import "voice_dave"
+import "../archive/history"
+import "os"
+
+# The worker supplies this list from current authenticated voice membership,
+# never from a model argument or a message embedded in an MLS payload.
+define discord_dave_users_valid with users as List returning Int:
+    if users equals 0 or else length_list(users) < 1 or else length_list(users) > 131072:
+        return 0
+    for each value in users:
+        set user to ptr_to_str(value)
+        if string_length(user) < 1 or else string_length(user) > 20:
+            return 0
+        set index to 0
+        repeat while index < string_length(user):
+            set code to peek_byte(str_to_ptr(user) and index)
+            if code < 48 or else code > 57:
+                return 0
+            set index to index + 1
+        if string_to_int(user) < 1:
+            return 0
+    return 1
+
+define discord_dave_input with state as List and pointer as Int and count as Int and name as Str returning Int:
+    if discord_dave_failures(state) is not equal to 0 or else get_list(state and 1) equals 0 or else pointer equals 0 or else count < 1 or else count > 16777216:
+        return 0
+    return ep_dlsym(get_list(state and 0) and name) is not equal to 0
+
+# Copies and frees library-owned output in the same call. An empty result is
+# represented separately by the caller, never silently converted to success.
+define discord_dave_owned_copy with library as Int and pointer as Int and count as Int returning List:
+    if pointer equals 0:
+        return 0
+    if count < 1 or else count > 16777216:
+        set released to ep_dlcall1(ep_dlsym(library and "daveFree") and pointer)
+        return 0
+    set output to alloc_bytes(count)
+    if output equals 0:
+        set released to ep_dlcall1(ep_dlsym(library and "daveFree") and pointer)
+        return 0
+    set index to 0
+    repeat while index < count:
+        set copied to poke_byte(output and index and peek_byte(pointer and index))
+        set index to index + 1
+    set released to ep_dlcall1(ep_dlsym(library and "daveFree") and pointer)
+    set blob to create_list()
+    set added to append_list(blob and output)
+    set added to append_list(blob and count)
+    return blob
+
+define discord_dave_external_sender with state as List and pointer as Int and count as Int returning Int:
+    if discord_dave_input(state and pointer and count and "daveSessionSetExternalSender") equals 0:
+        return 0
+    set applied to ep_dlcall3(ep_dlsym(get_list(state and 0) and "daveSessionSetExternalSender") and get_list(state and 1) and pointer and count)
+    return discord_dave_failures(state) equals 0
+
+define discord_dave_proposals with state as List and pointer as Int and count as Int and users as List returning List:
+    if discord_dave_input(state and pointer and count and "daveSessionProcessProposals") equals 0 or else discord_dave_users_valid(users) equals 0:
+        return history_status("invalid-mls-proposals")
+    set library to get_list(state and 0)
+    set output to research_native_words(1)
+    set size to research_native_words(1)
+    set processed to ep_dlcall7(ep_dlsym(library and "daveSessionProcessProposals") and get_list(state and 1) and pointer and count and get_list_data_ptr(users) and length_list(users) and get_list_data_ptr(output) and get_list_data_ptr(size))
+    if discord_dave_failures(state) is not equal to 0:
+        if get_list(output and 0) is not equal to 0:
+            set released to ep_dlcall1(ep_dlsym(library and "daveFree") and get_list(output and 0))
+        return history_status("mls-proposals-failed")
+    if get_list(output and 0) equals 0 and also get_list(size and 0) equals 0:
+        return history_status("no-output")
+    set blob to discord_dave_owned_copy(library and get_list(output and 0) and get_list(size and 0))
+    if blob equals 0:
+        return history_status("mls-output-unavailable")
+    set result to history_status("proposal-output")
+    set added to append_list(result and blob)
+    return result
+
+# Extracts a complete roster before destroying the result handle. Unexpected
+# membership permanently fails this session, requiring explicit reconstruction.
+define discord_dave_roster with state as List and result as Int and welcome as Int and users as List returning List:
+    set library to get_list(state and 0)
+    set get_name to "daveCommitResultGetRosterMemberIds"
+    set destroy_name to "daveCommitResultDestroy"
+    set disposition to "committed"
+    if welcome equals 1:
+        set get_name to "daveWelcomeResultGetRosterMemberIds"
+        set destroy_name to "daveWelcomeResultDestroy"
+        set disposition to "joined"
+    set ids to research_native_words(1)
+    set size to research_native_words(1)
+    set fetched to ep_dlcall3(ep_dlsym(library and get_name) and result and get_list_data_ptr(ids) and get_list_data_ptr(size))
+    set destroyed to ep_dlcall1(ep_dlsym(library and destroy_name) and result)
+    set count to get_list(size and 0)
+    set pointer to get_list(ids and 0)
+    set roster to create_list()
+    set valid to count > 0 and also count <= 131072 and also pointer is not equal to 0
+    set index to 0
+    repeat while valid equals 1 and also index < count:
+        set user to int_to_string(research_native_word(pointer + index * 8))
+        set found to 0
+        for each recognized in users:
+            if ptr_to_str(recognized) equals user:
+                set found to 1
+        if found equals 0:
+            set valid to 0
+        set added to append_list(roster and user)
+        set index to index + 1
+    if pointer is not equal to 0:
+        set released to ep_dlcall1(ep_dlsym(library and "daveFree") and pointer)
+    if valid equals 0 or else discord_dave_failures(state) is not equal to 0:
+        set failed to ep_dlcall3(ep_dlsym(get_list(state and 2) and "echo_voice_failure_callback") and str_to_ptr("roster") and str_to_ptr("unexpected-roster") and get_list(state and 3))
+        return history_status("unexpected-mls-roster")
+    set output to history_status(disposition)
+    set added to append_list(output and roster)
+    return output
+
+define discord_dave_commit with state as List and pointer as Int and count as Int and users as List returning List:
+    if discord_dave_input(state and pointer and count and "daveSessionProcessCommit") equals 0 or else discord_dave_users_valid(users) equals 0:
+        return history_status("invalid-mls-commit")
+    set library to get_list(state and 0)
+    set result to ep_dlcall3(ep_dlsym(library and "daveSessionProcessCommit") and get_list(state and 1) and pointer and count)
+    if result equals 0:
+        return history_status("mls-commit-failed")
+    if discord_dave_failures(state) is not equal to 0 or else ep_dlcall1(ep_dlsym(library and "daveCommitResultIsFailed") and result) is not equal to 0:
+        set destroyed to ep_dlcall1(ep_dlsym(library and "daveCommitResultDestroy") and result)
+        return history_status("mls-commit-failed")
+    if ep_dlcall1(ep_dlsym(library and "daveCommitResultIsIgnored") and result) is not equal to 0:
+        set destroyed to ep_dlcall1(ep_dlsym(library and "daveCommitResultDestroy") and result)
+        return history_status("ignored")
+    return discord_dave_roster(state and result and 0 and users)
+
+define discord_dave_welcome with state as List and pointer as Int and count as Int and users as List returning List:
+    if discord_dave_input(state and pointer and count and "daveSessionProcessWelcome") equals 0 or else discord_dave_users_valid(users) equals 0:
+        return history_status("invalid-mls-welcome")
+    set result to ep_dlcall5(ep_dlsym(get_list(state and 0) and "daveSessionProcessWelcome") and get_list(state and 1) and pointer and count and get_list_data_ptr(users) and length_list(users))
+    if result equals 0:
+        return history_status("mls-welcome-failed")
+    return discord_dave_roster(state and result and 1 and users)

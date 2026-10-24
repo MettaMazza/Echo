@@ -1,0 +1,158 @@
+import "voice_mls"
+
+# Current voice membership from authenticated Gateway events for one guild and
+# channel_id. Rows: [user ID, voice session ID, audio SSRC]. This is identity state,
+# never consent to record/transcribe and never a source of admin authority.
+# State: guild, channel_id, bot, gateway generation, rows, valid, revision.
+define discord_voice_participants_new with guild as Str and channel_id as Str and bot as Str and generation as Int returning List:
+    set ids to create_list()
+    set ids to [guild,channel_id,bot]
+    if discord_dave_users_valid(ids) equals 0 or else generation < 1:
+        return 0
+    set rows to create_list()
+    set state to create_list()
+    set state to [guild,channel_id,bot,generation,rows,1,0]
+    return state
+
+define discord_voice_participants_valid with state as List and generation as Int returning Int:
+    if state equals 0 or else length_list(state) is not equal to 7:
+        return 0
+    return get_list(state and 5) equals 1 and also get_list(state and 3) equals generation
+
+define discord_voice_participants_invalidate with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 7:
+        return 0
+    set changed to set_list(state and 5 and 0)
+    set changed to set_list(state and 4 and create_list())
+    set changed to set_list(state and 6 and get_list(state and 6) + 1)
+    return 1
+
+# Empty channel_id means a confirmed disconnect. Unrelated guild events have no
+# effect. A bot move/disconnect invalidates the entire binding immediately.
+define discord_voice_participants_update with state as List and generation as Int and guild as Str and channel_id as Str and user as Str and session as Str returning Str:
+    if discord_voice_participants_valid(state and generation) equals 0:
+        return "stale-participant-event"
+    if not (guild equals archive_list_text(state and 0)):
+        return "other-guild"
+    set ids to create_list()
+    set ids to [user]
+    if string_length(channel_id) > 0:
+        set added to append_list(ids and channel_id)
+    if discord_dave_users_valid(ids) equals 0:
+        return "invalid-participant"
+    set target to archive_list_text(state and 1)
+    set bot to archive_list_text(state and 2)
+    if user equals bot and also not (channel_id equals target):
+        set invalidated to discord_voice_participants_invalidate(state)
+        return "bot-left-channel"
+    if channel_id equals target and also (string_length(session) < 1 or else string_length(session) > 4096):
+        return "invalid-participant-session"
+    set rows to get_list(state and 4)
+    set replacement to create_list()
+    set found to 0
+    set changed_membership to 0
+    for each value in rows:
+        set row to value
+        if archive_list_text(row and 0) equals user:
+            set found to 1
+            if channel_id equals target:
+                if archive_list_text(row and 1) equals session:
+                    set added to append_list(replacement and row)
+                else:
+                    set updated to create_list()
+                    set updated to [user,session,0]
+                    set added to append_list(replacement and updated)
+                    set changed_membership to 1
+            else:
+                set changed_membership to 1
+        else:
+            set added to append_list(replacement and row)
+    if found equals 0 and also channel_id equals target:
+        if length_list(rows) >= 131072:
+            set invalidated to discord_voice_participants_invalidate(state)
+            return "participant-capacity-exceeded"
+        set updated to create_list()
+        set updated to [user,session,0]
+        set added to append_list(replacement and updated)
+        set changed_membership to 1
+    if changed_membership equals 1:
+        set changed to set_list(state and 4 and replacement)
+        set changed to set_list(state and 6 and get_list(state and 6) + 1)
+        return "membership-changed"
+    return "membership-unchanged"
+
+# Speaking/client-connect events may map an existing member, but never create
+# membership. Reject SSRC collisions before any mutation; the caller reconnects
+# or refreshes membership rather than assigning another participant's audio.
+define discord_voice_participants_ssrc with state as List and generation as Int and user as Str and ssrc as Int returning Str:
+    if discord_voice_participants_valid(state and generation) equals 0:
+        return "stale-participant-event"
+    if ssrc < 1 or else ssrc > 4294967295:
+        return "invalid-ssrc"
+    set rows to get_list(state and 4)
+    set target to create_list()
+    set target to 0
+    for each value in rows:
+        set row to value
+        if archive_list_text(row and 0) equals user:
+            set target to row
+        else if get_list(row and 2) equals ssrc:
+            set invalidated to discord_voice_participants_invalidate(state)
+            return "ambiguous-audio-identity"
+    if target equals 0:
+        return "unknown-voice-participant"
+    if get_list(target and 2) is not equal to ssrc:
+        set changed to set_list(target and 2 and ssrc)
+        set changed to set_list(state and 6 and get_list(state and 6) + 1)
+    return "audio-identity-mapped"
+
+define discord_voice_participants_user with state as List and generation as Int and ssrc as Int returning Str:
+    if discord_voice_participants_valid(state and generation) equals 0 or else ssrc < 1:
+        return ""
+    set rows to get_list(state and 4)
+    for each value in rows:
+        set row to value
+        if get_list(row and 2) equals ssrc:
+            return archive_list_text(row and 0)
+    return ""
+
+# A roster is usable only once the bot's own current voice state is present.
+# Returns copied IDs so later membership mutation cannot rewrite prior evidence.
+define discord_voice_participants_roster with state as List and generation as Int returning List:
+    if discord_voice_participants_valid(state and generation) equals 0:
+        return 0
+    set rows to get_list(state and 4)
+    set roster to create_list()
+    set bot_present to 0
+    for each value in rows:
+        set row to value
+        set user to archive_list_text(row and 0)
+        set added to append_list(roster and user)
+        if user equals archive_list_text(state and 2):
+            set bot_present to 1
+    if bot_present equals 0:
+        return 0
+    return roster
+
+# Carry authenticated socket SSRC mappings into a fresh Gateway snapshot only
+# while user AND voice session are unchanged. Never retain departed/rejoined
+# identities, and never mutate the prior snapshot or create fresh membership.
+define discord_voice_participants_carry with prior as List and fresh as List and generation as Int returning Int:
+    if discord_voice_participants_valid(fresh and generation) equals 0:
+        return 0
+    if prior equals 0:
+        return 1
+    if discord_voice_participants_valid(prior and generation) equals 0:
+        return 0
+    set index to 0
+    repeat while index < 3:
+        if not (archive_list_text(prior and index) equals archive_list_text(fresh and index)):
+            return 0
+        set index to index + 1
+    for each value in get_list(fresh and 4):
+        set row to value
+        for each previous in get_list(prior and 4):
+            if archive_list_text(row and 0) equals archive_list_text(previous and 0) and also archive_list_text(row and 1) equals archive_list_text(previous and 1) and also get_list(previous and 2) > 0:
+                if not (discord_voice_participants_ssrc(fresh and generation and archive_list_text(row and 0) and get_list(previous and 2)) equals "audio-identity-mapped"):
+                    return 0
+    return 1

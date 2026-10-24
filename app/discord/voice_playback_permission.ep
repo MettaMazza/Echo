@@ -1,0 +1,37 @@
+import "voice_playback_confirmation"
+import "voice_authorized_worker"
+import "voice_gateway_playback"
+
+# Called by the native audio owner, never directly with model-supplied proof.
+# Permission to join alone is insufficient; require fresh SPEAK and consent.
+define discord_voice_playback_gate_request with journal as Int and database as Int and engine as List and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str and consented as Int returning Str:
+    if consented is not equal to 1 or else engine equals 0 or else length_list(engine) is not equal to 7 or else get_list(engine and 4) is not equal to 0:
+        return "voice-playback-consent-denied"
+    set owner to get_list(engine and 0)
+    if not (archive_list_text(owner and 3) equals bot):
+        return "voice-playback-owner-denied"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "voice-playback-gate-store-busy"
+    set checked to discord_voice_worker_check(journal and database and archive_list_text(owner and 1) and proof and bot and guilds and admins and stop_file and 1)
+    if not (checked equals "allowed"):
+        return migration_fail(journal and checked)
+    if discord_voice_session_current(journal and owner and get_list(proof and 3)) equals 0:
+        return migration_fail(journal and "voice-playback-owner-denied")
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and archive_list_text(owner and 1))
+    set retained_voice_added to append_list(keys and archive_list_text(owner and 2))
+    set owned to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_connections WHERE identity=?1 AND generation=?2;" and keys))
+    if not (archive_list_text(owned and 1) equals "identified"):
+        return migration_fail(journal and "voice-playback-owner-denied")
+    set values to create_list()
+    set retained_voice_added to append_list(values and archive_list_text(owner and 1))
+    set retained_voice_added to append_list(values and archive_list_text(proof and 1))
+    set retained_voice_added to append_list(values and archive_list_text(proof and 2))
+    set retained_voice_added to append_list(values and int_to_string(get_list(proof and 3)))
+    set retained_voice_added to append_list(values and archive_list_text(proof and 4))
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_playback_gates(identity,generation,gateway_session,after_sequence,evidence,state) VALUES(?1,?2,?3,CAST(?4 AS INTEGER),?5,'pending') ON CONFLICT(identity) DO UPDATE SET after_sequence=excluded.after_sequence,evidence=excluded.evidence,state='pending' WHERE discord_voice_playback_gates.state IN ('pending','revoked') AND discord_voice_playback_gates.generation=excluded.generation AND discord_voice_playback_gates.gateway_session=excluded.gateway_session;" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "voice-playback-gate-store-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "voice-playback-gate-store-failed")
+    return "voice-playback-gate-requested"
+

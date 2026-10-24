@@ -1,0 +1,43 @@
+import "voice_audio_source"
+import "voice_opus"
+
+# Preparation owns its SQLite connection and performs file hashing and native
+# codec setup away from the heartbeat/media thread. Native configuration only:
+# archive path, run, actor, immutable audio binding, pinned Opus library path.
+# A prepared reader is not authority; the consumer rechecks the job and proof
+# before creating a player or sending anything. No PCM frame is consumed here.
+define discord_voice_audio_load with config as List and completed as Int returning Int:
+    if config equals 0 or else length_list(config) is not equal to 5:
+        send history_status("invalid-voice-audio-loader") to completed
+        return 1
+    set database to sql_open(archive_list_text(config and 0))
+    if database equals 0:
+        send history_status("voice-audio-archive-unavailable") to completed
+        return 1
+    if sql_execute(database and "PRAGMA busy_timeout=1000; PRAGMA query_only=ON;") is not equal to 0:
+        set closed to sql_close(database)
+        send history_status("voice-audio-archive-unavailable") to completed
+        return 1
+    set reader to discord_voice_audio_source_open(database and archive_list_text(config and 1) and archive_list_text(config and 2) and get_list(config and 3))
+    set closed to sql_close(database)
+    if reader equals 0:
+        send history_status("voice-audio-source-unavailable") to completed
+        return 1
+    set codec to discord_voice_opus_open(archive_list_text(config and 4))
+    if codec equals 0:
+        set closed to discord_voice_pcm_close(reader)
+        send history_status("voice-audio-codec-unavailable") to completed
+        return 1
+    set result to create_list()
+    set result to ["voice-audio-loaded",reader,codec]
+    send result to completed
+    return 0
+
+# Consumer discards late preparation after stop/revocation without constructing
+# a player. Ownership transfers to the player only on successful construction.
+define discord_voice_audio_loaded_close with result as List returning Int:
+    if result equals 0 or else length_list(result) is not equal to 3 or else not (archive_list_text(result and 0) equals "voice-audio-loaded"):
+        return 0
+    set closed to discord_voice_pcm_close(get_list(result and 1))
+    set closed to discord_voice_opus_close(get_list(result and 2))
+    return 1

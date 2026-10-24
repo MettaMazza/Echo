@@ -1,0 +1,127 @@
+import "voice_recording_gate_confirmation"
+import "voice_recording_proof"
+import "voice_audio_receiver"
+
+# Native capture boundary. The caller owns the journal transaction through PCM
+# persistence. The receiver borrows this exact engine's cipher/media resources;
+# proofs from another recording, connection or Gateway view cannot be reused.
+# Consent is read again on every packet, including silence/polling intervals.
+define discord_voice_recording_capture_policy with journal as Int and database as Int and engine as List and receiver as List and identity as Str and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str returning List:
+    if engine equals 0 or else length_list(engine) is not equal to 7 or else get_list(engine and 4) is not equal to 0 or else receiver equals 0 or else length_list(receiver) is not equal to 5 or else get_list(receiver and 4) is not equal to 0 or else get_list(receiver and 0) is not equal to get_list(engine and 3):
+        return history_status("recording-capture-owner-denied")
+    set checked to discord_voice_recording_proof_check(journal and database and identity and proof and bot and guilds and admins and stop_file)
+    if not (checked equals "allowed"):
+        set revoked to discord_voice_receiver_refresh(receiver and get_list(engine and 5) and get_list(engine and 2) and 0)
+        return history_status(checked)
+    set owner to get_list(engine and 0)
+    set transport to get_list(proof and 5)
+    if not (archive_list_text(owner and 1) equals archive_list_text(proof and 2)) or else not (archive_list_text(owner and 2) equals archive_list_text(transport and 1)) or else not (archive_list_text(owner and 3) equals bot) or else get_list(engine and 6) is not equal to get_list(transport and 3) or else discord_voice_session_current(journal and owner and get_list(transport and 3)) equals 0:
+        set revoked to discord_voice_receiver_refresh(receiver and get_list(engine and 5) and get_list(engine and 2) and 0)
+        return history_status("recording-capture-owner-denied")
+    set keys to [archive_list_text(owner and 1),archive_list_text(owner and 2)]
+    set durable to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_connections WHERE identity=?1 AND generation=?2;" and keys))
+    if not (archive_list_text(durable and 1) equals "identified"):
+        set revoked to discord_voice_receiver_refresh(receiver and get_list(engine and 5) and get_list(engine and 2) and 0)
+        return history_status("recording-capture-owner-denied")
+    set confirmed to discord_voice_recording_gate_confirmed(journal and owner and identity)
+    if confirmed is not equal to 1:
+        set revoked to discord_voice_receiver_refresh(receiver and get_list(engine and 5) and get_list(engine and 2) and 0)
+        if confirmed equals 0:
+            return history_status("recording-awaiting-gateway-confirmation")
+        return history_status("recording-gateway-state-denied")
+    set policy to discord_voice_recording_snapshot(journal and identity and get_list(engine and 5) and get_list(engine and 2))
+    if discord_voice_receiver_refresh(receiver and get_list(engine and 5) and get_list(engine and 2) and policy) equals 0:
+        return history_status("recording-policy-not-current")
+    return policy
+
+# Packet memory is borrowed. The returned PCM blob is owned by the caller and
+# may be retained only within the same checked transaction. No transcription,
+# model input or outgoing publication occurs at this layer.
+define discord_voice_recording_capture_packet with journal as Int and database as Int and engine as List and receiver as List and identity as Str and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str and pointer as Int and count as Int returning List:
+    set policy to discord_voice_recording_capture_policy(journal and database and engine and receiver and identity and proof and bot and guilds and admins and stop_file)
+    if not (archive_list_text(policy and 0) equals "recording-current"):
+        return policy
+    set decoded to discord_voice_receiver_packet(receiver and get_list(engine and 5) and get_list(engine and 2) and policy and pointer and count)
+    if not (archive_list_text(decoded and 0) equals "voice-pcm"):
+        return decoded
+    # Archive cancellation is independent of the journal writer lock. Recheck
+    # after decode; no useful PCM leaves this boundary after a known revocation.
+    set checked to discord_voice_recording_proof_check(journal and database and identity and proof and bot and guilds and admins and stop_file)
+    if not (checked equals "allowed"):
+        set released to discord_voice_blob_release(get_list(decoded and 5))
+        set revoked to discord_voice_receiver_refresh(receiver and get_list(engine and 5) and get_list(engine and 2) and 0)
+        return history_status(checked)
+    return decoded
+
+# Native receive lifecycle borrows the engine and its receiver. Readiness is
+# local to this exact authority/consent view, never a durable recording grant.
+# State: engine, receiver, view digest, drained. One owner calls this serially.
+define discord_voice_recording_capture_stream with engine as List and receiver as List returning List:
+    if engine equals 0 or else length_list(engine) is not equal to 7 or else receiver equals 0 or else length_list(receiver) is not equal to 5 or else get_list(receiver and 0) is not equal to get_list(engine and 3):
+        return 0
+    set stream to create_list()
+    set added to append_list(stream and engine)
+    set added to append_list(stream and receiver)
+    set added to append_list(stream and "")
+    set added to append_list(stream and 0)
+    return stream
+
+# Quoted values keep arbitrary voice-session strings unambiguous. REST receipt
+# refresh alone does not interrupt audio; authority cursor, participant revision,
+# recording identity and exact consent receipts define the receive boundary.
+define discord_voice_recording_capture_view with identity as Str and proof as List and policy as List returning Str:
+    set transport to get_list(proof and 5)
+    set body to concat(provider_quote(identity) and provider_quote(archive_list_text(transport and 1)))
+    set body to concat(body and provider_quote(archive_list_text(transport and 2)))
+    set body to concat(body and provider_quote(int_to_string(get_list(transport and 3))))
+    set body to concat(body and provider_quote(int_to_string(get_list(policy and 4))))
+    set body to concat(body and provider_quote(int_to_string(get_list(policy and 5))))
+    set body to concat(body and provider_quote(archive_list_text(policy and 6)))
+    for each consent in get_list(policy and 7):
+        set body to concat(body and provider_quote(archive_list_text(consent and 0)))
+        set body to concat(body and provider_quote(archive_list_text(consent and 1)))
+        set body to concat(body and provider_quote(archive_list_text(consent and 2)))
+    return ep_sha256(body)
+
+# One nonblocking datagram per poll, with the caller retaining its journal
+# writer transaction through PCM persistence. A changed view must observe an
+# empty socket before capture resumes. Queued packets consume authenticated
+# transport replay counters but never enter DAVE/Opus decoding. An uninterrupted
+# backlog keeps capture unarmed rather than making any unbounded drain loop.
+define discord_voice_recording_capture_poll with journal as Int and database as Int and stream as List and identity as Str and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str returning List:
+    if stream equals 0 or else length_list(stream) is not equal to 4:
+        return history_status("recording-capture-stream-denied")
+    set engine to get_list(stream and 0)
+    set receiver to get_list(stream and 1)
+    set policy to discord_voice_recording_capture_policy(journal and database and engine and receiver and identity and proof and bot and guilds and admins and stop_file)
+    if not (archive_list_text(policy and 0) equals "recording-current"):
+        set changed to set_list(stream and 2 and "")
+        set changed to set_list(stream and 3 and 0)
+        return policy
+    set view to discord_voice_recording_capture_view(identity and proof and policy)
+    if not (archive_list_text(stream and 2) equals view):
+        set changed to set_list(stream and 2 and view)
+        set changed to set_list(stream and 3 and 0)
+    set transport to get_list(get_list(get_list(engine and 3) and 0) and 0)
+    set received to discord_voice_udp_read(get_list(transport and 2))
+    if archive_list_text(received and 0) equals "again":
+        if length_list(received) equals 2 and also get_list(received and 1) equals 1:
+            set changed to set_list(stream and 3 and 1)
+        return received
+    if not (archive_list_text(received and 0) equals "packet"):
+        set changed to set_list(stream and 3 and 0)
+        return received
+    set packet to get_list(received and 1)
+    if get_list(stream and 3) equals 0:
+        set discard_policy to create_list()
+        set index to 0
+        repeat while index < 7:
+            set added to append_list(discard_policy and get_list(policy and index))
+            set index to index + 1
+        set added to append_list(discard_policy and create_list())
+        set discarded to discord_voice_receiver_packet(receiver and get_list(engine and 5) and get_list(engine and 2) and discard_policy and get_list(packet and 0) and get_list(packet and 1))
+        set released to discord_voice_blob_release(packet)
+        return history_status("recording-capture-draining")
+    set decoded to discord_voice_recording_capture_packet(journal and database and engine and receiver and identity and proof and bot and guilds and admins and stop_file and get_list(packet and 0) and get_list(packet and 1))
+    set released to discord_voice_blob_release(packet)
+    return decoded

@@ -1,0 +1,105 @@
+import "voice_recording_delivery"
+
+# Owned only by the slow controller thread: intent, current-session account
+# observations. Account type avoids prompting bots; it never grants recording
+# authority. Old sessions are discarded rather than growing a permanent cache.
+define discord_voice_recording_controller_new with intent as Str returning List:
+    if string_length(intent) equals 0:
+        return 0
+    set observations to create_list()
+    return [intent,observations]
+
+# One tick delivers at most one notice or challenge. No REST executes on the
+# audio/heartbeat thread. Completed prompts do not trigger repeated REST reads;
+# the independent capture observer still checks live authority and visibility.
+define discord_voice_recording_controller_tick with journal as Int and database as Int and state as List and config as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 2 or else config equals 0 or else length_list(config) is not equal to 11 or else not (archive_list_text(state and 0) equals archive_list_text(config and 4)):
+        return "invalid-recording-controller"
+    if file_exists(archive_list_text(config and 9)):
+        return "stopped"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT identity,state FROM discord_voice_recordings WHERE intent=?1 AND state IN ('pending-notice','active');" and [archive_list_text(state and 0)]))
+    if archive_list_text(row and 0) equals "end":
+        return "recording-controller-idle"
+    if not (archive_list_text(row and 0) equals "found"):
+        return "recording-store-unavailable"
+    set recording to archive_list_text(row and 1)
+    if archive_list_text(row and 2) equals "pending-notice":
+        return discord_voice_recording_deliver(archive_list_text(config and 0) and archive_list_text(config and 1) and journal and database and recording and "" and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 8) and archive_list_text(config and 9))
+    set guarded to discord_voice_recording_guard(journal and database and recording and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 9))
+    if not (archive_list_text(guarded and 0) equals "recording-native-current"):
+        return archive_list_text(guarded and 0)
+    set intent to history_collect_one(checkpoint_prepare(journal and "SELECT generation,gateway_session,guild,channel FROM discord_voice_intents WHERE identity=?1 AND state IN ('sent','connected');" and [archive_list_text(state and 0)]))
+    if not (archive_list_text(intent and 0) equals "found"):
+        return "recording-intent-unavailable"
+    set snapshot to discord_voice_membership_read_intent(journal and archive_list_text(intent and 1) and archive_list_text(intent and 2) and 1 and archive_list_text(intent and 3) and archive_list_text(intent and 4) and archive_list_text(config and 5) and archive_list_text(state and 0))
+    if not (archive_list_text(snapshot and 0) equals "voice-membership-ready"):
+        return "recording-membership-refresh-required"
+    set members to get_list(get_list(get_list(snapshot and 1) and 0) and 4)
+    set retained to create_list()
+    for each observation in get_list(state and 1):
+        for each member in members:
+            if archive_list_text(observation and 0) equals archive_list_text(member and 0) and also archive_list_text(observation and 1) equals archive_list_text(member and 1):
+                set added to append_list(retained and observation)
+    set changed to set_list(state and 1 and retained)
+    set waiting to 0
+    set member_index to 0
+    repeat while member_index < length_list(members):
+        set member to get_list(members and member_index)
+        set member_index to member_index + 1
+        set actor to archive_list_text(member and 0)
+        set session to archive_list_text(member and 1)
+        if actor equals archive_list_text(config and 5) or else discord_testing_allows(journal and actor) equals 0:
+            continue
+        set offer to history_collect_one(checkpoint_prepare(journal and "SELECT o.identity,m.message,COALESCE(d.state,'') FROM discord_voice_recording_offers o LEFT JOIN discord_voice_recording_offer_messages m ON m.offer=o.identity LEFT JOIN discord_outbox d ON d.identity='tool-post:voice-recording:offer:'||o.identity WHERE o.recording=?1 AND o.actor=?2 AND o.voice_session=?3;" and [recording,actor,session]))
+        if not (archive_list_text(offer and 0) equals "found" or else archive_list_text(offer and 0) equals "end"):
+            return "recording-store-unavailable"
+        if discord_snowflake(archive_list_text(offer and 2)) equals 1:
+            continue
+        if archive_list_text(offer and 3) equals "sending" or else archive_list_text(offer and 3) equals "uncertain" or else archive_list_text(offer and 3) equals "rejected":
+            # Other participants can still receive their independent prompts.
+            if archive_list_text(offer and 3) equals "rejected":
+                set waiting to 2
+            else if waiting equals 0:
+                set waiting to 1
+            continue
+        set account_type to ""
+        for each observation in retained:
+            if archive_list_text(observation and 0) equals actor and also archive_list_text(observation and 1) equals session:
+                set account_type to archive_list_text(observation and 2)
+        if string_length(account_type) equals 0:
+            set route to concat("/guilds/" and concat(archive_list_text(intent and 3) and concat("/members/" and actor)))
+            set observed to discord_access_get(archive_list_text(config and 0) and archive_list_text(config and 1) and journal and archive_list_text(config and 8) and route and "GET:member" and archive_list_text(intent and 3))
+            if not (archive_list_text(observed and 0) equals "observed"):
+                return archive_list_text(observed and 0)
+            set fields to provider_json_tokens(archive_list_text(observed and 1))
+            if fields equals 0 or else provider_unique_objects(fields) equals 0:
+                return "recording-member-unavailable"
+            set user to provider_member(fields and 0 and "user")
+            if not (provider_value(fields and provider_member(fields and user and "id")) equals actor):
+                return "recording-member-unavailable"
+            set flag to provider_member(fields and user and "bot")
+            set account_type to "human"
+            if flag >= 0:
+                if provider_kind(fields and flag) equals "true":
+                    set account_type to "bot"
+                else if not (provider_kind(fields and flag) equals "false"):
+                    return "recording-member-unavailable"
+            set observation to [actor,session,account_type]
+            set added to append_list(retained and observation)
+        if account_type equals "bot":
+            continue
+        set identity to archive_list_text(offer and 1)
+        if archive_list_text(offer and 0) equals "end":
+            set key to history_collect_one(checkpoint_prepare(journal and "SELECT json_array(?1,?2,?3);" and [recording,actor,session]))
+            if not (archive_list_text(key and 0) equals "found"):
+                return "recording-store-unavailable"
+            set identity to ep_sha256(archive_list_text(key and 1))
+            set created to discord_voice_recording_offer(journal and identity and recording and actor and session)
+            if not (created equals "offered"):
+                return created
+        return discord_voice_recording_deliver(archive_list_text(config and 0) and archive_list_text(config and 1) and journal and database and recording and identity and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 8) and archive_list_text(config and 9))
+    if waiting equals 2:
+        return "recording-controls-rejected"
+    if waiting equals 1:
+        return "recording-controls-await-reconciliation"
+    return "recording-controls-ready"

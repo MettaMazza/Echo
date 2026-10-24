@@ -1,0 +1,102 @@
+import "voice_intents"
+
+# Native journal storage, not an authorization API. The caller must verify the
+# admitted playback call and its request-event receipt, current source selection and
+# destination audience before enqueue, and recheck them before each media tick.
+# The consent_receipt field holds that admitted playback request event. It is
+# not a generic consent flag and cannot authorize recording or transcription.
+# Store only immutable attachment bindings; no file paths, text or audio bytes.
+define discord_voice_audio_jobs_schema with journal as Int returning Int:
+    if discord_voice_intent_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_audio_jobs(identity TEXT PRIMARY KEY,intent TEXT NOT NULL REFERENCES discord_voice_intents(identity),run TEXT NOT NULL,call_id TEXT NOT NULL,actor TEXT NOT NULL,original TEXT NOT NULL,derivative TEXT NOT NULL,pcm_digest TEXT NOT NULL,pcm_bytes TEXT NOT NULL,session TEXT NOT NULL,original_digest TEXT NOT NULL,consent_receipt TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('queued','attempted','completed','cancelled','uncertain')),attempt TEXT NOT NULL DEFAULT '',UNIQUE(run,call_id)); CREATE UNIQUE INDEX IF NOT EXISTS discord_voice_audio_one_attempt ON discord_voice_audio_jobs(intent) WHERE state='attempted';")
+
+define discord_voice_audio_job_enqueue with journal as Int and identity as Str and intent as Str and run as Str and call_id as Str and actor as Str and binding as List and consent_receipt as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(intent) equals 0 or else string_length(run) equals 0 or else string_length(call_id) equals 0 or else discord_snowflake(actor) equals 0 or else string_length(consent_receipt) equals 0:
+        return "invalid-voice-audio-job"
+    if binding equals 0 or else length_list(binding) is not equal to 7 or else not (archive_list_text(binding and 0) equals "voice-audio-ready"):
+        return "invalid-voice-audio-binding"
+    if string_length(archive_list_text(binding and 1)) equals 0 or else not (archive_list_text(binding and 2) equals concat(archive_list_text(binding and 1) and ":voice-pcm-wav")) or else string_length(archive_list_text(binding and 3)) is not equal to 64 or else string_to_int(archive_list_text(binding and 4)) < 44 or else string_length(archive_list_text(binding and 5)) equals 0 or else string_length(archive_list_text(binding and 6)) is not equal to 64:
+        return "invalid-voice-audio-binding"
+    set values to create_list()
+    set values to [identity,intent,run,call_id,actor]
+    set index to 1
+    repeat while index < 7:
+        set added to append_list(values and archive_list_text(binding and index))
+        set index to index + 1
+    set added to append_list(values and consent_receipt)
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "voice-audio-store-busy"
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT state,CASE WHEN identity=?1 AND intent=?2 AND run=?3 AND call_id=?4 AND actor=?5 AND original=?6 AND derivative=?7 AND pcm_digest=?8 AND pcm_bytes=?9 AND session=?10 AND original_digest=?11 AND consent_receipt=?12 THEN 1 ELSE 0 END FROM discord_voice_audio_jobs WHERE identity=?1 OR (run=?3 AND call_id=?4) LIMIT 1;" and values))
+    if archive_list_text(prior and 0) equals "found":
+        if archive_list_text(prior and 2) equals "1":
+            return migration_fail(journal and concat("existing:" and archive_list_text(prior and 1)))
+        return migration_fail(journal and "voice-audio-identity-conflict")
+    if not (archive_list_text(prior and 0) equals "end"):
+        return migration_fail(journal and "voice-audio-read-failed")
+    set keys to create_list()
+    set keys to [intent]
+    set owner to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_voice_intents WHERE identity=?1 AND state IN ('queued','claimed','sent','connected');" and keys))
+    if not (archive_list_text(owner and 0) equals "found"):
+        return migration_fail(journal and "voice-intent-unavailable")
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_audio_jobs(identity,intent,run,call_id,actor,original,derivative,pcm_digest,pcm_bytes,session,original_digest,consent_receipt,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'queued');" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "voice-audio-write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "voice-audio-commit-failed")
+    return "queued"
+
+# The attempt is committed before opening playback. Return binding and authority
+# identifiers for revalidation, never permission. A crash never requeues it.
+# Result: attempted, job, attempt, run, call, actor, consent, binding.
+define discord_voice_audio_job_claim with journal as Int and intent as Str returning List:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("voice-audio-store-busy")
+    set keys to create_list()
+    set keys to [intent]
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT j.identity,j.run,j.call_id,j.actor,j.consent_receipt,j.original,j.derivative,j.pcm_digest,j.pcm_bytes,j.session,j.original_digest FROM discord_voice_audio_jobs j JOIN discord_voice_intents i ON i.identity=j.intent WHERE j.intent=?1 AND j.state='queued' AND i.state IN ('sent','connected') AND NOT EXISTS(SELECT 1 FROM discord_voice_audio_jobs a WHERE a.intent=j.intent AND a.state='attempted') ORDER BY j.rowid LIMIT 1;" and keys))
+    if not (archive_list_text(row and 0) equals "found"):
+        set rolled to migration_fail(journal and "voice-audio-not-ready")
+        return history_status("voice-audio-not-ready")
+    set attempt to ptr_to_str(ep_uuid_v4())
+    set values to create_list()
+    set retained_voice_added to append_list(values and archive_list_text(row and 1))
+    set retained_voice_added to append_list(values and attempt)
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_audio_jobs SET state='attempted',attempt=?2 WHERE identity=?1 AND state='queued';" and values) and 101) is not equal to 0 or else sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to migration_fail(journal and "voice-audio-claim-failed")
+        return history_status("voice-audio-claim-failed")
+    set binding to history_status("voice-audio-ready")
+    set index to 6
+    repeat while index < 12:
+        set added to append_list(binding and archive_list_text(row and index))
+        set index to index + 1
+    set result to create_list()
+    set retained_voice_added to append_list(result and "attempted")
+    set retained_voice_added to append_list(result and archive_list_text(row and 1))
+    set retained_voice_added to append_list(result and attempt)
+    set retained_voice_added to append_list(result and archive_list_text(row and 2))
+    set retained_voice_added to append_list(result and archive_list_text(row and 3))
+    set retained_voice_added to append_list(result and archive_list_text(row and 4))
+    set retained_voice_added to append_list(result and archive_list_text(row and 5))
+    set retained_voice_added to append_list(result and binding)
+    return result
+
+# completed means the local paced sender finished; it is not proof of hearing.
+# Cancellation and recovery tombstones win over a late completion receipt.
+define discord_voice_audio_job_settle with journal as Int and identity as Str and attempt as Str and outcome as Str returning Str:
+    if string_length(attempt) equals 0 or else not (outcome equals "completed" or else outcome equals "uncertain"):
+        return "invalid-voice-audio-result"
+    set values to create_list()
+    set values to [identity,attempt,outcome]
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_audio_jobs SET state=?3 WHERE identity=?1 AND attempt=?2 AND state='attempted';" and values) and 101) is not equal to 0:
+        return "voice-audio-result-failed"
+    set changed to history_collect_one(archive_prepare(journal and "SELECT changes();"))
+    if not (archive_list_text(changed and 1) equals "1"):
+        return "voice-audio-result-not-applied"
+    return outcome
+
+# Called only by the exclusive intent owner after acquiring its process lock.
+# Active sends have unknown delivery after interruption; queued work is cancelled.
+define discord_voice_audio_jobs_recover with journal as Int and intent as Str returning Int:
+    set keys to create_list()
+    set keys to [intent]
+    return archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_audio_jobs SET state=CASE WHEN state='attempted' THEN 'uncertain' ELSE 'cancelled' END WHERE intent=?1 AND state IN ('queued','attempted');" and keys) and 101)

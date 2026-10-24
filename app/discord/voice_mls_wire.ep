@@ -1,0 +1,71 @@
+import "voice_mls"
+import "voice_wire"
+
+# Client binary messages contain only opcode + payload; the server additionally
+# prefixes a big-endian sequence number, and commits/welcomes a transition ID.
+# Returned bytes are owned. No binary payload is converted to a string.
+define discord_voice_mls_outbound with opcode as Int and pointer as Int and count as Int returning List:
+    if (opcode is not equal to 26 and also opcode is not equal to 28) or else pointer equals 0 or else count < 1 or else count > 16777215:
+        return 0
+    set output to alloc_bytes(count + 1)
+    if output equals 0:
+        return 0
+    set written to poke_byte(output and 0 and opcode)
+    set index to 0
+    repeat while index < count:
+        set written to poke_byte(output and index + 1 and peek_byte(pointer and index))
+        set index to index + 1
+    set blob to create_list()
+    set blob to [output,count + 1]
+    return blob
+
+# Borrowed input lives for this call only. Every returned output owns its bytes.
+# Output: [status, server sequence, transition ID (-1 if absent), result].
+# Caller acknowledges a sequence only after handling the returned disposition;
+# malformed input carries no acknowledged sequence. Reconnect/duplicate policy
+# belongs to the connection state, not to the cryptographic session wrapper.
+define discord_voice_mls_receive with session as List and pointer as Int and count as Int and users as List returning List:
+    if pointer equals 0 or else count < 4 or else count > 16777216 or else discord_dave_failures(session) is not equal to 0:
+        return history_status("invalid-mls-frame")
+    set sequence to discord_voice_u16(pointer and 0)
+    set opcode to peek_byte(pointer and 2)
+    set transition to -1
+    set offset to 3
+    if opcode equals 29 or else opcode equals 30:
+        if count < 6:
+            return history_status("invalid-mls-frame")
+        set transition to discord_voice_u16(pointer and 3)
+        set offset to 5
+    else:
+        if opcode is not equal to 25 and also opcode is not equal to 27:
+            return history_status("invalid-mls-frame")
+    if opcode equals 27:
+        if count < 5 or else peek_byte(pointer and 3) > 1:
+            return history_status("invalid-mls-frame")
+    set status to "external-sender"
+    set result to create_list()
+    if opcode equals 25:
+        if discord_dave_external_sender(session and pointer + offset and count - offset) equals 0:
+            set status to "mls-external-sender-failed"
+    if opcode equals 27:
+        set result to discord_dave_proposals(session and pointer + offset and count - offset and users)
+        set status to archive_list_text(result and 0)
+        if status equals "proposal-output":
+            set payload to get_list(result and 1)
+            set wire to discord_voice_mls_outbound(28 and get_list(payload and 0) and get_list(payload and 1))
+            set released to discord_voice_blob_release(payload)
+            if wire equals 0:
+                set status to "mls-output-unavailable"
+                set result to create_list()
+            else:
+                set status to "send-commit-welcome"
+                set result to wire
+    if opcode equals 29:
+        set result to discord_dave_commit(session and pointer + offset and count - offset and users)
+        set status to archive_list_text(result and 0)
+    if opcode equals 30:
+        set result to discord_dave_welcome(session and pointer + offset and count - offset and users)
+        set status to archive_list_text(result and 0)
+    set output to create_list()
+    set output to [status,sequence,transition,result]
+    return output

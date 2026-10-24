@@ -1,0 +1,189 @@
+import "voice_worker_loop"
+import "voice_job_loop"
+import "voice_permission_observer"
+import "voice_recording_controller_worker"
+
+# Configuration is the same private host tuple used by the permission observer.
+define discord_voice_service_proof with journal as Int and database as Int and config as List returning List:
+    return discord_voice_request_proof(archive_list_text(config and 0) and archive_list_text(config and 1) and journal and database and archive_list_text(config and 4) and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 8) and archive_list_text(config and 9) and get_list(config and 10))
+
+# Consume prepared TLS only after another complete permission/source check.
+# This boundary also lets a native host prepare off-thread without sending Identify.
+define discord_voice_service_activate with journal as Int and database as Int and binding as List and config as List and paths as List and interval as Int and system as Int and diagnostic as List returning List:
+    if config equals 0 or else length_list(config) is not equal to 11 or else binding equals 0 or else length_list(binding) is not equal to 4:
+        return 0
+    # A consumed preparation belongs to its existing owner; a duplicate may
+    # neither refresh it nor abandon that owner on a later timeout/denial.
+    set prepared to get_list(binding and 0)
+    if prepared equals 0 or else length_list(prepared) is not equal to 4 or else get_list(prepared and 3) is not equal to 0:
+        return 0
+    if paths equals 0 or else length_list(paths) is not equal to 3 or else interval < 1 or else interval > 60000 or else not (archive_list_text(binding and 1) equals archive_list_text(config and 4)) or else not (archive_list_text(binding and 3) equals archive_list_text(config and 5)):
+        set closed to discord_voice_prepared_close(get_list(binding and 0))
+        set abandoned to discord_voice_session_abandon(journal and archive_list_text(binding and 1))
+        return 0
+    set started to discord_monotonic_ms(system)
+    set now to started
+    set proof to history_status("voice-authorization-refresh-required")
+    # TLS preparation has sent no Identify. Refresh an invalidated permission
+    # snapshot without consuming that preparation or replaying any voice write.
+    # Every attempt repeats source, authority and permission checks; the existing
+    # activation transaction still fences the final cursor before Identify.
+    repeat while now >= 0 and also now >= started and also now - started < 30000:
+        set proof to discord_voice_service_proof(journal and database and config)
+        set now to discord_monotonic_ms(system)
+        if not (archive_list_text(proof and 0) equals "voice-authorization-refresh-required"):
+            break
+        if now >= started and also now - started < 30000:
+            set waited to ep_dlcall1(ep_dlsym(system and "usleep") and 20000)
+            set now to discord_monotonic_ms(system)
+    if started < 0 or else now < started or else now - started >= 30000:
+        set reason to "voice-activation-refresh-deadline"
+        if started < 0 or else now < started:
+            set reason to "voice-worker-clock-unavailable"
+        set reported to append_list(diagnostic and reason)
+        set closed to discord_voice_prepared_close(get_list(binding and 0))
+        set abandoned to discord_voice_session_abandon(journal and archive_list_text(binding and 1))
+        return 0
+    set owner to discord_voice_worker_activate(journal and database and binding and proof and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 9) and get_list(config and 10) and paths and 1 and now)
+    if owner equals 0:
+        set reason to archive_list_text(proof and 0)
+        if reason equals "allowed" or else string_length(reason) equals 0:
+            set reason to "voice-session-activation-failed"
+        set reported to append_list(diagnostic and reason)
+        return 0
+    set engine to discord_voice_engine_new(owner and archive_list_text(paths and 1) and 1)
+    if engine equals 0:
+        set closed to discord_voice_session_close(journal and owner)
+        return 0
+    set mailbox to discord_voice_permission_start(config)
+    set worker to discord_voice_worker_step_new(engine and mailbox and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 9) and get_list(config and 10) and interval and now)
+    if worker equals 0:
+        set stopped to discord_voice_permission_mailbox_stop(mailbox)
+        set closed to discord_voice_engine_close(journal and engine and "voice-worker-start-failed")
+        set joined to discord_voice_service_join(mailbox)
+        return 0
+    set changed to set_list(mailbox and 5 and proof)
+    set changed to set_list(worker and 8 and now + interval)
+    return worker
+
+# Voice resources close before joining the observer. Its in-progress bounded
+# REST call may finish later; process/SQLite owners must not exit before join.
+define discord_voice_service_join with mailbox as List returning Str:
+    set stopped to discord_voice_permission_mailbox_stop(mailbox)
+    set waits to create_list()
+    set added to append_list(waits and get_list(mailbox and 2))
+    repeat while get_list(mailbox and 6) is not equal to 2:
+        if select(waits and 100) >= 0:
+            return discord_voice_permission_mailbox_poll(mailbox)
+        if get_list(mailbox and 6) equals 4:
+            return "permission-observer-failed"
+    return "permission-observer-stopped"
+
+# Called only after acquiring the process-wide exclusive intent lock. Existing
+# recording authority never survives a native owner restart, even if startup
+# later fails. New requests are handled only after activation below.
+define discord_voice_service_recording_recover with journal as Int and intent as Str returning Int:
+    if string_length(intent) equals 0 or else discord_voice_recording_offer_schema(journal) is not equal to 0:
+        return 1
+    return discord_voice_recording_recover(journal and intent)
+
+# The controller runs beside the media loop with its own SQLite connections.
+# Both loop variants close the voice resources before returning. Only then do
+# we wait for the controller's bounded REST call and terminal interruption.
+define discord_voice_service_owned_loop with journal as Int and reader as Int and database as Int and worker as List and config as List and opus_path as Str and stop as Int returning Str:
+    set controller to discord_voice_recording_controller_start(config)
+    if controller equals 0:
+        return discord_voice_worker_step_close(journal and worker and "recording-controller-start-failed")
+    set outcome to ""
+    if string_length(opus_path) > 0:
+        set outcome to discord_voice_job_loop(journal and reader and database and worker and config and opus_path and stop)
+    else:
+        set outcome to discord_voice_worker_loop(journal and reader and database and worker and 0 and 0 and stop)
+    set joined to discord_voice_recording_controller_join(controller)
+    if not (joined equals "recording-controller-stopped"):
+        return joined
+    return outcome
+
+# One native process owns one durable intent. Gateway remains the sole OP4
+# socket writer. Startup never replays a consumed handoff or activation marker.
+define discord_voice_service_run with journal as Int and reader as Int and database as Int and config as List and paths as List and interval as Int and stop as Int returning Str:
+    return discord_voice_service_run_audio(journal and reader and database and config and paths and interval and stop and "")
+
+define discord_voice_service_run_audio with journal as Int and reader as Int and database as Int and config as List and paths as List and interval as Int and stop as Int and opus_path as Str returning Str:
+    if config equals 0 or else length_list(config) is not equal to 11 or else paths equals 0 or else length_list(paths) is not equal to 3 or else interval < 1 or else interval > 60000:
+        return "invalid-voice-service-config"
+    if discord_voice_service_recording_recover(journal and archive_list_text(config and 4)) is not equal to 0:
+        return "recording-recovery-failed"
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return "voice-worker-clock-unavailable"
+    set started to discord_monotonic_ms(system)
+    if started < 0:
+        set closed to ep_dlclose(system)
+        return "voice-worker-clock-unavailable"
+    set identity to archive_list_text(config and 4)
+    set keys to create_list()
+    set keys to [identity]
+    set waits to create_list()
+    set added to append_list(waits and stop)
+    set worker to 0
+    set outcome to "voice-startup-deadline"
+    repeat while discord_monotonic_ms(system) >= started and also discord_monotonic_ms(system) - started < 30000:
+        if select(waits and 0) >= 0:
+            set signal to receive from stop
+            set outcome to "voice-worker-stopped"
+            break
+        set guarded to discord_voice_request_guard(journal and database and identity and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 9))
+        if not (archive_list_text(guarded and 0) equals "allowed"):
+            set outcome to archive_list_text(guarded and 0)
+            break
+        set row to history_collect_one(checkpoint_prepare(journal and "SELECT i.state,COALESCE(h.consumed,0),CASE WHEN h.identity IS NOT NULL AND h.consumed=0 AND length(h.token)>0 AND length(h.endpoint)>0 THEN 1 ELSE 0 END FROM discord_voice_intents i LEFT JOIN discord_voice_handoffs h ON h.identity=i.identity WHERE i.identity=?1;" and keys))
+        set state to archive_list_text(row and 1)
+        if state equals "queued":
+            set proof to discord_voice_service_proof(journal and database and config)
+            # A short refresh/denial result is not an authorization proof.
+            # Preserve its cause and retry cursor refresh within this startup
+            # deadline; only a complete allowed proof reaches the claim fence.
+            set outcome to archive_list_text(proof and 0)
+            if outcome equals "allowed":
+                set claim to discord_voice_worker_claim(journal and database and identity and proof and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 9) and get_list(config and 10))
+                set outcome to archive_list_text(claim and 0)
+            if not (outcome equals "claimed" or else outcome equals "voice-authorization-refresh-required" or else outcome equals "stale-voice-claim"):
+                break
+        else if state equals "sent":
+            if archive_list_text(row and 2) equals "1":
+                set outcome to "voice-handoff-already-consumed"
+                break
+            if archive_list_text(row and 3) equals "1":
+                set proof to discord_voice_service_proof(journal and database and config)
+                if not (archive_list_text(proof and 0) equals "allowed"):
+                    set outcome to archive_list_text(proof and 0)
+                    if not (outcome equals "voice-authorization-refresh-required"):
+                        break
+                else:
+                    set binding to discord_voice_worker_prepare(journal and database and identity and proof and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 9) and get_list(config and 10) and archive_list_text(config and 0))
+                    if binding is not equal to 0:
+                        set diagnostic to create_list()
+                        set worker to discord_voice_service_activate(journal and database and binding and config and paths and interval and system and diagnostic)
+                        set outcome to "voice-activation-failed"
+                        if length_list(diagnostic) > 0:
+                            set outcome to archive_list_text(diagnostic and 0)
+                        break
+        else if not (state equals "claimed"):
+            set outcome to "voice-intent-not-startable"
+            break
+        set ready to select(waits and 20)
+        set outcome to "voice-startup-deadline"
+    if worker is not equal to 0:
+        set outcome to discord_voice_service_owned_loop(journal and reader and database and worker and config and opus_path and stop)
+        set joined to discord_voice_service_join(get_list(worker and 1))
+        if not (joined equals "permission-observer-stopped"):
+            set outcome to joined
+    else:
+        set abandoned to discord_voice_session_abandon(journal and identity)
+    # Also settle requests admitted while startup was in progress but activation
+    # failed. No pending recording may outlive this exclusive native owner.
+    if discord_voice_recording_recover(journal and identity) is not equal to 0:
+        set outcome to "recording-recovery-failed"
+    set closed to ep_dlclose(system)
+    return outcome

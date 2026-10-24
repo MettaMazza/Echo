@@ -1,0 +1,106 @@
+import "voice_recording_proof"
+
+# Terminal state is the durable edit intent. This projection records fair retry
+# deadlines and confirmed observations, never authorizes capture or new posts.
+define discord_voice_recording_terminal_schema with journal as Int returning Int:
+    if discord_voice_recording_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_recording_terminal_delivery(recording TEXT PRIMARY KEY REFERENCES discord_voice_recordings(identity),next_ms INTEGER NOT NULL DEFAULT 0,confirmed INTEGER NOT NULL DEFAULT 0,message TEXT NOT NULL DEFAULT '',receipt TEXT NOT NULL DEFAULT '');")
+
+define discord_voice_recording_terminal_text with state as Str returning Str:
+    if state equals "stopped":
+        return "Voice transcription stopped. No further audio is being captured for this recording. Existing consent controls no longer enable capture; a new recording requires new consent. Previously retained audio and attributed transcripts remain restricted to the original channel audience."
+    if state equals "interrupted":
+        return "Voice transcription interrupted. No further audio is being captured for this recording, and it will not resume automatically. A new recording requires new consent. Previously retained audio and attributed transcripts remain restricted to the original channel audience."
+    return ""
+
+define discord_voice_recording_terminal_message with body as Str and message as Str and origin as Str and bot as Str and content as Str returning Int:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 0
+    return provider_value(tokens and provider_member(tokens and 0 and "id")) equals message and also provider_value(tokens and provider_member(tokens and 0 and "channel_id")) equals origin and also provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id")) equals bot and also provider_value(tokens and provider_member(tokens and 0 and "content")) equals content
+
+define discord_voice_recording_terminal_confirm with journal as Int and identity as Str and message as Str and receipt as Str returning Str:
+    if string_length(receipt) equals 0:
+        return "recording-terminal-unconfirmed"
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recording_terminal_delivery SET confirmed=1,message=?2,receipt=?3 WHERE recording=?1;" and [identity,message,receipt]) and 101) is not equal to 0:
+        return "recording-terminal-store-failed"
+    return "recording-terminal-confirmed"
+
+# Cleanup uses the original bot-owned outbox target, never a model-supplied
+# route. It remains possible after the initiating run/admin authority is revoked:
+# this edit discloses no new audio and cannot enable recording. No new message,
+# audience change, or other message properties are sent.
+define discord_voice_recording_terminal_deliver with library as Str and token as Str and journal as Int and identity as Str and bot as Str and guilds as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT r.state,r.origin,i.guild,i.channel,o.message,t.confirmed FROM discord_voice_recordings r JOIN discord_voice_intents i ON i.identity=r.intent JOIN discord_outbox o ON o.identity='tool-post:voice-recording:notice:'||r.identity AND o.channel=r.origin AND o.state='sent' JOIN discord_voice_recording_terminal_delivery t ON t.recording=r.identity JOIN discord_identity b ON b.singleton=1 AND b.bot=?2 WHERE r.identity=?1 AND r.state IN ('stopped','interrupted') AND (r.notice='' OR r.notice=o.message);" and [identity,bot]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "recording-terminal-unavailable"
+    if archive_list_text(row and 6) equals "1":
+        return "recording-terminal-confirmed"
+    set state to archive_list_text(row and 1)
+    set origin to archive_list_text(row and 2)
+    set guild to archive_list_text(row and 3)
+    set room to archive_list_text(row and 4)
+    set message to archive_list_text(row and 5)
+    if discord_contains(guilds and guild) equals 0 or else discord_snowflake(origin) equals 0 or else discord_snowflake(message) equals 0:
+        return "recording-terminal-scope-denied"
+    set route to concat("/channels/" and origin)
+    set channel_observed to discord_access_get(library and token and journal and directory_path and route and "GET:channel" and origin)
+    if not (archive_list_text(channel_observed and 0) equals "observed"):
+        return archive_list_text(channel_observed and 0)
+    set fields to provider_json_tokens(archive_list_text(channel_observed and 1))
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "id")) equals origin) or else not (provider_value(fields and provider_member(fields and 0 and "guild_id")) equals guild):
+        return "recording-terminal-scope-denied"
+    set route to concat(route and concat("/messages/" and message))
+    set observed to discord_access_get(library and token and journal and directory_path and route and "GET:message" and origin)
+    # Only Discord's exact Unknown Message result retires missing-message
+    # cleanup. Missing access, generic 404 and transport failure remain retries.
+    if archive_list_text(observed and 0) equals "http-404":
+        set receipt_file to archive_list_text(observed and 1)
+        set missing_body to ptr_to_str(read_file(concat(directory_path and concat("/" and receipt_file))))
+        set missing to provider_json_tokens(missing_body)
+        if missing is not equal to 0 and also provider_unique_objects(missing) equals 1 and also provider_kind(missing and 0) equals "{" and also provider_value(missing and provider_member(missing and 0 and "code")) equals "10008":
+            set receipt to concat("missing-message:" and concat(receipt_file and concat(":" and ep_sha256(missing_body))))
+            set confirmed to discord_voice_recording_terminal_confirm(journal and identity and message and receipt)
+            if confirmed equals "recording-terminal-confirmed":
+                return "recording-terminal-missing"
+            return confirmed
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return archive_list_text(observed and 0)
+    set content to discord_voice_recording_terminal_text(state)
+    if discord_voice_recording_terminal_message(archive_list_text(observed and 1) and message and origin and bot and content) equals 1:
+        return discord_voice_recording_terminal_confirm(journal and identity and message and archive_list_text(observed and 2))
+    if discord_voice_recording_notice_valid(archive_list_text(observed and 1) and message and origin and room and bot) equals 0:
+        return "recording-terminal-message-changed"
+    # A lost PATCH response is reconciled by the GET above. Reapplying the same
+    # terminal content is safe only after observing the original content again.
+    if file_exists(stop_file):
+        return "stopped"
+    set current to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_recordings WHERE identity=?1;" and [identity]))
+    if not (archive_list_text(current and 1) equals state):
+        return "recording-terminal-state-changed"
+    set body to concat("{\"content\":" and concat(provider_quote(content) and ",\"allowed_mentions\":{\"parse\":[]}}"))
+    set patched to discord_access_body(library and token and journal and directory_path and "PATCH" and route and "PATCH:recording-terminal" and origin and body)
+    if not (archive_list_text(patched and 0) equals "observed") or else discord_voice_recording_terminal_message(archive_list_text(patched and 1) and message and origin and bot and content) equals 0:
+        return "recording-terminal-unconfirmed"
+    return discord_voice_recording_terminal_confirm(journal and identity and message and archive_list_text(patched and 2))
+
+define discord_voice_recording_terminal_tick with library as Str and token as Str and journal as Int and bot as Str and guilds as List and directory_path as Str and stop_file as Str returning Str:
+    if file_exists(stop_file):
+        return "stopped"
+    if discord_voice_recording_terminal_schema(journal) is not equal to 0:
+        return "recording-terminal-store-failed"
+    if sql_execute(journal and "INSERT OR IGNORE INTO discord_voice_recording_terminal_delivery(recording) SELECT r.identity FROM discord_voice_recordings r JOIN discord_outbox o ON o.identity='tool-post:voice-recording:notice:'||r.identity AND o.state='sent' AND o.channel=r.origin WHERE r.state IN ('stopped','interrupted');") is not equal to 0:
+        return "recording-terminal-store-failed"
+    set now to ep_time_now_ms()
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT recording FROM discord_voice_recording_terminal_delivery WHERE confirmed=0 AND next_ms<=CAST(?1 AS INTEGER) ORDER BY next_ms,recording LIMIT 1;" and [int_to_string(now)]))
+    if archive_list_text(row and 0) equals "end":
+        return "recording-terminal-idle"
+    if not (archive_list_text(row and 0) equals "found"):
+        return "recording-terminal-store-failed"
+    set identity to archive_list_text(row and 1)
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recording_terminal_delivery SET next_ms=CAST(?2 AS INTEGER) WHERE recording=?1;" and [identity,int_to_string(now + 15000)]) and 101) is not equal to 0:
+        return "recording-terminal-store-failed"
+    return discord_voice_recording_terminal_deliver(library and token and journal and identity and bot and guilds and directory_path and stop_file)

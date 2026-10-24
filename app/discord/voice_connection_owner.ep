@@ -1,0 +1,102 @@
+import "voice_connection_io"
+import "voice_handoff"
+
+# Clearing drops private references; GC-owned string storage is not claimed to
+# be securely erased. These objects never enter model-visible tool responses.
+define discord_voice_credentials_clear with credentials as List returning Int:
+    if credentials equals 0:
+        return 0
+    set index to 0
+    repeat while index < length_list(credentials):
+        set changed to set_list(credentials and index and "")
+        set index to index + 1
+    return 1
+
+# Prepared object owns socket and credentials until activation or disposal.
+define discord_voice_prepared_close with prepared as List returning Int:
+    if prepared equals 0 or else length_list(prepared) is not equal to 4:
+        return 0
+    if get_list(prepared and 0) is not equal to 0:
+        set closed to discord_socket_close(get_list(prepared and 0))
+        set changed to set_list(prepared and 0 and 0)
+    set cleared to discord_voice_credentials_clear(get_list(prepared and 1))
+    set changed to set_list(prepared and 3 and 1)
+    return 1
+
+# TLS may take time: deliberately do not Identify here. The controller must
+# recheck current authorization/cancellation after preparation and before activate.
+define discord_voice_connection_prepare with handoff as List and curl_path as Str returning List:
+    if discord_voice_handoff_ready(handoff) equals 0:
+        return 0
+    set channel_id to archive_list_text(handoff and 1)
+    set credentials to discord_voice_handoff_take(handoff)
+    if credentials equals 0:
+        return 0
+    set socket to discord_voice_socket_open(curl_path and archive_list_text(credentials and 4))
+    if not (archive_list_text(socket and 0) equals "connected"):
+        set cleared to discord_voice_credentials_clear(credentials)
+        return 0
+    set prepared to create_list()
+    set prepared to [socket,credentials,channel_id,0]
+    return prepared
+
+# Owner: polling-loop state, credentials retained for authenticated resume,
+# channel ID, closed flag. Both success and failure consume the prepared object.
+define discord_voice_connection_activate with prepared as List and paths as List and generation as Int and now as Int and authorized as Int and cancelled as Int returning List:
+    if prepared equals 0 or else length_list(prepared) is not equal to 4 or else get_list(prepared and 3) is not equal to 0:
+        return 0
+    if authorized is not equal to 1 or else cancelled is not equal to 0 or else now < 0 or else generation < 1:
+        set closed to discord_voice_prepared_close(prepared)
+        return 0
+    set credentials to get_list(prepared and 1)
+    if credentials equals 0 or else length_list(credentials) is not equal to 5:
+        set closed to discord_voice_prepared_close(prepared)
+        return 0
+    set channel_id to archive_list_text(prepared and 2)
+    set channels to create_list()
+    set channels to [channel_id]
+    if discord_dave_users_valid(channels) equals 0:
+        set closed to discord_voice_prepared_close(prepared)
+        return 0
+    set body to discord_voice_identify_body(archive_list_text(credentials and 0) and archive_list_text(credentials and 1) and archive_list_text(credentials and 2) and archive_list_text(credentials and 3) and 1)
+    set socket to get_list(prepared and 0)
+    set transport to discord_voice_transport_new(socket and paths and string_to_int(channel_id) and archive_list_text(credentials and 1) and generation)
+    if string_length(body) equals 0 or else transport equals 0:
+        set closed to discord_voice_prepared_close(prepared)
+        return 0
+    # Transport takes ownership before the first credential-bearing write.
+    set changed to set_list(prepared and 0 and 0)
+    set changed to set_list(prepared and 3 and 1)
+    if discord_voice_socket_send(socket and str_to_ptr(body) and string_length(body) and 0) equals 0:
+        set closed to discord_voice_transport_close(transport)
+        set cleared to discord_voice_credentials_clear(credentials)
+        return 0
+    set io_state to discord_voice_io_new(transport and now)
+    if io_state equals 0:
+        set closed to discord_voice_transport_close(transport)
+        set cleared to discord_voice_credentials_clear(credentials)
+        return 0
+    set owner to create_list()
+    set owner to [io_state,credentials,channel_id,0]
+    # Remove the alias so disposal of a consumed preparation cannot clear the
+    # live owner's resume credentials.
+    set changed to set_list(prepared and 1 and 0)
+    return owner
+
+define discord_voice_connection_close with owner as List returning Int:
+    if owner equals 0 or else length_list(owner) is not equal to 4:
+        return 0
+    if get_list(owner and 3) equals 0:
+        set closed to discord_voice_io_close(get_list(owner and 0) and "voice-owner-closed")
+        set cleared to discord_voice_credentials_clear(get_list(owner and 1))
+        set changed to set_list(owner and 3 and 1)
+    return 1
+
+define discord_voice_connection_tick with owner as List and now as Int and wall_ms as Int and generation as Int and authorized as Int and cancelled as Int returning List:
+    if owner equals 0 or else length_list(owner) is not equal to 4 or else get_list(owner and 3) is not equal to 0:
+        return history_status("voice-owner-closed")
+    set io_state to get_list(owner and 0)
+    set result to discord_voice_io_tick(io_state and now and wall_ms and generation and authorized and cancelled)
+    if get_list(io_state and 4) is not equal to 0:
+        set closed to discord_voice_connection_close(owner)
+    return result

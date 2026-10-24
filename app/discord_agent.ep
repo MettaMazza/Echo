@@ -1,5 +1,8 @@
+import "context/startup_warmup"
 import "retained_text"
 import "discord/worker_delivery"
+import "discord/terminal_claims"
+import "discord/foreground_release"
 import "archive/runtime_lock"
 import "archive/snapshot"
 import "discord/process"
@@ -7,6 +10,7 @@ import "discord/typing"
 import "discord/job_worker"
 import "discord/job_dispatch"
 import "discord/background_supervisor"
+import "discord/voice_dispatch"
 import "string"
 
 # Host-only isolated worker. Arguments: curl, secret file, journal, agent DB,
@@ -69,6 +73,8 @@ define discord_agent_main returning Int:
         if outcome equals "completed" or else outcome equals "waiting" or else outcome equals "cancelled":
             return 0
         return 10
+    if discord_foreground_release_schema(journal) is not equal to 0:
+        return 6
     if get_argument_count() equals 15:
         return discord_agent_child(journal and database and token and bot and guilds and admins and profile and get_argument(14))
     set properties to local_json_request(http_decimal(get_argument(11)) and "GET" and "/props" and "" and -1 and 65536)
@@ -84,13 +90,37 @@ define discord_agent_main returning Int:
         return 5
     if discord_worker_schema(journal) is not equal to 0 or else discord_delivery_schema(journal) is not equal to 0 or else discord_typing_schema(journal) is not equal to 0:
         return 6
+    if startup_warm_prefix(database) is not equal to 0:
+        return 1
+    if discord_terminal_claims_reconcile(journal and database) is not equal to 0:
+        return 6
     set idle to channel
     set rooted_literal_1 to create_list()
     set retained_value_added to append_list(rooted_literal_1 and idle)
     set waits to rooted_literal_1
     set status to 1
     set children to create_list()
+    set memory_children to create_list()
     set background_children to create_list()
+    set voice_children to create_list()
+    set voice_config to discord_voice_launch_config()
+    if discord_voice_launch_schema(journal) is not equal to 0 or else discord_voice_launch_recover(journal) is not equal to 0:
+        return 6
+    set voice_enabled to "0"
+    if voice_config is not equal to 0:
+        set voice_enabled to "1"
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_runtime(singleton,enabled) VALUES(1,CAST(?1 AS INTEGER)) ON CONFLICT(singleton) DO UPDATE SET enabled=excluded.enabled;" and [voice_enabled]) and 101) is not equal to 0:
+        return 6
+    set voice_audio_enabled to "0"
+    if voice_config is not equal to 0 and also length_list(voice_config) equals 6:
+        set voice_audio_enabled to "1"
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_audio_runtime(singleton,enabled) VALUES(1,CAST(?1 AS INTEGER)) ON CONFLICT(singleton) DO UPDATE SET enabled=excluded.enabled;" and [voice_audio_enabled]) and 101) is not equal to 0:
+        return 6
+    set voice_arguments to create_list()
+    set voice_argument_index to 1
+    repeat while voice_argument_index <= 9:
+        set added to append_list(voice_arguments and get_argument(voice_argument_index))
+        set voice_argument_index to voice_argument_index + 1
     set provisioned to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_delegations';"))
     set jobs_enabled to archive_list_text(provisioned and 0) equals "found"
     if jobs_enabled and web_worker_schema(database) is not equal to 0:
@@ -101,12 +131,38 @@ define discord_agent_main returning Int:
         set added to append_list(job_arguments and get_argument(argument_index))
         set argument_index to argument_index + 1
     repeat while not file_exists(get_argument(6)):
-        set remaining to create_list()
+        set remaining_voice to create_list()
+        for each voice in voice_children:
+            set result to discord_process_poll(get_list(voice and 1))
+            if result equals 0:
+                set added to append_list(remaining_voice and voice)
+            else:
+                set settled to discord_voice_launch_settle(journal and archive_list_text(voice and 2) and result)
+        set voice_children to remaining_voice
+        set launched_voice to discord_voice_launch_next(journal and voice_arguments and voice_config)
+        if archive_list_text(launched_voice and 0) equals "voice-worker-started":
+            set added to append_list(voice_children and launched_voice)
+        set remaining_memory to create_list()
         set child_failure to 0
-        for each process in children:
+        for each process in memory_children:
             set result to discord_process_poll(process)
             if result equals 0:
-                set added to append_list(remaining and process)
+                set added to append_list(remaining_memory and process)
+            else if result is not equal to 1:
+                set child_failure to 1
+        set memory_children to remaining_memory
+        set remaining to create_list()
+        for each worker in children:
+            set process to get_list(worker and 0)
+            set result to discord_process_poll(process)
+            if result equals 0:
+                set released to discord_foreground_release(journal and database and archive_list_text(worker and 1))
+                if released equals 1:
+                    set added to append_list(memory_children and process)
+                else:
+                    set added to append_list(remaining and worker)
+                    if released < 0:
+                        set child_failure to 1
             else if result is not equal to 1:
                 set child_failure to 1
         set children to remaining
@@ -127,7 +183,6 @@ define discord_agent_main returning Int:
             set background_active to discord_background_capacity(journal and database and background_children)
             if background_active < 0:
                 break
-        set typing_status to discord_typing_tick(get_argument(1) and token and journal and database and get_argument(5))
         if discord_worker_reconcile(journal) is not equal to 0:
             display "Delivery observation requires recovery."
             break
@@ -140,6 +195,8 @@ define discord_agent_main returning Int:
             set pending_identity to archive_list_text(pending and 1)
             if discord_reply_reschedule(journal and pending_identity and delivered and ep_time_now_ms()) is not equal to 0:
                 break
+        # A ready reply takes priority over ephemeral typing feedback.
+        set typing_status to discord_typing_tick(get_argument(1) and token and journal and database and get_argument(5))
         # Use the current provider's reported independent inference slots.
         # Different conversations may progress concurrently; a durable claim
         # serializes each user-in-channel/DM conversation.
@@ -160,7 +217,8 @@ define discord_agent_main returning Int:
             if process < 0:
                 display "Turn process launch failed; claim retained."
                 break
-            set added to append_list(children and process)
+            set worker to [process,inbox]
+            set added to append_list(children and worker)
         else if not (archive_list_text(claimed and 0) equals "end" or else archive_list_text(claimed and 0) equals "busy"):
             display "Intake claim requires recovery."
             break
@@ -174,7 +232,18 @@ define discord_agent_main returning Int:
     if file_exists(get_argument(6)):
         set status to 0
     # Retain ownership until every child observes the stop file or finishes.
-    for each process in children:
+    for each voice in voice_children:
+        set cancelled to discord_voice_intent_cancel(journal and archive_list_text(voice and 2))
+    for each voice in voice_children:
+        set voice_result to discord_process_poll(get_list(voice and 1))
+        repeat while voice_result equals 0:
+            set waited to select(waits and 100)
+            set voice_result to discord_process_poll(get_list(voice and 1))
+        set settled to discord_voice_launch_settle(journal and archive_list_text(voice and 2) and voice_result)
+    for each worker in children:
+        repeat while discord_process_poll(get_list(worker and 0)) equals 0:
+            set waited to select(waits and 100)
+    for each process in memory_children:
         repeat while discord_process_poll(process) equals 0:
             set waited to select(waits and 100)
     for each job in background_children:
@@ -194,10 +263,23 @@ define discord_agent_child with journal as Int and database as Int and token as 
         set result to discord_redirect_enqueue(journal and inbox)
     else:
         set result to discord_agent_turn(get_argument(1) and token and journal and get_argument(3) and database and inbox and bot and guilds and admins and get_argument(5) and get_argument(6) and profile)
-    if not (discord_worker_finish(journal and inbox and result) equals "recorded"):
-        display "Turn receipt requires recovery."
-        return 1
+    # A supervisor may already have released this completed foreground while
+    # this child retained ownership of extraction. Do not overwrite its receipt.
+    if discord_foreground_released(journal and inbox) equals 0:
+        set finished to discord_worker_finish(journal and inbox and result)
+        if not (finished equals "recorded") and discord_foreground_released(journal and inbox) equals 0:
+            display "Turn receipt requires recovery."
+            return 1
     display concat(inbox and concat(": " and result))
+    set snapshot_waits to create_list()
+    repeat while not file_exists(get_argument(6)):
+        set pending_delivery to discord_snapshot_delivery_pending(journal and inbox)
+        if pending_delivery equals 0:
+            break
+        if pending_delivery < 0:
+            display "Snapshot delivery state unavailable; canonical copy still required."
+            break
+        set waited to select(snapshot_waits and 100)
     set snapshot to concat(get_argument(12) and concat("/agent-" and concat(ptr_to_str(ep_uuid_v4()) and ".sqlite")))
     if archive_snapshot(database and snapshot) is not equal to 0:
         display "Canonical snapshot failed."

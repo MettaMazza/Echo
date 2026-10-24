@@ -1,0 +1,137 @@
+import "voice_service"
+import "agent_bridge"
+import "../archive/runtime_lock"
+
+# Each native owner has independent SQLite connections and the same exclusive
+# intent lock as the standalone voice executable. Process death closes every
+# media socket; normal shutdown signals all owners before joining any of them.
+define discord_voice_host_owner with config as List and paths as List and interval as Int and opus as Str and stop as Int and completed as Int returning Int:
+    set journal to sql_open(archive_list_text(config and 2))
+    set reader to sql_open(archive_list_text(config and 2))
+    set database to sql_open(archive_list_text(config and 3))
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set descriptor to -1
+    set outcome to "voice-host-store-unavailable"
+    if journal is not equal to 0 and reader is not equal to 0 and database is not equal to 0 and system is not equal to 0:
+        if sql_execute(journal and "PRAGMA busy_timeout=1000;") equals 0 and sql_execute(reader and "PRAGMA busy_timeout=1000; PRAGMA query_only=ON;") equals 0 and sql_execute(database and "PRAGMA busy_timeout=1000; PRAGMA query_only=ON;") equals 0:
+            set anchor to archive_runtime_anchor(journal and system)
+            if string_length(anchor) > 0:
+                set descriptor to native_open_mode(system and concat(anchor and concat(".voice." and ep_sha256(archive_list_text(config and 4)))) and 16777986 and 384)
+                set outcome to "voice-host-owner-unavailable"
+                if descriptor >= 0 and also socket_signed_result(ep_dlcall2(ep_dlsym(system and "flock") and descriptor and 6)) equals 0:
+                    set outcome to discord_voice_service_run_audio(journal and reader and database and config and paths and interval and stop and opus)
+    if descriptor >= 0:
+        set closed to net_close(descriptor)
+    if database is not equal to 0:
+        set closed to sql_close(database)
+    if reader is not equal to 0:
+        set closed to sql_close(reader)
+    if journal is not equal to 0:
+        set closed to sql_close(journal)
+    if system is not equal to 0:
+        set closed to ep_dlclose(system)
+    send outcome to completed
+    return 0
+
+define discord_voice_supervisor_schema with journal as Int returning Int:
+    if discord_voice_intent_schema(journal) is not equal to 0 or else discord_voice_session_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_host_results(identity TEXT PRIMARY KEY REFERENCES discord_voice_intents(identity),outcome TEXT NOT NULL,finished_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_voice_host_results_no_update BEFORE UPDATE ON discord_voice_host_results BEGIN SELECT RAISE(ABORT,'Voice owner results are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_voice_host_results_no_delete BEFORE DELETE ON discord_voice_host_results BEGIN SELECT RAISE(ABORT,'Voice owner results persist'); END;")
+
+# Configuration uses the archive worker's private ten-field host tuple. Each
+# admitted intent replaces field four in a new, exclusively owned service tuple.
+# Native-library paths and refresh interval come only from host configuration.
+define discord_voice_supervisor with config as List and paths as List and interval as Int and opus as Str and stop as Int and completed as Int returning Int:
+    if length_list(config) is not equal to 10 or else length_list(paths) is not equal to 3 or else interval < 1 or else interval > 60000 or else not file_exists(opus):
+        send 1 to completed
+        return 1
+    for each path in paths:
+        if not file_exists(ptr_to_str(path)):
+            send 1 to completed
+            return 1
+    set journal to discord_store_open(archive_list_text(config and 2) and archive_list_text(config and 5))
+    if journal equals 0:
+        send 1 to completed
+        return 1
+    set status to discord_voice_supervisor_schema(journal)
+    set slots to create_list()
+    set waits to [stop]
+    repeat while status equals 0 and not file_exists(archive_list_text(config and 9)):
+        if select(waits and 0) >= 0:
+            set signal to receive from stop
+            break
+        set free_slot to -1
+        set index to 0
+        repeat while index < length_list(slots):
+            set slot to get_list(slots and index)
+            if string_length(archive_list_text(slot and 0)) > 0:
+                set done_wait to create_list()
+                set added to append_list(done_wait and get_list(slot and 2))
+                if select(done_wait and 0) >= 0:
+                    set outcome to receive from get_list(slot and 2)
+                    if string_index_of(outcome and "voice-host-") equals 0:
+                        set status to 1
+                    else if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_host_results VALUES(?1,?2,CAST(?3 AS INTEGER));" and [archive_list_text(slot and 0),outcome,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+                        set status to 1
+                    set changed to set_list(slot and 0 and "")
+            if string_length(archive_list_text(slot and 0)) equals 0:
+                set free_slot to index
+            set index to index + 1
+        if status is not equal to 0:
+            break
+        set statement to archive_prepare(journal and "SELECT identity FROM discord_voice_intents WHERE state IN ('queued','claimed','sent') AND NOT EXISTS(SELECT 1 FROM discord_voice_host_results r WHERE r.identity=discord_voice_intents.identity) ORDER BY rowid;")
+        set candidate to ""
+        if statement equals 0:
+            set status to 1
+        else:
+            repeat while string_length(candidate) equals 0:
+                set step to ep_sqlite3_step(statement)
+                if step equals 101:
+                    break
+                if step is not equal to 100:
+                    set status to 1
+                    break
+                set identity to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+                set active to 0
+                for each slot in slots:
+                    if archive_list_text(slot and 0) equals identity:
+                        set active to 1
+                if active equals 0:
+                    set candidate to identity
+            if ep_sqlite3_finalize(statement) is not equal to 0:
+                set status to 1
+        if status equals 0 and string_length(candidate) > 0:
+            set owner_config to create_list()
+            set index to 0
+            repeat while index < 10:
+                if index equals 4:
+                    set added to append_list(owner_config and candidate)
+                else:
+                    set added to append_list(owner_config and get_list(config and index))
+                set index to index + 1
+            set added to append_list(owner_config and 0)
+            set owner_stop to channel
+            set owner_completed to channel
+            set slot to create_list()
+            set added to append_list(slot and candidate)
+            set added to append_list(slot and owner_stop)
+            set added to append_list(slot and owner_completed)
+            if free_slot >= 0:
+                set changed to set_list(slots and free_slot and slot)
+            else:
+                set added to append_list(slots and slot)
+            spawn discord_voice_host_owner(owner_config and paths and interval and opus and owner_stop and owner_completed)
+        set ready to select(waits and 100)
+    for each slot in slots:
+        if string_length(archive_list_text(slot and 0)) > 0:
+            send 1 to get_list(slot and 1)
+    for each slot in slots:
+        if string_length(archive_list_text(slot and 0)) > 0:
+            set outcome to receive from get_list(slot and 2)
+            if string_index_of(outcome and "voice-host-") equals 0:
+                set status to 1
+            else if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_host_results VALUES(?1,?2,CAST(?3 AS INTEGER));" and [archive_list_text(slot and 0),outcome,int_to_string(ep_time_now_ms())]) and 101) is not equal to 0:
+                set status to 1
+    set closed to sql_close(journal)
+    send status to completed
+    return status

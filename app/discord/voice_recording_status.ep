@@ -1,0 +1,81 @@
+import "voice_recording_authority"
+import "../web/attachments"
+
+# Current admin/source/channel checks belong to voice_perform. This additional
+# boundary binds artifact discovery to the current frozen device and the
+# original recording session. No filenames, host paths, raw logs or text leak.
+define discord_recording_status_assets with journal as Int and database as Int and run as Str and call_id as Str and recording as Str and request as Str and state as Str and after as Str and limit as Int returning Str:
+    set current to history_collect_one(checkpoint_prepare(database and "SELECT a.device FROM echo_tool_calls t JOIN echo_tool_authority a ON a.run=t.run AND a.call_id=t.call_id WHERE t.run=?1 AND t.call_id=?2;" and [run,call_id]))
+    set original to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_events WHERE event=?1 AND kind='tool_call';" and [request]))
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(original and 0) equals "found") or else web_attachment_session_allowed(database and archive_list_text(current and 1) and archive_list_text(original and 1) and 0) equals 0:
+        return "{\"stage\":\"unavailable\"}"
+    set installed to history_collect_one(archive_prepare(journal and "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('discord_voice_recording_artifact_recordings','discord_voice_recording_artifact_tracks','discord_voice_recording_artifacts');"))
+    set canonical to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('echo_voice_recording_publications','echo_voice_recording_transcripts');"))
+    if not (archive_list_text(installed and 1) equals "3") or else not (archive_list_text(canonical and 1) equals "2"):
+        return "{\"stage\":\"archive-worker-not-ready\",\"processing_complete\":false}"
+    set progress to history_collect_one(checkpoint_prepare(journal and "SELECT EXISTS(SELECT 1 FROM discord_voice_recording_artifact_recordings WHERE recording=?1),(SELECT COUNT(*) FROM discord_voice_recording_artifact_tracks WHERE recording=?1 AND done=0),(SELECT COUNT(*) FROM discord_voice_recording_artifacts WHERE recording=?1);" and [recording]))
+    set session to archive_list_text(original and 1)
+    set published to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*),COALESCE(SUM(CASE WHEN t.artifact IS NOT NULL THEN 1 ELSE 0 END),0) FROM echo_voice_recording_publications p LEFT JOIN echo_voice_recording_transcripts t ON t.artifact=p.identity WHERE p.recording=?1 AND p.request=?2 AND p.session=?3;" and [recording,request,session]))
+    if not (archive_list_text(progress and 0) equals "found") or else not (archive_list_text(published and 0) equals "found"):
+        return "{\"stage\":\"store-unavailable\",\"processing_complete\":false}"
+    set exported to (state equals "stopped" or else state equals "interrupted") and also archive_list_text(progress and 1) equals "1" and also archive_list_text(progress and 2) equals "0"
+    set complete to exported and also archive_list_text(progress and 3) equals archive_list_text(published and 1) and also archive_list_text(progress and 3) equals archive_list_text(published and 2)
+    set stage to "processing"
+    if state equals "active" or else state equals "pending-notice":
+        set stage to "capture-not-terminal"
+    else if complete:
+        set stage to "complete"
+        if archive_list_text(progress and 3) equals "0":
+            set stage to "no-audio"
+    set statement to checkpoint_prepare(database and "SELECT p.identity,p.audio,p.provenance,COALESCE(t.transcript,''),COALESCE(t.segments,''),e.sequence FROM echo_voice_recording_publications p JOIN echo_attachments a ON a.attachment=p.audio JOIN echo_events e ON e.event=a.event LEFT JOIN echo_voice_recording_transcripts t ON t.artifact=p.identity WHERE p.recording=?1 AND p.request=?2 AND p.session=?3 AND e.sequence>CAST(?4 AS INTEGER) ORDER BY e.sequence LIMIT CAST(?5 AS INTEGER);" and [recording,request,session,after,int_to_string(limit + 1)])
+    if statement equals 0:
+        return "{\"stage\":\"store-unavailable\",\"processing_complete\":false}"
+    set builder to create_builder()
+    set added to builder_append(builder and "[")
+    set count to 0
+    set more to "false"
+    set next to after
+    set result to ep_sqlite3_step(statement)
+    repeat while result equals 100:
+        if count equals limit:
+            set more to "true"
+            break
+        set values to create_list()
+        set index to 0
+        repeat while index < 6:
+            set added to append_list(values and concat(ptr_to_str(ep_sqlite3_column_text(statement and index)) and ""))
+            set index to index + 1
+        set added to append_list(values and recording)
+        set item to history_collect_one(checkpoint_prepare(journal and "SELECT json_object('artifact',?1,'audio',?2,'capture_provenance',?3,'transcript',?4,'timings',?5,'cursor',?6,'speaker',actor,'voice_session',voice_session,'samples',json_extract(manifest,'$.samples'),'sample_rate',48000,'boundary',json_extract(manifest,'$.boundary')) FROM discord_voice_recording_artifacts WHERE identity=?1 AND recording=?7;" and values))
+        if not (archive_list_text(item and 0) equals "found"):
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"stage\":\"refresh-required\",\"processing_complete\":false}"
+        if count > 0:
+            set added to builder_append(builder and ",")
+        set added to builder_append(builder and archive_list_text(item and 1))
+        set next to archive_list_text(values and 5)
+        set count to count + 1
+        set result to ep_sqlite3_step(statement)
+    set closed to ep_sqlite3_finalize(statement)
+    if (result is not equal to 101 and not (more equals "true")) or else closed is not equal to 0:
+        return "{\"stage\":\"store-unavailable\",\"processing_complete\":false}"
+    # Publication can advance during this read. Completion is claimed only
+    # after terminal export and matching immutable canonical receipt counts.
+    set added to builder_append(builder and "]")
+    if web_attachment_session_allowed(database and archive_list_text(current and 1) and session and 0) equals 0:
+        return "{\"stage\":\"unavailable\"}"
+    set export_flag to "false"
+    set complete_flag to "false"
+    if exported:
+        set export_flag to "true"
+    if complete:
+        set complete_flag to "true"
+    set output to concat("{\"stage\":" and provider_quote(stage))
+    set output to concat(output and concat(",\"export_complete\":" and export_flag))
+    set output to concat(output and concat(",\"processing_complete\":" and complete_flag))
+    set output to concat(output and concat(",\"segments_staged\":" and archive_list_text(progress and 3)))
+    set output to concat(output and concat(",\"audio_published\":" and archive_list_text(published and 1)))
+    set output to concat(output and concat(",\"transcripts_published\":" and archive_list_text(published and 2)))
+    set output to concat(output and concat(",\"artifacts\":" and ptr_to_str(builder_to_string(builder))))
+    set output to concat(output and concat(",\"has_more\":" and more))
+    return concat(output and concat(",\"next_after\":" and concat(provider_quote(next) and "}")))

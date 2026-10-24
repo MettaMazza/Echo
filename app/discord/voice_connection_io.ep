@@ -1,0 +1,267 @@
+import "voice_transport"
+import "voice_frames"
+import "voice_mls_dispatch"
+import "voice_transition_ready"
+import "voice_transition_execute"
+
+# Owns transport and framing plus handshake deadline, last monotonic time and
+# terminal flag, deferred messages/bytes and permission-wait start. One tick does bounded I/O; the worker refreshes authorization
+# and cancellation before every tick, including while discovery is pending.
+define discord_voice_io_new with transport as List and now as Int returning List:
+    if transport equals 0 or else length_list(transport) is not equal to 8 or else now < 0:
+        return 0
+    set frames to discord_voice_frames_new()
+    if frames equals 0:
+        return 0
+    set state to create_list()
+    set deferred to create_list()
+    set added to append_list(state and transport)
+    set added to append_list(state and frames)
+    set added to append_list(state and now + 30000)
+    set added to append_list(state and now)
+    set added to append_list(state and 0)
+    set added to append_list(state and deferred)
+    set added to append_list(state and 0)
+    set added to append_list(state and -1)
+    return state
+
+define discord_voice_io_close with state as List and reason as Str returning List:
+    if state is not equal to 0 and also length_list(state) equals 8:
+        set changed to set_list(state and 4 and 1)
+        for each deferred in get_list(state and 5):
+            set released to discord_voice_blob_release(get_list(deferred and 1))
+        set empty to create_list()
+        set changed to set_list(state and 5 and empty)
+        set changed to set_list(state and 6 and 0)
+        set closed to discord_voice_frames_close(get_list(state and 1))
+        set closed to discord_voice_transport_close(get_list(state and 0))
+    return history_status(reason)
+
+# Body dispatch consumes the complete owned message even when it is rejected.
+# Binary MLS output is transferred to its controller, which must release it and
+# acknowledge the sequence only after successful handling.
+define discord_voice_io_message with state as List and message as List and now as Int and generation as Int returning List:
+    set blob to get_list(message and 1)
+    set transport to get_list(state and 0)
+    set handshake to get_list(transport and 0)
+    if get_list(message and 2) equals 2:
+        if get_list(handshake and 0) is not equal to 4:
+            set released to discord_voice_blob_release(blob)
+            return discord_voice_io_close(state and "mls-before-session")
+        set result to history_status("binary-mls")
+        set added to append_list(result and blob)
+        return result
+    set body to ptr_to_str(get_list(blob and 0))
+    if string_length(body) is not equal to get_list(blob and 1):
+        set released to discord_voice_blob_release(blob)
+        return discord_voice_io_close(state and "nul-in-voice-json")
+    set action to discord_voice_handshake_receive(handshake and body and now and generation)
+    set released to discord_voice_blob_release(blob)
+    set disposition to archive_list_text(action and 0)
+    if get_list(handshake and 0) < 0:
+        return discord_voice_io_close(state and disposition)
+    if disposition equals "discover-udp":
+        if discord_voice_transport_discover(transport) equals 0:
+            return discord_voice_io_close(state and "voice-discovery-send-failed")
+        return history_status("discovering-udp")
+    if disposition equals "install-session-keys":
+        if discord_voice_transport_install(transport and get_list(action and 1)) equals 0:
+            return discord_voice_io_close(state and "voice-session-install-failed")
+        return history_status("voice-session-installed")
+    return action
+
+# Session-key installation does not complete heartbeat setup. A missing HELLO
+# retains the original connection deadline even if media transport is installed.
+define discord_voice_io_deadline with state as List and now as Int returning Int:
+    if state equals 0 or else length_list(state) is not equal to 8:
+        return 1
+    set handshake to get_list(get_list(state and 0) and 0)
+    set heart to get_list(handshake and 1)
+    return now >= get_list(state and 2) and also (get_list(handshake and 0) is not equal to 4 or else get_list(heart and 0) equals 0)
+
+# Only connection maintenance: no credentials, MLS response, UDP or PCM.
+define discord_voice_io_heartbeat with state as List and now as Int and wall_ms as Int returning List:
+    set transport to get_list(state and 0)
+    set handshake to get_list(transport and 0)
+    set heart to get_list(handshake and 1)
+    set heartbeat_action to discord_voice_heartbeat_action(heart and now)
+    if heartbeat_action equals "reconnect-missing-ack" or else heartbeat_action equals "reconnect-clock-anomaly":
+        return discord_voice_io_close(state and heartbeat_action)
+    if heartbeat_action equals "send":
+        set timestamp to discord_voice_heartbeat_timestamp(heart and wall_ms)
+        set body to discord_voice_heartbeat_body(heart and timestamp)
+        if string_length(body) equals 0 or else discord_voice_socket_send(get_list(transport and 1) and str_to_ptr(body) and string_length(body) and 0) equals 0:
+            return discord_voice_io_close(state and "voice-heartbeat-write-failed")
+        if discord_voice_heartbeat_sent(heart and now and timestamp) equals 0:
+            return discord_voice_io_close(state and "voice-heartbeat-state-failed")
+    return history_status("pending")
+
+define discord_voice_io_tick with state as List and now as Int and wall_ms as Int and generation as Int and authorized as Int and cancelled as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 8 or else get_list(state and 4) is not equal to 0:
+        return history_status("voice-io-closed")
+    set transport to get_list(state and 0)
+    set handshake to get_list(transport and 0)
+    if discord_voice_handshake_current(handshake and generation) equals 0:
+        return history_status("stale-or-closed-voice-socket")
+    if cancelled is not equal to 0:
+        return discord_voice_io_close(state and "voice-cancelled")
+    if authorized is not equal to 1:
+        return discord_voice_io_close(state and "voice-authorization-revoked")
+    if now < get_list(state and 3):
+        return discord_voice_io_close(state and "voice-clock-anomaly")
+    set changed to set_list(state and 3 and now)
+    if discord_voice_io_deadline(state and now) equals 1:
+        return discord_voice_io_close(state and "voice-handshake-timeout")
+    if get_list(state and 7) >= 0 and also now - get_list(state and 7) >= 30000:
+        return discord_voice_io_close(state and "voice-proof-refresh-deadline")
+    set changed to set_list(state and 7 and -1)
+    set maintained to discord_voice_io_heartbeat(state and now and wall_ms)
+    if get_list(state and 4) is not equal to 0:
+        return maintained
+    if get_list(handshake and 0) equals 1:
+        set discovery to discord_voice_transport_discovery_tick(transport)
+        if not (discovery equals "wait" or else discovery equals "protocol-selected"):
+            return discord_voice_io_close(state and discovery)
+    set deferred to get_list(state and 5)
+    set message to create_list()
+    if length_list(deferred) > 0:
+        set message to get_list(deferred and 0)
+        set remaining to create_list()
+        set index to 1
+        repeat while index < length_list(deferred):
+            set added to append_list(remaining and get_list(deferred and index))
+            set index to index + 1
+        set changed to set_list(state and 5 and remaining)
+        set changed to set_list(state and 6 and get_list(state and 6) - get_list(get_list(message and 1) and 1))
+    else:
+        set row to discord_voice_socket_read(get_list(transport and 1))
+        set message to discord_voice_frames_accept(get_list(state and 1) and row)
+    set status to archive_list_text(message and 0)
+    if status equals "pending":
+        return history_status("pending")
+    if status equals "closed":
+        set result to discord_voice_io_close(state and "voice-server-closed")
+        set added to append_list(result and archive_list_text(message and 1))
+        return result
+    if not (status equals "message"):
+        return discord_voice_io_close(state and status)
+    return discord_voice_io_message(state and message and now and generation)
+
+# Worker supplies the current authenticated participant roster. This consumes
+# the binary-mls blob returned by tick; callers never need to decode raw bytes.
+define discord_voice_io_apply_mls with state as List and blob as List and users as List and generation as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 8 or else get_list(state and 4) is not equal to 0:
+        set released to discord_voice_blob_release(blob)
+        return history_status("voice-io-closed")
+    set result to discord_voice_mls_dispatch(get_list(state and 0) and get_list(blob and 0) and get_list(blob and 1) and users and generation)
+    set released to discord_voice_blob_release(blob)
+    set status to archive_list_text(result and 0)
+    if status equals "stale-mls-owner":
+        return result
+    if status equals "external-sender" or else status equals "no-output" or else status equals "ignored" or else status equals "send-commit-welcome" or else status equals "committed" or else status equals "joined":
+        return result
+    return discord_voice_io_close(state and status)
+
+# Connect the cryptographic preparation result to socket ownership. A partial
+# Ready invalidates this connection; it cannot be retried on the same socket.
+define discord_voice_io_prepare_transition with state as List and result as List and queues as List and generation as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 8 or else get_list(state and 4) is not equal to 0:
+        set discarded to discord_voice_transition_abort(queues and "voice-io-closed")
+        return history_status("voice-io-closed")
+    set status to discord_voice_transition_ready(get_list(state and 0) and result and queues and generation)
+    if status equals "transition-ready" or else status equals "stale-transition-owner":
+        return history_status(status)
+    if status equals "execute-immediate-transition":
+        # Preserve sequence, transition and roster for apply-then-ack execution.
+        set action to history_status(status)
+        set added to append_list(action and result)
+        return action
+    return discord_voice_io_close(state and status)
+
+# Applies both immediate transition zero and decoded Execute Transition events.
+# Playback/transcription consent remains a separate gate in the media worker.
+define discord_voice_io_execute_transition with state as List and transition as Int and sequence as Int and streams as List and roster as List and generation as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 8 or else get_list(state and 4) is not equal to 0:
+        set closed to discord_voice_transition_streams_close(streams)
+        return history_status("voice-io-closed")
+    set status to discord_voice_transition_execute(get_list(state and 0) and transition and sequence and streams and roster and generation)
+    if status equals "transition-executed" or else status equals "stale-transition-owner":
+        return history_status(status)
+    return discord_voice_io_close(state and status)
+
+# Route the normalized JSON event produced by handshake_receive. Missing seq
+# remains -1; execution is valid but cannot invent a sequence acknowledgement.
+define discord_voice_io_execute_control with state as List and action as List and streams as List and roster as List and generation as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 8 or else get_list(state and 4) is not equal to 0:
+        return history_status("voice-io-closed")
+    if discord_voice_handshake_current(get_list(get_list(state and 0) and 0) and generation) equals 0:
+        return history_status("stale-transition-owner")
+    if action equals 0 or else length_list(action) is not equal to 4 or else not (archive_list_text(action and 0) equals "execute-transition") or else get_list(action and 1) is not equal to 22:
+        set closed to discord_voice_transition_streams_close(streams)
+        return discord_voice_io_close(state and "invalid-execute-transition-control")
+    set values to get_list(action and 3)
+    if values equals 0 or else length_list(values) is not equal to 1:
+        set closed to discord_voice_transition_streams_close(streams)
+        return discord_voice_io_close(state and "invalid-execute-transition-control")
+    return discord_voice_io_execute_transition(state and get_list(values and 0) and get_list(action and 2) and streams and roster and generation)
+
+# An activated owner may maintain its existing socket while a full REST proof
+# refresh is pending. Caller holds the native owner/stop fence. This never runs
+# after a completed denial. Data frames remain owned, bounded and unprocessed;
+# only a later authorized tick can deliver them to handshake/MLS code.
+define discord_voice_io_refresh_tick with state as List and now as Int and wall_ms as Int and generation as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 8 or else get_list(state and 4) is not equal to 0:
+        return history_status("voice-io-closed")
+    set transport to get_list(state and 0)
+    set handshake to get_list(transport and 0)
+    if discord_voice_handshake_current(handshake and generation) equals 0:
+        return history_status("stale-or-closed-voice-socket")
+    if now < get_list(state and 3):
+        return discord_voice_io_close(state and "voice-clock-anomaly")
+    set changed to set_list(state and 3 and now)
+    if get_list(state and 7) < 0:
+        set changed to set_list(state and 7 and now)
+    if now - get_list(state and 7) >= 30000 or else discord_voice_io_deadline(state and now) equals 1:
+        return discord_voice_io_close(state and "voice-proof-refresh-deadline")
+    set maintained to discord_voice_io_heartbeat(state and now and wall_ms)
+    if get_list(state and 4) is not equal to 0:
+        return maintained
+    set row to discord_voice_socket_read(get_list(transport and 1))
+    set message to discord_voice_frames_accept(get_list(state and 1) and row)
+    set status to archive_list_text(message and 0)
+    if status equals "pending":
+        return message
+    if status equals "closed":
+        return discord_voice_io_close(state and "voice-server-closed")
+    if not (status equals "message"):
+        return discord_voice_io_close(state and status)
+    set blob to get_list(message and 1)
+    if get_list(message and 2) equals 1:
+        set body to ptr_to_str(get_list(blob and 0))
+        if string_length(body) is not equal to get_list(blob and 1):
+            set released to discord_voice_blob_release(blob)
+            return discord_voice_io_close(state and "nul-in-voice-json")
+        set tokens to provider_json_tokens(body)
+        set opcode to provider_value(tokens and provider_member(tokens and 0 and "op"))
+        if opcode equals "8" or else opcode equals "6":
+            set decoded to discord_voice_control_decode(body)
+            set released to discord_voice_blob_release(blob)
+            set kind to archive_list_text(decoded and 0)
+            if length_list(decoded) is not equal to 4 or else not (kind equals "hello" or else kind equals "heartbeat-ack"):
+                return discord_voice_io_close(state and "invalid-voice-maintenance-control")
+            set heart to get_list(handshake and 1)
+            if kind equals "hello":
+                if discord_voice_heartbeat_hello(heart and get_list(get_list(decoded and 3) and 0) and now) equals 0:
+                    return discord_voice_io_close(state and "invalid-voice-hello-order")
+                return history_status("heartbeat-ready")
+            set acknowledged to discord_voice_heartbeat_ack(heart and now and generation)
+            # Do not advance seq_ack past deferred, unaccepted MLS/control frames.
+            return history_status("pending")
+    set deferred to get_list(state and 5)
+    set bytes to get_list(state and 6) + get_list(blob and 1)
+    if length_list(deferred) >= 64 or else bytes > 1048576:
+        set released to discord_voice_blob_release(blob)
+        return discord_voice_io_close(state and "voice-proof-buffer-limit")
+    set added to append_list(deferred and message)
+    set changed to set_list(state and 6 and bytes)
+    return history_status("pending")

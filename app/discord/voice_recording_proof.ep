@@ -1,0 +1,123 @@
+import "voice_recording_authority"
+import "voice_authorized_worker"
+
+define discord_voice_recording_notice_text with room as Str returning Str:
+    return concat("Voice transcription requested in <#" and concat(room and ">. Echo will retain audio and attributed transcripts only for participants who explicitly allow transcription for their current voice session. Each participant can decline or revoke below; leaving or reconnecting requires new consent. Transcripts are restricted to this channel's audience. Capture stops if this notice or its access is removed."))
+
+define discord_voice_recording_notice_valid with body as Str and message as Str and origin as Str and room as Str and bot as Str returning Int:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 0
+    return discord_snowflake(message) equals 1 and also provider_value(tokens and provider_member(tokens and 0 and "id")) equals message and also provider_value(tokens and provider_member(tokens and 0 and "channel_id")) equals origin and also provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "author") and "id")) equals bot and also provider_value(tokens and provider_member(tokens and 0 and "content")) equals discord_voice_recording_notice_text(room)
+
+# Native-only proof layout: status, recording, intent, notice, admitted request,
+# fresh transport proof, observation digest. No model argument creates a proof.
+define discord_voice_recording_proof_check with journal as Int and database as Int and identity as Str and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str returning Str:
+    set guarded to discord_voice_recording_guard(journal and database and identity and bot and guilds and admins and stop_file)
+    if not (archive_list_text(guarded and 0) equals "recording-native-current"):
+        return archive_list_text(guarded and 0)
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT intent,notice,request FROM discord_voice_recordings WHERE identity=?1 AND state='active' AND notice<>'' AND notice_receipt<>'';" and [identity]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "recording-not-active"
+    if proof equals 0 or else length_list(proof) is not equal to 7 or else not (archive_list_text(proof and 0) equals "recording-proof") or else not (archive_list_text(proof and 1) equals identity) or else not (archive_list_text(proof and 2) equals archive_list_text(row and 1)) or else not (archive_list_text(proof and 3) equals archive_list_text(row and 2)) or else not (archive_list_text(proof and 4) equals archive_list_text(row and 3)) or else string_length(archive_list_text(proof and 6)) is not equal to 64:
+        return "recording-proof-binding-denied"
+    return discord_voice_worker_check(journal and database and archive_list_text(row and 1) and get_list(proof and 5) and bot and guilds and admins and stop_file and 0)
+
+# REST observations run off the heartbeat/audio thread. Equal channel audience
+# prevents transcription from disclosing voice content into a broader channel.
+# The resulting proof is invalidated by any intervening Gateway event.
+define discord_voice_recording_preflight with library as Str and token as Str and journal as Int and database as Int and identity as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning List:
+    set guarded to discord_voice_recording_guard(journal and database and identity and bot and guilds and admins and stop_file)
+    if not (archive_list_text(guarded and 0) equals "recording-native-current"):
+        return guarded
+    set recording to get_list(guarded and 4)
+    set intent to archive_list_text(recording and 1)
+    set origin to archive_list_text(recording and 3)
+    set join_guard to get_list(guarded and 3)
+    set owner to get_list(join_guard and 3)
+    set guild to archive_list_text(owner and 1)
+    set room to archive_list_text(owner and 2)
+    set transport to discord_voice_request_proof(library and token and journal and database and intent and bot and guilds and admins and directory_path and stop_file and 0)
+    if not (archive_list_text(transport and 0) equals "allowed"):
+        return transport
+    set current to discord_run_source_check(library and token and journal and directory_path and archive_list_text(guarded and 2) and get_list(guarded and 1))
+    if not (current equals "current"):
+        return history_status(current)
+    set text_channel to discord_access_get(library and token and journal and directory_path and concat("/channels/" and origin) and "GET:channel" and origin)
+    if not (archive_list_text(text_channel and 0) equals "observed"):
+        return text_channel
+    set voice_channel to discord_access_get(library and token and journal and directory_path and concat("/channels/" and room) and "GET:channel" and room)
+    if not (archive_list_text(voice_channel and 0) equals "observed"):
+        return voice_channel
+    set fields to provider_json_tokens(archive_list_text(text_channel and 1))
+    set kind to provider_value(fields and provider_member(fields and 0 and "type"))
+    if not (kind equals "0" or else kind equals "5") or else discord_channel_same_audience(archive_list_text(text_channel and 1) and archive_list_text(voice_channel and 1) and guild) equals 0:
+        return history_status("recording-audience-denied")
+    set checked to discord_voice_worker_check(journal and database and intent and transport and bot and guilds and admins and stop_file and 0)
+    if not (checked equals "allowed"):
+        return history_status(checked)
+    set current to discord_voice_recording_guard(journal and database and identity and bot and guilds and admins and stop_file)
+    if not (archive_list_text(current and 0) equals "recording-native-current"):
+        return current
+    set evidence to ep_sha256(concat(archive_list_text(text_channel and 2) and archive_list_text(voice_channel and 2)))
+    return ["recording-preflight",identity,guarded,transport,evidence]
+
+define discord_voice_recording_proof with library as Str and token as Str and journal as Int and database as Int and identity as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning List:
+    set preflight to discord_voice_recording_preflight(library and token and journal and database and identity and bot and guilds and admins and directory_path and stop_file)
+    if not (archive_list_text(preflight and 0) equals "recording-preflight"):
+        return preflight
+    set guarded to get_list(preflight and 2)
+    set recording to get_list(guarded and 4)
+    set intent to archive_list_text(recording and 1)
+    set origin to archive_list_text(recording and 3)
+    set owner to get_list(get_list(guarded and 3) and 3)
+    set room to archive_list_text(owner and 2)
+    set transport to get_list(preflight and 3)
+    set notice to history_collect_one(checkpoint_prepare(journal and "SELECT notice FROM discord_voice_recordings WHERE identity=?1 AND state='active' AND notice<>'' AND notice_receipt<>'';" and [identity]))
+    if not (archive_list_text(notice and 0) equals "found"):
+        return history_status("recording-not-active")
+    set message to archive_list_text(notice and 1)
+    set route to concat("/channels/" and concat(origin and concat("/messages/" and message)))
+    set observed to discord_access_get(library and token and journal and directory_path and route and "GET:message" and origin)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return observed
+    if discord_voice_recording_notice_valid(archive_list_text(observed and 1) and message and origin and room and bot) equals 0:
+        return history_status("recording-notice-not-visible")
+    # A grant must retain a usable withdrawal control. A deleted or disabled
+    # challenge stops capture until it is restored or recording is restarted.
+    if discord_voice_recording_offer_schema(journal) is not equal to 0:
+        return history_status("recording-store-unavailable")
+    set last_actor to ""
+    set membership to create_list()
+    repeat while 1 equals 1:
+        set consent to history_collect_one(checkpoint_prepare(journal and "SELECT c.actor,o.identity,m.message,c.voice_session FROM discord_voice_recording_consents c LEFT JOIN discord_voice_recording_offers o ON o.recording=c.recording AND o.actor=c.actor AND o.voice_session=c.voice_session LEFT JOIN discord_voice_recording_offer_messages m ON m.offer=o.identity WHERE c.recording=?1 AND c.decision='grant' AND c.actor>?2 AND NOT EXISTS(SELECT 1 FROM discord_voice_recording_consents later WHERE later.recording=c.recording AND later.actor=c.actor AND (length(later.interaction)>length(c.interaction) OR (length(later.interaction)=length(c.interaction) AND later.interaction>c.interaction))) ORDER BY c.actor LIMIT 1;" and [identity,last_actor]))
+        if archive_list_text(consent and 0) equals "end":
+            break
+        if not (archive_list_text(consent and 0) equals "found"):
+            return history_status("recording-consent-control-not-visible")
+        set last_actor to archive_list_text(consent and 1)
+        if length_list(membership) equals 0:
+            set snapshot to discord_voice_membership_read_intent(journal and archive_list_text(transport and 1) and archive_list_text(transport and 2) and 1 and archive_list_text(owner and 1) and room and bot and intent)
+            if not (archive_list_text(snapshot and 0) equals "voice-membership-ready") or else get_list(snapshot and 2) is not equal to get_list(transport and 3):
+                return history_status("voice-authorization-refresh-required")
+            set membership to get_list(get_list(snapshot and 1) and 0)
+        set present to 0
+        for each member in get_list(membership and 4):
+            if archive_list_text(member and 0) equals last_actor and also archive_list_text(member and 1) equals archive_list_text(consent and 4):
+                set present to 1
+        # Previous-session grants cannot authorize capture. Their retired
+        # controls must not prevent a reconnecting member from consenting anew.
+        if present equals 0:
+            continue
+        if discord_snowflake(archive_list_text(consent and 3)) equals 0:
+            return history_status("recording-consent-control-not-visible")
+        set consent_route to concat("/channels/" and concat(origin and concat("/messages/" and archive_list_text(consent and 3))))
+        set consent_message to discord_access_get(library and token and journal and directory_path and consent_route and "GET:message" and origin)
+        if not (archive_list_text(consent_message and 0) equals "observed") or else not (discord_voice_recording_offer_observed(journal and archive_list_text(consent and 2) and archive_list_text(consent_message and 1) and archive_list_text(consent_message and 2)) equals "recording-offer-bound"):
+            return history_status("recording-consent-control-not-visible")
+    set evidence to ep_sha256(concat(archive_list_text(preflight and 4) and archive_list_text(observed and 2)))
+    set proof to ["recording-proof",identity,intent,message,archive_list_text(recording and 4),transport,evidence]
+    set checked to discord_voice_recording_proof_check(journal and database and identity and proof and bot and guilds and admins and stop_file)
+    if not (checked equals "allowed"):
+        return history_status(checked)
+    return proof

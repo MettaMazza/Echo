@@ -1,0 +1,329 @@
+import "voice_connection_io"
+import "voice_participant_control"
+
+# Owns I/O, media epochs, queues and pending roster snapshots. Media handles
+# remain inaccessible until Execute succeeds. Authorization/consent is separate.
+# State: io, path, entries[user,queue,epoch], pending[id,roster,order], active
+# roster, generation, closed, serial, executed order.
+define discord_voice_media_controller_new with io_state as List and path as Str and generation as Int returning List:
+    if io_state equals 0 or else length_list(io_state) is not equal to 8 or else get_list(io_state and 4) is not equal to 0:
+        return 0
+    set handshake to get_list(get_list(io_state and 0) and 0)
+    if discord_voice_handshake_current(handshake and generation) equals 0 or else get_list(handshake and 0) is not equal to 4:
+        return 0
+    set state to create_list()
+    set added to append_list(state and io_state)
+    set added to append_list(state and path)
+    set added to append_list(state and create_list())
+    set added to append_list(state and create_list())
+    set added to append_list(state and create_list())
+    set added to append_list(state and generation)
+    set added to append_list(state and 0)
+    set added to append_list(state and 0)
+    set added to append_list(state and 0)
+    return state
+
+define discord_voice_media_controller_close with state as List and reason as Str returning Str:
+    if state is not equal to 0 and also length_list(state) equals 9:
+        for each entry in get_list(state and 2):
+            set closed to discord_voice_transitions_close(get_list(entry and 1))
+            set closed to discord_voice_epoch_close(get_list(entry and 2))
+        set changed to set_list(state and 6 and 1)
+        set closed to discord_voice_io_close(get_list(state and 0) and reason)
+    return reason
+
+define discord_voice_media_controller_entry with state as List and user as Str returning List:
+    for each entry in get_list(state and 2):
+        if archive_list_text(entry and 0) equals user:
+            return entry
+    return 0
+
+define discord_voice_media_controller_execute with state as List and transition as Int and sequence as Int and recognized as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 9 or else get_list(state and 6) is not equal to 0:
+        return "media-controller-closed"
+    set selected to 0
+    for each row in get_list(state and 3):
+        if get_list(row and 0) equals transition:
+            set selected to row
+    if selected equals 0 or else get_list(selected and 2) < get_list(state and 8):
+        return discord_voice_media_controller_close(state and "unknown-or-stale-media-transition")
+    set streams to create_list()
+    for each user in get_list(selected and 1):
+        set entry to discord_voice_media_controller_entry(state and ptr_to_str(user))
+        if entry equals 0:
+            return discord_voice_media_controller_close(state and "missing-media-transition-stream")
+        set stream to create_list()
+        set added to append_list(stream and get_list(entry and 1))
+        set added to append_list(stream and get_list(entry and 2))
+        set added to append_list(streams and stream)
+    set executed to discord_voice_io_execute_transition(get_list(state and 0) and transition and sequence and streams and recognized and get_list(state and 5))
+    if not (archive_list_text(executed and 0) equals "transition-executed"):
+        return discord_voice_media_controller_close(state and archive_list_text(executed and 0))
+    set changed to set_list(state and 4 and get_list(selected and 1))
+    set changed to set_list(state and 8 and get_list(selected and 2))
+    set retained to create_list()
+    for each row in get_list(state and 3):
+        if get_list(row and 2) >= get_list(state and 8):
+            set added to append_list(retained and row)
+    set changed to set_list(state and 3 and retained)
+    set kept_entries to create_list()
+    for each entry in get_list(state and 2):
+        set needed to 0
+        for each row in retained:
+            for each user in get_list(row and 1):
+                if ptr_to_str(user) equals archive_list_text(entry and 0):
+                    set needed to 1
+        if needed equals 1:
+            set added to append_list(kept_entries and entry)
+        else:
+            set closed to discord_voice_transitions_close(get_list(entry and 1))
+            set closed to discord_voice_epoch_close(get_list(entry and 2))
+    set changed to set_list(state and 2 and kept_entries)
+    return "media-transition-executed"
+
+define discord_voice_media_controller_commit with state as List and result as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 9 or else get_list(state and 6) is not equal to 0:
+        return "media-controller-closed"
+    if result equals 0 or else length_list(result) is not equal to 4 or else not (archive_list_text(result and 0) equals "committed" or else archive_list_text(result and 0) equals "joined"):
+        return discord_voice_media_controller_close(state and "invalid-media-commit")
+    set native_result to get_list(result and 3)
+    if native_result equals 0 or else length_list(native_result) is not equal to 2:
+        return discord_voice_media_controller_close(state and "invalid-media-roster")
+    set roster to get_list(native_result and 1)
+    if discord_dave_users_valid(roster) equals 0 or else length_list(get_list(state and 3)) >= 32:
+        return discord_voice_media_controller_close(state and "invalid-media-roster")
+    set transition to get_list(result and 2)
+    for each row in get_list(state and 3):
+        if get_list(row and 0) equals transition:
+            return discord_voice_media_controller_close(state and "media-transition-id-conflict")
+    set io_state to get_list(state and 0)
+    set transport to get_list(io_state and 0)
+    set session to get_list(transport and 4)
+    set bot to archive_list_text(transport and 7)
+    set bot_present to 0
+    set queues to create_list()
+    set seen to create_list()
+    for each value in roster:
+        set user to ptr_to_str(value)
+        for each prior in seen:
+            if ptr_to_str(prior) equals user:
+                return discord_voice_media_controller_close(state and "duplicate-media-roster-user")
+        set added to append_list(seen and user)
+        set sending to 0
+        set ssrc to 0
+        if user equals bot:
+            set sending to 1
+            set bot_present to 1
+            set ssrc to get_list(get_list(transport and 0) and 2)
+        set entry to discord_voice_media_controller_entry(state and user)
+        if entry equals 0:
+            set queue to discord_voice_transitions_new(session and archive_list_text(state and 1) and user)
+            set epoch to discord_voice_epoch_open(session and archive_list_text(state and 1) and user and roster and ssrc and sending)
+            if queue equals 0 or else epoch equals 0:
+                set closed to discord_voice_transitions_close(queue)
+                set closed to discord_voice_epoch_close(epoch)
+                return discord_voice_media_controller_close(state and "media-stream-open-failed")
+            set entry to create_list()
+            set added to append_list(entry and user)
+            set added to append_list(entry and queue)
+            set added to append_list(entry and epoch)
+            set added to append_list(get_list(state and 2) and entry)
+        set added to append_list(queues and get_list(entry and 1))
+    if bot_present equals 0:
+        return discord_voice_media_controller_close(state and "bot-not-in-media-roster")
+    set serial to get_list(state and 7) + 1
+    set record to create_list()
+    set record to [transition,roster,serial]
+    set added to append_list(get_list(state and 3) and record)
+    set changed to set_list(state and 7 and serial)
+    set prepared to discord_voice_io_prepare_transition(io_state and result and queues and get_list(state and 5))
+    set status to archive_list_text(prepared and 0)
+    if status equals "execute-immediate-transition":
+        return discord_voice_media_controller_execute(state and 0 and get_list(result and 1) and roster)
+    if status equals "transition-ready":
+        return "media-transition-prepared"
+    return discord_voice_media_controller_close(state and status)
+
+# Private native handle access only. Worker supplies fresh authorization and
+# explicit playback/transcription consent; membership alone grants neither.
+define discord_voice_media_controller_media with state as List and user as Str and authorized as Int and consented as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 9 or else get_list(state and 6) is not equal to 0 or else authorized is not equal to 1 or else consented is not equal to 1:
+        return 0
+    if get_list(get_list(state and 0) and 4) is not equal to 0:
+        return 0
+    set active to 0
+    for each member in get_list(state and 4):
+        if ptr_to_str(member) equals user:
+            set active to 1
+    if active equals 0:
+        return 0
+    set entry to discord_voice_media_controller_entry(state and user)
+    if entry equals 0:
+        return 0
+    return get_list(get_list(entry and 2) and 0)
+
+# A version-1 Prepare Transition reuses an already captured transition, or
+# captures the latest proven MLS roster for a new transition. It never derives
+# membership from the control message or enables unencrypted passthrough.
+define discord_voice_media_controller_prepare with state as List and action as List and recognized as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 9 or else get_list(state and 6) is not equal to 0:
+        return "media-controller-closed"
+    if action equals 0 or else length_list(action) is not equal to 4 or else get_list(action and 1) is not equal to 21 or else length_list(get_list(action and 3)) is not equal to 2:
+        return discord_voice_media_controller_close(state and "invalid-prepare-transition")
+    set values to get_list(action and 3)
+    set transition to get_list(values and 0)
+    set sequence to get_list(action and 2)
+    if transition < 0 or else transition > 65535 or else sequence < -1 or else sequence > 65535 or else get_list(values and 1) is not equal to 1:
+        return discord_voice_media_controller_close(state and "invalid-prepare-transition")
+    set transport to get_list(get_list(state and 0) and 0)
+    set handshake to get_list(transport and 0)
+    if discord_voice_handshake_current(handshake and get_list(state and 5)) equals 0 or else get_list(handshake and 0) is not equal to 4:
+        return discord_voice_media_controller_close(state and "stale-prepare-transition")
+    set latest to 0
+    set existing to 0
+    for each row in get_list(state and 3):
+        if latest equals 0 or else get_list(row and 2) > get_list(latest and 2):
+            set latest to row
+        if get_list(row and 0) equals transition:
+            set existing to row
+    if existing is not equal to 0:
+        if transition equals 0:
+            return discord_voice_media_controller_execute(state and 0 and sequence and recognized)
+        # This record exists only after an earlier successful Ready. Do not
+        # recapture keys from a newer native epoch for the same transition ID.
+        set body to discord_voice_transition_body(23 and transition)
+        if discord_voice_socket_send(get_list(transport and 1) and str_to_ptr(body) and string_length(body) and 0) equals 0:
+            return discord_voice_media_controller_close(state and "transition-ready-write-uncertain")
+        if sequence >= 0:
+            set accepted to discord_voice_heartbeat_sequence(get_list(handshake and 1) and sequence and get_list(state and 5))
+        return "media-transition-prepared"
+    if latest equals 0:
+        return discord_voice_media_controller_close(state and "prepare-transition-before-mls")
+    set roster to get_list(latest and 1)
+    set native_result to history_status("committed")
+    set added to append_list(native_result and roster)
+    set result to history_status("committed")
+    set added to append_list(result and sequence)
+    set added to append_list(result and transition)
+    set added to append_list(result and native_result)
+    return discord_voice_media_controller_commit(state and result)
+
+# Prepare Epoch 1 starts a fresh MLS group while retaining the authenticated
+# voice socket and transport cipher. Other epoch notices do not reset MLS.
+define discord_voice_media_controller_epoch with state as List and action as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 9 or else get_list(state and 6) is not equal to 0:
+        return "media-controller-closed"
+    if action equals 0 or else length_list(action) is not equal to 4 or else get_list(action and 1) is not equal to 24 or else length_list(get_list(action and 3)) is not equal to 2:
+        return discord_voice_media_controller_close(state and "invalid-prepare-epoch")
+    set values to get_list(action and 3)
+    set epoch to get_list(values and 0)
+    set sequence to get_list(action and 2)
+    if epoch < 1 or else epoch > 9007199254740991 or else get_list(values and 1) is not equal to 1 or else sequence < -1 or else sequence > 65535:
+        return discord_voice_media_controller_close(state and "invalid-prepare-epoch")
+    set transport to get_list(get_list(state and 0) and 0)
+    set handshake to get_list(transport and 0)
+    if discord_voice_handshake_current(handshake and get_list(state and 5)) equals 0 or else get_list(handshake and 0) is not equal to 4:
+        return discord_voice_media_controller_close(state and "stale-prepare-epoch")
+    if epoch equals 1:
+        for each entry in get_list(state and 2):
+            set closed to discord_voice_transitions_close(get_list(entry and 1))
+            set closed to discord_voice_epoch_close(get_list(entry and 2))
+        set changed to set_list(state and 2 and create_list())
+        set changed to set_list(state and 3 and create_list())
+        set changed to set_list(state and 4 and create_list())
+        set changed to set_list(state and 7 and 0)
+        set changed to set_list(state and 8 and 0)
+        set closed to discord_dave_close(get_list(transport and 4))
+        set changed to set_list(transport and 4 and 0)
+        set paths to get_list(transport and 5)
+        set session to discord_dave_open(archive_list_text(paths and 1) and archive_list_text(paths and 2) and 1 and get_list(transport and 6) and archive_list_text(transport and 7))
+        set changed to set_list(transport and 4 and session)
+        if session equals 0:
+            return discord_voice_media_controller_close(state and "epoch-session-open-failed")
+        set package to discord_dave_key_package(session)
+        if package equals 0:
+            return discord_voice_media_controller_close(state and "epoch-key-package-failed")
+        set wire to discord_voice_mls_outbound(26 and get_list(package and 0) and get_list(package and 1))
+        set released to discord_voice_blob_release(package)
+        if wire equals 0:
+            return discord_voice_media_controller_close(state and "epoch-key-package-failed")
+        set sent to discord_voice_socket_send(get_list(transport and 1) and get_list(wire and 0) and get_list(wire and 1) and 1)
+        set released to discord_voice_blob_release(wire)
+        if sent equals 0:
+            return discord_voice_media_controller_close(state and "epoch-key-package-write-uncertain")
+    if sequence >= 0 and also discord_voice_heartbeat_sequence(get_list(handshake and 1) and sequence and get_list(state and 5)) equals 0:
+        return discord_voice_media_controller_close(state and "epoch-ack-failed")
+    if epoch equals 1:
+        return "media-awaiting-new-epoch"
+    return "media-epoch-notice"
+
+# Dispatch only native I/O results, never model-supplied controls. Binary blobs
+# are consumed by apply_mls before the returned commit enters roster handling.
+define discord_voice_media_controller_dispatch with state as List and action as List and recognized as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 9 or else get_list(state and 6) is not equal to 0:
+        if archive_list_text(action and 0) equals "binary-mls":
+            set released to discord_voice_blob_release(get_list(action and 1))
+        return "media-controller-closed"
+    set io_state to get_list(state and 0)
+    set result to action
+    if archive_list_text(result and 0) equals "binary-mls":
+        set result to discord_voice_io_apply_mls(io_state and get_list(result and 1) and recognized and get_list(state and 5))
+    set status to archive_list_text(result and 0)
+    if get_list(io_state and 4) is not equal to 0:
+        return discord_voice_media_controller_close(state and status)
+    if status equals "committed" or else status equals "joined":
+        return discord_voice_media_controller_commit(state and result)
+    if status equals "prepare-transition":
+        return discord_voice_media_controller_prepare(state and result and recognized)
+    if status equals "prepare-epoch":
+        return discord_voice_media_controller_epoch(state and result)
+    if status equals "execute-transition":
+        if length_list(result) is not equal to 4 or else get_list(result and 1) is not equal to 22 or else length_list(get_list(result and 3)) is not equal to 1:
+            return discord_voice_media_controller_close(state and "invalid-media-execute-control")
+        return discord_voice_media_controller_execute(state and get_list(get_list(result and 3) and 0) and get_list(result and 2) and recognized)
+    return status
+
+# The worker observes current permissions, participant policy and cancellation
+# before each bounded tick. Media access remains separately consent-gated.
+define discord_voice_media_controller_tick with state as List and monotonic_ms as Int and wall_ms as Int and recognized as List and authorized as Int and cancelled as Int returning Str:
+    if state equals 0 or else length_list(state) is not equal to 9 or else get_list(state and 6) is not equal to 0:
+        return "media-controller-closed"
+    set result to discord_voice_io_tick(get_list(state and 0) and monotonic_ms and wall_ms and get_list(state and 5) and authorized and cancelled)
+    return discord_voice_media_controller_dispatch(state and result and recognized)
+
+# Worker entry point: derive the MLS roster from current Gateway membership and
+# bind that registry to this channel and bot before processing any socket event.
+# Rejected binary actions still transfer ownership and must be released.
+define discord_voice_media_controller_members with state as List and participants as List and gateway_generation as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 9 or else get_list(state and 6) is not equal to 0:
+        return 0
+    set roster to discord_voice_participants_roster(participants and gateway_generation)
+    if roster equals 0:
+        return 0
+    set transport to get_list(get_list(state and 0) and 0)
+    if not (archive_list_text(participants and 1) equals int_to_string(get_list(transport and 6))) or else not (archive_list_text(participants and 2) equals archive_list_text(transport and 7)):
+        return 0
+    return roster
+
+define discord_voice_media_controller_dispatch_members with state as List and action as List and participants as List and gateway_generation as Int returning Str:
+    set roster to discord_voice_media_controller_members(state and participants and gateway_generation)
+    if roster equals 0:
+        if archive_list_text(action and 0) equals "binary-mls":
+            set released to discord_voice_blob_release(get_list(action and 1))
+        return discord_voice_media_controller_close(state and "invalid-current-voice-membership")
+    set status to archive_list_text(action and 0)
+    if status equals "speaking" or else status equals "client-disconnect":
+        set handshake to get_list(get_list(get_list(state and 0) and 0) and 0)
+        set handled to discord_voice_participant_control(participants and handshake and action and gateway_generation and get_list(state and 5))
+        if handled equals "audio-identity-mapped" or else handled equals "audio-identity-retired":
+            return handled
+        # Inconsistent identities require a fresh authoritative membership view;
+        # never continue receiving media under an ambiguous or unknown mapping.
+        return discord_voice_media_controller_close(state and handled)
+    return discord_voice_media_controller_dispatch(state and action and roster)
+
+define discord_voice_media_controller_tick_members with state as List and monotonic_ms as Int and wall_ms as Int and participants as List and gateway_generation as Int and authorized as Int and cancelled as Int returning Str:
+    if discord_voice_media_controller_members(state and participants and gateway_generation) equals 0:
+        return discord_voice_media_controller_close(state and "invalid-current-voice-membership")
+    set result to discord_voice_io_tick(get_list(state and 0) and monotonic_ms and wall_ms and get_list(state and 5) and authorized and cancelled)
+    return discord_voice_media_controller_dispatch_members(state and result and participants and gateway_generation)

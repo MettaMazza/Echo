@@ -1,0 +1,77 @@
+import "select"
+
+# Worker-owned nonblocking handoff. Fields: request/reply/completion channels,
+# next serial, outstanding serial, cached proof, lifecycle (0 running, 1 stopping,
+# 2 stopped, 3 failed awaiting completion, 4 failed and joined). Only the worker touches this state.
+define discord_voice_permission_mailbox_new with requests as Int and replies as Int and completed as Int returning List:
+    set state to create_list()
+    set state to [requests,replies,completed,1,0,0,0]
+    return state
+
+define discord_voice_permission_mailbox_stop with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 7:
+        return 0
+    if get_list(state and 6) equals 0:
+        set changed to set_list(state and 6 and 1)
+        set changed to set_list(state and 5 and 0)
+        send 0 to get_list(state and 0)
+    return 1
+
+define discord_voice_permission_mailbox_fail with state as List returning Str:
+    set stopped to discord_voice_permission_mailbox_stop(state)
+    set changed to set_list(state and 6 and 3)
+    set changed to set_list(state and 5 and 0)
+    return "permission-observer-failed"
+
+define discord_voice_permission_mailbox_refresh with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 7 or else get_list(state and 6) is not equal to 0 or else get_list(state and 4) is not equal to 0:
+        return 0
+    set serial to get_list(state and 3)
+    if serial < 1 or else serial > 9007199254740991:
+        set failed to discord_voice_permission_mailbox_fail(state)
+        return 0
+    set changed to set_list(state and 4 and serial)
+    set changed to set_list(state and 3 and serial + 1)
+    send serial to get_list(state and 0)
+    return serial
+
+# Consume at most one reply per call. Completion takes precedence over any
+# cached/in-flight proof. A mismatched reply cannot authorize another refresh.
+define discord_voice_permission_mailbox_poll with state as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 7:
+        return "permission-observer-failed"
+    set completions to create_list()
+    set added to append_list(completions and get_list(state and 2))
+    if select(completions and 0) >= 0:
+        set code to receive from get_list(state and 2)
+        set changed to set_list(state and 5 and 0)
+        set changed to set_list(state and 4 and 0)
+        if code is not equal to 0 or else get_list(state and 6) equals 3:
+            set changed to set_list(state and 6 and 4)
+            return "permission-observer-failed"
+        set changed to set_list(state and 6 and 2)
+        return "permission-observer-stopped"
+    if get_list(state and 6) equals 2:
+        return "permission-observer-stopped"
+    if get_list(state and 6) equals 3 or else get_list(state and 6) equals 4:
+        return "permission-observer-failed"
+    set responses to create_list()
+    set added to append_list(responses and get_list(state and 1))
+    if select(responses and 0) < 0:
+        return "pending"
+    set reply to receive from get_list(state and 1)
+    if reply equals 0 or else length_list(reply) is not equal to 2 or else get_list(state and 4) equals 0 or else get_list(reply and 0) is not equal to get_list(state and 4):
+        return discord_voice_permission_mailbox_fail(state)
+    set changed to set_list(state and 4 and 0)
+    if get_list(state and 6) is not equal to 0:
+        return "permission-observer-stopping"
+    set proof to get_list(reply and 1)
+    if proof equals 0 or else length_list(proof) < 1:
+        return discord_voice_permission_mailbox_fail(state)
+    set changed to set_list(state and 5 and proof)
+    return "permission-proof-ready"
+
+define discord_voice_permission_mailbox_proof with state as List returning List:
+    if state equals 0 or else length_list(state) is not equal to 7 or else get_list(state and 6) is not equal to 0:
+        return 0
+    return get_list(state and 5)

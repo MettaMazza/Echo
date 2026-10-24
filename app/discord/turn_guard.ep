@@ -15,14 +15,24 @@ define discord_source_matches with original as Str and fetched as Str returning 
     for each key in rooted_literal_1:
         set left to provider_member(before and 0 and ptr_to_str(key))
         set right to provider_member(after and 0 and ptr_to_str(key))
-        if left < 0 or else right < 0 or else not (provider_value(before and left) equals provider_value(after and right)):
+        if left < 0 or else right < 0:
+            return 0
+        # Retain both values across the other allocating decode.
+        set left_value to provider_value(before and left)
+        set right_value to provider_value(after and right)
+        if not (left_value equals right_value):
             return 0
     set left_author to provider_member(before and provider_member(before and 0 and "author") and "id")
     set right_author to provider_member(after and provider_member(after and 0 and "author") and "id")
-    if left_author < 0 or else right_author < 0 or else not (provider_value(before and left_author) equals provider_value(after and right_author)):
+    if left_author < 0 or else right_author < 0:
+        return 0
+    set left_author_value to provider_value(before and left_author)
+    set right_author_value to provider_value(after and right_author)
+    if not (left_author_value equals right_author_value):
         return 0
     set manifest to discord_attachment_manifest(original)
-    if string_length(manifest) equals 0 or else not (manifest equals discord_attachment_manifest(fetched)):
+    set fetched_manifest to discord_attachment_manifest(fetched)
+    if string_length(manifest) equals 0 or else not (manifest equals fetched_manifest):
         return 0
     return 1
 
@@ -31,11 +41,16 @@ define discord_source_matches with original as Str and fetched as Str returning 
 # Discord HAS_THREAD (32) metadata alone is not an edit. Require every other
 # original JSON path/type/value to match, except the optional send nonce.
 # Discord may also omit the optional quoted-message expansion; the original
-# message_reference identity must still match exactly.
+# message_reference identity must still match exactly. Discord also adds a
+# nullable account presentation field to author/mentions on thread creation;
+# null and absent vad_colors carry no message or authority change.
 # Partial, changed-content, attachment, author and unknown updates still cancel.
 # Keep temporary lists named/rooted before any allocating call: inline list
 # construction with int_to_string can cross a GC safepoint before it is rooted.
 define discord_turn_barrier with journal as Int and cursor as Int and message as Str and room as Str and guild_id as Str returning Int:
+    set author to history_collect_one(checkpoint_prepare(journal and "SELECT json_extract(payload,'$.author.id') FROM discord_inbox WHERE identity='message:create:'||?1;" and [message]))
+    if archive_list_text(author and 0) equals "found" and discord_testing_inbox_allows(journal and archive_list_text(author and 1) and concat("message:create:" and message)) equals 0:
+        return 1
     set cancellation_values to create_list()
     set added to append_list(cancellation_values and message)
     set cancellation to history_collect_one(checkpoint_prepare(journal and "SELECT source FROM discord_cancel_sources WHERE source='message:create:'||?1;" and cancellation_values))
@@ -50,7 +65,7 @@ define discord_turn_barrier with journal as Int and cursor as Int and message as
     set retained_value_added to append_list(rooted_literal_2 and room)
     set retained_value_added to append_list(rooted_literal_2 and guild_id)
     set values to rooted_literal_2
-    set row to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_inbox WHERE rowid>CAST(?1 AS INTEGER) AND ((kind IN ('MESSAGE_UPDATE','MESSAGE_DELETE') AND json_extract(payload,'$.id')=?2 AND json_extract(payload,'$.channel_id')=?3 AND NOT (kind='MESSAGE_UPDATE' AND EXISTS(SELECT 1 FROM discord_inbox AS source WHERE source.identity='message:create:'||?2 AND source.kind='MESSAGE_CREATE' AND json_type(source.payload,'$.flags')='integer' AND json_type(discord_inbox.payload,'$.flags')='integer' AND json_extract(discord_inbox.payload,'$.flags')=(json_extract(source.payload,'$.flags')|32) AND NOT EXISTS(SELECT fullkey,type,atom FROM json_tree(CASE WHEN json_type(discord_inbox.payload,'$.referenced_message') IS NULL THEN json_remove(source.payload,'$.referenced_message') ELSE source.payload END) WHERE fullkey NOT IN ('$.flags','$.nonce') EXCEPT SELECT fullkey,type,atom FROM json_tree(discord_inbox.payload) WHERE fullkey NOT IN ('$.flags','$.nonce')) AND NOT EXISTS(SELECT fullkey,type,atom FROM json_tree(discord_inbox.payload) WHERE fullkey NOT IN ('$.flags','$.nonce') EXCEPT SELECT fullkey,type,atom FROM json_tree(CASE WHEN json_type(discord_inbox.payload,'$.referenced_message') IS NULL THEN json_remove(source.payload,'$.referenced_message') ELSE source.payload END) WHERE fullkey NOT IN ('$.flags','$.nonce'))))) OR (kind='MESSAGE_DELETE_BULK' AND json_extract(payload,'$.channel_id')=?3 AND EXISTS(SELECT 1 FROM json_each(discord_inbox.payload,'$.ids') WHERE value=?2)) OR (identity LIKE 'audience:%' AND ?4<>'' AND json_extract(payload,'$.guild_id')=?4 AND (kind NOT IN ('CHANNEL_UPDATE','CHANNEL_DELETE') OR json_type(payload,'$.channel_id') IS NULL OR json_extract(payload,'$.channel_id')=?3 OR NOT EXISTS(SELECT 1 FROM discord_channel_scopes WHERE room=?3 AND guild=?4) OR json_extract(payload,'$.channel_id')=(SELECT parent FROM discord_channel_scopes WHERE room=?3 AND guild=?4 ORDER BY sequence DESC LIMIT 1)) AND (kind NOT IN ('THREAD_UPDATE','THREAD_DELETE') OR json_type(payload,'$.thread_id') IS NULL OR json_extract(payload,'$.thread_id')=?3)));" and values))
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_inbox WHERE rowid>CAST(?1 AS INTEGER) AND ((kind IN ('MESSAGE_UPDATE','MESSAGE_DELETE') AND json_extract(payload,'$.id')=?2 AND json_extract(payload,'$.channel_id')=?3 AND NOT (kind='MESSAGE_UPDATE' AND EXISTS(SELECT 1 FROM discord_inbox AS source WHERE source.identity='message:create:'||?2 AND source.kind='MESSAGE_CREATE' AND json_type(source.payload,'$.flags')='integer' AND json_type(discord_inbox.payload,'$.flags')='integer' AND json_extract(discord_inbox.payload,'$.flags')=(json_extract(source.payload,'$.flags')|32) AND NOT EXISTS(SELECT fullkey,type,atom FROM json_tree(CASE WHEN json_type(discord_inbox.payload,'$.referenced_message') IS NULL THEN json_remove(source.payload,'$.referenced_message') ELSE source.payload END) WHERE fullkey NOT IN ('$.flags','$.nonce') AND NOT (key='vad_colors' AND type='null' AND (path='$.author' OR path GLOB '$.mentions[[]*]')) EXCEPT SELECT fullkey,type,atom FROM json_tree(discord_inbox.payload) WHERE fullkey NOT IN ('$.flags','$.nonce') AND NOT (key='vad_colors' AND type='null' AND (path='$.author' OR path GLOB '$.mentions[[]*]'))) AND NOT EXISTS(SELECT fullkey,type,atom FROM json_tree(discord_inbox.payload) WHERE fullkey NOT IN ('$.flags','$.nonce') AND NOT (key='vad_colors' AND type='null' AND (path='$.author' OR path GLOB '$.mentions[[]*]')) EXCEPT SELECT fullkey,type,atom FROM json_tree(CASE WHEN json_type(discord_inbox.payload,'$.referenced_message') IS NULL THEN json_remove(source.payload,'$.referenced_message') ELSE source.payload END) WHERE fullkey NOT IN ('$.flags','$.nonce') AND NOT (key='vad_colors' AND type='null' AND (path='$.author' OR path GLOB '$.mentions[[]*]')))))) OR (kind='MESSAGE_DELETE_BULK' AND json_extract(payload,'$.channel_id')=?3 AND EXISTS(SELECT 1 FROM json_each(discord_inbox.payload,'$.ids') WHERE value=?2)) OR (identity LIKE 'audience:%' AND ?4<>'' AND json_extract(payload,'$.guild_id')=?4 AND (kind NOT IN ('CHANNEL_UPDATE','CHANNEL_DELETE') OR json_type(payload,'$.channel_id') IS NULL OR json_extract(payload,'$.channel_id')=?3 OR NOT EXISTS(SELECT 1 FROM discord_channel_scopes WHERE room=?3 AND guild=?4) OR json_extract(payload,'$.channel_id')=(SELECT parent FROM discord_channel_scopes WHERE room=?3 AND guild=?4 ORDER BY sequence DESC LIMIT 1)) AND (kind NOT IN ('THREAD_UPDATE','THREAD_DELETE') OR json_type(payload,'$.thread_id') IS NULL OR json_extract(payload,'$.thread_id')=?3)));" and values))
     if not (archive_list_text(row and 0) equals "found"):
         return -1
     if not (archive_list_text(row and 1) equals "0"):

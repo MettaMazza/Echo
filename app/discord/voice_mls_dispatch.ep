@@ -1,0 +1,51 @@
+import "voice_mls_wire"
+import "voice_handshake"
+import "voice_socket"
+
+# Dispose an unhandled outbound result when its owning transport is stale.
+define discord_voice_mls_discard with result as List returning Int:
+    if result is not equal to 0 and also length_list(result) equals 4 and also archive_list_text(result and 0) equals "send-commit-welcome":
+        set released to discord_voice_blob_release(get_list(result and 3))
+        set changed to set_list(result and 3 and 0)
+    return 1
+
+# Complete a native MLS result on its owning authenticated socket. Commit and
+# Welcome defer acknowledgement until the transition controller has captured
+# all ratchets and sent Ready. Never acknowledge merely parsing a transition ID.
+define discord_voice_mls_finish with transport as List and result as List and generation as Int returning List:
+    if transport equals 0 or else length_list(transport) is not equal to 8:
+        set discarded to discord_voice_mls_discard(result)
+        return history_status("invalid-mls-transport")
+    set handshake to get_list(transport and 0)
+    if discord_voice_handshake_current(handshake and generation) equals 0 or else get_list(handshake and 0) is not equal to 4:
+        set discarded to discord_voice_mls_discard(result)
+        return history_status("stale-mls-owner")
+    set status to archive_list_text(result and 0)
+    if length_list(result) is not equal to 4:
+        return result
+    if status equals "committed" or else status equals "joined":
+        return result
+    if status equals "send-commit-welcome":
+        set blob to get_list(result and 3)
+        set written to discord_voice_socket_send(get_list(transport and 1) and get_list(blob and 0) and get_list(blob and 1) and 1)
+        set released to discord_voice_blob_release(blob)
+        set changed to set_list(result and 3 and 0)
+        if written equals 0:
+            return history_status("mls-response-write-uncertain")
+    else:
+        if not (status equals "external-sender" or else status equals "no-output" or else status equals "ignored"):
+            return result
+    if discord_voice_heartbeat_sequence(get_list(handshake and 1) and get_list(result and 1) and generation) equals 0:
+        return history_status("mls-sequence-commit-failed")
+    return result
+
+# Caller retains the borrowed input. Validate ownership before invoking native
+# crypto, because an old socket must not mutate the current MLS session.
+define discord_voice_mls_dispatch with transport as List and pointer as Int and count as Int and users as List and generation as Int returning List:
+    if transport equals 0 or else length_list(transport) is not equal to 8:
+        return history_status("invalid-mls-transport")
+    set handshake to get_list(transport and 0)
+    if discord_voice_handshake_current(handshake and generation) equals 0 or else get_list(handshake and 0) is not equal to 4:
+        return history_status("stale-mls-owner")
+    set result to discord_voice_mls_receive(get_list(transport and 4) and pointer and count and users)
+    return discord_voice_mls_finish(transport and result and generation)

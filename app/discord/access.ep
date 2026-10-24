@@ -1,10 +1,41 @@
+import "receipt_spool"
 import "permissions"
 import "delivery"
 
 # Host-only authenticated inspection/typing with private evidence and shared rate
 # deadlines. The model never supplies routes or receives credentials.
 define discord_access_get with library as Str and token as Str and journal as Int and directory_path as Str and route as Str and bucket as Str and major as Str returning List:
-    return discord_access_request(library and token and journal and directory_path and "GET" and route and bucket and major)
+    set budget to ep_time_now_ms() + 15000
+    set attempt to 0
+    repeat while attempt < 5:
+        set result to discord_access_request(library and token and journal and directory_path and "GET" and route and bucket and major)
+        set delay to discord_access_retry_delay(archive_list_text(result and 0) and discord_rate_deadline(journal and bucket and major) and ep_time_now_ms() and budget)
+        if delay < 0 or else attempt equals 4:
+            return result
+        set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+        if system equals 0:
+            return result
+        set until to ep_time_now_ms() + delay
+        repeat while ep_time_now_ms() < until:
+            if (get_argument_count() equals 15 or else get_argument_count() equals 16) and get_argument(13) equals "--turn" and file_exists(get_argument(6)):
+                set closed to ep_dlclose(system)
+                return history_status("stopped")
+            set waited to ep_dlcall1(ep_dlsym(system and "usleep") and 50000)
+        set closed to ep_dlclose(system)
+        set attempt to attempt + 1
+    return history_status("rate-limited")
+
+# Only safe GET observations retry. Never replay mutations, cache permission
+# grants, or ask the model to spend a turn waiting for a short rate deadline.
+define discord_access_retry_delay with status as Str and deadline as Int and now as Int and budget as Int returning Int:
+    if not (status equals "rate-limited" or else status equals "http-429") or else deadline < 0:
+        return -1
+    set delay to deadline - now + 50
+    if delay < 250:
+        set delay to 250
+    if now + delay > budget:
+        return -1
+    return delay
 
 define discord_access_request with library as Str and token as Str and journal as Int and directory_path as Str and method as Str and route as Str and bucket as Str and major as Str returning List:
     return discord_access_body(library and token and journal and directory_path and method and route and bucket and major and "")
@@ -42,9 +73,16 @@ define discord_access_bytes_audit with library as Str and token as Str and journ
         set retained_value_added to append_list(rooted_literal_4 and "private-output-unavailable")
         return rooted_literal_4
     set identity to ptr_to_str(ep_uuid_v4())
-    set filename to concat(identity and ".json")
-    set headerfile to concat(identity and ".headers")
-    set output to workspace_file_open(system and directory and filename and 1)
+    set receipt_name to discord_receipt_name(system and directory and identity)
+    if string_length(receipt_name) equals 0:
+        set closed to net_close(directory)
+        set closed to ep_dlclose(system)
+        return history_status("private-output-unavailable")
+    set filename to concat(receipt_name and ".json")
+    set headerfile to concat(receipt_name and ".headers")
+    set output to -1
+    if string_length(receipt_name) > 0:
+        set output to workspace_file_open(system and directory and filename and 1)
     set headers to workspace_file_open(system and directory and headerfile and 1)
     set closed to net_close(directory)
     set closed to ep_dlclose(system)
@@ -129,6 +167,25 @@ define discord_access_check with library as Str and token as Str and journal as 
 
 # An additional operation-specific permission is checked in the same snapshots.
 define discord_access_check_bit with library as Str and token as Str and journal as Int and directory_path as Str and bot as Str and guild_id as Str and room as Str and user as Str and admins as List and required_bit as Int returning List:
+    return discord_access_check_bit_capture(library and token and journal and directory_path and bot and guild_id and room and user and admins and required_bit and create_list())
+
+# Optional native capture reuses the exact observed channel; ordinary results
+# remain status/evidence only. Never serialize this private capture to a model.
+define discord_access_check_bit_capture with library as Str and token as Str and journal as Int and directory_path as Str and bot as Str and guild_id as Str and room as Str and user as Str and admins as List and required_bit as Int and capture as List returning List:
+    return discord_access_check_snapshot(library and token and journal and directory_path and bot and guild_id and room and user and admins and required_bit and capture and create_list())
+
+# A snapshot belongs to one native authorization pass, never another turn.
+define discord_access_check_snapshot with library as Str and token as Str and journal as Int and directory_path as Str and bot as Str and guild_id as Str and room as Str and user as Str and admins as List and required_bit as Int and capture as List and snapshot as List returning List:
+    return discord_access_mode_snapshot(library and token and journal and directory_path and bot and guild_id and room and user and admins and required_bit and capture and snapshot and 0)
+
+# Reading history does not require send permission, an unarchived thread, or
+# freedom from a send timeout. Both the requester and bot still need history.
+define discord_access_read_snapshot with library as Str and token as Str and journal as Int and directory_path as Str and bot as Str and guild_id as Str and room as Str and user as Str and admins as List and snapshot as List returning List:
+    return discord_access_mode_snapshot(library and token and journal and directory_path and bot and guild_id and room and user and admins and -1 and create_list() and snapshot and 1)
+
+define discord_access_mode_snapshot with library as Str and token as Str and journal as Int and directory_path as Str and bot as Str and guild_id as Str and room as Str and user as Str and admins as List and required_bit as Int and capture as List and snapshot as List and read_only as Int returning List:
+    if discord_testing_allows(journal and user) equals 0:
+        return history_status("account-unavailable")
     if discord_snowflake(bot) equals 0 or else discord_snowflake(room) equals 0 or else discord_snowflake(user) equals 0:
         set rooted_literal_12 to create_list()
         set retained_value_added to append_list(rooted_literal_12 and "invalid-identity")
@@ -137,10 +194,11 @@ define discord_access_check_bit with library as Str and token as Str and journal
         set rooted_literal_13 to create_list()
         set retained_value_added to append_list(rooted_literal_13 and "guest-dm")
         return rooted_literal_13
-    set observed to discord_access_get(library and token and journal and directory_path and concat("/channels/" and room) and "GET:channel" and room)
+    set observed to discord_access_snapshot_get(library and token and journal and directory_path and concat("/channels/" and room) and "GET:channel" and room and snapshot)
     if not (archive_list_text(observed and 0) equals "observed"):
         return observed
     set room_body to archive_list_text(observed and 1)
+    set captured to append_list(capture and room_body)
     set evidence to archive_list_text(observed and 2)
     set room_tokens to provider_json_tokens(room_body)
     if not (provider_value(room_tokens and provider_member(room_tokens and 0 and "id")) equals room):
@@ -188,7 +246,7 @@ define discord_access_check_bit with library as Str and token as Str and journal
     set send_bit to 11
     if kind equals "10" or else kind equals "11" or else kind equals "12":
         set metadata to provider_member(room_tokens and 0 and "thread_metadata")
-        if not (provider_value(room_tokens and provider_member(room_tokens and metadata and "archived")) equals "false") or else not (provider_value(room_tokens and provider_member(room_tokens and metadata and "locked")) equals "false"):
+        if not read_only and (not (provider_value(room_tokens and provider_member(room_tokens and metadata and "archived")) equals "false") or else not (provider_value(room_tokens and provider_member(room_tokens and metadata and "locked")) equals "false")):
             set rooted_literal_21 to create_list()
             set retained_value_added to append_list(rooted_literal_21 and "thread-not-writable")
             return rooted_literal_21
@@ -197,7 +255,7 @@ define discord_access_check_bit with library as Str and token as Str and journal
             set rooted_literal_22 to create_list()
             set retained_value_added to append_list(rooted_literal_22 and "thread-parent-unavailable")
             return rooted_literal_22
-        set parent to discord_access_get(library and token and journal and directory_path and concat("/channels/" and permission_room) and "GET:channel" and permission_room)
+        set parent to discord_access_snapshot_get(library and token and journal and directory_path and concat("/channels/" and permission_room) and "GET:channel" and permission_room and snapshot)
         if not (archive_list_text(parent and 0) equals "observed"):
             return parent
         set permission_body to archive_list_text(parent and 1)
@@ -208,7 +266,7 @@ define discord_access_check_bit with library as Str and token as Str and journal
             set retained_value_added to append_list(rooted_literal_23 and bot)
             set retained_value_added to append_list(rooted_literal_23 and user)
             for each recipient in rooted_literal_23:
-                set membership to discord_access_get(library and token and journal and directory_path and concat("/channels/" and concat(room and concat("/thread-members/" and ptr_to_str(recipient)))) and "GET:thread-member" and room)
+                set membership to discord_access_snapshot_get(library and token and journal and directory_path and concat("/channels/" and concat(room and concat("/thread-members/" and ptr_to_str(recipient)))) and "GET:thread-member" and room and snapshot)
                 if not (archive_list_text(membership and 0) equals "observed"):
                     return membership
                 set membership_tokens to provider_json_tokens(archive_list_text(membership and 1))
@@ -223,10 +281,10 @@ define discord_access_check_bit with library as Str and token as Str and journal
         return rooted_literal_25
     if discord_channel_scope_record(journal and room_body) is not equal to 0:
         return history_status("channel-scope-record-unavailable")
-    set guild to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and guild_id) and "GET:guild" and guild_id)
+    set guild to discord_access_snapshot_get(library and token and journal and directory_path and concat("/guilds/" and guild_id) and "GET:guild" and guild_id and snapshot)
     if not (archive_list_text(guild and 0) equals "observed"):
         return guild
-    set roles to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild_id and "/roles")) and "GET:roles" and guild_id)
+    set roles to discord_access_snapshot_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild_id and "/roles")) and "GET:roles" and guild_id and snapshot)
     if not (archive_list_text(roles and 0) equals "observed"):
         return roles
     set evidence to concat(evidence and concat(archive_list_text(guild and 2) and archive_list_text(roles and 2)))
@@ -235,7 +293,7 @@ define discord_access_check_bit with library as Str and token as Str and journal
     set retained_value_added to append_list(rooted_literal_26 and user)
     for each recipient in rooted_literal_26:
         set person to ptr_to_str(recipient)
-        set member to discord_access_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild_id and concat("/members/" and person))) and "GET:member" and guild_id)
+        set member to discord_access_snapshot_get(library and token and journal and directory_path and concat("/guilds/" and concat(guild_id and concat("/members/" and person))) and "GET:member" and guild_id and snapshot)
         if not (archive_list_text(member and 0) equals "observed"):
             return member
         set evidence to concat(evidence and archive_list_text(member and 2))
@@ -243,17 +301,17 @@ define discord_access_check_bit with library as Str and token as Str and journal
             set rooted_literal_27 to create_list()
             set retained_value_added to append_list(rooted_literal_27 and "view-permission-denied")
             return rooted_literal_27
-        if discord_member_timeout(journal and archive_list_text(member and 1) and ep_time_now_ms()) is not equal to 0:
+        if not read_only and discord_member_timeout(journal and archive_list_text(member and 1) and ep_time_now_ms()) is not equal to 0:
             set rooted_literal_28 to create_list()
             set retained_value_added to append_list(rooted_literal_28 and "member-timeout-or-invalid")
             return rooted_literal_28
-        if discord_channel_permission(archive_list_text(guild and 1) and archive_list_text(roles and 1) and archive_list_text(member and 1) and permission_body and guild_id and person and permission_room and send_bit) is not equal to 1:
+        if not read_only and discord_channel_permission(archive_list_text(guild and 1) and archive_list_text(roles and 1) and archive_list_text(member and 1) and permission_body and guild_id and person and permission_room and send_bit) is not equal to 1:
             set rooted_literal_29 to create_list()
             set retained_value_added to append_list(rooted_literal_29 and "send-permission-denied")
             return rooted_literal_29
         if required_bit >= 0 and also discord_channel_permission(archive_list_text(guild and 1) and archive_list_text(roles and 1) and archive_list_text(member and 1) and permission_body and guild_id and person and permission_room and required_bit) is not equal to 1:
             return history_status("operation-permission-denied")
-        if person equals bot and discord_channel_permission(archive_list_text(guild and 1) and archive_list_text(roles and 1) and archive_list_text(member and 1) and permission_body and guild_id and person and permission_room and 16) is not equal to 1:
+        if (person equals bot or else read_only) and discord_channel_permission(archive_list_text(guild and 1) and archive_list_text(roles and 1) and archive_list_text(member and 1) and permission_body and guild_id and person and permission_room and 16) is not equal to 1:
             set rooted_literal_30 to create_list()
             set retained_value_added to append_list(rooted_literal_30 and "history-permission-denied")
             return rooted_literal_30
@@ -262,3 +320,24 @@ define discord_access_check_bit with library as Str and token as Str and journal
     set retained_value_added to append_list(retained_values_2 and "public")
     set retained_value_added to append_list(retained_values_2 and ep_sha256(evidence))
     return retained_values_2
+
+# Reuse GET evidence only inside the caller-owned pass. Any Gateway audience
+# update invalidates earlier entries; failures are never cached. A new pass
+# starts with an empty list and therefore performs new network observations.
+define discord_access_snapshot_epoch with journal as Int returning Str:
+    set row to history_collect_one(archive_prepare(journal and "SELECT CAST(COALESCE(MAX(rowid),0) AS TEXT) FROM discord_inbox WHERE identity LIKE 'audience:%';"))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)
+
+define discord_access_snapshot_get with library as Str and token as Str and journal as Int and directory_path as Str and route as Str and bucket as Str and major as Str and snapshot as List returning List:
+    set epoch to discord_access_snapshot_epoch(journal)
+    if string_length(epoch) equals 0:
+        return history_status("audience-observation-unavailable")
+    for each entry in snapshot:
+        if archive_list_text(entry and 0) equals route and archive_list_text(entry and 1) equals bucket and archive_list_text(entry and 2) equals major and archive_list_text(entry and 3) equals epoch:
+            return get_list(entry and 4)
+    set observed to discord_access_get(library and token and journal and directory_path and route and bucket and major)
+    if archive_list_text(observed and 0) equals "observed" and discord_access_snapshot_epoch(journal) equals epoch:
+        set added to append_list(snapshot and [route,bucket,major,epoch,observed])
+    return observed

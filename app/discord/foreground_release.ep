@@ -1,0 +1,51 @@
+import "worker_store"
+
+# Release only a proven completed foreground, while retaining its process for
+# memory extraction. Outbox creation is idempotent; actual delivery still checks
+# the source and live permissions. No inference or tool call is replayed here.
+define discord_foreground_release_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_foreground_releases(inbox TEXT PRIMARY KEY REFERENCES discord_agent_jobs(inbox),run TEXT NOT NULL,final_event TEXT NOT NULL,released_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_foreground_releases_no_update BEFORE UPDATE ON discord_foreground_releases BEGIN SELECT RAISE(ABORT,'Foreground releases are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_foreground_releases_no_delete BEFORE DELETE ON discord_foreground_releases BEGIN SELECT RAISE(ABORT,'Foreground releases are immutable'); END;")
+
+define discord_foreground_released with journal as Int and inbox as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT 1 FROM discord_foreground_releases r JOIN discord_agent_jobs j ON j.inbox=r.inbox WHERE r.inbox=?1 AND j.state='enqueued';" and [inbox]))
+    if archive_list_text(row and 0) equals "found":
+        return 1
+    return 0
+
+# 1: foreground released; 0: still owned by the turn; -1: store failure.
+define discord_foreground_release with journal as Int and database as Int and inbox as Str returning Int:
+    if not (string_index_of(inbox and "message:create:") equals 0):
+        return 0
+    if discord_foreground_released(journal and inbox) equals 1:
+        return 1
+    set job to history_collect_one(checkpoint_prepare(journal and "SELECT state,cursor FROM discord_agent_jobs WHERE inbox=?1;" and [inbox]))
+    if not (archive_list_text(job and 0) equals "found"):
+        return -1
+    if not (archive_list_text(job and 1) equals "claimed"):
+        return 0
+    set run to concat("discord-message:" and substring(inbox and 15 and string_length(inbox) - 15))
+    set final to history_collect_one(checkpoint_prepare(database and "SELECT r.last_event FROM echo_runs r JOIN echo_events f ON f.event=r.last_event AND f.session=r.session AND f.kind='assistant_final' JOIN echo_events h ON h.event=f.event||':foreground-complete' AND h.kind='foreground_complete' AND h.session=r.session WHERE r.run=?1 AND r.state='completed' AND json_extract(h.payload,'$.run_id')=r.run AND json_extract(h.payload,'$.final_event')=f.event AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=r.run AND t.state IN ('queued','running'));" and [run]))
+    if archive_list_text(final and 0) equals "end":
+        return 0
+    if not (archive_list_text(final and 0) equals "found"):
+        return -1
+    set source to discord_intake_source(journal and inbox)
+    if not (archive_list_text(source and 0) equals "found"):
+        return -1
+    if discord_turn_barrier(journal and string_to_int(archive_list_text(job and 2)) and archive_list_text(source and 6) and archive_list_text(source and 4) and archive_list_text(source and 5)) is not equal to 0:
+        return 0
+    if not (discord_agent_output(journal and database and inbox) equals "enqueued"):
+        return 0
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 0
+    set current to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_agent_jobs WHERE inbox=?1;" and [inbox]))
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 1) equals "claimed"):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return 0
+    set now to int_to_string(ep_time_now_ms())
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_foreground_releases VALUES(?1,?2,?3,CAST(?4 AS INTEGER));" and [inbox,run,archive_list_text(final and 1),now]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "UPDATE discord_agent_jobs SET state='enqueued',detail='foreground complete; memory worker retained',updated_ms=CAST(?2 AS INTEGER) WHERE inbox=?1;" and [inbox,now]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'enqueued','foreground complete; memory worker retained',CAST(?2 AS INTEGER));" and [inbox,now]) and 101) is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return -1
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return -1
+    return 1

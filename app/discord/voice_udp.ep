@@ -1,0 +1,101 @@
+import "voice_wire"
+import "../network/public_address"
+import "os"
+
+# Darwin socket ABI. All I/O uses MSG_DONTWAIT so the voice worker retains
+# control of cancellation and heartbeat deadlines. No DNS is performed here.
+define discord_voice_udp_close with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 2:
+        return 0
+    set library to get_list(state and 0)
+    if library equals 0:
+        return 1
+    set fd to get_list(state and 1)
+    set changed to set_list(state and 0 and 0)
+    set changed to set_list(state and 1 and -1)
+    set result to ep_dlcall1(ep_dlsym(library and "close") and fd)
+    set closed to ep_dlclose(library)
+    return result equals 0
+
+# The address must come from READY on the authenticated voice WebSocket.
+# Reusing the public-address policy denies local, special and mapped aliases.
+define discord_voice_udp_open with numeric as Str and port as Int returning List:
+    if not (ptr_to_str(os_name()) equals "macos") or else port < 1 or else port > 65535:
+        return 0
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 0
+    set required to create_list()
+    set required to ["inet_pton","socket","connect","close","send","recv","__error"]
+    for each name in required:
+        if ep_dlsym(library and ptr_to_str(name)) equals 0:
+            set closed to ep_dlclose(library)
+            return 0
+    set address to research_native_words(4)
+    set family to 2
+    set length to 16
+    set offset to 4
+    set parsed to ep_dlcall3(ep_dlsym(library and "inet_pton") and family and str_to_ptr(numeric) and get_list_data_ptr(address) + offset)
+    if parsed is not equal to 1:
+        set address to research_native_words(4)
+        set family to 30
+        set length to 28
+        set offset to 8
+        set parsed to ep_dlcall3(ep_dlsym(library and "inet_pton") and family and str_to_ptr(numeric) and get_list_data_ptr(address) + offset)
+    if parsed is not equal to 1 or else network_address_public(library and family and get_list_data_ptr(address) + offset) equals 0:
+        set closed to ep_dlclose(library)
+        return 0
+    set written to poke_byte(get_list_data_ptr(address) and 0 and length)
+    set written to poke_byte(get_list_data_ptr(address) and 1 and family)
+    set written to discord_voice_put_u16(get_list_data_ptr(address) and 2 and port)
+    set fd to ep_dlcall3(ep_dlsym(library and "socket") and family and 2 and 17)
+    if fd < 0 or else fd > 2147483647:
+        set closed to ep_dlclose(library)
+        return 0
+    set state to create_list()
+    set added to append_list(state and library)
+    set added to append_list(state and fd)
+    if ep_dlcall3(ep_dlsym(library and "connect") and fd and get_list_data_ptr(address) and length) is not equal to 0:
+        set closed to discord_voice_udp_close(state)
+        return 0
+    return state
+
+define discord_voice_udp_send with state as List and pointer as Int and count as Int returning Int:
+    if state equals 0 or else length_list(state) is not equal to 2 or else get_list(state and 0) equals 0 or else pointer equals 0 or else count < 1 or else count > 65507:
+        return 0
+    set library to get_list(state and 0)
+    set result to ep_dlcall4(ep_dlsym(library and "send") and get_list(state and 1) and pointer and count and 128)
+    # Datagram writes are indivisible. Caller must not blindly replay errors.
+    return result equals count
+
+# Results: ["packet", owned [pointer, length]], ["again", empty], or ["failed"].
+# Only EAGAIN proves an empty socket; EINTR remains retryable but proves no drain.
+# A connected UDP socket filters packets to the peer selected by READY.
+define discord_voice_udp_read with state as List returning List:
+    set result to create_list()
+    if state equals 0 or else length_list(state) is not equal to 2 or else get_list(state and 0) equals 0:
+        set added to append_list(result and "failed")
+        return result
+    set library to get_list(state and 0)
+    # A full UDP datagram fits; no truncated prefix can masquerade as a packet.
+    set pointer to alloc_bytes(65536)
+    if pointer equals 0:
+        set added to append_list(result and "failed")
+        return result
+    set count to ep_dlcall4(ep_dlsym(library and "recv") and get_list(state and 1) and pointer and 65536 and 128)
+    if count < 0 or else count > 65535:
+        set error_pointer to ep_dlcall0(ep_dlsym(library and "__error"))
+        set error to peek_byte(error_pointer and 0) + peek_byte(error_pointer and 1) * 256 + peek_byte(error_pointer and 2) * 65536 + peek_byte(error_pointer and 3) * 16777216
+        free_bytes(pointer)
+        if error equals 35 or else error equals 4:
+            set added to append_list(result and "again")
+            set added to append_list(result and error equals 35)
+        else:
+            set added to append_list(result and "failed")
+        return result
+    set blob to create_list()
+    set added to append_list(blob and pointer)
+    set added to append_list(blob and count)
+    set added to append_list(result and "packet")
+    set added to append_list(result and blob)
+    return result

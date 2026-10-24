@@ -1,0 +1,175 @@
+import "voice_wire"
+import "../archive/history"
+import "../archive/file_digest"
+import "../workspace/files"
+
+# Little-endian RIFF integers; reject 64-bit sizes beyond exact native range.
+define discord_pcm_u16 with pointer as Int and offset as Int returning Int:
+    return peek_byte(pointer and offset) + peek_byte(pointer and offset + 1) * 256
+
+define discord_pcm_u32 with pointer as Int and offset as Int returning Int:
+    return discord_pcm_u16(pointer and offset) + discord_pcm_u16(pointer and offset + 2) * 65536
+
+define discord_pcm_u64 with pointer as Int and offset as Int returning Int:
+    set high to discord_pcm_u32(pointer and offset + 4)
+    if high > 2097151:
+        return -1
+    return discord_pcm_u32(pointer and offset) + high * 4294967296
+
+define discord_pcm_tag with pointer as Int and offset as Int and tag as Str returning Int:
+    set index to 0
+    repeat while index < 4:
+        if peek_byte(pointer and offset + index) is not equal to peek_byte(str_to_ptr(tag) and index):
+            return 0
+        set index to index + 1
+    return 1
+
+define discord_pcm_read_exact with library as Int and fd as Int and pointer as Int and count as Int and offset as Int returning Int:
+    set copied to 0
+    repeat while copied < count:
+        set read_count to socket_signed_result(ep_dlcall4(ep_dlsym(library and "pread") and fd and pointer + copied and count - copied and offset + copied))
+        if read_count < 0:
+            if socket_errno(library) is not equal to 4:
+                return 0
+        else:
+            if read_count equals 0 or else read_count > count - copied:
+                return 0
+            set copied to copied + read_count
+    return 1
+
+# Parse bounded headers while skipping payloads by offset. Audio length is not
+# a memory allocation; RF64 ds64 supports recordings beyond RIFF's 4 GiB size.
+define discord_pcm_layout with library as Int and fd as Int and bytes as Int returning List:
+    if bytes < 44 or else bytes > 9007199254740991:
+        return 0
+    set words to research_native_words(5)
+    set buffer to get_list_data_ptr(words)
+    if discord_pcm_read_exact(library and fd and buffer and 12 and 0) equals 0 or else discord_pcm_tag(buffer and 8 and "WAVE") equals 0:
+        return 0
+    set large to discord_pcm_tag(buffer and 0 and "RF64")
+    if large equals 0:
+        if discord_pcm_tag(buffer and 0 and "RIFF") equals 0 or else discord_pcm_u32(buffer and 4) + 8 is not equal to bytes:
+            return 0
+    else:
+        if discord_pcm_u32(buffer and 4) is not equal to 4294967295:
+            return 0
+    set position to 12
+    set format_seen to 0
+    set data_offset to -1
+    set data_bytes to 0
+    set large_data to -1
+    repeat while position < bytes:
+        if bytes - position < 8 or else discord_pcm_read_exact(library and fd and buffer and 8 and position) equals 0:
+            return 0
+        set count to discord_pcm_u32(buffer and 4)
+        set is_data to discord_pcm_tag(buffer and 0 and "data")
+        if large equals 1 and also position equals 12 and also discord_pcm_tag(buffer and 0 and "ds64") equals 0:
+            return 0
+        if count equals 4294967295:
+            if is_data equals 0 or else large_data < 0:
+                return 0
+            set count to large_data
+        if count > bytes - position - 8:
+            return 0
+        if discord_pcm_tag(buffer and 0 and "ds64") equals 1:
+            if large equals 0 or else large_data >= 0 or else count < 28 or else discord_pcm_read_exact(library and fd and buffer and 28 and position + 8) equals 0:
+                return 0
+            if discord_pcm_u64(buffer and 0) is not equal to bytes - 8:
+                return 0
+            set large_data to discord_pcm_u64(buffer and 8)
+            if large_data < 0 or else discord_pcm_u32(buffer and 24) * 12 > count - 28:
+                return 0
+        else if discord_pcm_tag(buffer and 0 and "fmt ") equals 1:
+            if format_seen equals 1 or else count < 16 or else discord_pcm_read_exact(library and fd and buffer and 16 and position + 8) equals 0:
+                return 0
+            if discord_pcm_u16(buffer and 0) is not equal to 1 or else discord_pcm_u16(buffer and 2) is not equal to 2 or else discord_pcm_u32(buffer and 4) is not equal to 48000 or else discord_pcm_u32(buffer and 8) is not equal to 192000 or else discord_pcm_u16(buffer and 12) is not equal to 4 or else discord_pcm_u16(buffer and 14) is not equal to 16:
+                return 0
+            set format_seen to 1
+        else if is_data equals 1:
+            if data_offset >= 0 or else count < 1 or else count % 4 is not equal to 0:
+                return 0
+            set data_offset to position + 8
+            set data_bytes to count
+        set position to position + 8 + count + count % 2
+    if position is not equal to bytes or else format_seen is not equal to 1 or else data_offset < 0:
+        return 0
+    set result to create_list()
+    set result to [data_offset,data_bytes]
+    return result
+
+# Native caller supplies an audience-owned derivative path and expected digest.
+# Hash a duplicate of this exact opened inode; pread never reopens the pathname.
+# State: retained system library, descriptor, data offset/size, cursor, closed.
+define discord_voice_pcm_open with path as Str and expected as Str and bytes as Int returning List:
+    if string_length(expected) is not equal to 64:
+        return 0
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set fd to socket_signed_result(ep_dlcall2(ep_dlsym(library and "open") and str_to_ptr(path) and 553648132))
+    if fd < 0:
+        set closed to ep_dlclose(library)
+        return 0
+    if workspace_regular_file(library and fd) equals 0:
+        set closed to net_close(fd)
+        set closed to ep_dlclose(library)
+        return 0
+    set duplicate to socket_signed_result(ep_dlcall1(ep_dlsym(library and "dup") and fd))
+    set retained_library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set digest to file_digest_owned_descriptor(retained_library and duplicate and 65536 and 0)
+    set layout to 0
+    if archive_list_text(digest and 0) equals "verified" and also archive_list_text(digest and 1) equals expected and also get_list(digest and 2) equals bytes:
+        set layout to discord_pcm_layout(library and fd and bytes)
+    if layout equals 0:
+        set closed to net_close(fd)
+        set closed to ep_dlclose(library)
+        return 0
+    set state to create_list()
+    set retained_voice_added to append_list(state and library)
+    set retained_voice_added to append_list(state and fd)
+    set retained_voice_added to append_list(state and get_list(layout and 0))
+    set retained_voice_added to append_list(state and get_list(layout and 1))
+    set retained_voice_added to append_list(state and 0)
+    set retained_voice_added to append_list(state and 0)
+    return state
+
+define discord_voice_pcm_close with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 6:
+        return 0
+    if get_list(state and 5) equals 0:
+        set closed to net_close(get_list(state and 1))
+        set closed to ep_dlclose(get_list(state and 0))
+        set changed to set_list(state and 0 and 0)
+        set changed to set_list(state and 1 and -1)
+        set changed to set_list(state and 5 and 1)
+    return 1
+
+# Owned output [frame, blob(pointer,3840), valid PCM bytes]. The final frame is
+# zero-padded; valid byte count retains exact duration for progress accounting.
+define discord_voice_pcm_next with state as List returning List:
+    if state equals 0 or else length_list(state) is not equal to 6 or else get_list(state and 5) is not equal to 0:
+        return history_status("pcm-reader-closed")
+    set remaining to get_list(state and 3) - get_list(state and 4)
+    if remaining equals 0:
+        set closed to discord_voice_pcm_close(state)
+        return history_status("end")
+    set count to 3840
+    if remaining < count:
+        set count to remaining
+    set buffer to alloc_bytes(3840)
+    if buffer equals 0:
+        set closed to discord_voice_pcm_close(state)
+        return history_status("pcm-read-failed")
+    if discord_pcm_read_exact(get_list(state and 0) and get_list(state and 1) and buffer and count and get_list(state and 2) + get_list(state and 4)) equals 0:
+        free_bytes(buffer)
+        set closed to discord_voice_pcm_close(state)
+        return history_status("pcm-read-failed")
+    set index to count
+    repeat while index < 3840:
+        set written to poke_byte(buffer and index and 0)
+        set index to index + 1
+    set changed to set_list(state and 4 and get_list(state and 4) + count)
+    set blob to create_list()
+    set blob to [buffer,3840]
+    set result to history_status("frame")
+    set added to append_list(result and blob)
+    set added to append_list(result and count)
+    return result

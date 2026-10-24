@@ -1,0 +1,101 @@
+import "voice_request_proof"
+import "voice_session_engine"
+
+# Native proofs are never deserialized from tool arguments. Bind a completed
+# proof to its original intent and checked operation before using its cursor.
+define discord_voice_worker_check with journal as Int and database as Int and identity as Str and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str and playback as Int returning Str:
+    set guarded to discord_voice_request_guard(journal and database and identity and bot and guilds and admins and stop_file)
+    if not (archive_list_text(guarded and 0) equals "allowed"):
+        return archive_list_text(guarded and 0)
+    if proof equals 0 or else length_list(proof) is not equal to 7 or else not (archive_list_text(proof and 0) equals "allowed") or else not (archive_list_text(proof and 5) equals identity) or else string_length(archive_list_text(proof and 4)) is not equal to 64 or else get_list(proof and 3) < 0:
+        return "voice-proof-binding-denied"
+    if (playback is not equal to 0 and also playback is not equal to 1) or else (get_list(proof and 6) is not equal to 0 and also get_list(proof and 6) is not equal to 1) or else playback > get_list(proof and 6):
+        return "voice-proof-operation-denied"
+    set current to history_collect_one(archive_prepare(journal and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(current and 0) equals "found"):
+        return "voice-gateway-unavailable"
+    if not (archive_list_text(current and 1) equals archive_list_text(proof and 1)) or else not (archive_list_text(current and 2) equals archive_list_text(proof and 2)):
+        return "voice-authorization-refresh-required"
+    set cursor to string_to_int(archive_list_text(current and 3))
+    if discord_voice_proof_messages_only(journal and archive_list_text(proof and 2) and get_list(proof and 3) and cursor) equals 0:
+        return "voice-authorization-refresh-required"
+    # This worker owns the native proof. Advance only its validated watermark,
+    # not its REST evidence; downstream writer fences still require this exact
+    # current cursor before Identify, MLS, discovery or media can be written.
+    set changed to set_list(proof and 3 and cursor)
+    return "allowed"
+
+# The network permission observer runs independently. This short worker step
+# consumes only its completed native proof, checks local revocation/source/stop
+# again, then lets the engine fence the same cursor under its writer lock.
+define discord_voice_worker_poll with journal as Int and reader as Int and database as Int and engine as List and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str and playback as Int and monotonic_ms as Int and wall_ms as Int returning Str:
+    if engine equals 0 or else length_list(engine) is not equal to 7 or else get_list(engine and 4) is not equal to 0:
+        return "voice-engine-closed"
+    set owner to get_list(engine and 0)
+    if not (archive_list_text(owner and 3) equals bot):
+        return discord_voice_engine_close(journal and engine and "voice-worker-binding-denied")
+    set checked to discord_voice_worker_check(journal and database and archive_list_text(owner and 1) and proof and bot and guilds and admins and stop_file and playback)
+    if checked equals "voice-authorization-refresh-required":
+        return checked
+    if not (checked equals "allowed"):
+        return discord_voice_engine_close(journal and engine and checked)
+    if not (archive_list_text(owner and 2) equals archive_list_text(proof and 1)):
+        return discord_voice_engine_close(journal and engine and "voice-worker-generation-denied")
+    return discord_voice_engine_poll(journal and reader and engine and get_list(proof and 3) and monotonic_ms and wall_ms and 1 and 0)
+
+# Queue-to-claim transition is fenced again inside the intent transaction.
+# Failure leaves an unclaimed intent intact; the controller may refresh proof.
+define discord_voice_worker_claim with journal as Int and database as Int and identity as Str and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str and playback as Int returning List:
+    set checked to discord_voice_worker_check(journal and database and identity and proof and bot and guilds and admins and stop_file and playback)
+    if not (checked equals "allowed"):
+        return history_status(checked)
+    return discord_voice_intent_claim(journal and identity and archive_list_text(proof and 1) and get_list(proof and 3) and archive_list_text(proof and 4))
+
+# Preparation may block in TLS and never sends Identify. Activation requires
+# another current proof after preparation, not reuse of a pre-TLS decision.
+define discord_voice_worker_prepare with journal as Int and database as Int and identity as Str and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str and playback as Int and curl_path as Str returning List:
+    if not (discord_voice_worker_check(journal and database and identity and proof and bot and guilds and admins and stop_file and playback) equals "allowed"):
+        return 0
+    return discord_voice_session_prepare(journal and identity and archive_list_text(proof and 1) and bot and curl_path and 1 and 0)
+
+# Both outcomes consume preparation. Denial closes TLS, drops credentials and
+# requests leave; an already consumed preparation cannot affect a live owner.
+define discord_voice_worker_activate with journal as Int and database as Int and binding as List and proof as List and bot as Str and guilds as List and admins as List and stop_file as Str and playback as Int and paths as List and generation as Int and monotonic_ms as Int returning List:
+    if binding equals 0 or else length_list(binding) is not equal to 4:
+        return 0
+    set checked to discord_voice_worker_check(journal and database and archive_list_text(binding and 1) and proof and bot and guilds and admins and stop_file and playback)
+    if not (checked equals "allowed") or else not (archive_list_text(binding and 3) equals bot) or else not (archive_list_text(binding and 2) equals archive_list_text(proof and 1)):
+        return discord_voice_session_activate(journal and binding and paths and generation and monotonic_ms and 0 and 0 and 1)
+    return discord_voice_session_activate(journal and binding and paths and generation and monotonic_ms and get_list(proof and 3) and 1 and 0)
+
+# Maintain only an already identified socket while REST reauthorization is
+# pending. The same writer fence checks current intent, source, stop, Gateway
+# generation and own voice-session ownership before a heartbeat/control read.
+# This cannot authorize media, MLS responses, discovery or a new connection.
+define discord_voice_worker_refresh_transport with journal as Int and database as Int and engine as List and bot as Str and guilds as List and admins as List and stop_file as Str and now as Int and wall_ms as Int returning Str:
+    if engine equals 0 or else length_list(engine) is not equal to 7 or else get_list(engine and 4) is not equal to 0:
+        return "voice-engine-closed"
+    set owner to get_list(engine and 0)
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return discord_voice_engine_close(journal and engine and "voice-session-store-unavailable")
+    set guarded to discord_voice_request_guard(journal and database and archive_list_text(owner and 1) and bot and guilds and admins and stop_file)
+    if not (archive_list_text(guarded and 0) equals "allowed"):
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        return discord_voice_engine_close(journal and engine and archive_list_text(guarded and 0))
+    set cursor to history_collect_one(archive_prepare(journal and "SELECT sequence FROM discord_gateway WHERE singleton=1;"))
+    set keys to create_list()
+    set added to append_list(keys and archive_list_text(owner and 1))
+    set added to append_list(keys and archive_list_text(owner and 2))
+    set durable to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_connections WHERE identity=?1 AND generation=?2;" and keys))
+    if not (archive_list_text(cursor and 0) equals "found") or else discord_voice_session_current(journal and owner and string_to_int(archive_list_text(cursor and 1))) equals 0 or else not (archive_list_text(durable and 1) equals "identified"):
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        return discord_voice_engine_close(journal and engine and "voice-session-not-owned")
+    set io_state to get_list(get_list(owner and 0) and 0)
+    set result to discord_voice_io_refresh_tick(io_state and now and wall_ms and get_list(engine and 2))
+    set outcome to archive_list_text(result and 0)
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        return discord_voice_engine_close(journal and engine and "voice-session-store-unavailable")
+    if get_list(io_state and 4) is not equal to 0 or else not (outcome equals "pending" or else outcome equals "heartbeat-ready"):
+        return discord_voice_engine_close(journal and engine and outcome)
+    return "voice-awaiting-permission-proof"

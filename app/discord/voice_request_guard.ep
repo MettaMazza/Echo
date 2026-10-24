@@ -1,0 +1,42 @@
+import "run_barrier"
+import "voice_access"
+import "voice_intents"
+
+# Native-only guard for an existing voice intent. Resolve actor and source from
+# admitted archive lineage; never accept a model-supplied privilege or channel.
+# A completed parent may leave its explicitly started voice session running;
+# cancellation, revoked authority or failed parent never permits continuation.
+define discord_voice_request_guard with journal as Int and database as Int and identity as Str and bot as Str and guilds as List and admins as List and stop_file as Str returning List:
+    if file_exists(stop_file):
+        return history_status("voice-stopped")
+    set keys to create_list()
+    set keys to [identity]
+    set intent to history_collect_one(checkpoint_prepare(journal and "SELECT guild,channel,actor,run,call_id FROM discord_voice_intents WHERE identity=?1 AND state IN ('queued','claimed','sent','connected');" and keys))
+    if not (archive_list_text(intent and 0) equals "found"):
+        return history_status("voice-intent-unavailable")
+    set guild to archive_list_text(intent and 1)
+    set actor to archive_list_text(intent and 3)
+    set run to archive_list_text(intent and 4)
+    set call_id to archive_list_text(intent and 5)
+    if discord_contains(guilds and guild) equals 0 or else discord_contains(admins and actor) equals 0 or else run_authority_allows(database and run and "admin") equals 0 or else tool_authority_allows(database and run and call_id and "admin") equals 0 or else node_run_status(database and run) is not equal to 1:
+        return history_status("voice-request-authority-denied")
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    set journal_binding to history_collect_one(archive_prepare(journal and "SELECT bot FROM discord_identity WHERE singleton=1;"))
+    if not (archive_list_text(binding and 1) equals bot) or else not (archive_list_text(journal_binding and 1) equals bot):
+        return history_status("voice-request-binding-denied")
+    set keys to create_list()
+    set keys to [run,call_id]
+    set call to history_collect_one(checkpoint_prepare(database and "SELECT t.run FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event JOIN echo_runs r ON r.run=t.run WHERE t.run=?1 AND t.call_id=?2 AND e.kind='tool_call' AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.call_id')=?2 AND json_extract(e.payload,'$.name')='discord_voice' AND t.state<>'uncertain' AND r.state NOT IN ('failed','cancelled') AND NOT EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=t.run);" and keys))
+    if not (archive_list_text(call and 0) equals "found"):
+        return history_status("voice-request-call-denied")
+    set source to discord_run_source(journal and database and run)
+    set inbox to discord_job_origin(journal and database and run)
+    if not (archive_list_text(source and 0) equals "found") or else string_length(inbox) equals 0 or else not (archive_list_text(source and 3) equals actor) or else not (archive_list_text(source and 5) equals guild):
+        return history_status("voice-request-source-denied")
+    if discord_run_barrier(journal and inbox and string_to_int(archive_list_text(source and 7)) and archive_list_text(source and 6) and archive_list_text(source and 4) and guild) is not equal to 0:
+        return history_status("voice-request-source-changed")
+    set result to history_status("allowed")
+    set added to append_list(result and source)
+    set added to append_list(result and inbox)
+    set added to append_list(result and intent)
+    return result

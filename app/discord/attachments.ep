@@ -2,6 +2,7 @@ import "routing"
 import "../web/attachments"
 import "../network/curl_native"
 import "../workspace/directories"
+import "attachment_representation"
 
 # Signed CDN queries expire. Identity, size, name and type must remain equal,
 # but a fresh authenticated message fetch may renew the URL query.
@@ -33,9 +34,39 @@ define discord_attachment_manifest with original as Str returning Str:
         set result to concat(result and concat("{\"id\":" and provider_quote(identity)))
         set result to concat(result and concat(",\"size\":" and provider_quote(size)))
         set result to concat(result and concat(",\"filename\":" and provider_quote(name)))
-        set result to concat(result and concat(",\"content_type\":" and concat(provider_quote(media) and "}")))
+        set result to concat(result and concat(",\"content_type\":" and provider_quote(media)))
+        set original_type to provider_value(tokens and provider_member(tokens and item and "original_content_type"))
+        # Keep legacy manifest bytes unchanged when no rendition was declared.
+        if not (original_type equals "null" or else string_length(original_type) equals 0):
+            set result to concat(result and concat(",\"original_content_type\":" and provider_quote(original_type)))
+        set result to concat(result and "}")
         set count to count + 1
     return concat(result and "]")
+
+define discord_attachment_declaration with tokens as List and item as Int returning Str:
+    set result to "{"
+    set separator to ""
+    set keys to create_list()
+    set keys to ["id","filename","size","content_type","original_content_type"]
+    for each key in keys:
+        set value to provider_value(tokens and provider_member(tokens and item and ptr_to_str(key)))
+        set result to concat(result and concat(separator and concat(provider_quote(ptr_to_str(key)) and concat(":" and provider_quote(value)))))
+        set separator to ","
+    return concat(result and "}")
+
+# Historical source binding is checked without borrowing current device
+# authority. Callers separately enforce ownership before exposing any bytes.
+define discord_attachment_stored_matches with database as Int and session as Str and attachment as Str and declaration as Str and name as Str and media as Str and size as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT a.name,a.media_type,CAST(a.bytes AS TEXT),a.digest,COALESCE(e.payload,'') FROM echo_attachments a LEFT JOIN echo_events e ON e.event=a.event||':source' AND e.session=a.session AND e.kind='attachment_source' WHERE a.attachment=?1 AND a.session=?2;" and [attachment,session]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 1) equals name):
+        return 0
+    set receipt to archive_list_text(row and 5)
+    if string_length(receipt) equals 0:
+        return archive_list_text(row and 2) equals media and also archive_list_text(row and 3) equals size
+    set fields to provider_json_tokens(receipt)
+    if fields equals 0:
+        return 0
+    return provider_value(fields and provider_member(fields and 0 and "declaration")) equals declaration and also provider_value(fields and provider_member(fields and 0 and "received_media")) equals archive_list_text(row and 2) and also provider_value(fields and provider_member(fields and 0 and "received_bytes")) equals archive_list_text(row and 3) and also provider_value(fields and provider_member(fields and 0 and "received_sha256")) equals archive_list_text(row and 4)
 
 define discord_attachment_url with url as Str and room as Str and identity as Str returning List:
     set parsed to network_url_parse(url and "")
@@ -73,13 +104,14 @@ define discord_attachment_import with database as Int and device as Str and sess
     if media equals "null" or else string_length(media) equals 0:
         set media to "application/octet-stream"
     set size to provider_value(tokens and provider_member(tokens and item and "size"))
+    set declaration to discord_attachment_declaration(tokens and item)
     set attachment to discord_attachment_identity(database and session and message and identity)
     if string_length(attachment) equals 0:
         return history_status("attachment-store-unavailable")
     set old to web_attachment_owned(database and device and attachment)
     if archive_list_text(old and 0) equals "found":
         set digest to file_digest(archive_list_text(old and 1) and 65536)
-        if archive_list_text(old and 2) equals name and archive_list_text(old and 3) equals media and archive_list_text(old and 5) equals size and archive_list_text(old and 6) equals session and archive_list_text(digest and 0) equals "verified" and archive_list_text(digest and 1) equals archive_list_text(old and 4):
+        if discord_attachment_stored_matches(database and session and attachment and declaration and name and media and size) equals 1 and archive_list_text(digest and 0) equals "verified" and archive_list_text(digest and 1) equals archive_list_text(old and 4):
             set result to history_status("imported")
             set added to append_list(result and attachment)
             return result
@@ -115,9 +147,22 @@ define discord_attachment_import with database as Int and device as Str and sess
         return history_status("attachment-transfer-failed")
     set path to concat(directory_path and concat("/" and filename))
     set verified to file_digest(path and 65536)
-    if not (archive_list_text(verified and 0) equals "verified") or else not (int_to_string(get_list(verified and 2)) equals size):
-        return history_status("attachment-size-mismatch")
-    if web_attachment_register(database and device and session and attachment and path and name and media) is not equal to 0:
+    if not (archive_list_text(verified and 0) equals "verified"):
+        return history_status("attachment-digest-failed")
+    set received_media to provider_value(transfer and provider_member(transfer and 0 and "content_type"))
+    set original_type to provider_value(tokens and provider_member(tokens and item and "original_content_type"))
+    set representation to discord_attachment_representation(media and original_type and size and received_media and discord_attachment_file_magic(path) and get_list(verified and 2))
+    if not (representation equals "exact" or else representation equals "declared-image-rendition"):
+        return history_status(representation)
+    if representation equals "declared-image-rendition":
+        set media to network_media_type(received_media)
+    set provenance to concat("{\"declaration\":" and provider_quote(declaration))
+    set provenance to concat(provenance and concat(",\"received_sha256\":" and provider_quote(archive_list_text(verified and 1))))
+    set provenance to concat(provenance and concat(",\"received_bytes\":" and provider_quote(int_to_string(get_list(verified and 2)))))
+    set provenance to concat(provenance and concat(",\"received_media\":" and provider_quote(media)))
+    set provenance to concat(provenance and concat(",\"representation\":" and provider_quote(representation)))
+    set provenance to concat(provenance and concat(",\"transfer\":" and concat(receipt and "}")))
+    if web_attachment_publish_source(database and device and session and attachment and path and name and media and "" and "" and "" and 0 and provenance) is not equal to 0:
         return history_status("attachment-registration-failed")
     set result to history_status("imported")
     set added to append_list(result and attachment)

@@ -1,5 +1,8 @@
 import "retained_text"
 import "discord/action_worker"
+import "discord/voice_recording_terminal_worker"
+import "discord/voice_recording_archive_worker"
+import "discord/voice_supervisor"
 import "archive/runtime_lock"
 import "discord/snapshot"
 import "string"
@@ -47,12 +50,92 @@ define main returning Int:
         return 5
     if discord_action_worker_schema(journal) is not equal to 0:
         return 6
+    set terminal_config to create_list()
+    set added to append_list(terminal_config and get_argument(1))
+    set added to append_list(terminal_config and token)
+    set added to append_list(terminal_config and get_argument(3))
+    set added to append_list(terminal_config and get_argument(7))
+    set added to append_list(terminal_config and guilds)
+    set added to append_list(terminal_config and get_argument(5))
+    set added to append_list(terminal_config and get_argument(6))
+    set terminal_stop to channel
+    set terminal_completed to channel
+    spawn discord_voice_recording_terminal_worker(terminal_config and terminal_stop and terminal_completed)
+    # Host opt-in only. Keep disabled until the complete recording workflow is
+    # qualified; the model and Discord command arguments cannot choose a root.
+    set archive_root to ptr_to_str(get_env("ECHO_DISCORD_RECORDING_ROOT"))
+    set archive_stop to channel
+    set archive_completed to channel
+    set archive_waits to create_list()
+    set added to append_list(archive_waits and archive_completed)
+    set archive_joined to 1
+    set archive_status to 0
+    if string_length(archive_root) > 0:
+        set archive_config to create_list()
+        set added to append_list(archive_config and get_argument(1))
+        set added to append_list(archive_config and token)
+        set added to append_list(archive_config and get_argument(3))
+        set added to append_list(archive_config and get_argument(4))
+        set added to append_list(archive_config and archive_root)
+        set added to append_list(archive_config and get_argument(7))
+        set added to append_list(archive_config and guilds)
+        set added to append_list(archive_config and admins)
+        set added to append_list(archive_config and get_argument(5))
+        set added to append_list(archive_config and get_argument(6))
+        set archive_joined to 0
+        spawn discord_voice_recording_archive_worker(archive_config and archive_stop and archive_completed)
+    set voice_stop to channel
+    set voice_completed to channel
+    set voice_waits to [voice_completed]
+    set voice_joined to 1
+    set voice_status to 0
+    set opus_path to ptr_to_str(get_env("ECHO_DISCORD_VOICE_OPUS"))
+    if string_length(opus_path) > 0:
+        set voice_config to create_list()
+        set added to append_list(voice_config and get_argument(1))
+        set added to append_list(voice_config and token)
+        set added to append_list(voice_config and get_argument(3))
+        set added to append_list(voice_config and get_argument(4))
+        set added to append_list(voice_config and "")
+        set added to append_list(voice_config and get_argument(7))
+        set added to append_list(voice_config and guilds)
+        set added to append_list(voice_config and admins)
+        set added to append_list(voice_config and get_argument(5))
+        set added to append_list(voice_config and get_argument(6))
+        set voice_paths to create_list()
+        set added to append_list(voice_paths and ptr_to_str(get_env("ECHO_DISCORD_VOICE_SODIUM")))
+        set added to append_list(voice_paths and ptr_to_str(get_env("ECHO_DISCORD_VOICE_DAVE")))
+        set added to append_list(voice_paths and ptr_to_str(get_env("ECHO_DISCORD_VOICE_CALLBACKS")))
+        set voice_joined to 0
+        spawn discord_voice_supervisor(voice_config and voice_paths and 1000 and opus_path and voice_stop and voice_completed)
     set idle to channel
     set waits to create_list()
     set added to append_list(waits and idle)
+    set terminal_waits to create_list()
+    set added to append_list(terminal_waits and terminal_completed)
+    set terminal_joined to 0
+    set terminal_status to 0
     set previous to ""
     set status to 0
     repeat while not file_exists(get_argument(6)):
+        if voice_joined equals 0 and also select(voice_waits and 0) >= 0:
+            set voice_status to receive from voice_completed
+            set voice_joined to 1
+            if voice_status is not equal to 0:
+                display "Voice supervisor failed; interaction handling remains available."
+                set status to 11
+        if terminal_joined equals 0 and also select(terminal_waits and 0) >= 0:
+            set terminal_status to receive from terminal_completed
+            set terminal_joined to 1
+            if terminal_status is not equal to 0:
+                display "Recording notice cleanup worker failed; interaction handling remains available."
+                set status to 9
+        if archive_joined equals 0 and also select(archive_waits and 0) >= 0:
+            set archive_status to receive from archive_completed
+            set archive_joined to 1
+            if archive_status is not equal to 0:
+                display "Recording archive worker failed; interaction handling remains available."
+                set status to 10
         set result to discord_action_worker_tick_scoped(get_argument(1) and token and journal and database and get_argument(7) and guilds and admins and get_argument(5) and get_argument(6))
         if not (result equals previous):
             display concat("interaction-actions: " and result)
@@ -61,6 +144,27 @@ define main returning Int:
             set status to 7
             break
         set waited to select(waits and 500)
+    if terminal_joined equals 0:
+        send 1 to terminal_stop
+    if archive_joined equals 0:
+        send 1 to archive_stop
+    if voice_joined equals 0:
+        send 1 to voice_stop
+    if terminal_joined equals 0:
+        set terminal_status to receive from terminal_completed
+        if terminal_status is not equal to 0:
+            display "Recording notice cleanup worker failed."
+            set status to 9
+    if archive_joined equals 0:
+        set archive_status to receive from archive_completed
+        if archive_status is not equal to 0:
+            display "Recording archive worker failed."
+            set status to 10
+    if voice_joined equals 0:
+        set voice_status to receive from voice_completed
+        if voice_status is not equal to 0:
+            display "Voice supervisor failed."
+            set status to 11
     set snapshot to concat(get_argument(9) and concat("/interaction-action-journal-" and concat(ptr_to_str(ep_uuid_v4()) and ".sqlite")))
     if discord_journal_snapshot(journal and snapshot) is not equal to 0:
         display "Canonical interaction action snapshot failed."

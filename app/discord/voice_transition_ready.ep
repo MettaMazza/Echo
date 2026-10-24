@@ -1,0 +1,53 @@
+import "voice_transitions"
+import "voice_mls_dispatch"
+import "voice_messages"
+
+# The worker supplies one key queue per current MLS roster identity. Closing
+# these queues on failure discards pending native keys; caller closes transport.
+define discord_voice_transition_abort with queues as List and reason as Str returning Str:
+    if queues is not equal to 0:
+        for each queue in queues:
+            set closed to discord_voice_transitions_close(queue)
+    return reason
+
+# Consume only a successfully applied Commit/Welcome result from MLS dispatch.
+# Validate the entire queue/roster/session binding before preparing any key.
+# Transition zero executes immediately: its caller must apply keys and then
+# acknowledge; this function deliberately sends no Ready or early sequence ack.
+define discord_voice_transition_ready with transport as List and result as List and queues as List and generation as Int returning Str:
+    if transport equals 0 or else length_list(transport) is not equal to 8:
+        return "invalid-transition-transport"
+    set handshake to get_list(transport and 0)
+    if discord_voice_handshake_current(handshake and generation) equals 0 or else get_list(handshake and 0) is not equal to 4:
+        return "stale-transition-owner"
+    if result equals 0 or else length_list(result) is not equal to 4 or else not (archive_list_text(result and 0) equals "committed" or else archive_list_text(result and 0) equals "joined"):
+        return discord_voice_transition_abort(queues and "invalid-transition-result")
+    set native_result to get_list(result and 3)
+    if native_result equals 0 or else length_list(native_result) is not equal to 2 or else not (archive_list_text(native_result and 0) equals archive_list_text(result and 0)):
+        return discord_voice_transition_abort(queues and "invalid-transition-result")
+    set roster to get_list(native_result and 1)
+    set transition to get_list(result and 2)
+    set sequence to get_list(result and 1)
+    if discord_dave_users_valid(roster) equals 0 or else queues equals 0 or else length_list(queues) is not equal to length_list(roster) or else transition < 0 or else transition > 65535 or else sequence < -1 or else sequence > 65535:
+        return discord_voice_transition_abort(queues and "invalid-transition-roster")
+    for each user in roster:
+        set matches to 0
+        for each queue in queues:
+            if queue equals 0 or else length_list(queue) is not equal to 7 or else get_list(queue and 0) is not equal to get_list(transport and 4) or else get_list(queue and 5) is not equal to 0:
+                return discord_voice_transition_abort(queues and "invalid-transition-queue")
+            if archive_list_text(queue and 2) equals ptr_to_str(user):
+                set matches to matches + 1
+        if matches is not equal to 1:
+            return discord_voice_transition_abort(queues and "incomplete-transition-keys")
+    for each queue in queues:
+        set prepared to discord_voice_transitions_prepare(queue and transition and roster)
+        if not (prepared equals "transition-prepared" or else prepared equals "transition-already-prepared"):
+            return discord_voice_transition_abort(queues and prepared)
+    if transition equals 0:
+        return "execute-immediate-transition"
+    set body to discord_voice_transition_body(23 and transition)
+    if discord_voice_socket_send(get_list(transport and 1) and str_to_ptr(body) and string_length(body) and 0) equals 0:
+        return discord_voice_transition_abort(queues and "transition-ready-write-uncertain")
+    if sequence >= 0 and also discord_voice_heartbeat_sequence(get_list(handshake and 1) and sequence and generation) equals 0:
+        return discord_voice_transition_abort(queues and "transition-ready-ack-failed")
+    return "transition-ready"

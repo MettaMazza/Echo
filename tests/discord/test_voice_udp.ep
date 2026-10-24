@@ -1,0 +1,101 @@
+import "../../app/discord/voice_udp"
+
+# Test-only loopback fixture. Production open has no private-address bypass.
+define fixture_udp returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set fd to ep_dlcall3(ep_dlsym(library and "socket") and 2 and 2 and 17)
+    if fd < 0 or else fd > 2147483647:
+        return 0
+    set address to research_native_words(2)
+    set pointer to get_list_data_ptr(address)
+    set written to poke_byte(pointer and 0 and 16)
+    set written to poke_byte(pointer and 1 and 2)
+    set written to poke_byte(pointer and 4 and 127)
+    set written to poke_byte(pointer and 7 and 1)
+    if ep_dlcall3(ep_dlsym(library and "bind") and fd and pointer and 16) is not equal to 0:
+        return 0
+    set size to research_native_words(1)
+    set changed to set_list(size and 0 and 16)
+    if ep_dlcall3(ep_dlsym(library and "getsockname") and fd and pointer and get_list_data_ptr(size)) is not equal to 0:
+        return 0
+    set state to create_list()
+    set added to append_list(state and library)
+    set added to append_list(state and fd)
+    set fixture to create_list()
+    set added to append_list(fixture and state)
+    set added to append_list(fixture and address)
+    return fixture
+
+define fixture_udp_connect with fixture as List and peer as List returning Int:
+    set state to get_list(fixture and 0)
+    set address to get_list(peer and 1)
+    return ep_dlcall3(ep_dlsym(get_list(state and 0) and "connect") and get_list(state and 1) and get_list_data_ptr(address) and 16) equals 0
+
+define fixture_udp_wait with state as List returning List:
+    set attempts to 0
+    set row to discord_voice_udp_read(state)
+    repeat while archive_list_text(row and 0) equals "again" and also attempts < 100:
+        set waited to ep_dlcall1(ep_dlsym(get_list(state and 0) and "usleep") and 1000)
+        set row to discord_voice_udp_read(state)
+        set attempts to attempts + 1
+    return row
+
+define main returning Int:
+    set denied to create_list()
+    set denied to ["127.0.0.1","::1","::ffff:127.0.0.1","0.0.0.0","10.1.2.3","192.168.1.1","169.254.169.254","224.0.0.1","localhost","1.2.3.4/path"]
+    for each address in denied:
+        if discord_voice_udp_open(ptr_to_str(address) and 50000) is not equal to 0:
+            return 1
+    if discord_voice_udp_open("1.1.1.1" and 0) is not equal to 0 or else discord_voice_udp_open("1.1.1.1" and 65536) is not equal to 0:
+        return 2
+    set left to fixture_udp()
+    set right to fixture_udp()
+    set other to fixture_udp()
+    if left equals 0 or else right equals 0 or else other equals 0:
+        return 3
+    if fixture_udp_connect(left and right) equals 0 or else fixture_udp_connect(right and left) equals 0 or else fixture_udp_connect(other and right) equals 0:
+        return 4
+    set left_state to get_list(left and 0)
+    set right_state to get_list(right and 0)
+    set other_state to get_list(other and 0)
+    set empty to discord_voice_udp_read(right_state)
+    if not (archive_list_text(empty and 0) equals "again") or else length_list(empty) is not equal to 2 or else get_list(empty and 1) is not equal to 1:
+        return 5
+    set packet to discord_voice_discovery_request(16909060)
+    if discord_voice_udp_send(left_state and get_list(packet and 0) and get_list(packet and 1)) equals 0:
+        return 6
+    set received to fixture_udp_wait(right_state)
+    if not (archive_list_text(received and 0) equals "packet"):
+        display archive_list_text(received and 0)
+        return 7
+    set blob to get_list(received and 1)
+    if get_list(blob and 1) is not equal to 74:
+        return 8
+    set index to 0
+    repeat while index < 74:
+        if peek_byte(get_list(blob and 0) and index) is not equal to peek_byte(get_list(packet and 0) and index):
+            return 9
+        set index to index + 1
+    set released to discord_voice_blob_release(blob)
+    if discord_voice_udp_send(other_state and get_list(packet and 0) and 74) equals 0:
+        return 10
+    set rejected to fixture_udp_wait(right_state)
+    if not (archive_list_text(rejected and 0) equals "again"):
+        return 11
+    if discord_voice_udp_send(right_state and get_list(packet and 0) and 74) equals 0:
+        return 12
+    set reply to fixture_udp_wait(left_state)
+    if not (archive_list_text(reply and 0) equals "packet"):
+        return 13
+    set blob to get_list(reply and 1)
+    set released to discord_voice_blob_release(blob)
+    if discord_voice_udp_send(left_state and get_list(packet and 0) and 65508) is not equal to 0:
+        return 14
+    set released to discord_voice_blob_release(packet)
+    if discord_voice_udp_close(left_state) equals 0 or else discord_voice_udp_close(left_state) equals 0 or else discord_voice_udp_close(right_state) equals 0 or else discord_voice_udp_close(other_state) equals 0:
+        return 15
+    set closed to discord_voice_udp_read(left_state)
+    if not (archive_list_text(closed and 0) equals "failed"):
+        return 16
+    display "PASS: native UDP binary exchange, nonblocking empty reads, connected-peer source filtering, public destination gate, length bounds and idempotent close."
+    return 0

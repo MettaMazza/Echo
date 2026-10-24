@@ -1,0 +1,117 @@
+import "voice_participants"
+import "voice_control_decode"
+
+# Wraps a registry with its accepted Gateway dispatch cursor and baseline flag.
+# Only the authenticated Gateway intake may supply these payloads/cursors.
+define discord_voice_membership_new with guild as Str and channel_id as Str and bot as Str and generation as Int returning List:
+    set registry to discord_voice_participants_new(guild and channel_id and bot and generation)
+    if registry equals 0:
+        return 0
+    set state to create_list()
+    set state to [registry,-1,0]
+    return state
+
+# Normalized voice-state payload [user, channel-or-empty, session]. A null
+# channel is a disconnect; missing channel is malformed, never a disconnect.
+define discord_voice_membership_row with tokens as List and object as Int returning List:
+    set user_index to provider_member(tokens and object and "user_id")
+    set channel_index to provider_member(tokens and object and "channel_id")
+    set session_index to provider_member(tokens and object and "session_id")
+    if not (provider_kind(tokens and user_index) equals "string"):
+        return 0
+    set user to provider_value(tokens and user_index)
+    set channel_id to ""
+    if provider_kind(tokens and channel_index) equals "string":
+        set channel_id to provider_value(tokens and channel_index)
+        if string_length(channel_id) equals 0:
+            return 0
+    else if not (provider_kind(tokens and channel_index) equals "null"):
+        return 0
+    set session to ""
+    if provider_kind(tokens and session_index) equals "string":
+        set session to provider_value(tokens and session_index)
+    else if string_length(channel_id) > 0:
+        return 0
+    set ids to create_list()
+    set ids to [user]
+    if string_length(channel_id) > 0:
+        set added to append_list(ids and channel_id)
+        if string_length(session) < 1 or else string_length(session) > 4096:
+            return 0
+    if discord_dave_users_valid(ids) equals 0:
+        return 0
+    set row to create_list()
+    set row to [user,channel_id,session]
+    return row
+
+# Fresh GUILD_CREATE data supplies an atomic baseline. Later snapshots require
+# a new wrapper/generation, preventing old snapshots from erasing newer events.
+define discord_voice_membership_snapshot with state as List and generation as Int and sequence as Int and body as Str returning Str:
+    if state equals 0 or else length_list(state) is not equal to 3 or else sequence < 0 or else sequence > 9007199254740991:
+        return "invalid-membership-snapshot"
+    set registry to get_list(state and 0)
+    if discord_voice_participants_valid(registry and generation) equals 0:
+        return "stale-membership-generation"
+    if get_list(state and 2) is not equal to 0:
+        return "membership-already-seeded"
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "invalid-membership-snapshot"
+    set guild_index to provider_member(tokens and 0 and "id")
+    set decoded_guild to provider_value(tokens and guild_index)
+    if not (provider_kind(tokens and guild_index) equals "string") or else not (decoded_guild equals archive_list_text(registry and 0)):
+        return "wrong-membership-guild"
+    set entries to provider_items(tokens and provider_member(tokens and 0 and "voice_states"))
+    if entries equals 0 or else length_list(entries) > 131072:
+        return "invalid-membership-snapshot"
+    set replacement to discord_voice_participants_new(archive_list_text(registry and 0) and archive_list_text(registry and 1) and archive_list_text(registry and 2) and generation)
+    set seen to create_list()
+    for each item in entries:
+        set row to discord_voice_membership_row(tokens and item)
+        if row equals 0:
+            return "invalid-membership-snapshot"
+        set user to archive_list_text(row and 0)
+        for each previous in seen:
+            if ptr_to_str(previous) equals user:
+                return "duplicate-membership-user"
+        set added to append_list(seen and user)
+        if archive_list_text(row and 1) equals archive_list_text(registry and 1):
+            set result to discord_voice_participants_update(replacement and generation and archive_list_text(registry and 0) and archive_list_text(row and 1) and user and archive_list_text(row and 2))
+            if not (result equals "membership-changed"):
+                return "invalid-membership-snapshot"
+    set changed to set_list(state and 0 and replacement)
+    set changed to set_list(state and 1 and sequence)
+    set changed to set_list(state and 2 and 1)
+    return "membership-seeded"
+
+# Called for VOICE_STATE_UPDATE data only. Event names and Gateway session
+# identity are bound upstream; message text cannot invoke this event handler.
+define discord_voice_membership_event with state as List and generation as Int and sequence as Int and body as Str returning Str:
+    if state equals 0 or else length_list(state) is not equal to 3 or else sequence < 0 or else sequence > 9007199254740991:
+        return "invalid-membership-event"
+    set registry to get_list(state and 0)
+    if discord_voice_participants_valid(registry and generation) equals 0:
+        return "stale-membership-generation"
+    if get_list(state and 2) is not equal to 1:
+        return "await-membership-snapshot"
+    if sequence <= get_list(state and 1):
+        return "duplicate-or-stale-membership-event"
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "invalid-membership-event"
+    set guild_index to provider_member(tokens and 0 and "guild_id")
+    set decoded_guild to provider_value(tokens and guild_index)
+    if not (provider_kind(tokens and guild_index) equals "string") or else not (decoded_guild equals archive_list_text(registry and 0)):
+        return "wrong-membership-guild"
+    set row to discord_voice_membership_row(tokens and 0)
+    if row equals 0:
+        return "invalid-membership-event"
+    set result to discord_voice_participants_update(registry and generation and archive_list_text(registry and 0) and archive_list_text(row and 1) and archive_list_text(row and 0) and archive_list_text(row and 2))
+    if result equals "membership-changed" or else result equals "membership-unchanged" or else result equals "bot-left-channel":
+        set changed to set_list(state and 1 and sequence)
+    return result
+
+define discord_voice_membership_roster with state as List and generation as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 3 or else get_list(state and 2) is not equal to 1:
+        return 0
+    return discord_voice_participants_roster(get_list(state and 0) and generation)

@@ -1,0 +1,153 @@
+import "voice_rtp_receive"
+import "voice_media_controller"
+import "voice_opus"
+
+# Private worker state: borrowed media controller and transport cipher, pinned
+# Opus path, SSRC entries [user,session,ssrc,replay,codec], closed. Replay state
+# survives consent withdrawal and identity remapping until the transport key is
+# retired. Decoder state never crosses participant sessions or consent gaps.
+define discord_voice_receiver_new with controller as List and opus_path as Str returning List:
+    if controller equals 0 or else length_list(controller) is not equal to 9 or else get_list(controller and 6) is not equal to 0 or else string_length(opus_path) equals 0:
+        return 0
+    set transport to get_list(get_list(controller and 0) and 0)
+    set cipher to get_list(transport and 3)
+    if cipher equals 0 or else length_list(cipher) is not equal to 3 or else get_list(cipher and 0) equals 0:
+        return 0
+    set entries to create_list()
+    return [controller,cipher,opus_path,entries,0]
+
+define discord_voice_receiver_close with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 5:
+        return 0
+    for each entry in get_list(state and 3):
+        set closed to discord_voice_opus_close(get_list(entry and 4))
+        set changed to set_list(entry and 4 and 0)
+    set changed to set_list(state and 4 and 1)
+    return 1
+
+# Native authorization adapter supplies this receipt-bound snapshot only after
+# checking durable enablement, visible notice and individual participant consent.
+# This is NOT an authorization API for model arguments. Snapshot fields:
+# [recording-current,guild,channel,bot,generation,revision,notice,consents].
+# Each consent is [user,voice-session,immutable-consent-receipt]. Exact revision
+# matching invalidates the snapshot on join, leave, session or SSRC changes.
+define discord_voice_receiver_policy with participants as List and generation as Int and policy as List returning Int:
+    if discord_voice_participants_roster(participants and generation) equals 0 or else policy equals 0 or else length_list(policy) is not equal to 8 or else not (archive_list_text(policy and 0) equals "recording-current"):
+        return 0
+    if not (archive_list_text(policy and 1) equals archive_list_text(participants and 0)) or else not (archive_list_text(policy and 2) equals archive_list_text(participants and 1)) or else not (archive_list_text(policy and 3) equals archive_list_text(participants and 2)) or else get_list(policy and 4) is not equal to generation or else get_list(policy and 5) is not equal to get_list(participants and 6) or else string_length(archive_list_text(policy and 6)) equals 0:
+        return 0
+    set consents to get_list(policy and 7)
+    if consents equals 0 or else length_list(consents) > 1024:
+        return 0
+    set seen to create_list()
+    for each consent in consents:
+        if length_list(consent) is not equal to 3 or else string_length(archive_list_text(consent and 0)) equals 0 or else string_length(archive_list_text(consent and 1)) equals 0 or else string_length(archive_list_text(consent and 2)) equals 0:
+            return 0
+        for each user in seen:
+            if ptr_to_str(user) equals archive_list_text(consent and 0):
+                return 0
+        set added to append_list(seen and archive_list_text(consent and 0))
+    return 1
+
+define discord_voice_receiver_consent with participants as List and policy as List and user as Str and session as Str and ssrc as Int returning Str:
+    set current to 0
+    for each member in get_list(participants and 4):
+        if archive_list_text(member and 0) equals user and also archive_list_text(member and 1) equals session and also get_list(member and 2) equals ssrc:
+            set current to 1
+    if current equals 0:
+        return ""
+    for each consent in get_list(policy and 7):
+        if archive_list_text(consent and 0) equals user and also archive_list_text(consent and 1) equals session:
+            return archive_list_text(consent and 2)
+    return ""
+
+# Refresh even when no UDP packet arrived: revoke decoders immediately. A fresh
+# policy may resume only with a fresh decoder; replay history is retained.
+define discord_voice_receiver_refresh with state as List and participants as List and generation as Int and policy as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 5 or else get_list(state and 4) is not equal to 0:
+        return 0
+    set controller to get_list(state and 0)
+    set transport to get_list(get_list(controller and 0) and 0)
+    if get_list(controller and 6) is not equal to 0 or else get_list(get_list(controller and 0) and 4) is not equal to 0 or else get_list(get_list(state and 1) and 0) equals 0 or else get_list(transport and 3) is not equal to get_list(state and 1) or else discord_voice_media_controller_members(controller and participants and generation) equals 0:
+        set closed to discord_voice_receiver_close(state)
+        return 0
+    set valid to discord_voice_receiver_policy(participants and generation and policy)
+    for each entry in get_list(state and 3):
+        set retain to 0
+        if valid equals 1:
+            if string_length(discord_voice_receiver_consent(participants and policy and archive_list_text(entry and 0) and archive_list_text(entry and 1) and get_list(entry and 2))) > 0:
+                set retain to 1
+        if retain equals 0:
+            set closed to discord_voice_opus_close(get_list(entry and 4))
+            set changed to set_list(entry and 4 and 0)
+    return valid
+
+# Borrowed packet; successful result owns PCM and preserves actor/session and
+# consent provenance. No storage, transcription or public output is done here.
+define discord_voice_receiver_packet with state as List and participants as List and generation as Int and policy as List and pointer as Int and count as Int returning List:
+    if discord_voice_receiver_refresh(state and participants and generation and policy) equals 0:
+        return history_status("recording-policy-not-current")
+    set parsed to discord_voice_rtp_parse(pointer and count)
+    if parsed equals 0:
+        return history_status("invalid-audio-rtp")
+    set ssrc to get_list(parsed and 5)
+    set user to discord_voice_participants_user(participants and generation and ssrc)
+    if string_length(user) equals 0 or else user equals archive_list_text(participants and 2):
+        return history_status("audio-participant-unavailable")
+    set session to ""
+    for each member in get_list(participants and 4):
+        if archive_list_text(member and 0) equals user:
+            set session to archive_list_text(member and 1)
+    set receipt to discord_voice_receiver_consent(participants and policy and user and session and ssrc)
+    set entry to create_list()
+    set entry to 0
+    for each prior in get_list(state and 3):
+        if get_list(prior and 2) equals ssrc:
+            set entry to prior
+    if entry equals 0:
+        if length_list(get_list(state and 3)) >= 1024:
+            set closed to discord_voice_receiver_close(state)
+            return history_status("audio-receiver-capacity-exceeded")
+        set replay to discord_voice_replay_new(ssrc)
+        set entry to [user,session,ssrc,replay,0]
+        set added to append_list(get_list(state and 3) and entry)
+    else if not (archive_list_text(entry and 0) equals user) or else not (archive_list_text(entry and 1) equals session):
+        set closed to discord_voice_opus_close(get_list(entry and 4))
+        set changed to set_list(entry and 4 and 0)
+        set changed to set_list(entry and 0 and user)
+        set changed to set_list(entry and 1 and session)
+    set decoded to discord_voice_rtp_unwrap(get_list(state and 1) and get_list(entry and 3) and pointer and count)
+    # Authenticate transport and retain its replay counter even without consent.
+    # The payload remains DAVE encrypted; never create a decoder or expose audio
+    # for a denied participant. Later consent cannot revive a discarded packet.
+    if string_length(receipt) equals 0:
+        if archive_list_text(decoded and 0) equals "rtp-audio":
+            set released to discord_voice_blob_release(get_list(decoded and 4))
+        return history_status("audio-participant-not-consented")
+    if not (archive_list_text(decoded and 0) equals "rtp-audio"):
+        return decoded
+    set frame to get_list(decoded and 4)
+    set media to discord_voice_media_controller_media(get_list(state and 0) and user and 1 and 1)
+    if media equals 0 or else get_list(media and 3) is not equal to 0:
+        set released to discord_voice_blob_release(frame)
+        return history_status("audio-awaiting-member-epoch")
+    set opus to discord_voice_media_frame(media and get_list(frame and 0) and get_list(frame and 1))
+    set released to discord_voice_blob_release(frame)
+    if opus equals 0:
+        return history_status("audio-member-authentication-failed")
+    if get_list(entry and 4) equals 0:
+        set changed to set_list(entry and 4 and discord_voice_opus_open(archive_list_text(state and 2)))
+    set pcm to discord_voice_opus_decode(get_list(entry and 4) and get_list(opus and 0) and get_list(opus and 1))
+    set released to discord_voice_blob_release(opus)
+    if pcm equals 0:
+        return history_status("audio-decode-failed")
+    set result to history_status("voice-pcm")
+    set added to append_list(result and user)
+    set added to append_list(result and session)
+    set added to append_list(result and get_list(decoded and 2))
+    set added to append_list(result and get_list(decoded and 3))
+    set added to append_list(result and pcm)
+    set added to append_list(result and receipt)
+    set added to append_list(result and ssrc)
+    set added to append_list(result and discord_voice_u32(pointer and count - 4))
+    return result

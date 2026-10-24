@@ -1,0 +1,52 @@
+import "../../app/discord/worker_store"
+
+# Explicit host recovery after an importer repair. Run with the connector
+# stopped, against the exact retained source digest. No inference or external
+# mutation occurs here; ordinary intake will repeat current source/access checks.
+define requeue_unadmitted_import with journal as Int and database as Int and message as Str and expected as Str returning Str:
+    if discord_snowflake(message) equals 0 or else string_length(expected) is not equal to 64:
+        return "invalid-identity"
+    set run to concat("discord-message:" and message)
+    set inbox to concat("message:create:" and message)
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "archive-busy"
+    set safe to history_collect_one(checkpoint_prepare(database and "SELECT (SELECT COUNT(*) FROM echo_runs WHERE run=?1)+(SELECT COUNT(*) FROM echo_tool_calls WHERE run=?1);" and [run]))
+    if not (archive_list_text(safe and 1) equals "0"):
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return "already-admitted-no-replay"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return "journal-busy"
+    set saved to history_collect_one(checkpoint_prepare(journal and "SELECT i.payload FROM discord_inbox i JOIN discord_agent_jobs j ON j.inbox=i.identity WHERE i.identity=?1 AND i.kind='MESSAGE_CREATE' AND j.state='attachment-size-mismatch';" and [inbox]))
+    if not (archive_list_text(saved and 0) equals "found") or else not (ep_sha256(archive_list_text(saved and 1)) equals expected):
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return "source-or-state-changed"
+    set now to int_to_string(ep_time_now_ms())
+    set changed to checkpoint_prepare(journal and "UPDATE discord_agent_jobs SET state='service-stopped',detail='host importer repair: unadmitted source requeued with prior failure retained',updated_ms=0 WHERE inbox=?1 AND state='attachment-size-mismatch';" and [inbox])
+    set event to checkpoint_prepare(journal and "INSERT INTO discord_agent_job_events(inbox,state,detail,observed_ms) VALUES(?1,'service-stopped','host importer repair: verified no admitted run or tool call; source unchanged; retry normal access checks',CAST(?2 AS INTEGER));" and [inbox,now])
+    if archive_finish(changed and 101) is not equal to 0 or else archive_finish(event and 101) is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return "requeue-failed"
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        set rolled to sql_execute(database and "ROLLBACK;")
+        return "journal-commit-failed"
+    set released to sql_execute(database and "ROLLBACK;")
+    return "requeued"
+
+define main returning Int:
+    if get_argument_count() is not equal to 6 or else not file_exists(get_argument(5)):
+        return 1
+    set journal to sql_open(get_argument(1))
+    set database to archive_open(get_argument(2))
+    if journal equals 0 or else database equals 0:
+        return 2
+    set result to requeue_unadmitted_import(journal and database and get_argument(3) and get_argument(4))
+    display result
+    set closed to sql_close(journal)
+    set closed to sql_close(database)
+    if not (result equals "requeued"):
+        return 3
+    return 0

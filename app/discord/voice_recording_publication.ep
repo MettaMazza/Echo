@@ -1,0 +1,89 @@
+import "voice_recording_publication_authority"
+
+# Canonical archive receipt commits with both attachments. It is the authority
+# for restart reconciliation; a transport-journal cursor alone is insufficient.
+define discord_voice_recording_publication_schema with database as Int returning Int:
+    if web_attachment_schema(database) is not equal to 0:
+        return 1
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_voice_recording_publications(identity TEXT PRIMARY KEY,session TEXT NOT NULL REFERENCES echo_sessions(session),request TEXT NOT NULL REFERENCES echo_events(event),recording TEXT NOT NULL,origin TEXT NOT NULL,guild TEXT NOT NULL,audio TEXT NOT NULL UNIQUE REFERENCES echo_attachments(attachment),provenance TEXT NOT NULL UNIQUE REFERENCES echo_attachments(attachment),audio_digest TEXT NOT NULL,manifest_digest TEXT NOT NULL,access_evidence TEXT NOT NULL); CREATE INDEX IF NOT EXISTS echo_voice_recording_publications_recording ON echo_voice_recording_publications(recording,session,identity); CREATE TRIGGER IF NOT EXISTS echo_voice_recording_publications_no_update BEFORE UPDATE ON echo_voice_recording_publications BEGIN SELECT RAISE(ABORT,'Recording publication provenance is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_voice_recording_publications_no_delete BEFORE DELETE ON echo_voice_recording_publications BEGIN SELECT RAISE(ABORT,'Recording publication provenance persists'); END;")
+
+# Internal primitive, called only while the native publication guard and both
+# writer fences are held. Uses the ordinary attachment/event format, preserving
+# existing ownership, visibility and integrity enforcement on subsequent reads.
+define discord_voice_recording_attachment_pending with database as Int and session as Str and identity as Str and path as Str and name as Str and media as Str and digest as Str and bytes as Str and source as Str returning Int:
+    set event to concat(identity and ":attachment")
+    set payload to concat("{\"attachment\":" and provider_quote(identity))
+    set payload to concat(payload and concat(",\"name\":" and provider_quote(name)))
+    set payload to concat(payload and concat(",\"media_type\":" and provider_quote(media)))
+    set payload to concat(payload and concat(",\"sha256\":" and provider_quote(digest)))
+    set payload to concat(payload and concat(",\"bytes\":" and concat(provider_quote(bytes) and "}")))
+    set now to concat("unix-ms:" and int_to_string(ep_time_now_ms()))
+    if archive_append_pending(database and session and event and "attachment" and payload and now) is not equal to 0 or else archive_append_pending(database and session and concat(event and ":source") and "attachment_source" and source and now) is not equal to 0:
+        return 1
+    return archive_finish(checkpoint_prepare(database and "INSERT INTO echo_attachments(attachment,session,path,name,media_type,digest,bytes,event) VALUES(?1,?2,?3,?4,?5,?6,CAST(?7 AS INTEGER),?8);" and [identity,session,path,name,media,digest,bytes,event]) and 101)
+
+define discord_voice_recording_publication_rollback with journal as Int and database as Int and status as Str returning List:
+    set rolled to sql_execute(database and "ROLLBACK;")
+    set rolled to sql_execute(journal and "ROLLBACK;")
+    return history_status(status)
+
+# Host-owned archive worker entry point. Source paths and session come only
+# from immutable staging receipts and the admitted recording call. No model
+# can choose a target session, device, file or permission observation.
+define discord_voice_recording_publish with library as Str and token as Str and journal as Int and database as Int and artifact as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning List:
+    if discord_voice_recording_publication_schema(database) is not equal to 0:
+        return history_status("recording-publication-store-failed")
+    set staged to history_collect_one(checkpoint_prepare(journal and "SELECT recording,manifest,wav_path,wav_digest,wav_bytes,manifest_path,manifest_digest FROM discord_voice_recording_artifacts WHERE identity=?1;" and [artifact]))
+    if not (archive_list_text(staged and 0) equals "found"):
+        return history_status("recording-publication-artifact-unavailable")
+    set audio_file to file_digest(archive_list_text(staged and 3) and 65536)
+    set manifest_file to file_digest(archive_list_text(staged and 6) and 65536)
+    if not (archive_list_text(audio_file and 0) equals "verified") or else not (archive_list_text(manifest_file and 0) equals "verified") or else not (archive_list_text(audio_file and 1) equals archive_list_text(staged and 4)) or else get_list(audio_file and 2) is not equal to string_to_int(archive_list_text(staged and 5)) or else not (archive_list_text(manifest_file and 1) equals archive_list_text(staged and 7)) or else not (ep_sha256(archive_list_text(staged and 2)) equals archive_list_text(staged and 7)):
+        return history_status("recording-publication-integrity-failed")
+    set proof to discord_voice_recording_publication_proof(library and token and journal and database and artifact and bot and guilds and admins and directory_path and stop_file)
+    if not (archive_list_text(proof and 0) equals "recording-publication-proof"):
+        return proof
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("recording-publication-store-busy")
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("recording-publication-store-busy")
+    set guarded to discord_voice_recording_publication_guard(journal and database and artifact and bot and guilds and admins and stop_file)
+    if not (archive_list_text(guarded and 0) equals "recording-publication-current"):
+        return discord_voice_recording_publication_rollback(journal and database and archive_list_text(guarded and 0))
+    if not (discord_access_snapshot_epoch(journal) equals archive_list_text(proof and 2)):
+        return discord_voice_recording_publication_rollback(journal and database and "recording-publication-refresh-required")
+    set origin to get_list(guarded and 1)
+    set call to get_list(guarded and 2)
+    set session to archive_list_text(call and 3)
+    set manifest to provider_json_tokens(archive_list_text(staged and 2))
+    if manifest equals 0 or else provider_unique_objects(manifest) equals 0 or else not (provider_value(manifest and provider_member(manifest and 0 and "recording")) equals archive_list_text(origin and 1)) or else not (provider_value(manifest and provider_member(manifest and 0 and "origin")) equals archive_list_text(origin and 3)) or else not (provider_value(manifest and provider_member(manifest and 0 and "request")) equals archive_list_text(origin and 4)) or else not (provider_value(manifest and provider_member(manifest and 0 and "guild")) equals archive_list_text(origin and 5)):
+        return discord_voice_recording_publication_rollback(journal and database and "recording-publication-provenance-denied")
+    set audio to concat(artifact and ":audio")
+    set provenance to concat(artifact and ":provenance")
+    set values to [artifact,session,archive_list_text(origin and 4),archive_list_text(origin and 1),archive_list_text(origin and 3),archive_list_text(origin and 5),audio,provenance,archive_list_text(staged and 4),archive_list_text(staged and 7)]
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN session=?2 AND request=?3 AND recording=?4 AND origin=?5 AND guild=?6 AND audio=?7 AND provenance=?8 AND audio_digest=?9 AND manifest_digest=?10 THEN 1 ELSE 0 END FROM echo_voice_recording_publications WHERE identity=?1;" and values))
+    if archive_list_text(prior and 0) equals "found":
+        if not (archive_list_text(prior and 1) equals "1"):
+            return discord_voice_recording_publication_rollback(journal and database and "recording-publication-conflict")
+    else if archive_list_text(prior and 0) equals "end":
+        set source to concat("{\"representation\":\"consented-discord-voice-capture\",\"recording\":" and provider_quote(archive_list_text(origin and 1)))
+        set source to concat(source and concat(",\"request\":" and provider_quote(archive_list_text(origin and 4))))
+        set source to concat(source and concat(",\"origin\":" and provider_quote(archive_list_text(origin and 3))))
+        set source to concat(source and concat(",\"guild\":" and provider_quote(archive_list_text(origin and 5))))
+        set source to concat(source and concat(",\"provenance_attachment\":" and provider_quote(provenance)))
+        set source to concat(source and concat(",\"manifest_sha256\":" and concat(provider_quote(archive_list_text(staged and 7)) and "}")))
+        set saved_audio to discord_voice_recording_attachment_pending(database and session and audio and archive_list_text(staged and 3) and "Recording audio.wav" and "audio/wav" and archive_list_text(staged and 4) and archive_list_text(staged and 5) and source)
+        set saved_manifest to discord_voice_recording_attachment_pending(database and session and provenance and archive_list_text(staged and 6) and "Recording provenance.json" and "application/json" and archive_list_text(staged and 7) and int_to_string(get_list(manifest_file and 2)) and source)
+        set added to append_list(values and archive_list_text(proof and 3))
+        set saved_receipt to archive_finish(checkpoint_prepare(database and "INSERT INTO echo_voice_recording_publications VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11);" and values) and 101)
+        if saved_audio is not equal to 0 or else saved_manifest is not equal to 0 or else saved_receipt is not equal to 0:
+            return discord_voice_recording_publication_rollback(journal and database and "recording-publication-store-failed")
+    else:
+        return discord_voice_recording_publication_rollback(journal and database and "recording-publication-store-failed")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return discord_voice_recording_publication_rollback(journal and database and "recording-publication-commit-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return history_status("recording-publication-unconfirmed")
+    return ["recording-published",audio,provenance]

@@ -1,0 +1,63 @@
+import "post_file"
+import "audio_decode"
+import "voice_pcm_reader"
+
+# Binding contains only attachment IDs, digests, byte count and session, never a
+# model-supplied path. Caller separately proves the voice destination audience,
+# current playback authority and consent before handing a reader to the worker.
+# Fields: ready, original, PCM derivative, PCM digest, PCM bytes, session,
+# original digest. Recheck selection and exact ancestry before every new use.
+define discord_voice_audio_source_current with database as Int and run as Str and actor as Str and binding as List returning List:
+    if binding equals 0 or else length_list(binding) is not equal to 7 or else not (archive_list_text(binding and 0) equals "voice-audio-ready"):
+        return history_status("invalid-voice-audio-binding")
+    set original to archive_list_text(binding and 1)
+    set derivative to archive_list_text(binding and 2)
+    if not (derivative equals concat(original and ":voice-pcm-wav")):
+        return history_status("voice-audio-lineage-denied")
+    set source to discord_post_file_source(database and run and actor and original)
+    if not (archive_list_text(source and 0) equals "found"):
+        return source
+    if string_index_of(archive_list_text(source and 3) and "audio/") is not equal to 0 or else not (archive_list_text(source and 4) equals archive_list_text(binding and 6)) or else not (archive_list_text(source and 6) equals archive_list_text(binding and 5)):
+        return history_status("voice-audio-source-changed")
+    set pcm to discord_post_file_source(database and run and actor and derivative)
+    if not (archive_list_text(pcm and 0) equals "found"):
+        return pcm
+    set lineage to history_collect_one(checkpoint_prepare(database and "SELECT parent FROM echo_attachment_derivations WHERE attachment=?1;" and [derivative]))
+    if not (archive_list_text(lineage and 1) equals original) or else not (archive_list_text(pcm and 3) equals "audio/wav") or else not (archive_list_text(pcm and 4) equals archive_list_text(binding and 3)) or else not (archive_list_text(pcm and 5) equals archive_list_text(binding and 4)) or else not (archive_list_text(pcm and 6) equals archive_list_text(binding and 5)):
+        return history_status("voice-audio-derivative-changed")
+    return pcm
+
+# Conversion runs outside the audio/heartbeat timing loop. Preserve the
+# existing pinned decoder, verified byte copy and same-session publication.
+define discord_voice_audio_source_prepare with database as Int and run as Str and actor as Str and attachment as Str and directory_path as Str returning List:
+    set source to discord_post_file_source(database and run and actor and attachment)
+    if not (archive_list_text(source and 0) equals "found"):
+        return source
+    if string_index_of(archive_list_text(source and 3) and "audio/") is not equal to 0:
+        return history_status("voice-audio-source-required")
+    set decoded to discord_voice_audio_decode(database and concat("discord:" and actor) and archive_list_text(source and 6) and attachment and directory_path)
+    if not (archive_list_text(decoded and 0) equals "decoded"):
+        return decoded
+    set pcm to discord_post_file_source(database and run and actor and archive_list_text(decoded and 1))
+    if not (archive_list_text(pcm and 0) equals "found"):
+        return pcm
+    set binding to create_list()
+    set retained_voice_added to append_list(binding and "voice-audio-ready")
+    set retained_voice_added to append_list(binding and attachment)
+    set retained_voice_added to append_list(binding and archive_list_text(decoded and 1))
+    set retained_voice_added to append_list(binding and archive_list_text(pcm and 4))
+    set retained_voice_added to append_list(binding and archive_list_text(pcm and 5))
+    set retained_voice_added to append_list(binding and archive_list_text(source and 6))
+    set retained_voice_added to append_list(binding and archive_list_text(source and 4))
+    set current to discord_voice_audio_source_current(database and run and actor and binding)
+    if not (archive_list_text(current and 0) equals "found"):
+        return current
+    return binding
+
+# Open the verified inode, not a cached path supplied by the model. PCM format,
+# complete-file digest and byte count are checked by the native streaming reader.
+define discord_voice_audio_source_open with database as Int and run as Str and actor as Str and binding as List returning List:
+    set current to discord_voice_audio_source_current(database and run and actor and binding)
+    if not (archive_list_text(current and 0) equals "found"):
+        return 0
+    return discord_voice_pcm_open(archive_list_text(current and 1) and archive_list_text(binding and 3) and string_to_int(archive_list_text(binding and 4)))

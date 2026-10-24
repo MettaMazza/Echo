@@ -1,0 +1,116 @@
+import "voice_session_owner"
+import "voice_media_controller"
+import "voice_membership_reader"
+
+# Adopts the durable connection owner. Media starts only after transport keys
+# are installed. State: session owner, DAVE path, socket generation, media, closed, current participants, snapshot cursor.
+define discord_voice_engine_new with owner as List and path as Str and generation as Int returning List:
+    if owner equals 0 or else length_list(owner) is not equal to 4 or else generation < 1 or else string_length(path) equals 0:
+        return 0
+    set connection to get_list(owner and 0)
+    if connection equals 0 or else length_list(connection) is not equal to 4 or else get_list(connection and 3) is not equal to 0:
+        return 0
+    set handshake to get_list(get_list(get_list(connection and 0) and 0) and 0)
+    if discord_voice_handshake_current(handshake and generation) equals 0:
+        return 0
+    set state to create_list()
+    set state to [owner,path,generation,0,0,0,-1]
+    return state
+
+define discord_voice_engine_close with journal as Int and state as List and reason as Str returning Str:
+    if state is not equal to 0 and also length_list(state) equals 7 and also get_list(state and 4) equals 0:
+        set changed to set_list(state and 4 and 1)
+        if get_list(state and 3) is not equal to 0:
+            set closed to discord_voice_media_controller_close(get_list(state and 3) and reason)
+        set closed to discord_voice_session_close(journal and get_list(state and 0))
+    return reason
+
+# Native controller supplies a freshly read registry and exact proof cursor.
+# The same writer lock covers current-owner checks, socket poll and MLS/control
+# responses, so Gateway cancellation cannot interleave before a Ready write.
+define discord_voice_engine_tick with journal as Int and state as List and participants as List and gateway_generation as Int and through_sequence as Int and monotonic_ms as Int and wall_ms as Int and authorized as Int and cancelled as Int returning Str:
+    if state equals 0 or else length_list(state) is not equal to 7 or else get_list(state and 4) is not equal to 0:
+        return "voice-engine-closed"
+    if authorized is not equal to 1 or else cancelled is not equal to 0:
+        return discord_voice_engine_close(journal and state and "voice-session-revoked")
+    set owner to get_list(state and 0)
+    set connection to get_list(owner and 0)
+    set credentials to get_list(connection and 1)
+    set roster to discord_voice_participants_roster(participants and gateway_generation)
+    if roster equals 0 or else not (archive_list_text(participants and 0) equals archive_list_text(credentials and 0)) or else not (archive_list_text(participants and 1) equals archive_list_text(connection and 2)) or else not (archive_list_text(participants and 2) equals archive_list_text(credentials and 1)):
+        return discord_voice_engine_close(journal and state and "invalid-current-voice-membership")
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return discord_voice_engine_close(journal and state and "voice-session-store-unavailable")
+    if discord_voice_session_current(journal and owner and through_sequence) equals 0:
+        # A dispatch can arrive between the reader snapshot and this writer
+        # fence. Keep a still-owned socket, but perform no transport operation
+        # with the superseded proof/roster. The worker must refresh both.
+        set current to history_collect_one(archive_prepare(journal and "SELECT sequence FROM discord_gateway WHERE singleton=1;"))
+        set current_sequence to string_to_int(archive_list_text(current and 1))
+        if archive_list_text(current and 0) equals "found" and also current_sequence > through_sequence and also discord_voice_session_current(journal and owner and current_sequence) equals 1:
+            set rolled_back to sql_execute(journal and "ROLLBACK;")
+            if rolled_back is not equal to 0:
+                return discord_voice_engine_close(journal and state and "voice-session-store-unavailable")
+            return "voice-authorization-refresh-required"
+        set failed to migration_fail(journal and "voice-session-stale")
+        return discord_voice_engine_close(journal and state and "voice-session-stale")
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and archive_list_text(owner and 1))
+    set retained_voice_added to append_list(keys and archive_list_text(owner and 2))
+    set durable to history_collect_one(checkpoint_prepare(journal and "SELECT state FROM discord_voice_connections WHERE identity=?1 AND generation=?2;" and keys))
+    if not (archive_list_text(durable and 1) equals "identified"):
+        set failed to migration_fail(journal and "voice-session-not-owned")
+        return discord_voice_engine_close(journal and state and "voice-session-not-owned")
+    set action to discord_voice_connection_tick(connection and monotonic_ms and wall_ms and get_list(state and 2) and 1 and 0)
+    set status to archive_list_text(action and 0)
+    set io_state to get_list(connection and 0)
+    set handshake to get_list(get_list(io_state and 0) and 0)
+    if get_list(connection and 3) equals 0 and also get_list(handshake and 0) equals 4:
+        if get_list(state and 3) equals 0:
+            set media to discord_voice_media_controller_new(io_state and archive_list_text(state and 1) and get_list(state and 2))
+            set changed to set_list(state and 3 and media)
+        if get_list(state and 3) equals 0:
+            if status equals "binary-mls":
+                set released to discord_voice_blob_release(get_list(action and 1))
+            set status to "voice-media-owner-failed"
+            set closed to discord_voice_connection_close(connection)
+        else:
+            set status to discord_voice_media_controller_dispatch_members(get_list(state and 3) and action and participants and gateway_generation)
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set failed to migration_fail(journal and "voice-session-commit-failed")
+        return discord_voice_engine_close(journal and state and "voice-session-store-unavailable")
+    if get_list(connection and 3) is not equal to 0 or else get_list(io_state and 4) is not equal to 0:
+        return discord_voice_engine_close(journal and state and status)
+    return status
+
+# Dedicated read connection supplies a finite snapshot; the writer-side poll
+# rechecks its cursor before any socket action. The authorization proof must
+# refer to this same snapshot. A racing newer Gateway event requires refresh.
+define discord_voice_engine_poll with journal as Int and reader as Int and state as List and proof_sequence as Int and monotonic_ms as Int and wall_ms as Int and authorized as Int and cancelled as Int returning Str:
+    if state equals 0 or else length_list(state) is not equal to 7 or else get_list(state and 4) is not equal to 0:
+        return "voice-engine-closed"
+    if authorized is not equal to 1 or else cancelled is not equal to 0:
+        return discord_voice_engine_close(journal and state and "voice-session-revoked")
+    set owner to get_list(state and 0)
+    set connection to get_list(owner and 0)
+    set credentials to get_list(connection and 1)
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and archive_list_text(owner and 1))
+    set retained_voice_added to append_list(keys and archive_list_text(owner and 2))
+    set binding to history_collect_one(checkpoint_prepare(reader and "SELECT gateway_session FROM discord_voice_intents WHERE identity=?1 AND generation=?2 AND state='sent';" and keys))
+    if not (archive_list_text(binding and 0) equals "found"):
+        return discord_voice_engine_close(journal and state and "voice-session-not-owned")
+    set snapshot to discord_voice_membership_read_intent(reader and archive_list_text(owner and 2) and archive_list_text(binding and 1) and get_list(state and 2) and archive_list_text(credentials and 0) and archive_list_text(connection and 2) and archive_list_text(credentials and 1) and archive_list_text(owner and 1))
+    if not (archive_list_text(snapshot and 0) equals "voice-membership-ready"):
+        return discord_voice_engine_close(journal and state and archive_list_text(snapshot and 0))
+    set cursor to get_list(snapshot and 2)
+    if cursor is not equal to proof_sequence:
+        return "voice-authorization-refresh-required"
+    if cursor < get_list(state and 6):
+        return discord_voice_engine_close(journal and state and "voice-membership-cursor-regressed")
+    set fresh to get_list(get_list(snapshot and 1) and 0)
+    if discord_voice_participants_carry(get_list(state and 5) and fresh and get_list(state and 2)) equals 0:
+        return discord_voice_engine_close(journal and state and "voice-membership-reconcile-failed")
+    set changed to set_list(state and 5 and fresh)
+    set changed to set_list(state and 6 and cursor)
+    return discord_voice_engine_tick(journal and state and fresh and get_list(state and 2) and cursor and monotonic_ms and wall_ms and authorized and cancelled)

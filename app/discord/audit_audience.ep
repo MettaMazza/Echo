@@ -1,0 +1,99 @@
+import "member_guard"
+
+# Audit records are guild-private. Requester permission alone cannot make the
+# room_body's other readers eligible. Prove the role-derived audience separately
+# from explicit member overwrites; the caller must check both before release.
+# This proof uses every possible single role, including roles with no current
+# members, so adding a member cannot silently broaden the authorized audience.
+define discord_audit_role_audience with server as Str and roles as Str and room_body as Str and guild as Str and room as Str returning Int:
+    set fields to provider_json_tokens(room_body)
+    set role_fields to provider_json_tokens(roles)
+    set server_fields to provider_json_tokens(server)
+    if fields equals 0 or else role_fields equals 0 or else server_fields equals 0 or else provider_unique_objects(fields) equals 0 or else provider_unique_objects(role_fields) equals 0 or else provider_unique_objects(server_fields) equals 0:
+        return 0
+    if not (provider_value(fields and provider_member(fields and 0 and "id")) equals room) or else not (provider_value(fields and provider_member(fields and 0 and "guild_id")) equals guild) or else not (provider_value(server_fields and provider_member(server_fields and 0 and "id")) equals guild):
+        return 0
+    set overwrites to provider_member(fields and 0 and "permission_overwrites")
+    if not (provider_kind(fields and overwrites) equals "[") or else not (provider_kind(role_fields and 0) equals "["):
+        return 0
+    set filtered to "["
+    set count to 0
+    set seen to create_list()
+    set retained to create_list()
+    set items to create_list()
+    set items to provider_items(fields and overwrites)
+    set added to append_list(retained and items)
+    for each item in items:
+        set identity to provider_value(fields and provider_member(fields and item and "id"))
+        set kind to provider_value(fields and provider_member(fields and item and "type"))
+        set key to concat(kind and concat(":" and identity))
+        if discord_snowflake(identity) equals 0 or else not (kind equals "0" or else kind equals "1") or else discord_contains(seen and key) equals 1:
+            return 0
+        set added to append_list(seen and key)
+        if discord_permission_bit(provider_value(fields and provider_member(fields and item and "allow")) and 10) < 0 or else discord_permission_bit(provider_value(fields and provider_member(fields and item and "deny")) and 10) < 0:
+            return 0
+        if kind equals "0":
+            if string_length(discord_role_snapshot(roles and identity)) equals 0:
+                return 0
+            if count > 0:
+                set filtered to concat(filtered and ",")
+            set filtered to concat(filtered and agent_json_source(room_body and fields and item))
+            set count to count + 1
+    set filtered to concat(filtered and "]")
+    set projected to concat("{\"id\":" and concat(provider_quote(room) and concat(",\"guild_id\":" and concat(provider_quote(guild) and concat(",\"permission_overwrites\":" and concat(filtered and "}"))))))
+    # A synthetic member never inherits the actual owner's bypass or a member
+    # overwrite. Owners and administrators already possess VIEW_AUDIT_LOG.
+    set guild_view to concat("{\"id\":" and concat(provider_quote(guild) and ",\"owner_id\":\"0\"}"))
+    set role_items to create_list()
+    set role_items to provider_items(role_fields and 0)
+    set added to append_list(retained and role_items)
+    set found_everyone to 0
+    for each item in role_items:
+        set identity to provider_value(role_fields and provider_member(role_fields and item and "id"))
+        set selected to "[]"
+        if identity equals guild:
+            set found_everyone to 1
+        else:
+            set selected to concat("[" and concat(provider_quote(identity) and "]"))
+        set member to concat("{\"user\":{\"id\":\"1\"},\"roles\":" and concat(selected and "}"))
+        set reads to discord_channel_permission(guild_view and roles and member and projected and guild and "1" and room and 10)
+        set audits to discord_member_guild_permission(guild_view and roles and member and guild and "1" and 7)
+        if reads < 0 or else audits < 0 or else (reads equals 1 and also audits is not equal to 1):
+            return 0
+    return found_everyone
+
+# Check every explicit member VIEW_CHANNEL allow against a fresh member body.
+# Missing/departed members do not prove a safe audience and fail closed.
+define discord_audit_member_audience with server as Str and roles as Str and room_body as Str and members as Str and guild as Str returning Int:
+    set fields to provider_json_tokens(room_body)
+    set snapshots to provider_json_tokens(members)
+    if fields equals 0 or else snapshots equals 0 or else provider_unique_objects(fields) equals 0 or else provider_unique_objects(snapshots) equals 0 or else not (provider_kind(snapshots and 0) equals "["):
+        return 0
+    set overwrites to provider_member(fields and 0 and "permission_overwrites")
+    if not (provider_kind(fields and overwrites) equals "["):
+        return 0
+    set items to create_list()
+    set retained to create_list()
+    set items to provider_items(fields and overwrites)
+    set added to append_list(retained and items)
+    set member_items to create_list()
+    set member_items to provider_items(snapshots and 0)
+    set added to append_list(retained and member_items)
+    for each item in items:
+        if provider_value(fields and provider_member(fields and item and "type")) equals "1":
+            set allow to discord_permission_bit(provider_value(fields and provider_member(fields and item and "allow")) and 10)
+            if allow < 0:
+                return 0
+            if allow equals 1:
+                set identity to provider_value(fields and provider_member(fields and item and "id"))
+                set found to 0
+                for each candidate in member_items:
+                    set person to provider_member(snapshots and candidate and "user")
+                    if provider_value(snapshots and provider_member(snapshots and person and "id")) equals identity:
+                        set body to agent_json_source(members and snapshots and candidate)
+                        if discord_member_guild_permission(server and roles and body and guild and identity and 7) is not equal to 1:
+                            return 0
+                        set found to found + 1
+                if found is not equal to 1:
+                    return 0
+    return 1

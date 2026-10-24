@@ -1,0 +1,42 @@
+import "voice_recording_transcript_publication"
+
+define discord_recording_transcript_queue_schema with journal as Int returning Int:
+    if discord_recording_transcription_schema(journal) is not equal to 0:
+        return 1
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_recording_transcript_delivery(artifact TEXT NOT NULL REFERENCES discord_voice_recording_artifacts(identity),archive_anchor TEXT NOT NULL,confirmed INTEGER NOT NULL DEFAULT 0,next_ms INTEGER NOT NULL DEFAULT 0,outcome TEXT NOT NULL DEFAULT '',PRIMARY KEY(artifact,archive_anchor)); CREATE INDEX IF NOT EXISTS discord_voice_recording_transcript_pending ON discord_voice_recording_transcript_delivery(archive_anchor,next_ms,artifact) WHERE confirmed=0;")
+
+define discord_recording_transcript_seed with journal as Int and anchor as Str returning Int:
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_voice_recording_transcript_delivery(artifact,archive_anchor) SELECT identity,?1 FROM discord_voice_recording_artifacts;" and [anchor]) and 101) is not equal to 0:
+        return 1
+    return archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recording_transcript_delivery SET confirmed=0,next_ms=0 WHERE archive_anchor=?1;" and [anchor]) and 101)
+
+# One local derivation/publication at a time, independently of model turns and
+# interaction handling. Inaccessible items back off without starving other work.
+define discord_recording_transcript_tick with journal as Int and database as Int and config as List and anchor as Str and profile as Str and root as Str returning Str:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT t.artifact FROM discord_voice_recording_transcript_delivery t JOIN discord_voice_recording_archive_delivery a ON a.artifact=t.artifact AND a.archive_anchor=t.archive_anchor AND a.confirmed=1 WHERE t.archive_anchor=?1 AND t.confirmed=0 AND t.next_ms<=CAST(?2 AS INTEGER) ORDER BY t.next_ms,t.artifact LIMIT 1;" and [anchor,int_to_string(ep_time_now_ms())]))
+    if archive_list_text(row and 0) equals "end":
+        return "recording-transcript-idle"
+    if not (archive_list_text(row and 0) equals "found"):
+        return "recording-archive-store-failed"
+    set artifact to archive_list_text(row and 1)
+    set result to discord_recording_transcript_observed(journal and database and artifact)
+    if result equals "recording-transcript-pending":
+        set staged to history_collect_one(checkpoint_prepare(journal and "SELECT artifact FROM discord_voice_recording_transcripts WHERE artifact=?1;" and [artifact]))
+        if archive_list_text(staged and 0) equals "found":
+            set result to "recording-transcription-staged"
+        else if archive_list_text(staged and 0) equals "end":
+            set result to "recording-transcription-not-configured"
+            if string_length(profile) > 0 and string_length(root) > 0:
+                set result to discord_recording_transcribe(journal and database and config and artifact and profile and root)
+        else:
+            set result to "recording-transcript-store-failed"
+        if result equals "recording-transcription-staged":
+            set result to discord_recording_transcript_publish(journal and database and config and artifact)
+    set confirmed to result equals "recording-transcript-published" or else result equals "recording-transcript-observed"
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recording_transcript_delivery SET confirmed=CAST(?3 AS INTEGER),next_ms=CAST(?4 AS INTEGER),outcome=?5 WHERE artifact=?1 AND archive_anchor=?2;" and [artifact,anchor,int_to_string(confirmed),int_to_string(ep_time_now_ms() + 30000),result]) and 101) is not equal to 0:
+        return "recording-archive-store-failed"
+    if confirmed:
+        return "recording-archive-progress"
+    if discord_contains(["recording-transcript-conflict","recording-transcript-store-failed","recording-transcript-integrity-failed","recording-transcript-provenance-denied","recording-transcript-log-failed","recording-transcription-store-failed","recording-transcription-log-failed","recording-transcription-integrity-failed"] and result) equals 1:
+        return "recording-archive-failed"
+    return "recording-archive-deferred"

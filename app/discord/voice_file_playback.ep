@@ -1,0 +1,83 @@
+import "voice_playback"
+import "voice_pcm_reader"
+
+# Owns reader and playback on success. Only one pending PCM frame is retained.
+# Fields: reader, playback, pending blob, valid bytes, sent source bytes,
+# silence frames remaining (-1 until EOF), closed.
+define discord_voice_file_playback_new with reader as List and playback as List returning List:
+    if reader equals 0 or else length_list(reader) is not equal to 6 or else get_list(reader and 5) is not equal to 0 or else playback equals 0 or else length_list(playback) is not equal to 8 or else get_list(playback and 6) is not equal to 0:
+        return 0
+    set state to create_list()
+    set state to [reader,playback,0,0,0,-1,0]
+    return state
+
+define discord_voice_file_playback_fail with state as List and reason as Str returning Str:
+    if state is not equal to 0 and also length_list(state) equals 7 and also get_list(state and 6) equals 0:
+        set released to discord_voice_blob_release(get_list(state and 2))
+        set changed to set_list(state and 2 and 0)
+        set closed to discord_voice_pcm_close(get_list(state and 0))
+        set closed to discord_voice_playback_fail(get_list(state and 1) and reason)
+        set changed to set_list(state and 6 and 1)
+    return reason
+
+# Source bytes count only successful audio frames, excluding padding and the
+# five paced silence frames used to terminate Opus. Revocation never flushes.
+define discord_voice_file_playback_tick with state as List and now as Int and authorized as Int and consented as Int and cancelled as Int returning Str:
+    if state equals 0 or else length_list(state) is not equal to 7 or else get_list(state and 6) is not equal to 0:
+        return "file-playback-closed"
+    if authorized is not equal to 1 or else consented is not equal to 1 or else cancelled is not equal to 0:
+        return discord_voice_file_playback_fail(state and "file-playback-revoked")
+    set playback to get_list(state and 1)
+    if now < get_list(playback and 5) or else now > 9007199254740971:
+        return discord_voice_file_playback_fail(state and "playback-clock-anomaly")
+    set changed to set_list(playback and 5 and now)
+    if get_list(state and 2) equals 0:
+        if get_list(state and 5) < 0:
+            set frame to discord_voice_pcm_next(get_list(state and 0))
+            set status to archive_list_text(frame and 0)
+            if status equals "frame":
+                set changed to set_list(state and 2 and get_list(frame and 1))
+                set changed to set_list(state and 3 and get_list(frame and 2))
+            else:
+                if not (status equals "end"):
+                    return discord_voice_file_playback_fail(state and status)
+                set changed to set_list(state and 5 and 5)
+        if get_list(state and 5) equals 0:
+            # Let the last 20 ms frame finish before clearing Speaking.
+            set playback to get_list(state and 1)
+            if now < get_list(playback and 5):
+                return discord_voice_file_playback_fail(state and "playback-clock-anomaly")
+            if now < get_list(playback and 4):
+                return "wait"
+            set stopped to discord_voice_playback_stop(playback)
+            if not (stopped equals "playback-stopped"):
+                return discord_voice_file_playback_fail(state and stopped)
+            set closed to discord_voice_pcm_close(get_list(state and 0))
+            set changed to set_list(state and 6 and 1)
+            return "file-playback-complete"
+        if get_list(state and 5) > 0:
+            set pointer to alloc_bytes(3840)
+            if pointer equals 0:
+                return discord_voice_file_playback_fail(state and "playback-tail-allocation-failed")
+            set index to 0
+            repeat while index < 3840:
+                set written to poke_byte(pointer and index and 0)
+                set index to index + 1
+            set blob to create_list()
+            set blob to [pointer,3840]
+            set changed to set_list(state and 2 and blob)
+            set changed to set_list(state and 3 and 0)
+    set blob to get_list(state and 2)
+    set sent to discord_voice_playback_tick(get_list(state and 1) and get_list(blob and 0) and get_list(blob and 1) and now and authorized and consented and cancelled)
+    if sent equals "wait" or else sent equals "await-media":
+        return sent
+    if not (sent equals "sent"):
+        return discord_voice_file_playback_fail(state and sent)
+    set changed to set_list(state and 4 and get_list(state and 4) + get_list(state and 3))
+    set released to discord_voice_blob_release(blob)
+    set changed to set_list(state and 2 and 0)
+    set changed to set_list(state and 3 and 0)
+    if get_list(state and 5) > 0:
+        set changed to set_list(state and 5 and get_list(state and 5) - 1)
+        return "silence-sent"
+    return "source-frame-sent"

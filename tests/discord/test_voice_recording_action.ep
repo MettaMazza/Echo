@@ -1,0 +1,152 @@
+import "../../app/discord/action_worker"
+import "../../app/discord/worker_store"
+import "../../app/discord/gateway_journal"
+import "../fixtures/tool_call_fixture"
+
+define recording_authority_submit with journal as Int and database as Int and identity as Str returning Int:
+    set body to concat("{\"id\":" and concat(provider_quote(identity) and ",\"channel_id\":\"300\",\"guild_id\":\"200\",\"type\":0,\"author\":{\"id\":\"500\"},\"mentions\":[{\"id\":\"900\"}],\"content\":\"Authorised voice test\"}"))
+    set inbox to concat("message:create:" and identity)
+    if not (discord_inbox_record(journal and inbox and "MESSAGE_CREATE" and body) equals "recorded"):
+        return 1
+    set claimed to discord_worker_claim(journal)
+    if not (archive_list_text(claimed and 1) equals inbox):
+        return 2
+    set submitted to discord_agent_submit(journal and database and inbox and "900" and ["200"] and ["500"])
+    if not (archive_list_text(submitted and 0) equals "accepted"):
+        display archive_list_text(submitted and 0)
+        return 3
+    return 0
+
+define recording_authority_generate with database as Int and run as Str and request as Str and operation as Str returning Int:
+    set listener to local_socket_listen(0)
+    set arguments to concat("{\"operation\":" and concat(provider_quote(operation) and ",\"intent\":\"voice-intent\"}"))
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"voice-call\",\"function\":{\"name\":\"discord_voice\",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set generated to agent_generate_local(database and run and request and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    set closed to local_socket_close(listener)
+    return generated + served
+
+define recording_authority_check with journal as Int and database as Int and expected as Str returning Int:
+    set result to discord_voice_recording_guard(journal and database and "recording" and "900" and ["200"] and ["500"] and "/absent-fixture-stop")
+    if not (archive_list_text(result and 0) equals expected):
+        display concat("Expected " and concat(expected and concat("; got " and archive_list_text(result and 0))))
+        return 1
+    return 0
+
+define recording_action_click with journal as Int and id as Str and actor as Str and offer as Str and decision as Str returning Str:
+    set custom to concat("echo:record:" and concat(offer and concat(":" and decision)))
+    set body to concat("{\"id\":" and provider_quote(id))
+    set body to concat(body and ",\"type\":3,\"application_id\":\"900\",\"guild_id\":\"200\",\"channel_id\":\"300\",\"message\":{\"id\":\"710\",\"author\":{\"id\":\"900\"}},\"member\":{\"user\":{\"id\":")
+    set body to concat(body and concat(provider_quote(actor) and "}},\"data\":{\"component_type\":2,\"custom_id\":"))
+    set body to concat(body and concat(provider_quote(custom) and "}}"))
+    set inbox to concat("interaction:" and id)
+    set recorded to discord_inbox_record(journal and inbox and "INTERACTION_CREATE" and body)
+    return inbox
+
+define main returning Int:
+    if get_argument_count() is not equal to 5 or else file_exists(get_argument(1)) or else file_exists(get_argument(2)):
+        return 1
+    set database to discord_agent_open(get_argument(1) and "900")
+    if database equals 0 or else web_cancel_schema(database) is not equal to 0 or else not (delegation_schema(database) equals "applied"):
+        return 2
+    set admin to discord_agent_principal(database and "500" and ["500"])
+    set journal to discord_store_open(get_argument(2) and "900")
+    if journal equals 0 or else discord_worker_schema(journal) is not equal to 0 or else discord_voice_recording_schema(journal) is not equal to 0:
+        return 3
+    if recording_authority_submit(journal and database and "100") is not equal to 0 or else recording_authority_generate(database and "discord-message:100" and "join-request" and "join") is not equal to 0:
+        return 4
+    set requested to discord_voice_intent_request(journal and "voice-intent" and "200" and "600" and "500" and "discord-message:100" and "voice-call" and ep_sha256("fixture-access"))
+    set changed to sql_execute(journal and "UPDATE discord_voice_intents SET state='sent' WHERE identity='voice-intent';")
+    # Model the completed join before admitting the later recording request.
+    set changed to sql_execute(database and "UPDATE echo_runs SET state='completed' WHERE run='discord-message:100'; UPDATE echo_tool_calls SET state='observed' WHERE run='discord-message:100';")
+    set changed to sql_execute(journal and "UPDATE discord_agent_jobs SET state='enqueued' WHERE inbox='message:create:100';")
+    if recording_authority_submit(journal and database and "101") is not equal to 0 or else recording_authority_generate(database and "discord-message:101" and "record-request" and "record") is not equal to 0:
+        return 5
+    set request to history_collect_one(archive_prepare(database and "SELECT request_event FROM echo_tool_calls WHERE run='discord-message:101' AND call_id='voice-call';"))
+    if not (discord_voice_recording_request(journal and "recording" and "voice-intent" and "500" and "300" and archive_list_text(request and 1)) equals "pending-notice"):
+        return 6
+    if recording_authority_check(journal and database and "recording-native-current") is not equal to 0:
+        return 7
+    if discord_gateway_schema(journal) is not equal to 0:
+        return 30
+    set bound to discord_gateway_bind(journal and "generation" and "session")
+    set recorded to discord_gateway_dispatch(journal and "generation" and "session" and 1 and "IGNORED" and ep_sha256("fixture") and "" and "")
+    if not (discord_voice_recording_notice(journal and "recording" and "700" and "observed-notice") equals "active"):
+        return 31
+    if discord_gateway_voice_schema(journal) is not equal to 0 or else discord_voice_recording_offer_schema(journal) is not equal to 0:
+        return 40
+    set baseline to "{\"id\":\"200\",\"voice_states\":[{\"user_id\":\"900\",\"channel_id\":\"600\",\"session_id\":\"bot-session\"},{\"user_id\":\"500\",\"channel_id\":\"600\",\"session_id\":\"human-session\"}]}"
+    set recorded to discord_gateway_voice_record(journal and "session" and 1 and "GUILD_CREATE" and baseline)
+    set changed to sql_execute(journal and "UPDATE discord_voice_intents SET generation='generation',gateway_session='session',after_sequence=0 WHERE identity='voice-intent';")
+    set offer to ep_sha256("human-session-offer")
+    if not (discord_voice_recording_offer(journal and offer and "recording" and "500" and "human-session") equals "offered"):
+        return 41
+    set body to discord_voice_recording_offer_body(journal and offer)
+    set observed to history_collect_one(checkpoint_prepare(journal and "SELECT json_set(?1,'$.id','710','$.channel_id','300','$.author',json('{\"id\":\"900\"}'));" and [body]))
+    set body to archive_list_text(observed and 1)
+    if not (discord_voice_recording_offer_observed(journal and offer and body and "offer-receipt") equals "recording-offer-bound"):
+        return 42
+    set fixture to ep_dlopen(get_argument(3))
+    set configured to ep_dlcall2(ep_dlsym(fixture and "fixture_configure") and 0 and str_to_ptr(get_argument(2)))
+    if ep_dlcall1(ep_dlsym(fixture and "fixture_recording_offer") and str_to_ptr(body)) is not equal to 1:
+        return 43
+    set configured to ep_dlcall2(ep_dlsym(fixture and "fixture_configure") and 9 and str_to_ptr(get_argument(2)))
+    set original to recording_action_click(journal and "119" and "500" and offer and "grant")
+    set outcome to discord_voice_recording_action(get_argument(3) and "fixture-token-no-network-123456" and journal and database and original and "900" and ["200"] and ["500"] and get_argument(4) and "/absent-fixture-stop")
+    if not (outcome equals "recording-membership-refresh-required"):
+        display outcome
+        return 53
+    set configured to ep_dlcall2(ep_dlsym(fixture and "fixture_configure") and 0 and str_to_ptr(get_argument(2)))
+    set original to recording_action_click(journal and "120" and "500" and offer and "grant")
+    set outcome to discord_voice_recording_action(get_argument(3) and "fixture-token-no-network-123456" and journal and database and original and "900" and ["200"] and ["500"] and get_argument(4) and "/absent-fixture-stop")
+    if not (outcome equals "recording-consent-granted"):
+        display outcome
+        return 44
+    set original to recording_action_click(journal and "121" and "501" and offer and "grant")
+    set outcome to discord_voice_recording_action(get_argument(3) and "fixture-token-no-network-123456" and journal and database and original and "900" and ["200"] and ["500"] and get_argument(4) and "/absent-fixture-stop")
+    if not (outcome equals "recording-control-denied"):
+        return 45
+    set configured to ep_dlcall2(ep_dlsym(fixture and "fixture_configure") and 5 and str_to_ptr(get_argument(2)))
+    set original to recording_action_click(journal and "130" and "500" and offer and "revoke")
+    set outcome to discord_voice_recording_action(get_argument(3) and "fixture-token-no-network-123456" and journal and database and original and "900" and ["200"] and ["500"] and get_argument(4) and "/absent-fixture-stop")
+    if not (outcome equals "recording-consent-revoked") or else ep_dlcall0(ep_dlsym(fixture and "fixture_calls")) is not equal to 0:
+        display outcome
+        return 46
+    set configured to ep_dlcall2(ep_dlsym(fixture and "fixture_configure") and 0 and str_to_ptr(get_argument(2)))
+    set original to recording_action_click(journal and "125" and "500" and offer and "grant")
+    set outcome to discord_voice_recording_action(get_argument(3) and "fixture-token-no-network-123456" and journal and database and original and "900" and ["200"] and ["500"] and get_argument(4) and "/absent-fixture-stop")
+    if not (outcome equals "recording-consent-superseded"):
+        return 47
+    set original to recording_action_click(journal and "140" and "500" and offer and "grant")
+    set outcome to discord_voice_recording_action(get_argument(3) and "fixture-token-no-network-123456" and journal and database and original and "900" and ["200"] and ["500"] and get_argument(4) and "/absent-fixture-stop")
+    if not (outcome equals "recording-consent-granted"):
+        return 48
+    # Test actual interaction-worker dispatch after testing-mode blocks this actor.
+    if discord_action_worker_schema(journal) is not equal to 0:
+        return 49
+    set changed to sql_execute(journal and "INSERT INTO discord_testing_receipts(interaction,actor,digest,enabled,admins,observed_ms) VALUES('fixture-testing','999','fixture',1,'[\"999\"]',0);")
+    if changed is not equal to 0 or else discord_testing_allows(journal and "500") is not equal to 0:
+        return 52
+    set original to recording_action_click(journal and "150" and "500" and offer and "revoke")
+    set inserted to archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_interaction_jobs(identity,state,received_ms,detail) VALUES(?1,'acknowledged',0,'fixture');" and [original]) and 101)
+    set configured to ep_dlcall2(ep_dlsym(fixture and "fixture_configure") and 5 and str_to_ptr(get_argument(2)))
+    set outcome to discord_action_worker_tick_scoped(get_argument(3) and "fixture-token-no-network-123456" and journal and database and "900" and ["200"] and [] and get_argument(4) and "/absent-fixture-stop")
+    if not (outcome equals "completed"):
+        display outcome
+        return 50
+    set saved to history_collect_one(checkpoint_prepare(journal and "SELECT detail FROM discord_interaction_jobs WHERE identity=?1;" and [original]))
+    if not (archive_list_text(saved and 1) equals "recording-consent-revoked"):
+        display archive_list_text(saved and 1)
+        return 51
+    set original to recording_action_click(journal and "160" and "500" and offer and "grant")
+    set inserted to archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_interaction_jobs(identity,state,received_ms,detail) VALUES(?1,'acknowledged',0,'fixture');" and [original]) and 101)
+    set outcome to discord_action_worker_tick_scoped(get_argument(3) and "fixture-token-no-network-123456" and journal and database and "900" and ["200"] and [] and get_argument(4) and "/absent-fixture-stop")
+    if not (outcome equals "denied"):
+        return 54
+    set saved to history_collect_one(checkpoint_prepare(journal and "SELECT detail,(SELECT COUNT(*) FROM discord_voice_recording_consents WHERE receipt=?1) FROM discord_interaction_jobs WHERE identity=?1;" and [original]))
+    if not (archive_list_text(saved and 1) equals "account-unavailable") or else not (archive_list_text(saved and 2) equals "0"):
+        return 55
+    display "PASS: consent actions require exact current human/session controls and fresh grant authority; revocation needs no REST, delayed grants report supersession, and the interaction worker preserves withdrawal during testing mode."
+    return 0

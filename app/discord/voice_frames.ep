@@ -1,0 +1,127 @@
+import "voice_socket"
+
+# Owns a bounded binary message buffer and a separate control-close buffer.
+# Fields: data, used, next offset, left, kind, flags, close data/offset/left,
+# terminal. Every supplied chunk is consumed/released on all return paths.
+define discord_voice_frames_new returning List:
+    set data to alloc_bytes(16777216)
+    set close_data to alloc_bytes(125)
+    if data equals 0 or else close_data equals 0:
+        if data is not equal to 0:
+            free_bytes(data)
+        if close_data is not equal to 0:
+            free_bytes(close_data)
+        return 0
+    set state to research_native_words(10)
+    set changed to set_list(state and 0 and data)
+    set changed to set_list(state and 6 and close_data)
+    return state
+
+define discord_voice_frames_close with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 10:
+        return 0
+    if get_list(state and 0) is not equal to 0:
+        free_bytes(get_list(state and 0))
+    if get_list(state and 6) is not equal to 0:
+        free_bytes(get_list(state and 6))
+    set changed to set_list(state and 0 and 0)
+    set changed to set_list(state and 6 and 0)
+    set changed to set_list(state and 9 and 1)
+    return 1
+
+define discord_voice_frames_reject with state as List and blob as List and reason as Str returning List:
+    set released to discord_voice_blob_release(blob)
+    set changed to set_list(state and 9 and 1)
+    return history_status(reason)
+
+define discord_voice_frames_accept with state as List and row as List returning List:
+    set status to archive_list_text(row and 0)
+    if state equals 0 or else length_list(state) is not equal to 10 or else get_list(state and 9) is not equal to 0:
+        if status equals "chunk" and also length_list(row) >= 2:
+            set released to discord_voice_blob_release(get_list(row and 1))
+        return history_status("frames-closed")
+    if status equals "again" or else status equals "control":
+        return history_status("pending")
+    if not (status equals "chunk"):
+        set changed to set_list(state and 9 and 1)
+        return row
+    set blob to get_list(row and 1)
+    if length_list(row) is not equal to 5 or else blob equals 0 or else length_list(blob) is not equal to 2 or else get_list(blob and 0) equals 0:
+        return discord_voice_frames_reject(state and blob and "invalid-frame-row")
+    set pointer to get_list(blob and 0)
+    set count to get_list(blob and 1)
+    set flags to get_list(row and 2)
+    set offset to get_list(row and 3)
+    set remaining to get_list(row and 4)
+    if count < 0 or else count > 65536 or else offset < 0 or else offset > 16777216 or else remaining < 0 or else remaining > 16777216:
+        return discord_voice_frames_reject(state and blob and "invalid-frame-size")
+    if flags equals 8:
+        if offset is not equal to get_list(state and 7) or else offset + count + remaining > 125:
+            return discord_voice_frames_reject(state and blob and "invalid-close-frame")
+        if get_list(state and 8) > 0 and also get_list(state and 8) is not equal to count + remaining:
+            return discord_voice_frames_reject(state and blob and "invalid-close-continuity")
+        set index to 0
+        repeat while index < count:
+            set copied to poke_byte(get_list(state and 6) and offset + index and peek_byte(pointer and index))
+            set index to index + 1
+        set released to discord_voice_blob_release(blob)
+        set changed to set_list(state and 7 and offset + count)
+        set changed to set_list(state and 8 and remaining)
+        if remaining > 0:
+            return history_status("pending")
+        set changed to set_list(state and 9 and 1)
+        if offset + count equals 1:
+            return history_status("invalid-close-frame")
+        set code to 1005
+        if offset + count > 1:
+            set code to peek_byte(get_list(state and 6) and 0) * 256 + peek_byte(get_list(state and 6) and 1)
+        set result to history_status("closed")
+        set added to append_list(result and int_to_string(code))
+        return result
+    if not (flags equals 1 or else flags equals 2 or else flags equals 5 or else flags equals 6):
+        return discord_voice_frames_reject(state and blob and "invalid-frame-type")
+    set kind to flags modulo 4
+    if get_list(state and 4) is not equal to 0 and also get_list(state and 4) is not equal to kind:
+        return discord_voice_frames_reject(state and blob and "frame-type-changed")
+    set previous_left to get_list(state and 3)
+    if previous_left > 0:
+        if offset is not equal to get_list(state and 2) or else previous_left is not equal to count + remaining or else flags is not equal to get_list(state and 5):
+            return discord_voice_frames_reject(state and blob and "invalid-frame-continuity")
+    else if offset is not equal to 0:
+        return discord_voice_frames_reject(state and blob and "invalid-frame-offset")
+    set used to get_list(state and 1)
+    if used + count + remaining > 16777216:
+        return discord_voice_frames_reject(state and blob and "voice-message-too-large")
+    set index to 0
+    repeat while index < count:
+        set copied to poke_byte(get_list(state and 0) and used + index and peek_byte(pointer and index))
+        set index to index + 1
+    set released to discord_voice_blob_release(blob)
+    set changed to set_list(state and 1 and used + count)
+    set changed to set_list(state and 2 and offset + count)
+    set changed to set_list(state and 3 and remaining)
+    set changed to set_list(state and 4 and kind)
+    set changed to set_list(state and 5 and flags)
+    if remaining > 0 or else flags equals 5 or else flags equals 6:
+        return history_status("pending")
+    set size to used + count
+    set output to alloc_bytes(size + 1)
+    if output equals 0:
+        set changed to set_list(state and 9 and 1)
+        return history_status("allocation-failed")
+    set index to 0
+    repeat while index < size:
+        set copied to poke_byte(output and index and peek_byte(get_list(state and 0) and index))
+        set index to index + 1
+    set terminated to poke_byte(output and size and 0)
+    set index to 1
+    repeat while index <= 5:
+        set changed to set_list(state and index and 0)
+        set index to index + 1
+    set message to create_list()
+    set added to append_list(message and output)
+    set added to append_list(message and size)
+    set result to history_status("message")
+    set added to append_list(result and message)
+    set added to append_list(result and kind)
+    return result

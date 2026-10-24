@@ -1,0 +1,115 @@
+import "voice_recording_transcription"
+
+# Transcript and timing attachments, exact audio ancestry and this immutable
+# canonical receipt commit together. Journal delivery state is only a cursor.
+define discord_recording_transcript_publication_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_voice_recording_transcripts(artifact TEXT PRIMARY KEY REFERENCES echo_voice_recording_publications(identity),attempt TEXT NOT NULL,transcript TEXT NOT NULL UNIQUE REFERENCES echo_attachments(attachment),segments TEXT NOT NULL UNIQUE REFERENCES echo_attachments(attachment),transcript_digest TEXT NOT NULL,segments_digest TEXT NOT NULL,attribution TEXT NOT NULL CHECK(json_valid(attribution)),profile TEXT NOT NULL CHECK(json_valid(profile)),access_evidence TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS echo_voice_recording_transcripts_no_update BEFORE UPDATE ON echo_voice_recording_transcripts BEGIN SELECT RAISE(ABORT,'Recording transcript publication is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_voice_recording_transcripts_no_delete BEFORE DELETE ON echo_voice_recording_transcripts BEGIN SELECT RAISE(ABORT,'Recording transcript provenance persists'); END;")
+
+# No new access or output: reconcile an existing committed canonical receipt.
+define discord_recording_transcript_observed with journal as Int and database as Int and artifact as Str returning Str:
+    set receipt to history_collect_one(checkpoint_prepare(database and "SELECT t.attempt,t.transcript,t.segments,t.transcript_digest,t.segments_digest,t.attribution,t.profile,a.path,a.bytes,b.path,b.bytes,p.session,p.audio FROM echo_voice_recording_transcripts t JOIN echo_voice_recording_publications p ON p.identity=t.artifact JOIN echo_attachments a ON a.attachment=t.transcript AND a.session=p.session AND a.digest=t.transcript_digest JOIN echo_attachments b ON b.attachment=t.segments AND b.session=p.session AND b.digest=t.segments_digest JOIN echo_attachment_derivations x ON x.attachment=t.transcript AND x.parent=p.audio JOIN echo_attachment_derivations y ON y.attachment=t.segments AND y.parent=p.audio WHERE t.artifact=?1;" and [artifact]))
+    if archive_list_text(receipt and 0) equals "end":
+        set exists to history_collect_one(checkpoint_prepare(database and "SELECT artifact FROM echo_voice_recording_transcripts WHERE artifact=?1;" and [artifact]))
+        if archive_list_text(exists and 0) equals "end":
+            return "recording-transcript-pending"
+        return "recording-transcript-conflict"
+    if not (archive_list_text(receipt and 0) equals "found"):
+        return "recording-transcript-store-failed"
+    set staged to history_collect_one(checkpoint_prepare(journal and "SELECT attempt,directory,transcript_digest,transcript_bytes,segments_digest,segments_bytes,attribution,profile FROM discord_voice_recording_transcripts WHERE artifact=?1;" and [artifact]))
+    if not (archive_list_text(staged and 0) equals "found") or else not (archive_list_text(staged and 1) equals archive_list_text(receipt and 1)) or else not (concat(artifact and ":transcript") equals archive_list_text(receipt and 2)) or else not (concat(artifact and ":segments") equals archive_list_text(receipt and 3)) or else not (archive_list_text(staged and 3) equals archive_list_text(receipt and 4)) or else not (archive_list_text(staged and 5) equals archive_list_text(receipt and 5)) or else not (archive_list_text(staged and 7) equals archive_list_text(receipt and 6)) or else not (archive_list_text(staged and 8) equals archive_list_text(receipt and 7)) or else not (concat(archive_list_text(staged and 2) and "/transcript.txt") equals archive_list_text(receipt and 8)) or else not (archive_list_text(staged and 4) equals archive_list_text(receipt and 9)) or else not (concat(archive_list_text(staged and 2) and "/transcript.json") equals archive_list_text(receipt and 10)) or else not (archive_list_text(staged and 6) equals archive_list_text(receipt and 11)):
+        return "recording-transcript-conflict"
+    return "recording-transcript-observed"
+
+# Called only inside the original-session writer transaction and native guard.
+define discord_recording_transcript_lineage with database as Int and session as Str and attachment as Str and parent as Str returning Int:
+    set event to concat(attachment and ":attachment:derived")
+    set payload to concat("{\"attachment\":" and concat(provider_quote(attachment) and concat(",\"parent\":" and concat(provider_quote(parent) and "}"))))
+    if archive_append_pending(database and session and event and "attachment_derivation" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return 1
+    return archive_finish(checkpoint_prepare(database and "INSERT INTO echo_attachment_derivations VALUES(?1,?2,?3);" and [attachment,parent,event]) and 101)
+
+define discord_recording_transcript_publish with journal as Int and database as Int and config as List and artifact as Str returning Str:
+    set staged to history_collect_one(checkpoint_prepare(journal and "SELECT attempt,profile,directory,transcript_digest,transcript_bytes,segments_digest,segments_bytes,attribution,stdout_digest,stderr_digest FROM discord_voice_recording_transcripts WHERE artifact=?1;" and [artifact]))
+    set audio to history_collect_one(checkpoint_prepare(journal and "SELECT actor,voice_session,wav_digest,manifest_digest FROM discord_voice_recording_artifacts WHERE identity=?1;" and [artifact]))
+    if not (archive_list_text(staged and 0) equals "found") or else not (archive_list_text(audio and 0) equals "found"):
+        return "recording-transcript-source-unavailable"
+    set fields to provider_json_tokens(archive_list_text(staged and 8))
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "artifact")) equals artifact) or else not (provider_value(fields and provider_member(fields and 0 and "actor")) equals archive_list_text(audio and 1)) or else not (provider_value(fields and provider_member(fields and 0 and "voice_session")) equals archive_list_text(audio and 2)) or else not (provider_value(fields and provider_member(fields and 0 and "audio_sha256")) equals archive_list_text(audio and 3)) or else not (provider_value(fields and provider_member(fields and 0 and "capture_manifest_sha256")) equals archive_list_text(audio and 4)) or else not (provider_value(fields and provider_member(fields and 0 and "profile_sha256")) equals ep_sha256(archive_list_text(staged and 2))):
+        return "recording-transcript-provenance-denied"
+    set location to archive_list_text(staged and 3)
+    set text_path to concat(location and "/transcript.txt")
+    set segments_path to concat(location and "/transcript.json")
+    set text_file to file_digest(text_path and 65536)
+    set segments_file to file_digest(segments_path and 65536)
+    set stdout_file to file_digest(concat(location and "/runtime.stdout") and 65536)
+    set stderr_file to file_digest(concat(location and "/runtime.stderr") and 65536)
+    if not (archive_list_text(text_file and 0) equals "verified") or else not (archive_list_text(text_file and 1) equals archive_list_text(staged and 4)) or else get_list(text_file and 2) is not equal to string_to_int(archive_list_text(staged and 5)) or else not (archive_list_text(segments_file and 0) equals "verified") or else not (archive_list_text(segments_file and 1) equals archive_list_text(staged and 6)) or else get_list(segments_file and 2) is not equal to string_to_int(archive_list_text(staged and 7)) or else not (archive_list_text(stdout_file and 0) equals "verified") or else not (archive_list_text(stdout_file and 1) equals archive_list_text(staged and 9)) or else not (archive_list_text(stderr_file and 0) equals "verified") or else not (archive_list_text(stderr_file and 1) equals archive_list_text(staged and 10)):
+        return "recording-transcript-integrity-failed"
+    set proof to discord_voice_recording_publication_proof(archive_list_text(config and 0) and archive_list_text(config and 1) and journal and database and artifact and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 8) and archive_list_text(config and 9))
+    if not (archive_list_text(proof and 0) equals "recording-publication-proof"):
+        return archive_list_text(proof and 0)
+    set guard to discord_voice_recording_publication_guard(journal and database and artifact and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 9))
+    if not (archive_list_text(guard and 0) equals "recording-publication-current"):
+        return archive_list_text(guard and 0)
+    set session to archive_list_text(get_list(guard and 2) and 3)
+    # Restore missing native logs/profile from exact retained files after an
+    # older canonical archive is restored; never run recognition again for it.
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return "recording-transcript-storage-failed"
+    set directory to workspace_root_open(system and location)
+    set log_status to 1
+    if directory >= 0:
+        set output to workspace_file_open(system and directory and "runtime.stdout" and 0)
+        set errors to workspace_file_open(system and directory and "runtime.stderr" and 0)
+        set log_status to discord_recording_transcription_log(database and session and archive_list_text(staged and 1) and system and output and "stdout")
+        if discord_recording_transcription_log(database and session and archive_list_text(staged and 1) and system and errors and "stderr") is not equal to 0:
+            set log_status to 1
+        if output >= 0:
+            set closed to net_close(output)
+        if errors >= 0:
+            set closed to net_close(errors)
+        set closed to net_close(directory)
+    set closed to ep_dlclose(system)
+    if log_status is not equal to 0 or else discord_recording_transcription_event(database and session and concat(archive_list_text(staged and 1) and ":profile") and "recording_transcription_profile" and archive_list_text(staged and 2)) is not equal to 0:
+        return "recording-transcript-log-failed"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "recording-transcript-store-busy"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        set rolled to sql_execute(journal and "ROLLBACK;")
+        return "recording-transcript-store-busy"
+    set guard to discord_voice_recording_publication_guard(journal and database and artifact and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 9))
+    set result to "recording-transcript-authority-changed"
+    if archive_list_text(guard and 0) equals "recording-publication-current" and discord_access_snapshot_epoch(journal) equals archive_list_text(proof and 2):
+        set parent to history_collect_one(checkpoint_prepare(database and "SELECT audio FROM echo_voice_recording_publications WHERE identity=?1 AND session=?2 AND audio_digest=?3 AND manifest_digest=?4;" and [artifact,session,archive_list_text(audio and 3),archive_list_text(audio and 4)]))
+        if archive_list_text(parent and 0) equals "found":
+            set observed to discord_recording_transcript_observed(journal and database and artifact)
+            if observed equals "recording-transcript-observed":
+                set result to "recording-transcript-published"
+            else if observed equals "recording-transcript-pending":
+                set transcript to concat(artifact and ":transcript")
+                set segments to concat(artifact and ":segments")
+                set source to concat("{\"parent_attachment\":" and provider_quote(archive_list_text(parent and 1)))
+                set source to concat(source and concat(",\"capture_provenance_attachment\":" and provider_quote(concat(artifact and ":provenance"))))
+                set source to concat(source and concat(",\"attribution\":" and concat(archive_list_text(staged and 8) and "}")))
+                set saved to discord_voice_recording_attachment_pending(database and session and transcript and text_path and "Recording transcript.txt" and "text/plain" and archive_list_text(staged and 4) and archive_list_text(staged and 5) and source)
+                set saved_segments to discord_voice_recording_attachment_pending(database and session and segments and segments_path and "Recording transcript timings.json" and "application/json" and archive_list_text(staged and 6) and archive_list_text(staged and 7) and source)
+                set saved_lineage to discord_recording_transcript_lineage(database and session and transcript and archive_list_text(parent and 1))
+                set saved_segments_lineage to discord_recording_transcript_lineage(database and session and segments and archive_list_text(parent and 1))
+                set saved_receipt to archive_finish(checkpoint_prepare(database and "INSERT INTO echo_voice_recording_transcripts VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);" and [artifact,archive_list_text(staged and 1),transcript,segments,archive_list_text(staged and 4),archive_list_text(staged and 6),archive_list_text(staged and 8),archive_list_text(staged and 2),archive_list_text(proof and 3)]) and 101)
+                set result to "recording-transcript-store-failed"
+                if saved equals 0 and saved_segments equals 0 and saved_lineage equals 0 and saved_segments_lineage equals 0 and saved_receipt equals 0:
+                    set result to "recording-transcript-published"
+            else:
+                set result to observed
+        else:
+            set result to "recording-transcript-parent-unavailable"
+    if result equals "recording-transcript-published":
+        if sql_execute(database and "COMMIT;") is not equal to 0:
+            set result to "recording-transcript-store-failed"
+    else:
+        set rolled to sql_execute(database and "ROLLBACK;")
+    if result equals "recording-transcript-store-failed":
+        set rolled to sql_execute(database and "ROLLBACK;")
+    set rolled to sql_execute(journal and "ROLLBACK;")
+    return result

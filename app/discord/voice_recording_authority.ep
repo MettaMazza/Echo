@@ -1,0 +1,40 @@
+import "voice_recording_consent"
+import "voice_request_guard"
+
+# Recording has an independent admitted request. A join, a model-supplied
+# consent flag or a row in the recording projection cannot grant capture.
+# This local check does not replace fresh REST visibility/audience evidence.
+define discord_voice_recording_guard with journal as Int and database as Int and identity as Str and bot as Str and guilds as List and admins as List and stop_file as Str returning List:
+    set recording to history_collect_one(checkpoint_prepare(journal and "SELECT intent,actor,origin,request,state FROM discord_voice_recordings WHERE identity=?1 AND state IN ('pending-notice','active');" and [identity]))
+    if not (archive_list_text(recording and 0) equals "found"):
+        return history_status("recording-not-current")
+    set intent to archive_list_text(recording and 1)
+    set guarded to discord_voice_request_guard(journal and database and intent and bot and guilds and admins and stop_file)
+    if not (archive_list_text(guarded and 0) equals "allowed"):
+        return guarded
+    set call to history_collect_one(checkpoint_prepare(database and "SELECT t.run,t.call_id,json_extract(e.payload,'$.arguments') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event JOIN echo_runs r ON r.run=t.run WHERE t.request_event=?1 AND e.kind='tool_call' AND json_extract(e.payload,'$.run_id')=t.run AND json_extract(e.payload,'$.call_id')=t.call_id AND json_extract(e.payload,'$.name')='discord_voice' AND t.state<>'uncertain' AND r.state NOT IN ('failed','cancelled') AND NOT EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=t.run);" and [archive_list_text(recording and 4)]))
+    if not (archive_list_text(call and 0) equals "found"):
+        return history_status("recording-call-denied")
+    set run to archive_list_text(call and 1)
+    set call_id to archive_list_text(call and 2)
+    set actor to archive_list_text(recording and 2)
+    if discord_contains(admins and actor) equals 0 or else run_authority_allows(database and run and "admin") equals 0 or else tool_authority_allows(database and run and call_id and "admin") equals 0 or else node_run_status(database and run) is not equal to 1:
+        return history_status("recording-authority-denied")
+    set arguments to provider_json_tokens(archive_list_text(call and 3))
+    if arguments equals 0 or else provider_unique_objects(arguments) equals 0 or else not (provider_kind(arguments and 0) equals "{"):
+        return history_status("recording-call-denied")
+    if not (provider_value(arguments and provider_member(arguments and 0 and "operation")) equals "record") or else not (provider_value(arguments and provider_member(arguments and 0 and "intent")) equals intent):
+        return history_status("recording-call-denied")
+    set source to discord_run_source(journal and database and run)
+    set inbox to discord_job_origin(journal and database and run)
+    set join_source to get_list(guarded and 1)
+    if not (archive_list_text(source and 0) equals "found") or else string_length(inbox) equals 0 or else not (archive_list_text(source and 3) equals actor) or else not (archive_list_text(source and 4) equals archive_list_text(recording and 3)) or else not (actor equals archive_list_text(join_source and 3)) or else not (archive_list_text(source and 4) equals archive_list_text(join_source and 4)) or else not (archive_list_text(source and 5) equals archive_list_text(join_source and 5)):
+        return history_status("recording-source-denied")
+    if discord_run_barrier(journal and inbox and string_to_int(archive_list_text(source and 7)) and archive_list_text(source and 6) and archive_list_text(source and 4) and archive_list_text(source and 5)) is not equal to 0:
+        return history_status("recording-source-changed")
+    set result to history_status("recording-native-current")
+    set added to append_list(result and source)
+    set added to append_list(result and inbox)
+    set added to append_list(result and guarded)
+    set added to append_list(result and recording)
+    return result

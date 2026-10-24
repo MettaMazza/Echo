@@ -1,0 +1,94 @@
+import "gateway_voice_membership"
+
+# Read using a dedicated journal connection. One read transaction fixes a finite
+# snapshot and dispatch boundary; no live SQL rows or statement pointers escape.
+define discord_voice_membership_read_fail with database as Int and reason as Str returning List:
+    set rolled_back to sql_execute(database and "ROLLBACK;")
+    return history_status(reason)
+
+# Legacy unbound readers retain conservative history invalidation. Production
+# owners supply their exact native intent; no caller-selected cutoff is accepted.
+define discord_voice_membership_read with database as Int and gateway_generation as Str and session as Str and local_generation as Int and guild as Str and channel_id as Str and bot as Str returning List:
+    return discord_voice_membership_read_bound(database and gateway_generation and session and local_generation and guild and channel_id and bot and "")
+
+define discord_voice_membership_read_intent with database as Int and gateway_generation as Str and session as Str and local_generation as Int and guild as Str and channel_id as Str and bot as Str and identity as Str returning List:
+    if string_length(identity) equals 0:
+        return history_status("invalid-voice-membership-intent")
+    return discord_voice_membership_read_bound(database and gateway_generation and session and local_generation and guild and channel_id and bot and identity)
+
+# Reconstruct an old bot departure as historical absence only when it predates
+# this admitted join. Preserve every other member and their exact voice session.
+# A current departure still invalidates the live binding through the normal path.
+define discord_voice_membership_replay with state as List and generation as Int and sequence as Int and body as Str and join_sequence as Int returning Str:
+    if state is not equal to 0 and also length_list(state) equals 3 and also get_list(state and 2) equals 1 and also sequence > get_list(state and 1) and also sequence <= join_sequence:
+        set registry to get_list(state and 0)
+        set tokens to provider_json_tokens(body)
+        if discord_voice_participants_valid(registry and generation) equals 1 and also tokens is not equal to 0 and also provider_unique_objects(tokens) equals 1:
+            set row to discord_voice_membership_row(tokens and 0)
+            set decoded_guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+            if row is not equal to 0 and also provider_kind(tokens and provider_member(tokens and 0 and "guild_id")) equals "string" and also decoded_guild equals archive_list_text(registry and 0) and also archive_list_text(row and 0) equals archive_list_text(registry and 2) and also not (archive_list_text(row and 1) equals archive_list_text(registry and 1)):
+                set remaining to create_list()
+                for each member in get_list(registry and 4):
+                    if not (archive_list_text(member and 0) equals archive_list_text(registry and 2)):
+                        set added to append_list(remaining and member)
+                set changed to set_list(registry and 4 and remaining)
+                set changed to set_list(registry and 6 and get_list(registry and 6) + 1)
+                set changed to set_list(state and 1 and sequence)
+                return "membership-changed"
+    return discord_voice_membership_event(state and generation and sequence and body)
+
+define discord_voice_membership_read_bound with database as Int and gateway_generation as Str and session as Str and local_generation as Int and guild as Str and channel_id as Str and bot as Str and identity as Str returning List:
+    set membership to discord_voice_membership_new(guild and channel_id and bot and local_generation)
+    if membership equals 0 or else string_length(gateway_generation) equals 0 or else string_length(session) equals 0:
+        return history_status("invalid-voice-membership-binding")
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return history_status("voice-membership-reader-unavailable")
+    set current to history_collect_one(archive_prepare(database and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 1) equals gateway_generation) or else not (archive_list_text(current and 2) equals session):
+        return discord_voice_membership_read_fail(database and "stale-voice-membership-binding")
+    set boundary to archive_list_text(current and 3)
+    set join_sequence to -1
+    if string_length(identity) > 0:
+        set join_keys to create_list()
+        set join_keys to [identity,gateway_generation,session,guild,channel_id]
+        set join_binding to history_collect_one(checkpoint_prepare(database and "SELECT after_sequence FROM discord_voice_intents WHERE identity=?1 AND generation=?2 AND gateway_session=?3 AND guild=?4 AND channel=?5 AND state IN ('sent','connected');" and join_keys))
+        if not (archive_list_text(join_binding and 0) equals "found"):
+            return discord_voice_membership_read_fail(database and "stale-voice-membership-intent")
+        set join_sequence to string_to_int(archive_list_text(join_binding and 1))
+        if join_sequence < 0 or else join_sequence > string_to_int(boundary):
+            return discord_voice_membership_read_fail(database and "stale-voice-membership-intent")
+    set keys to create_list()
+    set keys to [session,guild,boundary]
+    set baseline to history_collect_one(checkpoint_prepare(database and "SELECT sequence,payload FROM discord_voice_membership_events WHERE session=?1 AND COALESCE(json_extract(payload,'$.id'),json_extract(payload,'$.guild_id'))=?2 AND kind='GUILD_CREATE' AND sequence<=CAST(?3 AS INTEGER) ORDER BY sequence DESC LIMIT 1;" and keys))
+    if archive_list_text(baseline and 0) equals "end":
+        return discord_voice_membership_read_fail(database and "await-voice-membership-baseline")
+    if not (archive_list_text(baseline and 0) equals "found"):
+        return discord_voice_membership_read_fail(database and "voice-membership-read-failed")
+    set cursor to archive_list_text(baseline and 1)
+    set seeded to discord_voice_membership_snapshot(membership and local_generation and string_to_int(cursor) and archive_list_text(baseline and 2))
+    if not (seeded equals "membership-seeded"):
+        return discord_voice_membership_read_fail(database and "invalid-voice-membership-baseline")
+    set finished to 0
+    repeat while finished equals 0:
+        set keys to create_list()
+        set keys to [session,guild,cursor,boundary]
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT sequence,kind,payload FROM discord_voice_membership_events WHERE session=?1 AND COALESCE(json_extract(payload,'$.id'),json_extract(payload,'$.guild_id'))=?2 AND sequence>CAST(?3 AS INTEGER) AND sequence<=CAST(?4 AS INTEGER) ORDER BY sequence LIMIT 1;" and keys))
+        if archive_list_text(row and 0) equals "end":
+            set finished to 1
+        else:
+            if not (archive_list_text(row and 0) equals "found"):
+                return discord_voice_membership_read_fail(database and "voice-membership-read-failed")
+            if not (archive_list_text(row and 2) equals "VOICE_STATE_UPDATE"):
+                return discord_voice_membership_read_fail(database and "voice-membership-invalidated")
+            set applied to discord_voice_membership_replay(membership and local_generation and string_to_int(archive_list_text(row and 1)) and archive_list_text(row and 3) and join_sequence)
+            if not (applied equals "membership-changed" or else applied equals "membership-unchanged"):
+                return discord_voice_membership_read_fail(database and "voice-membership-invalidated")
+            set cursor to archive_list_text(row and 1)
+    if discord_voice_membership_roster(membership and local_generation) equals 0:
+        return discord_voice_membership_read_fail(database and "await-bot-voice-state")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        return discord_voice_membership_read_fail(database and "voice-membership-read-commit-failed")
+    set result to history_status("voice-membership-ready")
+    set added to append_list(result and membership)
+    set added to append_list(result and string_to_int(boundary))
+    return result

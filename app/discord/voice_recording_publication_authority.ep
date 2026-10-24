@@ -1,0 +1,65 @@
+import "voice_recording_authority"
+import "../web/attachments"
+
+# Retained recording publication has its own native check: the original voice
+# connection may already be closed, but no new caller/session can inherit the
+# recording request. The admitted tool call and its frozen device remain the
+# authority; this does not manufacture a running model call after completion.
+define discord_voice_recording_publication_guard with journal as Int and database as Int and artifact as Str and bot as Str and guilds as List and admins as List and stop_file as Str returning List:
+    if file_exists(stop_file):
+        return history_status("recording-publication-stopped")
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT r.identity,r.actor,r.origin,r.request,i.guild,r.intent FROM discord_voice_recording_artifacts a JOIN discord_voice_recordings r ON r.identity=a.recording JOIN discord_voice_intents i ON i.identity=r.intent JOIN discord_identity b ON b.singleton=1 AND b.bot=?2 WHERE a.identity=?1 AND r.state IN ('stopped','interrupted');" and [artifact,bot]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("recording-publication-source-unavailable")
+    if discord_contains(guilds and archive_list_text(row and 5)) equals 0 or else discord_contains(admins and archive_list_text(row and 2)) equals 0:
+        return history_status("recording-publication-scope-denied")
+    set binding to history_collect_one(archive_prepare(database and "SELECT bot FROM echo_discord_binding WHERE singleton=1;"))
+    if not (archive_list_text(binding and 1) equals bot):
+        return history_status("recording-publication-binding-denied")
+    set call to history_collect_one(checkpoint_prepare(database and "SELECT t.run,t.call_id,t.session,a.device,json_extract(e.payload,'$.arguments') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event AND e.session=t.session JOIN echo_runs r ON r.run=t.run AND r.session=t.session JOIN echo_tool_authority a ON a.run=t.run AND a.call_id=t.call_id JOIN echo_group_run_origins o ON o.run=t.run AND o.session=t.session AND o.device=a.device JOIN echo_group_sessions s ON s.session=t.session JOIN echo_groups g ON g.identity=s.group_id WHERE t.request_event=?1 AND e.kind='tool_call' AND json_extract(e.payload,'$.run_id')=t.run AND json_extract(e.payload,'$.call_id')=t.call_id AND json_extract(e.payload,'$.name')='discord_voice' AND t.state<>'uncertain' AND r.state NOT IN ('failed','cancelled') AND NOT EXISTS(SELECT 1 FROM echo_cancel_requests c WHERE c.run=t.run) AND g.platform='discord' AND g.server=?2 AND g.channel=?3;" and [archive_list_text(row and 4),archive_list_text(row and 5),archive_list_text(row and 3)]))
+    if not (archive_list_text(call and 0) equals "found"):
+        return history_status("recording-publication-call-denied")
+    set run to archive_list_text(call and 1)
+    set call_id to archive_list_text(call and 2)
+    set session to archive_list_text(call and 3)
+    set device to archive_list_text(call and 4)
+    if run_authority_allows(database and run and "admin") equals 0 or else tool_authority_allows(database and run and call_id and "admin") equals 0 or else node_run_status(database and run) is not equal to 1 or else web_attachment_session_allowed(database and device and session and 1) equals 0:
+        return history_status("recording-publication-authority-denied")
+    set arguments to provider_json_tokens(archive_list_text(call and 5))
+    if arguments equals 0 or else provider_unique_objects(arguments) equals 0 or else not (provider_kind(arguments and 0) equals "{") or else not (provider_value(arguments and provider_member(arguments and 0 and "operation")) equals "record") or else not (provider_value(arguments and provider_member(arguments and 0 and "intent")) equals archive_list_text(row and 6)):
+        return history_status("recording-publication-call-denied")
+    set source to discord_run_source(journal and database and run)
+    set inbox to discord_job_origin(journal and database and run)
+    if not (archive_list_text(source and 0) equals "found") or else string_length(inbox) equals 0 or else not (archive_list_text(source and 3) equals archive_list_text(row and 2)) or else not (archive_list_text(source and 4) equals archive_list_text(row and 3)) or else not (archive_list_text(source and 5) equals archive_list_text(row and 5)):
+        return history_status("recording-publication-source-denied")
+    set result to history_status("recording-publication-current")
+    set added to append_list(result and row)
+    set added to append_list(result and call)
+    set added to append_list(result and source)
+    set added to append_list(result and inbox)
+    return result
+
+# Fresh REST checks occur off the media loop and outside writer transactions.
+# Caller must re-run the native guard under the archive writer lock, and check
+# this Gateway audience epoch under the journal writer lock before publication.
+define discord_voice_recording_publication_proof with library as Str and token as Str and journal as Int and database as Int and artifact as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning List:
+    set guarded to discord_voice_recording_publication_guard(journal and database and artifact and bot and guilds and admins and stop_file)
+    if not (archive_list_text(guarded and 0) equals "recording-publication-current"):
+        return guarded
+    set epoch to discord_access_snapshot_epoch(journal)
+    if string_length(epoch) equals 0:
+        return history_status("recording-publication-observation-unavailable")
+    set row to get_list(guarded and 1)
+    set access to discord_access_check(library and token and journal and directory_path and bot and archive_list_text(row and 5) and archive_list_text(row and 3) and archive_list_text(row and 2) and admins)
+    if not (archive_list_text(access and 0) equals "allowed"):
+        return access
+    set source to discord_run_source_check(library and token and journal and directory_path and archive_list_text(guarded and 4) and get_list(guarded and 3))
+    if not (source equals "current"):
+        return history_status(source)
+    if not (discord_access_snapshot_epoch(journal) equals epoch):
+        return history_status("recording-publication-refresh-required")
+    set result to history_status("recording-publication-proof")
+    set added to append_list(result and artifact)
+    set added to append_list(result and epoch)
+    set added to append_list(result and archive_list_text(access and 2))
+    return result

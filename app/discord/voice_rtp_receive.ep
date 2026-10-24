@@ -1,0 +1,104 @@
+import "os"
+import "../archive/history"
+import "voice_packet_encryption"
+
+# Borrowed UDP packet; structural validation grants no permission or identity.
+# rtpsize leaves the fixed RTP header, CSRCs and extension preamble clear and
+# authenticates them as associated data. Extension contents remain encrypted.
+# Result: header bytes, extension bytes, padding flag, sequence, timestamp, SSRC.
+define discord_voice_rtp_parse with pointer as Int and count as Int returning List:
+    if pointer equals 0 or else count < 33 or else count > 65507:
+        return 0
+    set flags to peek_byte(pointer and 0)
+    if flags / 64 is not equal to 2 or else peek_byte(pointer and 1) modulo 128 is not equal to 120:
+        return 0
+    set header_bytes to 12 + (flags modulo 16) * 4
+    set extension_bytes to 0
+    if (flags / 16) modulo 2 equals 1:
+        if count <= header_bytes + 24:
+            return 0
+        set extension_bytes to discord_voice_u16(pointer and header_bytes + 2) * 4
+        set header_bytes to header_bytes + 4
+    if count <= header_bytes + 20 + extension_bytes:
+        return 0
+    set ssrc to discord_voice_u32(pointer and 8)
+    if ssrc equals 0:
+        return 0
+    return [header_bytes,extension_bytes,(flags / 32) modulo 2,discord_voice_u16(pointer and 2),discord_voice_u32(pointer and 4),ssrc]
+
+# One replay window per authenticated sender SSRC and transport key lifetime.
+# Reordering within 64 counters is allowed once; counters never wrap. RTP
+# sequence wrap does not reset this window. Retire it with the key/identity.
+define discord_voice_replay_new with ssrc as Int returning List:
+    if ssrc < 1 or else ssrc > 4294967295:
+        return 0
+    set slots to create_list()
+    set index to 0
+    repeat while index < 64:
+        set added to append_list(slots and -1)
+        set index to index + 1
+    return [ssrc,-1,slots]
+
+define discord_voice_replay_available with state as List and nonce as Int returning Int:
+    if state equals 0 or else length_list(state) is not equal to 3 or else length_list(get_list(state and 2)) is not equal to 64 or else nonce < 0 or else nonce > 4294967295:
+        return 0
+    if nonce <= get_list(state and 1) - 64:
+        return 0
+    return get_list(get_list(state and 2) and nonce modulo 64) is not equal to nonce
+
+# Call only after authentication and payload validation. Invalid packets never
+# advance the window or suppress a subsequent genuine packet with that counter.
+define discord_voice_replay_commit with state as List and nonce as Int returning Int:
+    if discord_voice_replay_available(state and nonce) equals 0:
+        return 0
+    set changed to set_list(get_list(state and 2) and nonce modulo 64 and nonce)
+    if nonce > get_list(state and 1):
+        set changed to set_list(state and 1 and nonce)
+    return 1
+
+# No DAVE or PCM decoding here. Caller must establish current participant
+# mapping and explicit recording policy before invoking the receive pipeline.
+# Input is borrowed. Successful result owns only the stripped DAVE payload:
+# [rtp-audio, SSRC, sequence, timestamp, blob]. Never accepts plaintext fallback.
+define discord_voice_rtp_unwrap with cipher as List and replay as List and pointer as Int and count as Int returning List:
+    set parsed to discord_voice_rtp_parse(pointer and count)
+    if parsed equals 0:
+        return history_status("invalid-audio-rtp")
+    if replay equals 0 or else length_list(replay) is not equal to 3 or else get_list(replay and 0) is not equal to get_list(parsed and 5):
+        return history_status("audio-identity-mismatch")
+    set nonce to discord_voice_u32(pointer and count - 4)
+    if discord_voice_replay_available(replay and nonce) equals 0:
+        return history_status("audio-replay-denied")
+    set clear to discord_voice_crypto_unwrap(cipher and pointer and count and get_list(parsed and 0))
+    if clear equals 0:
+        return history_status("audio-authentication-failed")
+    set start to get_list(parsed and 1)
+    set end to get_list(clear and 1)
+    if get_list(parsed and 2) equals 1:
+        set padding to peek_byte(get_list(clear and 0) and end - 1)
+        if padding < 1 or else padding >= end - start:
+            set released to discord_voice_blob_release(clear)
+            return history_status("invalid-audio-padding")
+        set end to end - padding
+    if end <= start:
+        set released to discord_voice_blob_release(clear)
+        return history_status("invalid-audio-payload")
+    set output to alloc_bytes(end - start)
+    if output equals 0:
+        set released to discord_voice_blob_release(clear)
+        return history_status("audio-allocation-failed")
+    set index to start
+    repeat while index < end:
+        set copied to poke_byte(output and index - start and peek_byte(get_list(clear and 0) and index))
+        set index to index + 1
+    set released to discord_voice_blob_release(clear)
+    if discord_voice_replay_commit(replay and nonce) equals 0:
+        free_bytes(output)
+        return history_status("audio-replay-denied")
+    set payload to [output,end - start]
+    set result to history_status("rtp-audio")
+    set added to append_list(result and get_list(parsed and 5))
+    set added to append_list(result and get_list(parsed and 3))
+    set added to append_list(result and get_list(parsed and 4))
+    set added to append_list(result and payload)
+    return result

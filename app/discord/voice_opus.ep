@@ -1,0 +1,81 @@
+import "voice_wire"
+
+# Codec state owns library, encoder and decoder. PCM is signed 16-bit native
+# little-endian stereo at 48kHz on the qualified Darwin arm64 host.
+define discord_voice_opus_close with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 3:
+        return 0
+    set library to get_list(state and 0)
+    if library equals 0:
+        return 1
+    if get_list(state and 1) is not equal to 0:
+        set destroyed to ep_dlcall1(ep_dlsym(library and "opus_encoder_destroy") and get_list(state and 1))
+    if get_list(state and 2) is not equal to 0:
+        set destroyed to ep_dlcall1(ep_dlsym(library and "opus_decoder_destroy") and get_list(state and 2))
+    set changed to set_list(state and 0 and 0)
+    set changed to set_list(state and 1 and 0)
+    set changed to set_list(state and 2 and 0)
+    set closed to ep_dlclose(library)
+    return 1
+
+define discord_voice_opus_open with path as Str returning List:
+    set library to ep_dlopen(path)
+    if library equals 0:
+        return 0
+    set names to create_list()
+    set names to ["opus_encoder_create","opus_decoder_create","opus_encoder_destroy","opus_decoder_destroy","opus_encode","opus_decode"]
+    for each name in names:
+        if ep_dlsym(library and ptr_to_str(name)) equals 0:
+            set closed to ep_dlclose(library)
+            return 0
+    set state to create_list()
+    set added to append_list(state and library)
+    set added to append_list(state and 0)
+    set added to append_list(state and 0)
+    set error to research_native_words(1)
+    set encoder to ep_dlcall4(ep_dlsym(library and "opus_encoder_create") and 48000 and 2 and 2049 and get_list_data_ptr(error))
+    set changed to set_list(state and 1 and encoder)
+    if encoder equals 0 or else get_list(error and 0) is not equal to 0:
+        set closed to discord_voice_opus_close(state)
+        return 0
+    set decoder to ep_dlcall3(ep_dlsym(library and "opus_decoder_create") and 48000 and 2 and get_list_data_ptr(error))
+    set changed to set_list(state and 2 and decoder)
+    if decoder equals 0 or else get_list(error and 0) is not equal to 0:
+        set closed to discord_voice_opus_close(state)
+        return 0
+    return state
+
+# Exactly 20ms per outbound packet; final short PCM frames are padded by the
+# authorised playback pipeline, never read beyond their actual byte count.
+define discord_voice_opus_encode with state as List and pcm as Int and count as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 3 or else get_list(state and 0) equals 0 or else pcm equals 0 or else count is not equal to 3840:
+        return 0
+    set packet to alloc_bytes(1275)
+    if packet equals 0:
+        return 0
+    set bytes to ep_dlcall5(ep_dlsym(get_list(state and 0) and "opus_encode") and get_list(state and 1) and pcm and 960 and packet and 1275)
+    if bytes < 1 or else bytes > 1275:
+        free_bytes(packet)
+        return 0
+    set result to create_list()
+    set added to append_list(result and packet)
+    set added to append_list(result and bytes)
+    return result
+
+# Caller must enforce explicit transcription/participant policy before invoking
+# this decoder. It accepts only authenticated, DAVE-decoded Opus payload bytes.
+define discord_voice_opus_decode with state as List and packet as Int and count as Int returning List:
+    if state equals 0 or else length_list(state) is not equal to 3 or else get_list(state and 0) equals 0 or else packet equals 0 or else count < 1 or else count > 65507:
+        return 0
+    # Opus permits up to 120ms: 5760 samples per channel at 48kHz.
+    set pcm to alloc_bytes(23040)
+    if pcm equals 0:
+        return 0
+    set samples to ep_dlcall6(ep_dlsym(get_list(state and 0) and "opus_decode") and get_list(state and 2) and packet and count and pcm and 5760 and 0)
+    if samples < 1 or else samples > 5760:
+        free_bytes(pcm)
+        return 0
+    set result to create_list()
+    set added to append_list(result and pcm)
+    set added to append_list(result and samples * 4)
+    return result

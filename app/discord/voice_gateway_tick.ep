@@ -1,0 +1,96 @@
+import "voice_gateway_recording"
+import "voice_gateway_playback"
+import "voice_gateway_send"
+import "voice_handoff_store"
+
+# Holding the same writer lock used by dispatch fences the old socket before
+# changing claims. Marked attempts remain uncertain and are never resent.
+# Their original session/cursor is retained for trusted leave reconciliation.
+define discord_voice_gateway_recover with journal as Int and generation as Str returning Str:
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "voice-tick-store-busy"
+    set current to history_collect_one(archive_prepare(journal and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 1) equals generation):
+        return migration_fail(journal and "stale-voice-tick")
+    set keys to create_list()
+    set keys to [generation]
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_intents SET state='leave-required' WHERE state='claimed' AND generation<>?1;" and keys) and 101) is not equal to 0:
+        return migration_fail(journal and "voice-tick-store-failed")
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_leave_attempts SET state='uncertain' WHERE state='claimed' AND generation<>?1 AND EXISTS(SELECT 1 FROM discord_voice_gateway_writes w WHERE w.claim=discord_voice_leave_attempts.claim);" and keys) and 101) is not equal to 0:
+        return migration_fail(journal and "voice-tick-store-failed")
+    set values to create_list()
+    set retained_voice_added to append_list(values and generation)
+    set retained_voice_added to append_list(values and archive_list_text(current and 2))
+    set retained_voice_added to append_list(values and archive_list_text(current and 3))
+    if archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_leave_attempts SET generation=?1,gateway_session=?2,after_sequence=CAST(?3 AS INTEGER) WHERE state='claimed' AND generation<>?1 AND NOT EXISTS(SELECT 1 FROM discord_voice_gateway_writes w WHERE w.claim=discord_voice_leave_attempts.claim);" and values) and 101) is not equal to 0:
+        return migration_fail(journal and "voice-tick-store-failed")
+    if sql_execute(journal and "UPDATE discord_voice_intents SET state='leave-required' WHERE state='sent' AND identity IN (SELECT identity FROM discord_voice_playback_gates WHERE state IN ('attempted','uncertain'));") is not equal to 0:
+        return migration_fail(journal and "voice-tick-store-failed")
+    if discord_voice_recording_gate_reconcile(journal) is not equal to 0 or else sql_execute(journal and "UPDATE discord_voice_intents SET state='leave-required' WHERE state='sent' AND identity IN (SELECT intent FROM discord_voice_recording_gates WHERE state IN ('attempted','uncertain','close-attempted','close-uncertain'));") is not equal to 0:
+        return migration_fail(journal and "voice-tick-store-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "voice-tick-store-failed")
+    return "voice-recovered"
+
+# Bounded Gateway-owner work: at most one short OP4 write per poll. REST/model
+# work belongs to the separate controller. Only previously authorized durable
+# claims are eligible; exact Gateway cursor and cancellation are rechecked by
+# the dispatcher. Leave cleanup is prioritized over new joins.
+define discord_voice_gateway_tick with journal as Int and socket as List and generation as Str and stop_file as Str and bot as Str returning Str:
+    if discord_snowflake(bot) equals 0:
+        return "invalid-voice-bot"
+    set recovered to discord_voice_gateway_recover(journal and generation)
+    if not (recovered equals "voice-recovered"):
+        return recovered
+    if discord_voice_handoff_prune(journal and ep_time_now_ms()) is not equal to 0:
+        return "voice-tick-store-failed"
+    set current to history_collect_one(archive_prepare(journal and "SELECT session FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(current and 0) equals "found"):
+        return "voice-tick-store-failed"
+    set confirmation_keys to create_list()
+    set retained_voice_added to append_list(confirmation_keys and "")
+    set retained_voice_added to append_list(confirmation_keys and archive_list_text(current and 1))
+    set retained_voice_added to append_list(confirmation_keys and bot)
+    set confirmable to history_collect_one(checkpoint_prepare(journal and discord_voice_leave_confirmation_query() and confirmation_keys))
+    if archive_list_text(confirmable and 0) equals "found":
+        set confirmed to discord_voice_leave_reconcile(journal and archive_list_text(confirmable and 1) and generation and bot)
+        if confirmed equals "voice-left-confirmed" or else confirmed equals "voice-leave-store-busy" or else confirmed equals "await-voice-leave-confirmation" or else confirmed equals "stale-voice-leave-reconcile":
+            return confirmed
+        return "voice-tick-store-failed"
+    if not (archive_list_text(confirmable and 0) equals "end"):
+        return "voice-tick-store-failed"
+    set keys to create_list()
+    set keys to [generation]
+    # An unmarked claim is proven unwritten by the dispatcher's durable marker.
+    # Recovery can adopt it after fencing its old generation, without replaying
+    # an attempted write. Same-generation pre-write interruption is safe too.
+    set unfinished to history_collect_one(checkpoint_prepare(journal and "SELECT l.identity,l.claim FROM discord_voice_leave_attempts l JOIN discord_voice_intents i ON i.identity=l.identity WHERE l.state='claimed' AND l.generation=?1 AND i.state='leave-required' AND NOT EXISTS(SELECT 1 FROM discord_voice_gateway_writes w WHERE w.claim=l.claim) ORDER BY l.rowid LIMIT 1;" and keys))
+    if archive_list_text(unfinished and 0) equals "found":
+        return discord_voice_gateway_send(journal and socket and archive_list_text(unfinished and 1) and archive_list_text(unfinished and 2) and generation and 1 and 0 and 1 and stop_file)
+    if not (archive_list_text(unfinished and 0) equals "end"):
+        return "voice-tick-store-failed"
+    set pending_leave to history_collect_one(archive_prepare(journal and "SELECT i.identity FROM discord_voice_intents i WHERE i.state='leave-required' AND NOT EXISTS(SELECT 1 FROM discord_voice_leave_attempts l WHERE l.identity=i.identity) ORDER BY i.rowid LIMIT 1;"))
+    if archive_list_text(pending_leave and 0) equals "found":
+        set identity to archive_list_text(pending_leave and 1)
+        set claimed to discord_voice_leave_claim(journal and identity and generation)
+        if not (archive_list_text(claimed and 0) equals "leave-claimed"):
+            return archive_list_text(claimed and 0)
+        return discord_voice_gateway_send(journal and socket and identity and archive_list_text(claimed and 1) and generation and 1 and 0 and 1 and stop_file)
+    if not (archive_list_text(pending_leave and 0) equals "end"):
+        return "voice-tick-store-failed"
+    set recording_gate to history_collect_one(archive_prepare(journal and "SELECT recording FROM discord_voice_recording_gates WHERE state IN ('pending','close-pending') ORDER BY CASE WHEN state='close-pending' THEN 0 ELSE 1 END,rowid LIMIT 1;"))
+    if archive_list_text(recording_gate and 0) equals "found":
+        return discord_voice_recording_gate_send(journal and socket and archive_list_text(recording_gate and 1) and generation and stop_file)
+    if not (archive_list_text(recording_gate and 0) equals "end"):
+        return "voice-tick-store-failed"
+    set playback_gate to history_collect_one(checkpoint_prepare(journal and "SELECT identity FROM discord_voice_playback_gates WHERE state='pending' ORDER BY rowid LIMIT 1;" and create_list()))
+    if archive_list_text(playback_gate and 0) equals "found":
+        return discord_voice_playback_gate_send(journal and socket and archive_list_text(playback_gate and 1) and generation and stop_file)
+    if not (archive_list_text(playback_gate and 0) equals "end"):
+        return "voice-tick-store-failed"
+    set pending_join to history_collect_one(checkpoint_prepare(journal and "SELECT identity,claim FROM discord_voice_intents i WHERE state='claimed' AND generation=?1 AND NOT EXISTS(SELECT 1 FROM discord_voice_gateway_writes w WHERE w.claim=i.claim) ORDER BY rowid LIMIT 1;" and keys))
+    if archive_list_text(pending_join and 0) equals "end":
+        return "voice-idle"
+    if not (archive_list_text(pending_join and 0) equals "found"):
+        return "voice-tick-store-failed"
+    return discord_voice_gateway_send(journal and socket and archive_list_text(pending_join and 1) and archive_list_text(pending_join and 2) and generation and 0 and 1 and 0 and stop_file)

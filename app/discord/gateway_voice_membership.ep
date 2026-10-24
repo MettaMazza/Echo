@@ -1,0 +1,85 @@
+import "voice_membership_events"
+import "routing"
+import "store"
+
+# Private worker event stream: deliberately separate from discord_inbox and
+# therefore from ordinary message/activity processing. Never stores voice tokens.
+define discord_gateway_voice_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS discord_voice_membership_events(session TEXT NOT NULL,sequence INTEGER NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL CHECK(json_valid(payload)),PRIMARY KEY(session,sequence));")
+
+define discord_gateway_voice_row_json with row as List returning Str:
+    set body to concat("{\"user_id\":" and provider_quote(archive_list_text(row and 0)))
+    set channel_json to "null"
+    if string_length(archive_list_text(row and 1)) > 0:
+        set channel_json to provider_quote(archive_list_text(row and 1))
+    set body to concat(body and concat(",\"channel_id\":" and channel_json))
+    return concat(body and concat(",\"session_id\":" and concat(provider_quote(archive_list_text(row and 2)) and "}")))
+
+# Preserve only typed control flags needed for native playback confirmation.
+# Missing legacy fields never imply permission to transmit.
+define discord_gateway_voice_flags with body as Str and tokens as List and item as Int returning Str:
+    set output to substring(body and 0 and string_length(body) - 1)
+    for each name in ["self_mute","self_deaf","mute","suppress"]:
+        set key to ptr_to_str(name)
+        set field to provider_member(tokens and item and key)
+        if field >= 0:
+            set kind to provider_kind(tokens and field)
+            if not (kind equals "true" or else kind equals "false"):
+                return ""
+            set output to concat(output and concat("," and concat(provider_quote(key) and concat(":" and kind))))
+    return concat(output and "}")
+
+define discord_gateway_voice_projection with tokens as List and kind as Str and guilds as List returning Str:
+    if not (kind equals "GUILD_CREATE" or else kind equals "VOICE_STATE_UPDATE" or else kind equals "GUILD_DELETE"):
+        return ""
+    set data to provider_member(tokens and 0 and "d")
+    set guild_field to "guild_id"
+    if kind equals "GUILD_CREATE" or else kind equals "GUILD_DELETE":
+        set guild_field to "id"
+    set guild_index to provider_member(tokens and data and guild_field)
+    set guild to provider_value(tokens and guild_index)
+    if not (provider_kind(tokens and guild_index) equals "string") or else discord_snowflake(guild) equals 0 or else discord_contains(guilds and guild) equals 0:
+        return ""
+    set invalid to concat("{\"guild_id\":" and concat(provider_quote(guild) and ",\"invalid\":true}"))
+    if kind equals "GUILD_DELETE":
+        return invalid
+    if kind equals "VOICE_STATE_UPDATE":
+        set row to discord_voice_membership_row(tokens and data)
+        if row equals 0:
+            return invalid
+        set projected to discord_gateway_voice_flags(discord_gateway_voice_row_json(row) and tokens and data)
+        if string_length(projected) equals 0:
+            return invalid
+        return concat("{\"guild_id\":" and concat(provider_quote(guild) and concat("," and substring(projected and 1 and string_length(projected) - 1))))
+    set entries to provider_items(tokens and provider_member(tokens and data and "voice_states"))
+    if entries equals 0 or else length_list(entries) > 131072:
+        return invalid
+    set content to ""
+    set seen to create_list()
+    for each item in entries:
+        set row to discord_voice_membership_row(tokens and item)
+        if row equals 0:
+            return invalid
+        set user to archive_list_text(row and 0)
+        for each prior in seen:
+            if ptr_to_str(prior) equals user:
+                return invalid
+        set added to append_list(seen and user)
+        if string_length(content) > 0:
+            set content to concat(content and ",")
+        set projected to discord_gateway_voice_flags(discord_gateway_voice_row_json(row) and tokens and item)
+        if string_length(projected) equals 0:
+            return invalid
+        set content to concat(content and projected)
+    return concat("{\"id\":" and concat(provider_quote(guild) and concat(",\"voice_states\":[" and concat(content and "]}"))))
+
+# Called only inside the accepted Gateway dispatch transaction. Receipt,
+# private event and Gateway cursor commit or roll back together.
+define discord_gateway_voice_record with database as Int and session as Str and sequence as Int and kind as Str and payload as Str returning Int:
+    if string_length(payload) equals 0:
+        return 0
+    if not (kind equals "GUILD_CREATE" or else kind equals "VOICE_STATE_UPDATE" or else kind equals "GUILD_DELETE"):
+        return 1
+    set values to create_list()
+    set values to [session,int_to_string(sequence),kind,payload]
+    return archive_finish(checkpoint_prepare(database and "INSERT INTO discord_voice_membership_events(session,sequence,kind,payload) VALUES(?1,CAST(?2 AS INTEGER),?3,?4);" and values) and 101)

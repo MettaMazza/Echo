@@ -1,0 +1,105 @@
+import "voice_recording_offer"
+
+# Persist only a genuine component interaction by the challenge's target user.
+# The adapter supplies a current journal-fenced membership snapshot. Granting
+# requires the exact session offered; revocation remains available after leave.
+define discord_voice_recording_consent with journal as Int and offer as Str and inbox as Str and participants as List and generation as Int returning Str:
+    if discord_voice_participants_roster(participants and generation) equals 0:
+        return "recording-membership-unavailable"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "recording-store-busy"
+    return discord_voice_recording_consent_owned(journal and offer and inbox and participants and generation)
+
+# Production adapter binds its finite membership snapshot to the current
+# Gateway cursor under the same transaction that records the human decision.
+define discord_voice_recording_consent_at with journal as Int and offer as Str and inbox as Str and participants as List and generation as Int and gateway_generation as Str and gateway_session as Str and cursor as Int returning Str:
+    if discord_voice_participants_roster(participants and generation) equals 0:
+        return "recording-membership-unavailable"
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "recording-store-busy"
+    set current to history_collect_one(archive_prepare(journal and "SELECT generation,session,sequence FROM discord_gateway WHERE singleton=1;"))
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 1) equals gateway_generation) or else not (archive_list_text(current and 2) equals gateway_session) or else cursor < 0 or else string_to_int(archive_list_text(current and 3)) is not equal to cursor:
+        return migration_fail(journal and "recording-membership-refresh-required")
+    return discord_voice_recording_consent_owned(journal and offer and inbox and participants and generation)
+
+# Owns the already-open transaction, including all failure rollback paths.
+define discord_voice_recording_consent_owned with journal as Int and offer as Str and inbox as Str and participants as List and generation as Int returning Str:
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT o.recording,o.actor,o.voice_session,r.origin,i.guild,i.channel,r.state,r.notice FROM discord_voice_recording_offers o JOIN discord_voice_recordings r ON r.identity=o.recording JOIN discord_voice_intents i ON i.identity=r.intent WHERE o.identity=?1 AND i.state IN ('sent','connected');" and [offer]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 7) equals "active") or else not (archive_list_text(row and 5) equals archive_list_text(participants and 0)) or else not (archive_list_text(row and 6) equals archive_list_text(participants and 1)):
+        return migration_fail(journal and "recording-not-active")
+    set original to history_collect_one(checkpoint_prepare(journal and "SELECT payload FROM discord_inbox WHERE identity=?1 AND kind='INTERACTION_CREATE';" and [inbox]))
+    if not (archive_list_text(original and 0) equals "found"):
+        return migration_fail(journal and "recording-interaction-unavailable")
+    set tokens to provider_json_tokens(archive_list_text(original and 1))
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return migration_fail(journal and "invalid-recording-interaction")
+    set interaction to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and provider_member(tokens and 0 and "member") and "user") and "id"))
+    set account to provider_member(tokens and provider_member(tokens and 0 and "member") and "user")
+    if provider_kind(tokens and provider_member(tokens and account and "bot")) equals "true":
+        return migration_fail(journal and "recording-human-consent-required")
+    set bot to archive_list_text(participants and 2)
+    if discord_snowflake(interaction) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "3") or else not (actor equals archive_list_text(row and 2)) or else not (provider_value(tokens and provider_member(tokens and 0 and "guild_id")) equals archive_list_text(row and 5)) or else not (provider_value(tokens and provider_member(tokens and 0 and "channel_id")) equals archive_list_text(row and 4)) or else not (provider_value(tokens and provider_member(tokens and 0 and "application_id")) equals bot) or else not (provider_value(tokens and provider_member(tokens and provider_member(tokens and provider_member(tokens and 0 and "message") and "author") and "id")) equals bot):
+        return migration_fail(journal and "recording-interaction-binding-denied")
+    set custom to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "data") and "custom_id"))
+    set message to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "message") and "id"))
+    set bound to history_collect_one(checkpoint_prepare(journal and "SELECT message FROM discord_voice_recording_offer_messages WHERE offer=?1 AND message=?2;" and [offer,message]))
+    if not (archive_list_text(bound and 0) equals "found"):
+        return migration_fail(journal and "recording-interaction-message-denied")
+    set prefix to concat("echo:record:" and concat(offer and ":"))
+    set decision to ""
+    if custom equals concat(prefix and "grant"):
+        set decision to "grant"
+    else if custom equals concat(prefix and "revoke"):
+        set decision to "revoke"
+    else:
+        return migration_fail(journal and "recording-interaction-binding-denied")
+    set session to archive_list_text(row and 3)
+    if decision equals "grant":
+        set current to 0
+        for each member in get_list(participants and 4):
+            if archive_list_text(member and 0) equals actor and also archive_list_text(member and 1) equals session:
+                set current to 1
+        if current equals 0:
+            return migration_fail(journal and "recording-consent-session-changed")
+    set keys to [inbox,interaction,archive_list_text(row and 1),actor,session,decision]
+    set prior to history_collect_one(checkpoint_prepare(journal and "SELECT CASE WHEN receipt=?1 AND interaction=?2 AND recording=?3 AND actor=?4 AND voice_session=?5 AND decision=?6 THEN 1 ELSE 0 END FROM discord_voice_recording_consents WHERE receipt=?1 OR interaction=?2 LIMIT 1;" and keys))
+    if archive_list_text(prior and 0) equals "found":
+        if archive_list_text(prior and 1) equals "1":
+            return migration_fail(journal and "existing-consent-receipt")
+        return migration_fail(journal and "recording-consent-conflict")
+    if not (archive_list_text(prior and 0) equals "end"):
+        return migration_fail(journal and "recording-consent-read-failed")
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_voice_recording_consents(receipt,interaction,recording,actor,voice_session,decision) VALUES(?1,?2,?3,?4,?5,?6);" and keys) and 101) is not equal to 0:
+        return migration_fail(journal and "recording-consent-write-failed")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        return migration_fail(journal and "recording-consent-commit-failed")
+    return "consent-recorded"
+
+# Storage projection, not independent authorization. The native controller must
+# recheck enablement authority, current notice visibility, audience and exact
+# Gateway cursor before passing this snapshot to the receiver on each tick.
+# Snowflake ordering uses decimal length/lexical order (no floating-point or
+# signed overflow). A delayed grant cannot override a newer human revocation.
+define discord_voice_recording_snapshot with journal as Int and recording as Str and participants as List and generation as Int returning List:
+    if discord_voice_participants_roster(participants and generation) equals 0:
+        return history_status("recording-membership-unavailable")
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT i.guild,i.channel,r.notice_receipt FROM discord_voice_recordings r JOIN discord_voice_intents i ON i.identity=r.intent WHERE r.identity=?1 AND r.state='active' AND r.notice<>'' AND r.notice_receipt<>'' AND i.state IN ('sent','connected');" and [recording]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 1) equals archive_list_text(participants and 0)) or else not (archive_list_text(row and 2) equals archive_list_text(participants and 1)):
+        return history_status("recording-not-active")
+    set consents to create_list()
+    for each member in get_list(participants and 4):
+        set user to archive_list_text(member and 0)
+        set latest to history_collect_one(checkpoint_prepare(journal and "SELECT decision,voice_session,receipt FROM discord_voice_recording_consents WHERE recording=?1 AND actor=?2 ORDER BY length(interaction) DESC,interaction DESC LIMIT 1;" and [recording,user]))
+        if archive_list_text(latest and 0) equals "found" and also archive_list_text(latest and 1) equals "grant" and also archive_list_text(latest and 2) equals archive_list_text(member and 1) and also not (user equals archive_list_text(participants and 2)):
+            set consent to [user,archive_list_text(member and 1),archive_list_text(latest and 3)]
+            set added to append_list(consents and consent)
+    set result to history_status("recording-current")
+    set added to append_list(result and archive_list_text(participants and 0))
+    set added to append_list(result and archive_list_text(participants and 1))
+    set added to append_list(result and archive_list_text(participants and 2))
+    set added to append_list(result and generation)
+    set added to append_list(result and get_list(participants and 6))
+    set added to append_list(result and archive_list_text(row and 3))
+    set added to append_list(result and consents)
+    return result

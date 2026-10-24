@@ -1,0 +1,152 @@
+import "voice_audio_jobs"
+import "voice_audio_loader"
+import "voice_permission_observer"
+import "voice_worker_audio"
+
+# One worker-owned job lifecycle. Fields: claim, permission mailbox, loader
+# completion channel, loaded resources, player, next refresh, phase (0 active,
+# 1 draining, 2 closed), outcome, loader received. At most one job is active.
+define discord_voice_audio_job_start with journal as Int and database as Int and config as List and opus_path as Str and now as Int returning List:
+    if config equals 0 or else length_list(config) is not equal to 11 or else string_length(opus_path) equals 0 or else now < 0:
+        return history_status("invalid-voice-audio-worker")
+    set claim to discord_voice_audio_job_claim(journal and archive_list_text(config and 4))
+    if not (archive_list_text(claim and 0) equals "attempted"):
+        return claim
+    set guarded to discord_voice_audio_job_guard(journal and database and archive_list_text(config and 4) and claim and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 9))
+    if not (archive_list_text(guarded and 0) equals "voice-audio-native-current"):
+        set settled to discord_voice_audio_job_settle(journal and archive_list_text(claim and 1) and archive_list_text(claim and 2) and "uncertain")
+        return guarded
+    set observed_config to create_list()
+    set index to 0
+    repeat while index < 10:
+        set added to append_list(observed_config and get_list(config and index))
+        set index to index + 1
+    set added to append_list(observed_config and 1)
+    set added to append_list(observed_config and claim)
+    set mailbox to discord_voice_permission_start(observed_config)
+    if mailbox equals 0:
+        set settled to discord_voice_audio_job_settle(journal and archive_list_text(claim and 1) and archive_list_text(claim and 2) and "uncertain")
+        return history_status("voice-audio-observer-unavailable")
+    set loading to channel
+    set load_config to create_list()
+    set retained_voice_added to append_list(load_config and archive_list_text(config and 3))
+    set retained_voice_added to append_list(load_config and archive_list_text(claim and 3))
+    set retained_voice_added to append_list(load_config and archive_list_text(claim and 5))
+    set retained_voice_added to append_list(load_config and get_list(claim and 7))
+    set retained_voice_added to append_list(load_config and opus_path)
+    spawn discord_voice_audio_load(load_config and loading)
+    set state to create_list()
+    set added to append_list(state and claim)
+    set added to append_list(state and mailbox)
+    set added to append_list(state and loading)
+    set added to append_list(state and 0)
+    set added to append_list(state and 0)
+    set added to append_list(state and now)
+    set added to append_list(state and 0)
+    set added to append_list(state and "")
+    set added to append_list(state and 0)
+    set result to history_status("voice-audio-started")
+    set added to append_list(result and state)
+    return result
+
+# Poll loader and observer without blocking control/heartbeat work. A late
+# resource transfer after cancellation is closed immediately on receipt.
+define discord_voice_audio_job_drain with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 9:
+        return 0
+    if get_list(state and 8) equals 0:
+        set waits to create_list()
+        set added to append_list(waits and get_list(state and 2))
+        if select(waits and 0) >= 0:
+            set loaded to receive from get_list(state and 2)
+            set changed to set_list(state and 8 and 1)
+            set changed to set_list(state and 3 and loaded)
+    set observed to discord_voice_permission_mailbox_poll(get_list(state and 1))
+    if get_list(state and 6) is not equal to 0:
+        set closed to discord_voice_audio_loaded_close(get_list(state and 3))
+        set changed to set_list(state and 3 and 0)
+        set lifecycle to get_list(get_list(state and 1) and 6)
+        if get_list(state and 8) equals 1 and also (lifecycle equals 2 or else lifecycle equals 4):
+            set changed to set_list(state and 6 and 2)
+            return 1
+    return 0
+
+define discord_voice_audio_job_finish with journal as Int and state as List and outcome as Str returning Str:
+    if state equals 0 or else length_list(state) is not equal to 9:
+        return outcome
+    if get_list(state and 6) equals 0:
+        set claim to get_list(state and 0)
+        set disposition to "uncertain"
+        if outcome equals "file-playback-complete":
+            set disposition to "completed"
+        set settled to discord_voice_audio_job_settle(journal and archive_list_text(claim and 1) and archive_list_text(claim and 2) and disposition)
+        if not (settled equals disposition):
+            set outcome to "voice-audio-result-uncertain"
+        set changed to set_list(state and 6 and 1)
+        set changed to set_list(state and 7 and outcome)
+        set stopped to discord_voice_permission_mailbox_stop(get_list(state and 1))
+        set closed to discord_voice_file_playback_fail(get_list(state and 4) and outcome)
+        set changed to set_list(state and 4 and 0)
+    set drained to discord_voice_audio_job_drain(state)
+    return archive_list_text(state and 7)
+
+# stream preserves RTP sequence/timestamp across files on this voice connection.
+# Network checks and file/codec preparation execute on their separate threads.
+define discord_voice_audio_job_tick with journal as Int and reader as Int and database as Int and worker as List and state as List and stream as List and now as Int and wall_ms as Int returning Str:
+    if state equals 0 or else length_list(state) is not equal to 9 or else stream equals 0 or else length_list(stream) is not equal to 2:
+        return "invalid-voice-audio-worker"
+    set drained to discord_voice_audio_job_drain(state)
+    if get_list(state and 6) is not equal to 0:
+        return discord_voice_worker_step(journal and reader and database and worker and now and wall_ms)
+    set engine to get_list(worker and 0)
+    set owner to get_list(engine and 0)
+    set claim to get_list(state and 0)
+    set guarded to discord_voice_audio_job_guard(journal and database and archive_list_text(owner and 1) and claim and archive_list_text(worker and 2) and get_list(worker and 3) and get_list(worker and 4) and archive_list_text(worker and 5))
+    if not (archive_list_text(guarded and 0) equals "voice-audio-native-current"):
+        set closed to discord_voice_worker_step_close(journal and worker and archive_list_text(guarded and 0))
+        return discord_voice_audio_job_finish(journal and state and closed)
+    set mailbox to get_list(state and 1)
+    if get_list(mailbox and 6) is not equal to 0:
+        set closed to discord_voice_worker_step_close(journal and worker and "voice-audio-observer-stopped")
+        return discord_voice_audio_job_finish(journal and state and closed)
+    if now >= get_list(state and 5):
+        if discord_voice_permission_mailbox_refresh(mailbox) > 0:
+            set changed to set_list(state and 5 and now + get_list(worker and 7))
+    if get_list(state and 4) equals 0:
+        set control to discord_voice_worker_step(journal and reader and database and worker and now and wall_ms)
+        if get_list(worker and 10) is not equal to 0:
+            return discord_voice_audio_job_finish(journal and state and control)
+        if get_list(state and 8) equals 0:
+            return "voice-audio-loading"
+        set loaded to get_list(state and 3)
+        if not (archive_list_text(loaded and 0) equals "voice-audio-loaded"):
+            set closed to discord_voice_worker_step_close(journal and worker and archive_list_text(loaded and 0))
+            return discord_voice_audio_job_finish(journal and state and closed)
+        if get_list(engine and 3) equals 0:
+            return "voice-audio-awaiting-transport"
+        set playback to discord_voice_playback_new(get_list(engine and 3) and get_list(loaded and 2) and get_list(stream and 0) and get_list(stream and 1) and now)
+        set player to discord_voice_file_playback_new(get_list(loaded and 1) and playback)
+        if player equals 0:
+            set closed to discord_voice_playback_fail(playback and "voice-audio-player-unavailable")
+            set closed to discord_voice_worker_step_close(journal and worker and "voice-audio-player-unavailable")
+            return discord_voice_audio_job_finish(journal and state and closed)
+        set changed to set_list(state and 4 and player)
+        set changed to set_list(state and 3 and 0)
+    set proof to discord_voice_permission_mailbox_proof(mailbox)
+    if proof is not equal to 0 and also not (archive_list_text(proof and 0) equals "voice-audio-proof"):
+        if archive_list_text(proof and 0) equals "voice-authorization-refresh-required":
+            set refreshed to discord_voice_permission_mailbox_refresh(mailbox)
+            set proof to 0
+        else:
+            set closed to discord_voice_worker_step_close(journal and worker and archive_list_text(proof and 0))
+            return discord_voice_audio_job_finish(journal and state and closed)
+    set player to get_list(state and 4)
+    set outcome to discord_voice_worker_audio_tick_scoped(journal and reader and database and worker and player and now and wall_ms and 1 and claim and proof)
+    set playback to get_list(player and 1)
+    set changed to set_list(stream and 0 and get_list(playback and 2))
+    set changed to set_list(stream and 1 and get_list(playback and 3))
+    if outcome equals "voice-awaiting-audio-proof":
+        set refreshed to discord_voice_permission_mailbox_refresh(mailbox)
+    if outcome equals "file-playback-complete" or else get_list(worker and 10) is not equal to 0 or else get_list(player and 6) is not equal to 0:
+        return discord_voice_audio_job_finish(journal and state and outcome)
+    return outcome

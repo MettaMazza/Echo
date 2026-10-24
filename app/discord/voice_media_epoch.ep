@@ -1,0 +1,85 @@
+import "voice_media"
+
+# Epoch-authenticated ratchet updates. A duplicate transition never reinstalls
+# the same sending key, which would reset its nonce counter. The protocol
+# controller invokes refresh only when the prepared transition executes.
+define discord_voice_epoch_authenticator with session as List returning List:
+    if discord_dave_failures(session) is not equal to 0 or else get_list(session and 1) equals 0:
+        return 0
+    set library to get_list(session and 0)
+    set function to ep_dlsym(library and "daveSessionGetLastEpochAuthenticator")
+    if function equals 0:
+        return 0
+    set pointer to research_native_words(1)
+    set size to research_native_words(1)
+    set fetched to ep_dlcall3(function and get_list(session and 1) and get_list_data_ptr(pointer) and get_list_data_ptr(size))
+    return discord_dave_owned_copy(library and get_list(pointer and 0) and get_list(size and 0))
+
+define discord_voice_epoch_close with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 3:
+        return 0
+    set closed to discord_voice_media_close(get_list(state and 0))
+    set released to discord_voice_blob_release(get_list(state and 2))
+    return 1
+
+define discord_voice_epoch_open with session as List and path as Str and user as Str and roster as List and ssrc as Int and sending as Int returning List:
+    set authenticator to discord_voice_epoch_authenticator(session)
+    if authenticator equals 0:
+        return 0
+    set media to discord_voice_media_open(session and path and user and roster and ssrc and sending)
+    if media equals 0:
+        set released to discord_voice_blob_release(authenticator)
+        return 0
+    set state to create_list()
+    set state to [media,user,authenticator]
+    return state
+
+# 1 applied; 2 already on this epoch; 0 unusable. A failed membership or
+# session check closes the media object so callers cannot keep using stale keys.
+define discord_voice_epoch_refresh with state as List and roster as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 3:
+        return 0
+    set media to get_list(state and 0)
+    if media equals 0 or else get_list(media and 0) equals 0:
+        return 0
+    set user to archive_list_text(state and 1)
+    set found to 0
+    if discord_dave_users_valid(roster) equals 1:
+        for each member in roster:
+            if ptr_to_str(member) equals user:
+                set found to 1
+    set session to get_list(media and 2)
+    if found equals 0 or else discord_dave_failures(session) is not equal to 0:
+        set closed to discord_voice_epoch_close(state)
+        return 0
+    set fresh to discord_voice_epoch_authenticator(session)
+    if fresh equals 0:
+        set closed to discord_voice_epoch_close(state)
+        return 0
+    set old to get_list(state and 2)
+    set same to get_list(old and 1) equals get_list(fresh and 1)
+    set index to 0
+    repeat while same equals 1 and also index < get_list(fresh and 1):
+        if peek_byte(get_list(old and 0) and index) is not equal to peek_byte(get_list(fresh and 0) and index):
+            set same to 0
+        set index to index + 1
+    if same equals 1:
+        set released to discord_voice_blob_release(fresh)
+        return 2
+    set library to get_list(media and 0)
+    set ratchet to ep_dlcall2(ep_dlsym(library and "daveSessionGetKeyRatchet") and get_list(session and 1) and str_to_ptr(user))
+    if ratchet equals 0:
+        set released to discord_voice_blob_release(fresh)
+        set closed to discord_voice_epoch_close(state)
+        return 0
+    set name to "daveDecryptorTransitionToKeyRatchet"
+    if get_list(media and 3) equals 1:
+        set name to "daveEncryptorSetKeyRatchet"
+    set changed to ep_dlcall2(ep_dlsym(library and name) and get_list(media and 1) and ratchet)
+    set released to ep_dlcall1(ep_dlsym(library and "daveKeyRatchetDestroy") and ratchet)
+    set released to discord_voice_blob_release(old)
+    set changed to set_list(state and 2 and fresh)
+    if discord_dave_failures(session) is not equal to 0:
+        set closed to discord_voice_epoch_close(state)
+        return 0
+    return 1

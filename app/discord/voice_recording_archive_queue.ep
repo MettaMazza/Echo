@@ -1,0 +1,80 @@
+import "voice_recording_artifact"
+import "voice_recording_publication"
+import "voice_recording_transcript_queue"
+
+# Transport progress is a projection. The canonical receipt, not this marker,
+# proves publication. Reset observations on worker startup to handle restoring
+# the journal and conversation archive from different verified snapshots.
+define discord_voice_recording_archive_schema with journal as Int returning Int:
+    return sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_voice_recording_archive_delivery(artifact TEXT NOT NULL REFERENCES discord_voice_recording_artifacts(identity),archive_anchor TEXT NOT NULL,confirmed INTEGER NOT NULL DEFAULT 0,next_ms INTEGER NOT NULL DEFAULT 0,outcome TEXT NOT NULL DEFAULT '',PRIMARY KEY(artifact,archive_anchor)); CREATE INDEX IF NOT EXISTS discord_voice_recording_archive_pending ON discord_voice_recording_archive_delivery(archive_anchor,next_ms,artifact) WHERE confirmed=0;")
+
+define discord_voice_recording_archive_seed with journal as Int and anchor as Str returning Int:
+    if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_voice_recording_archive_delivery(artifact,archive_anchor) SELECT identity,?1 FROM discord_voice_recording_artifacts;" and [anchor]) and 101) is not equal to 0:
+        return 1
+    return archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recording_archive_delivery SET confirmed=0,next_ms=0 WHERE archive_anchor=?1;" and [anchor]) and 101)
+
+# Reconcile an already committed publication without REST or another write to
+# the canonical archive. This grants no new access and returns no user content.
+# Missing receipts are pending, while inconsistent existing receipts fail closed.
+define discord_voice_recording_archive_observed with journal as Int and database as Int and artifact as Str returning Str:
+    set receipt to history_collect_one(checkpoint_prepare(database and "SELECT session,request,recording,origin,guild,audio,provenance,audio_digest,manifest_digest FROM echo_voice_recording_publications WHERE identity=?1;" and [artifact]))
+    if archive_list_text(receipt and 0) equals "end":
+        return "recording-archive-pending"
+    if not (archive_list_text(receipt and 0) equals "found"):
+        return "recording-archive-store-failed"
+    set staged to history_collect_one(checkpoint_prepare(journal and "SELECT a.recording,r.request,r.origin,i.guild,a.wav_digest,a.manifest_digest,a.wav_path,a.manifest_path,a.wav_bytes FROM discord_voice_recording_artifacts a JOIN discord_voice_recordings r ON r.identity=a.recording JOIN discord_voice_intents i ON i.identity=r.intent WHERE a.identity=?1;" and [artifact]))
+    if not (archive_list_text(staged and 0) equals "found") or else not (archive_list_text(receipt and 2) equals archive_list_text(staged and 2)) or else not (archive_list_text(receipt and 3) equals archive_list_text(staged and 1)) or else not (archive_list_text(receipt and 4) equals archive_list_text(staged and 3)) or else not (archive_list_text(receipt and 5) equals archive_list_text(staged and 4)) or else not (archive_list_text(receipt and 6) equals concat(artifact and ":audio")) or else not (archive_list_text(receipt and 7) equals concat(artifact and ":provenance")) or else not (archive_list_text(receipt and 8) equals archive_list_text(staged and 5)) or else not (archive_list_text(receipt and 9) equals archive_list_text(staged and 6)):
+        return "recording-archive-conflict"
+    set values to [archive_list_text(receipt and 1),archive_list_text(receipt and 2),archive_list_text(receipt and 6),archive_list_text(receipt and 7),archive_list_text(staged and 5),archive_list_text(staged and 6),archive_list_text(staged and 7),archive_list_text(staged and 8),archive_list_text(staged and 9)]
+    set matched to history_collect_one(checkpoint_prepare(database and "SELECT t.session FROM echo_tool_calls t JOIN echo_attachments a ON a.attachment=?3 AND a.session=t.session AND a.digest=?5 AND a.path=?7 AND a.bytes=CAST(?9 AS INTEGER) JOIN echo_attachments p ON p.attachment=?4 AND p.session=t.session AND p.digest=?6 AND p.path=?8 WHERE t.request_event=?2 AND t.session=?1;" and values))
+    if not (archive_list_text(matched and 0) equals "found"):
+        return "recording-archive-conflict"
+    return "recording-archive-observed"
+
+# One unit of work. Publication is preferred; otherwise stage one bounded
+# segment. Temporary access/REST failures retain explicit retry deadlines, so
+# one inaccessible recording cannot monopolize background processing.
+define discord_voice_recording_archive_tick with journal as Int and database as Int and system as Int and journal_anchor as Str and archive_anchor as Str and config as List and profile as Str and speech_root as Str returning Str:
+    if file_exists(archive_list_text(config and 9)) or else (length_list(config) > 10 and also provider_helper_cancelled(system and get_list(config and 10)) is not equal to 0):
+        return "recording-archive-stopped"
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT artifact FROM discord_voice_recording_archive_delivery WHERE archive_anchor=?1 AND confirmed=0 AND next_ms<=CAST(?2 AS INTEGER) ORDER BY next_ms,artifact LIMIT 1;" and [archive_anchor,int_to_string(ep_time_now_ms())]))
+    if archive_list_text(row and 0) equals "found":
+        set artifact to archive_list_text(row and 1)
+        set observed to discord_voice_recording_archive_observed(journal and database and artifact)
+        set result to observed
+        if observed equals "recording-archive-pending":
+            set published to discord_voice_recording_publish(archive_list_text(config and 0) and archive_list_text(config and 1) and journal and database and artifact and archive_list_text(config and 5) and get_list(config and 6) and get_list(config and 7) and archive_list_text(config and 8) and archive_list_text(config and 9))
+            set result to archive_list_text(published and 0)
+        set confirmed to 0
+        if result equals "recording-published" or else result equals "recording-archive-observed":
+            set confirmed to 1
+        set changed to archive_finish(checkpoint_prepare(journal and "UPDATE discord_voice_recording_archive_delivery SET confirmed=CAST(?3 AS INTEGER),next_ms=CAST(?4 AS INTEGER),outcome=?5 WHERE artifact=?1 AND archive_anchor=?2;" and [artifact,archive_anchor,int_to_string(confirmed),int_to_string(ep_time_now_ms() + 30000),result]) and 101)
+        if changed is not equal to 0:
+            return "recording-archive-store-failed"
+        if confirmed equals 1:
+            if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_voice_recording_transcript_delivery(artifact,archive_anchor) VALUES(?1,?2);" and [artifact,archive_anchor]) and 101) is not equal to 0:
+                return "recording-archive-store-failed"
+            return "recording-archive-progress"
+        if discord_contains(["recording-publication-store-failed","recording-publication-integrity-failed","recording-publication-provenance-denied","recording-publication-conflict","recording-archive-conflict","recording-archive-store-failed"] and result) equals 1:
+            return "recording-archive-failed"
+        return "recording-archive-deferred"
+    if not (archive_list_text(row and 0) equals "end"):
+        return "recording-archive-store-failed"
+    set transcription to discord_recording_transcript_tick(journal and database and config and archive_anchor and profile and speech_root)
+    if transcription equals "recording-archive-progress" or else transcription equals "recording-archive-failed" or else transcription equals "recording-archive-store-failed":
+        return transcription
+    if file_exists(archive_list_text(config and 9)) or else (length_list(config) > 10 and also provider_helper_cancelled(system and get_list(config and 10)) is not equal to 0):
+        return "recording-archive-stopped"
+    set staged to discord_voice_recording_artifact_step(journal and system and journal_anchor and archive_list_text(config and 4))
+    set status to archive_list_text(staged and 0)
+    if status equals "recording-artifact-staged":
+        if archive_finish(checkpoint_prepare(journal and "INSERT OR IGNORE INTO discord_voice_recording_archive_delivery(artifact,archive_anchor) VALUES(?1,?2);" and [archive_list_text(staged and 1),archive_anchor]) and 101) is not equal to 0:
+            return "recording-archive-store-failed"
+        return "recording-archive-progress"
+    if status equals "recording-artifact-discovered":
+        return "recording-archive-progress"
+    if status equals "recording-artifact-idle":
+        return "recording-archive-idle"
+    if status equals "recording-artifact-store-busy":
+        return "recording-archive-deferred"
+    return "recording-archive-failed"

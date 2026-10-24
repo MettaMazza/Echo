@@ -1,0 +1,86 @@
+import "voice_recording_proof"
+import "voice_membership_reader"
+import "worker_delivery"
+
+# Uses the existing nonce-bound outbox. The tool-post prefix keeps these rows
+# out of the general reply worker, which cannot perform recording preflights.
+# Empty offer selects the public notice; an offer selects one member challenge.
+define discord_voice_recording_deliver with library as Str and token as Str and journal as Int and database as Int and identity as Str and offer as Str and bot as Str and guilds as List and admins as List and directory_path as Str and stop_file as Str returning Str:
+    if string_length(offer) is not equal to 0 and also string_length(offer) is not equal to 64:
+        return "recording-delivery-binding-denied"
+    set preflight to discord_voice_recording_preflight(library and token and journal and database and identity and bot and guilds and admins and directory_path and stop_file)
+    if not (archive_list_text(preflight and 0) equals "recording-preflight"):
+        return archive_list_text(preflight and 0)
+    set guarded to get_list(preflight and 2)
+    set recording to get_list(guarded and 4)
+    set origin to archive_list_text(recording and 3)
+    set intent to archive_list_text(recording and 1)
+    set owner to get_list(get_list(guarded and 3) and 3)
+    set room to archive_list_text(owner and 2)
+    set transport to get_list(preflight and 3)
+    set outbox to concat("tool-post:voice-recording:notice:" and identity)
+    set body to concat("{\"content\":" and concat(provider_quote(discord_voice_recording_notice_text(room)) and ",\"allowed_mentions\":{\"parse\":[]}}"))
+    if string_length(offer) > 0:
+        set selected to history_collect_one(checkpoint_prepare(journal and "SELECT actor,voice_session FROM discord_voice_recording_offers WHERE identity=?1 AND recording=?2;" and [offer,identity]))
+        if not (archive_list_text(selected and 0) equals "found") or else not (archive_list_text(recording and 5) equals "active"):
+            return "recording-delivery-binding-denied"
+        set notice to history_collect_one(checkpoint_prepare(journal and "SELECT notice FROM discord_voice_recordings WHERE identity=?1 AND state='active' AND notice_receipt<>'';" and [identity]))
+        if not (archive_list_text(notice and 0) equals "found") or else discord_snowflake(archive_list_text(notice and 1)) equals 0:
+            return "recording-notice-not-visible"
+        set notice_route to concat("/channels/" and concat(origin and concat("/messages/" and archive_list_text(notice and 1))))
+        set visible to discord_access_get(library and token and journal and directory_path and notice_route and "GET:message" and origin)
+        if not (archive_list_text(visible and 0) equals "observed") or else discord_voice_recording_notice_valid(archive_list_text(visible and 1) and archive_list_text(notice and 1) and origin and room and bot) equals 0:
+            return "recording-notice-not-visible"
+        set snapshot to discord_voice_membership_read_intent(journal and archive_list_text(transport and 1) and archive_list_text(transport and 2) and 1 and archive_list_text(owner and 1) and room and bot and intent)
+        if not (archive_list_text(snapshot and 0) equals "voice-membership-ready") or else get_list(snapshot and 2) is not equal to get_list(transport and 3):
+            return "recording-membership-refresh-required"
+        set present to 0
+        for each member in get_list(get_list(get_list(snapshot and 1) and 0) and 4):
+            if archive_list_text(member and 0) equals archive_list_text(selected and 1) and also archive_list_text(member and 1) equals archive_list_text(selected and 2):
+                set present to 1
+        if present equals 0:
+            return "recording-offer-session-changed"
+        set body to discord_voice_recording_offer_body(journal and offer)
+        set outbox to concat("tool-post:voice-recording:offer:" and offer)
+    if string_length(body) equals 0:
+        return "recording-delivery-binding-denied"
+    set queued to discord_outbox_enqueue(journal and outbox and archive_list_text(guarded and 2) and origin and body)
+    if not (queued equals "enqueued" or else queued equals "already-enqueued"):
+        return queued
+    set row to history_collect_one(checkpoint_prepare(journal and "SELECT state,message FROM discord_outbox WHERE identity=?1;" and [outbox]))
+    if archive_list_text(row and 1) equals "pending":
+        set checked to discord_voice_recording_guard(journal and database and identity and bot and guilds and admins and stop_file)
+        if not (archive_list_text(checked and 0) equals "recording-native-current"):
+            return archive_list_text(checked and 0)
+        set checked_transport to discord_voice_worker_check(journal and database and intent and transport and bot and guilds and admins and stop_file and 0)
+        if not (checked_transport equals "allowed"):
+            return checked_transport
+        set sent to discord_delivery_send(library and token and journal and outbox and directory_path)
+        set row to history_collect_one(checkpoint_prepare(journal and "SELECT state,message FROM discord_outbox WHERE identity=?1;" and [outbox]))
+        if not (archive_list_text(row and 1) equals "sent"):
+            if archive_list_text(row and 1) equals "uncertain" or else archive_list_text(row and 1) equals "sending" or else archive_list_text(row and 1) equals "rejected":
+                return concat("recording-delivery:" and archive_list_text(row and 1))
+            return concat("recording-delivery:" and sent)
+    if not (archive_list_text(row and 1) equals "sent"):
+        # Sending/uncertain waits for authenticated Gateway reconciliation;
+        # this path never returns it to pending or fabricates a fresh nonce.
+        return concat("recording-delivery:" and archive_list_text(row and 1))
+    set message to archive_list_text(row and 2)
+    set route to concat("/channels/" and concat(origin and concat("/messages/" and message)))
+    set observed to discord_access_get(library and token and journal and directory_path and route and "GET:message" and origin)
+    if not (archive_list_text(observed and 0) equals "observed"):
+        return archive_list_text(observed and 0)
+    set checked to discord_voice_recording_guard(journal and database and identity and bot and guilds and admins and stop_file)
+    if not (archive_list_text(checked and 0) equals "recording-native-current"):
+        return archive_list_text(checked and 0)
+    set checked_transport to discord_voice_worker_check(journal and database and intent and transport and bot and guilds and admins and stop_file and 0)
+    if not (checked_transport equals "allowed"):
+        return checked_transport
+    if string_length(offer) > 0:
+        return discord_voice_recording_offer_observed(journal and offer and archive_list_text(observed and 1) and archive_list_text(observed and 2))
+    if discord_voice_recording_notice_valid(archive_list_text(observed and 1) and message and origin and room and bot) equals 0:
+        return "recording-notice-not-visible"
+    set state to history_collect_one(checkpoint_prepare(journal and "SELECT state,notice FROM discord_voice_recordings WHERE identity=?1;" and [identity]))
+    if archive_list_text(state and 1) equals "active" and also archive_list_text(state and 2) equals message:
+        return "active"
+    return discord_voice_recording_notice(journal and identity and message and archive_list_text(observed and 2))

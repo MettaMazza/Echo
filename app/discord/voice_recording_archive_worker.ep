@@ -1,0 +1,88 @@
+import "voice_recording_archive_queue"
+import "voice_recording_frames"
+import "agent_bridge"
+import "select"
+
+# Bridge channel shutdown into the same native cancellation pipe watched by
+# helper monitors, including controller failures without an external stop file.
+define discord_recording_archive_stop_relay with stop as Int and finish as Int and writer as Int and completed as Int returning Int:
+    set waits to [stop,finish]
+    repeat while 1 equals 1:
+        set selected to select(waits and 500)
+        if selected >= 0:
+            set signal to receive from get_list(waits and selected)
+            break
+    set closed to net_close(writer)
+    send 0 to completed
+    return 0
+
+# Private host configuration: REST library/token, journal/archive paths, artifact
+# root, bot/guild/admin allowlists, private REST spool and stop file. No model
+# input enables this worker or selects its filesystem paths. Owned by the sole
+# interaction-actions process; archive and REST work stays off its command loop.
+define discord_voice_recording_archive_worker with config as List and stop as Int and completed as Int returning Int:
+    if config equals 0 or else length_list(config) is not equal to 10:
+        send 1 to completed
+        return 1
+    set journal to discord_store_open(archive_list_text(config and 2) and archive_list_text(config and 5))
+    set database to discord_agent_open(archive_list_text(config and 3) and archive_list_text(config and 5))
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set status to 0
+    set journal_anchor to ""
+    set archive_anchor to ""
+    set profile to ""
+    set profile_path to ptr_to_str(get_env("ECHO_SPEECH_PROFILE"))
+    set speech_root to ptr_to_str(get_env("ECHO_SPEECH_ROOT"))
+    if string_length(profile_path) > 0:
+        set profile to ptr_to_str(read_file(profile_path))
+    if journal equals 0 or else database equals 0 or else system equals 0:
+        set status to 1
+    else:
+        # Long export snapshots must never delay Gateway/media commits in a
+        # rollback-journal configuration. Deployment installs WAL explicitly.
+        set journal_mode to history_collect_one(archive_prepare(journal and "PRAGMA journal_mode;"))
+        if not (archive_list_text(journal_mode and 1) equals "wal") or else discord_voice_recording_frames_schema(journal) is not equal to 0 or else discord_voice_recording_artifact_schema(journal) is not equal to 0 or else discord_voice_recording_archive_schema(journal) is not equal to 0 or else discord_voice_recording_publication_schema(database) is not equal to 0 or else discord_recording_transcript_queue_schema(journal) is not equal to 0 or else discord_recording_transcript_publication_schema(database) is not equal to 0:
+            set status to 1
+        else:
+            set journal_anchor to archive_runtime_anchor(journal and system)
+            set archive_anchor to archive_runtime_anchor(database and system)
+            if string_length(journal_anchor) equals 0 or else string_length(archive_anchor) equals 0 or else discord_voice_recording_archive_seed(journal and archive_anchor) is not equal to 0 or else discord_recording_transcript_seed(journal and archive_anchor) is not equal to 0:
+                set status to 1
+    set cancellation to 0
+    set relay_finish to channel
+    set relay_completed to channel
+    if status equals 0:
+        set cancellation to socket_cancellation_create(system)
+        if cancellation equals 0:
+            set status to 1
+        else:
+            set added to append_list(config and get_list(cancellation and 0))
+            spawn discord_recording_archive_stop_relay(stop and relay_finish and get_list(cancellation and 1) and relay_completed)
+    set idle to channel
+    set waits to [idle]
+    repeat while status equals 0:
+        if provider_helper_cancelled(system and get_list(cancellation and 0)) is not equal to 0:
+            break
+        set result to discord_voice_recording_archive_tick(journal and database and system and journal_anchor and archive_anchor and config and profile and speech_root)
+        if result equals "recording-archive-stopped":
+            break
+        if result equals "recording-archive-failed" or else result equals "recording-archive-store-failed":
+            set status to 1
+            break
+        set delay to 500
+        if result equals "recording-archive-progress":
+            set delay to 1
+        set waited to select(waits and delay)
+    if cancellation is not equal to 0:
+        send 1 to relay_finish
+        set finished to receive from relay_completed
+        set changed to set_list(cancellation and 1 and -1)
+        set closed to socket_cancellation_close(cancellation)
+    if database is not equal to 0:
+        set closed to sql_close(database)
+    if journal is not equal to 0:
+        set closed to sql_close(journal)
+    if system is not equal to 0:
+        set closed to ep_dlclose(system)
+    send status to completed
+    return status

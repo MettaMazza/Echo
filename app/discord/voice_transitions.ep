@@ -1,0 +1,103 @@
+import "voice_epoch_snapshot"
+
+# One queue per media identity. The MLS controller prepares every active media
+# identity before acknowledging Ready, and applies them before permitting audio.
+# State: session, library path, user, rows, last executed order, closed, serial.
+# Row: transition ID, arrival order, owned snapshot, executed flag.
+define discord_voice_transitions_new with session as List and path as Str and user as Str returning List:
+    if discord_dave_failures(session) is not equal to 0 or else get_list(session and 1) equals 0:
+        return 0
+    set rows to create_list()
+    set state to create_list()
+    set state to [session,path,user,rows,0,0,0]
+    return state
+
+define discord_voice_transitions_close with state as List returning Int:
+    if state equals 0 or else length_list(state) is not equal to 7:
+        return 0
+    for each row in get_list(state and 3):
+        set closed to discord_voice_snapshot_close(get_list(row and 2))
+        set changed to set_list(row and 2 and 0)
+    set changed to set_list(state and 5 and 1)
+    return 1
+
+define discord_voice_transitions_prepare with state as List and transition as Int and roster as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 7 or else get_list(state and 5) is not equal to 0 or else transition < 0 or else transition > 65535:
+        return "invalid-transition"
+    set snapshot to discord_voice_snapshot_capture(get_list(state and 0) and archive_list_text(state and 1) and archive_list_text(state and 2) and roster)
+    if snapshot equals 0:
+        set closed to discord_voice_transitions_close(state)
+        return "transition-capture-failed"
+    set rows to get_list(state and 3)
+    set pending to 0
+    for each row in rows:
+        if get_list(row and 3) equals 0:
+            set pending to pending + 1
+        if get_list(row and 0) equals transition:
+            set same to 0
+            set prior to get_list(row and 2)
+            if prior is not equal to 0:
+                set left to get_list(prior and 2)
+                set right to get_list(snapshot and 2)
+                set same to get_list(left and 1) equals get_list(right and 1)
+                set index to 0
+                repeat while same equals 1 and also index < get_list(left and 1):
+                    if peek_byte(get_list(left and 0) and index) is not equal to peek_byte(get_list(right and 0) and index):
+                        set same to 0
+                    set index to index + 1
+            set closed to discord_voice_snapshot_close(snapshot)
+            if same equals 1:
+                return "transition-already-prepared"
+            # An ID cannot designate two epochs, or revive a completed epoch.
+            set closed to discord_voice_transitions_close(state)
+            return "transition-id-conflict"
+    if pending >= 32:
+        set closed to discord_voice_snapshot_close(snapshot)
+        set closed to discord_voice_transitions_close(state)
+        return "too-many-pending-transitions"
+    set serial to get_list(state and 6) + 1
+    set row to create_list()
+    set row to [transition,serial,snapshot,0]
+    # Keep bounded completed-ID history while retaining every pending ratchet.
+    set retained to create_list()
+    for each prior in rows:
+        if get_list(prior and 3) equals 0 or else get_list(prior and 1) >= get_list(state and 4) - 64:
+            set added to append_list(retained and prior)
+    set added to append_list(retained and row)
+    set changed to set_list(state and 3 and retained)
+    set changed to set_list(state and 6 and serial)
+    return "transition-prepared"
+
+define discord_voice_transitions_execute with state as List and transition as Int and epoch as List and roster as List returning Str:
+    if state equals 0 or else length_list(state) is not equal to 7 or else get_list(state and 5) is not equal to 0:
+        set closed to discord_voice_epoch_close(epoch)
+        return "transition-controller-closed"
+    set eligible to 0
+    if discord_dave_users_valid(roster) equals 1:
+        for each member in roster:
+            if ptr_to_str(member) equals archive_list_text(state and 2):
+                set eligible to 1
+    if eligible equals 0 or else discord_dave_failures(get_list(state and 0)) is not equal to 0 or else get_list(get_list(state and 0) and 1) equals 0:
+        set closed to discord_voice_epoch_close(epoch)
+        set closed to discord_voice_transitions_close(state)
+        return "transition-membership-invalid"
+    for each row in get_list(state and 3):
+        if get_list(row and 0) equals transition:
+            if get_list(row and 1) < get_list(state and 4):
+                return "stale-transition"
+            if get_list(row and 3) equals 1:
+                return "transition-duplicate"
+            set applied to discord_voice_snapshot_apply(epoch and get_list(row and 2) and roster)
+            if applied equals 0:
+                set closed to discord_voice_transitions_close(state)
+                return "transition-apply-failed"
+            set changed to set_list(state and 4 and get_list(row and 1))
+            set changed to set_list(row and 3 and 1)
+            # Discard all superseded keys, preserving only small ID tombstones.
+            for each prior in get_list(state and 3):
+                if get_list(prior and 1) <= get_list(state and 4):
+                    set closed to discord_voice_snapshot_close(get_list(prior and 2))
+                    set changed to set_list(prior and 2 and 0)
+                    set changed to set_list(prior and 3 and 1)
+            return "transition-applied"
+    return "unknown-transition"

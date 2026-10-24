@@ -1,0 +1,40 @@
+import "voice_gateway_playback"
+
+# Caller holds the journal writer fence and has checked current owner/proof.
+# 0 waits for a post-write own-state update; 1 permits audio; -1 revokes it.
+define discord_voice_playback_gate_confirmed with journal as Int and owner as List returning Int:
+    set connection to get_list(owner and 0)
+    set credentials to get_list(connection and 1)
+    set keys to create_list()
+    set retained_voice_added to append_list(keys and archive_list_text(owner and 1))
+    set retained_voice_added to append_list(keys and archive_list_text(owner and 2))
+    set gate to history_collect_one(checkpoint_prepare(journal and "SELECT state,gateway_session,after_sequence FROM discord_voice_playback_gates WHERE identity=?1 AND generation=?2;" and keys))
+    if not (archive_list_text(gate and 0) equals "found"):
+        return -1
+    set state to archive_list_text(gate and 1)
+    if state equals "pending" or else state equals "attempted":
+        return 0
+    if not (state equals "sent"):
+        return -1
+    set values to create_list()
+    set retained_voice_added to append_list(values and archive_list_text(gate and 2))
+    set retained_voice_added to append_list(values and archive_list_text(credentials and 0))
+    set retained_voice_added to append_list(values and archive_list_text(owner and 3))
+    set latest to history_collect_one(checkpoint_prepare(journal and "SELECT sequence,kind,payload FROM discord_voice_membership_events WHERE session=?1 AND COALESCE(json_extract(payload,'$.guild_id'),json_extract(payload,'$.id'))=?2 AND (kind<>'VOICE_STATE_UPDATE' OR json_extract(payload,'$.user_id')=?3 OR json_extract(payload,'$.invalid')=1) ORDER BY sequence DESC LIMIT 1;" and values))
+    if not (archive_list_text(latest and 0) equals "found") or else string_to_int(archive_list_text(latest and 1)) <= string_to_int(archive_list_text(gate and 3)):
+        return 0
+    if not (archive_list_text(latest and 2) equals "VOICE_STATE_UPDATE"):
+        return -1
+    set fields to provider_json_tokens(archive_list_text(latest and 3))
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "user_id")) equals archive_list_text(owner and 3)) or else not (provider_value(fields and provider_member(fields and 0 and "channel_id")) equals archive_list_text(connection and 2)) or else not (provider_value(fields and provider_member(fields and 0 and "session_id")) equals archive_list_text(credentials and 2)):
+        return -1
+    set deaf_kind to provider_kind(fields and provider_member(fields and 0 and "self_deaf"))
+    if deaf_kind equals "false":
+        set receiving to history_collect_one(checkpoint_prepare(journal and "SELECT COUNT(*) FROM discord_voice_recording_gates WHERE intent=?1 AND generation=?2 AND bot=?3 AND voice_session=?4 AND state IN ('sent','close-pending','close-attempted','close-sent');" and [archive_list_text(owner and 1),archive_list_text(owner and 2),archive_list_text(owner and 3),archive_list_text(credentials and 2)]))
+        if not (archive_list_text(receiving and 0) equals "found") or else archive_list_text(receiving and 1) equals "0":
+            return -1
+    else if not (deaf_kind equals "true"):
+        return -1
+    if not (provider_kind(fields and provider_member(fields and 0 and "self_mute")) equals "false") or else not (provider_kind(fields and provider_member(fields and 0 and "mute")) equals "false") or else not (provider_kind(fields and provider_member(fields and 0 and "suppress")) equals "false"):
+        return -1
+    return 1
