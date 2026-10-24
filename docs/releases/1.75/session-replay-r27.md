@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../1.9/README.md) · [feature status](../1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Session replay repair — r27
 
 The later owner-session failure reopened the r24 audio-capability and latency acceptance. Earlier isolated successes did not cover this sequence with the owner's accumulated context. r24's blanket completion wording must not be read as universal reliability.

@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord message reads — Phase Two Step 15
 
 Status: implemented, deployed at idle with rollback, and qualified across four actual Qwen3.8 Discord turns plus reload. Native option/response and child-runtime binding checks passed. This is not full community-tool or Phase Two completion.

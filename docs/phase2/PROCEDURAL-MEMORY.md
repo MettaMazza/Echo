@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Procedural memory — Step 09
 
 The ErnosDecent reference (`decent_store/knowledge.ep`, procedure_store/get/list) retains named workflow text. Echo's procedure versions retain that authored workflow plus the original observed tool calls, expected outcomes, exact discovery contracts and runtime build identity required by Phase Two.

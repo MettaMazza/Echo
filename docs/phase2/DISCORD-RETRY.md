@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord saved-run retry
 
 `/retry message:` continues a saved, safely retryable run rather than submitting

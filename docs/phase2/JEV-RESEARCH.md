@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Jev review — 16 October 2026
 
 Decision: do not integrate Jev into Echo Phase Two. The requested condition is open, freely available local execution. The official model catalogue provides hosted API access; the customer agreement defines TypeSafe-hosted services. No downloadable Jev weights or self-hosted model release was found in the official documentation or GitHub organization. Open SDKs are not open model weights.

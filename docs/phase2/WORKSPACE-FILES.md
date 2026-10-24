@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Scoped workspace file tools
 
 Step 08 file tooling continues the existing read, create and mkdir operations. `workspace_list` adds directory enumeration through the normal registry/schema/capability/dispatch path. The caller supplies only a relative path (`.` for the workspace root), offset and requested number of entries. The host resolves the private or shared session workspace from authenticated saved authority. The operation rechecks access before returning names.

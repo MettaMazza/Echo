@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # User-in-channel contexts
 
 `app/security/channel_silo.ep` implements the Step 06 personal channel route. Trusted adapters supply the authenticated device and verified platform, server and channel. The principal comes from the device binding; callers do not supply a user identity. A length-prefixed namespace hash selects a stable context for that principal in that channel.

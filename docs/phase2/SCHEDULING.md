@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Durable scheduling
 
 Current status, 16 October 2026: scheduling storage and automatic dispatch are deployed; the live archive has `echo_schedules` and the service runs the scheduler. Step 08 remains in progress, including delegation. The sections below retain the sequence of earlier acceptance checks; their statements about production refer to those checks, not the current deployment.

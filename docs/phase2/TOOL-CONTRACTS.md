@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Builtin tool discovery contracts
 
 Step 08 implementation, 16 October 2026. `tool_search` returns the schema plus a versioned contract: capability, minimum role, operation effects, recovery guidance and runtime dependencies. These describe existing implementations; they grant no permissions. Invocation still checks current authority and dependencies.

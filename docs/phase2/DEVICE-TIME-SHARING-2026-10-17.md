@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Inference device-time sharing — 17 October 2026
 
 The live trace showed a fresh ~168k-token request prefilling while two recap reviewers generated. The previous recurrent-model scheduler alternated one pure prompt batch with one pure generation batch. A 512-token prompt batch took about 1.1 seconds, while a decode step emitted just one token per active generating slot. Generation fell below one token/second. Separate inference slots existed; the problem was scheduling GPU work by batch count rather than elapsed device time.

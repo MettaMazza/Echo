@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord attachment controls — deployed command controls
 
 The Discord transport must use the existing archive lifecycle and visibility writers. Native uploads remain native; these controls manage retained attachments after upload.

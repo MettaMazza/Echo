@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Checklist deployment cache regression — 17 October 2026
 
 The first user request after the checklist deployment (`5d17c917-7215-48ce-9e63-6fe2a1ac4bab`) was admitted promptly but incurred a full cold prefill. The inference log showed task 54884 processing approximately 199,089 prompt tokens on the foreground slot with zero cached tokens. Background memory extraction was admitted separately; foreground prefill had priority. No old delegated workers were competing.

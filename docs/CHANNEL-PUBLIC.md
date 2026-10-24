@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Channel-public observations
 
 `app/security/channel_public.ep` stores public-channel observations independently of private conversations, personal channel contexts and joined-group contexts. A registered namespace preserves the original platform/server/channel and derives a collision-resistant archive scope. Source event identity, sender, original text, occurrence time and archive digest remain available. Source edits require distinct platform event identities; conflicting replay never overwrites the original.

@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord announcement publication — 22 October 2026
 
 Status: native checks and actual three-turn unsupported-channel/cleanup/ordinary-follow-up acceptance passed; deployed idle. Positive announcement publication remains unperformed because the authorised server lacks a suitable announcement channel.

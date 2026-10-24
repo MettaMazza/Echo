@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Options and settings
 
 Updated 17 October 2026. Options opens a native modal dialog with Appearance, Conversations, and (when present) Devices & access categories. The desktop layout uses a category sidebar; phones use a horizontally scrollable category row. Each section scrolls independently of the conversation.

@@ -1,3 +1,11 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
+## 1.9 publication
+
+The last pushed community baseline is `72fcd9c4b297c0679743ec043547309d7e58d6d7`; its tree exactly matches local `5823c562391be5c36a170dc4c43d75659737bd82`. The 1.9 branch starts from that remote commit, preserving published ancestry. Update the default-branch landing page through a normal fast-forward when the verified remote relationship permits it. The `release/echo-1.9` development branch does not mark production V1.
+
+The public Discord invitation was verified on 24 October 2026 and is intentionally published. Private account maps, keys, identity text, references, archives, model files and local binaries stay excluded. About text/topics are only claimed applied when the GitHub API confirms them.
+
 # Repository publication
 
 Reviewed 16 October 2026. The GitHub repository has retained its original history at the owner's request. The current source publication excludes models, conversations, credentials, active configuration and private identity material.

@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Admin Code/Git workflow
 
 Original step 08 includes Code/Git operations. `host_git` accepts an absolute working directory, a Git subcommand and separate argument strings. It invokes installed `/usr/bin/git --no-pager -C ...` through the existing execution guardian. This provides repository status/diff/history/source queries, branch/worktree operations, patch application, staging/commits and native remote operations. `init` and `clone` use an existing parent directory as the working directory. Git controls its native command semantics; no added commit-count or output-size cap is imposed.

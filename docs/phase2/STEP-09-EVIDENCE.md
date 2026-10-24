@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Step 09 — projects, cross-session memory and continuity import
 
 Reviewed against the original Step 09 bullets, section 5 memory requirements and carry-forward D03/D04/D05 on 17 October 2026. The implementation and backend acceptance below are delivered. This map does not claim the browser project/sharing controls assigned to Step 10, full installation restoration assigned to Step 26, final integrated acceptance, or the joint prompt review assigned to Step 29.

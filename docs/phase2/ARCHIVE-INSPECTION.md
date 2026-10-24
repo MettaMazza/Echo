@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Scoped archive inspection
 
 Step 08 `workspace_archive_list` inspects ZIP, TAR and gzip TAR metadata from a regular file opened through the authenticated session workspace. Arguments are `path`, zero-based `offset`, and positive `entries`. Returns indexed entry names, numeric file type, declared byte size, total count, next offset, end state and SHA256 of the source bytes observed before parsing.

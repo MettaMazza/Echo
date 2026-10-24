@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Scoped JSON selection
 
 Step 08 structured-data operation `workspace_read_json` accepts a workspace `path` and string-array `segments`. Empty segments select the root. Object keys match exactly; array indexes are canonical zero-based decimal strings. Missing paths and traversal through scalar values return explicit statuses.

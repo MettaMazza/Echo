@@ -1,3 +1,9 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
+## Current 1.9 audience model
+
+Public Discord memory may cross speakers and public channels after live view/history and imported-ancestry checks. Public does not mean “an admin can read it.” Restricted rooms and private threads remain restricted. A DM/web owner can access explicitly linked private history through `ECHO_PRIVATE_MEMORY_LINKS`; admin status alone never establishes ownership. Public/group runs cannot open that bridge. `/testing` is Discord admission state only, never an agent prompt directive. Brave credentials are restricted to the fixed API endpoint. Voice recording requires visible notice, participant consent and current per-participant authority, with revocation and epoch changes rechecked. Do not publish identity links, prompts, recordings, tokens or archives.
+
 > **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
 
 # Security and data boundaries

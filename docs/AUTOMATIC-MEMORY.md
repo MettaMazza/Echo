@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Automatic private memory
 
 The original recall incident was a cursor error, not missing conversations. The model read the first result, then passed the scan boundary as the next cursor and skipped intervening messages. `memory_search` now returns a complete `next_search` argument object. `through` remains a frozen upper boundary. A single result is not an exhaustive search.

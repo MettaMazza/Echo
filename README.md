@@ -1,35 +1,54 @@
-# Echo 1.75
+# Echo — a local AI with lasting context and a community home
 
-**20 October update:** r35 preserves reasoning, memory and native audio. Five consecutive warm browser turns had a 17.7-second median (12.3–54.1 seconds), versus the historical short-turn median of 13.3 seconds. Latency remains inconsistent; the tested Q8 candidate was not promoted. See [measurements and limits](docs/releases/1.75/latency-oct20.md). Earlier deployment statements below are historical.
+![Echo: local AI, lasting context, plain English](docs/assets/echo-cover.svg)
 
-**Latest r29 deployment / r27 session replay:** see [r27 session replay](docs/releases/1.75/session-replay-r27.md). The owner-history replay exposed an audio-capability denial and high end-to-end latency after the earlier r24 checks. r27 preserves native reasoning and Warm, corrects capability/presence context, and separates interactive/background model work. Measured replies still take tens of seconds; the earlier first-output figures are not complete-turn latency.
+**Conversations that continue. Tools that do real work. A shared community with private boundaries.**
 
-**Installed and validated on the configured host; relaunched idle.** Echo uses Qwen3-Omni Thinking with the selected Warm voice. Source and acceptance records distinguish tested scope from retained failures and remaining Phase Two work.
+Echo is a self-hosted conversational agent built in **Ernos**, a plain-English programming language. It combines a browser interface and Discord with durable memory, native tools, local media generation, and inspectable reasoning and action records.
 
-Echo is a local conversational agent built in Ernos, with a durable conversation archive, native tools and a browser interface for Mac and linked devices.
+[**Join Echo’s Garden on Discord**](https://discord.gg/9QU2rXwGVF) · [**Explore the features**](docs/releases/1.9/FEATURES.md) · [**Read the 1.9 update**](docs/releases/1.9/README.md) · [**Build and run**](docs/BUILD-AND-TEST.md)
 
-This release adds native audio and combined audio/video input through Qwen3-Omni, a private video library, in-chat/fullscreen watching, and the host-enrolled Echo voice. It also carries the multi-turn interim-message persistence fixes, mid-task questions, free/task autonomy and source-authority protections.
+> **1.9 is a development update.** “V1” names the future production release, reserved for completion and production readiness of Phase Two. These development labels are not a claim that the V1 milestone has already shipped. [Current status and remaining work](docs/STATUS.md).
 
-## What you can do
+## Meet Echo
 
-- Talk with Echo across multiple turns, attach audio/images/video, and inspect original tool results and model traces.
-- Watch supported episodes or movies in the chat. Choose continuous playback or checkpoints; both participants can pause. Whoever pauses speaks first. Echo can end watching while retaining the original media.
-- See playback position separately from the range actually processed by Echo. Analysis uses bounded native audio/video segments, not a transcript-only substitute.
-- Use a host-enrolled private voice for spoken replies. The default example is **Echo Warm hybrid, pitch +1.25 semitones**. The current host selection uses two user-supplied private recordings blended with a synthetic Warm character; its Desktop audition is verified. The active helper anchors to that accepted voice, generates sentence by sentence and applies controlled pacing/pauses rather than higher sampling randomness. Two native long-speech checks passed within their documented scope; browser Speak/reload and native cache tests passed; actual selected-WAV and fresh generated-speech Thinking multi-turn listening checks passed in the isolated candidate. Personal recordings and conditioning must be installed locally; they are not distributed here.
-- Use `/auto` for free autonomy or `/auto <task>` for bounded work. The existing authority and source-isolation rules continue to apply.
+- **Keep the conversation going.** Start fresh sessions without losing authorized cross-session memory. Recall original messages in bounded batches, follow their provenance, and distinguish historical timestamps from the current clock.
+- **Build a community, not isolated chat boxes.** Echo can recall permitted public Discord conversations across users and rooms, retaining speaker and session attribution. Private DMs and explicitly linked web histories have separate access rules.
+- **Work together on real tasks.** Projects, files, checklists, schedules, delegated work, scoped command execution and code/Git tools support multi-step work. Follow-ups can steer an active task; completed foreground work releases the conversation while memory extraction finishes separately.
+- **Create and share.** Send documents and images, request local image generation, receive attached results, transcribe supported audio and request spoken replies. The selected host TTS configuration is **Chatterbox Nano on CPU, eight threads, using the locally installed Echo reference**.
+- **Research with sources.** Brave-backed search on configured hosts, readable web previews, retained originals and source-linked results keep research inspectable. A Brave API key is operator-supplied; the chat core does not require cloud inference.
+- **See what happened.** Inspect model-emitted reasoning, tool requests/results, task state and conversation history. Archived records distinguish queued, running, completed and failed operations.
 
-The required release checkpoint is **Qwen3-Omni Thinking**, with explicit reasoning output and native multimodal input. The initial Instruct installation did not meet the reasoning requirement. Thinking artifacts are downloaded and hash-verified. Native four-turn reasoning/tools, selected-voice multi-turn browser listening, fresh speech, cancellation recovery and bounded combined audio/video checks passed in the isolated candidate. Instruct is retired and its service is stopped. The live application is on Thinking, and the final four-turn audio/speech/reload checks passed before the idle restart. The activity panel displays actual returned reasoning and tool events, never invented traces. See [upstream model variants](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Thinking).
+## Discord, beyond a bot reply
 
-## Tested scope and limits
+Echo supports mentions, replies, reactions, joined conversations, message history/search, projects, schedules, attachments and conversation controls. Administrative tools cover channels, threads, roles, members, invitations, scheduled events, expressions, AutoMod configuration, onboarding, guild settings and scoped audit reads. Actual actions remain limited by Discord permissions and the configured authority of the requester.
 
-The native model context is **65,536 tokens**. Movie duration is not bounded by a single context window: recent source-bound observations are carried between short analysis segments. This is not every-frame perception or perfect recall. Playback may buffer while Echo catches up. Current browser playback loads a whole verified media blob, so file size, memory, codec support and inference speed are practical limits.
+Use `/new` for a fresh conversation; `/history`, `/resume`, `/search`, `/branch`, `/edit`, `/regenerate`, `/retry` and `/cancel` manage continuity. `/attachments`, `/project`, `/schedules`, `/group`, `/share`, `/export` and `/hud` expose supported workflows. Admin `/testing` restricts Discord communication to configured admins without inserting testing-state instructions into Echo’s context. It does not restrict the web UI.
 
-Current **Thinking** acceptance includes a 24-second synthetic film processed through four bounded native audio/video segments, actual processed-through coverage, human pause/cancellation, reload position recovery and end with original retention. Earlier Instruct checks remain historical evidence only. Native tests cover ownership, cancellation, no lookahead, coverage gaps and checkpoint recovery. **A full feature-film soak has not been performed.** Models can misdescribe timing or claim an action without performing it; the durable tool/player state is authoritative.
+**Voice is an active development area:** join/leave, transport, encrypted audio, consent-based recording, transcription and artifact handling have substantial implementation and component coverage. Full live voice playback/recording/transcription acceptance is still open. AutoMod configuration is not a completed autonomous moderation policy controller.
 
-This is a source release for a configured Mac installation, not a portable one-click installer. [Build and test](docs/BUILD-AND-TEST.md), [1.75 operations and acceptance](docs/releases/1.75/README.md), [architecture](docs/ARCHITECTURE.md), [security](docs/SECURITY-AND-DATA.md), and [complete source reference](docs/reference/APPLICATION.md) describe the implementation and its boundaries. Generated source indexes are lexical documentation, not a claim of complete test coverage.
+[Join Echo’s Garden](https://discord.gg/9QU2rXwGVF) · [Open welcome-and-rules](https://discord.com/channels/1559928442403819711/1559928443817431091) · [Discord and privacy guide](docs/releases/1.9/DISCORD.md)
 
-## Continuing development
+## Local ownership, explicit boundaries
 
-[Phase Two](phase2.md) remains open. Remaining Discord functionality and server setup, wider integration qualification, the protected improvement/research lifecycle and the final joint prompt review are **not declared complete by 1.75**. See [handover](docs/releases/1.75/HANDOVER.md). Unfinished guardian experiments are retained in the separate local development history and are excluded from this release.
+Echo stores original conversation and tool events locally. Compaction preserves source-linked continuity rather than deleting the originals. Public community recall must pass current visibility and provenance checks. Private account linking is explicit: admin status alone does not grant access to another person’s private history.
 
-Models, credentials, live identities, recordings, voice embeddings, conversations, private media and raw private evidence are excluded. Echo is maintained by [MettaMazza](https://github.com/MettaMazza). No project-wide software licence has been selected; upstream dependencies retain their own terms.
+Guest workspaces, host/admin tools, generated tool candidates and protected changes have distinct authority boundaries. The source includes charter, consent, review and rollback machinery. **The complete generated-tool activation and recursive improvement/research lifecycle remains unfinished.**
+
+The configured host uses a local primary reasoning model through llama.cpp, with separate configured media services. Reasoning stays at the highest configured setting; the latency work does not lower reasoning effort or impose a response cap. Exact model choice and runtime settings are host configuration, not bundled dependencies.
+
+## Start exploring
+
+| I want to… | Start here |
+|---|---|
+| Talk with Echo | [Discord invitation](https://discord.gg/9QU2rXwGVF) |
+| Understand every feature and its status | [Feature matrix](docs/releases/1.9/FEATURES.md) |
+| Set up the source on a compatible Mac | [Build](docs/BUILD-AND-TEST.md) and [operations](docs/OPERATIONS.md) |
+| Understand how it works | [Architecture](docs/ARCHITECTURE.md) and [security](docs/SECURITY-AND-DATA.md) |
+| Inspect callable tools and endpoints | [API and tools](docs/API-AND-TOOLS.md) |
+| Review what changed since the last push | [Change narrative](docs/releases/1.9/CHANGES.md), [every changed file](docs/releases/1.9/FILE-CHANGES.md), [hash manifest](docs/releases/1.9/change-manifest.json) |
+| Follow the path to production | [Phase Two plan](phase2.md) and [V1 remaining work](docs/releases/1.9/REMAINING.md) |
+
+This is a source release for a configured Apple Silicon installation, not a one-click installer. Models, credentials, private identity prompts, reference recordings, conversations and live configuration are not included. Research latency remains workload-dependent and can take minutes; 1.9 does not claim that issue is resolved. See [verification and measured limits](docs/releases/1.9/VERIFICATION.md).
+
+Maintained by [MettaMazza](https://github.com/MettaMazza), using [Ernos](https://github.com/MettaMazza/Ernos-Programming-Language). No project-wide software licence has been selected; upstream components retain their own terms.

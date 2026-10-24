@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Attachment trash and restore
 
 Deployed 17 October 2026 as `phase2-attachment-lifecycle-20261017-022151`. This delivers reversible trash/restore within D19; it does not complete forgetting or protected erasure.

@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Public web research
 
 Current deployment: these tools are included in the deployed schema-26 server (`phase2-git-20261016-233505`). Earlier statements below about non-deployment describe their original qualification date; they are superseded by the research release and subsequent release manifests. Current configured runtime dependencies and source hashes were checked during the Step 08 reconciliation.

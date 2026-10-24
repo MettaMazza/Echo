@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord channel invitations — candidate qualification
 
 Status: native and real three-turn invitation lifecycle acceptance passed, including reload and cleanup. This is one controller within original Step 15, not completion of that dependency.

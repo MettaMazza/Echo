@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Conversation work panel
 
 Implemented within Step 10. `app/web/work_status.ep` provides a read-only, cursor-paged snapshot for conversation runs and schedules. The authenticated device is checked as active; selected conversation access and each returned run are checked separately, with linked-device ownership resolution. Direct delegated children are candidates only if their own current read access succeeds. Schedule definitions remain scoped to their originating conversation. No tool execution, cancellation, schedule mutation or worker launch occurs in this reader.

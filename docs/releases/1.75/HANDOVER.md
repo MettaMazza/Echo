@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../1.9/README.md) · [feature status](../1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Remaining work after 1.75
 
 **20 October update:** r35 preserves reasoning, memory and native audio. Five consecutive warm browser turns had a 17.7-second median (12.3–54.1 seconds), versus the historical short-turn median of 13.3 seconds. Latency remains inconsistent; the tested Q8 candidate was not promoted. See [measurements and limits](latency-oct20.md). Earlier deployment statements below are historical.

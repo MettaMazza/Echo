@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Admin host execution
 
 `host_execute` is the Step 05 admin worker. It accepts `program` and a list of `arguments`, taken from the immutable queued tool request. It is advertised only to a currently authorised admin in an eligible audience and only when the host has configured its protected and secret roots. Guest `workspace_execute` retains its original restricted profile.

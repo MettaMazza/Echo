@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Runtime-bound capability memories
 
 `system_inspect` now returns `runtime_binding`: the deployed executable/helper build fingerprint, a hash of the run's selected provider profile (including a routed vision profile when present), and a hash identifying the installed architecture/identity file contents. Prompt text and credentials are not copied into this identity. The source tool result remains the immutable observation.

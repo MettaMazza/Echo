@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Combined memory recovery — Step 09
 
 `tests/memory/test_memory_recovery.ep` exercises an actual model-generated and reviewed compaction, snapshots its isolated archive, restores to an independent database, and asks the actual model in a new session to recover a dated episode, corrected semantic fact, selected project and demonstrated procedure with original execution evidence. A source-only workflow-forgetting change after snapshot must not affect that snapshot. The test requires the requested markers, actual tool-family calls and intact archive chains. Its project has no files: this is database/project-state recovery, not complete installation or attachment-bundle recovery.

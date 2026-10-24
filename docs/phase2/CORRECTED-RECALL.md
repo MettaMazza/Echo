@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Corrected-fact recall — Step 09
 
 The existing evidence graph already stores immutable correction chains: the successor references the earlier assertion, and graph traversal returns both directions. A replacement must match the original principal, kind, subject and predicate. Separate contradictory evidence remains separate. The ordinary recalled context selects current, visible, unexpired claims and never resurrects a superseded assertion simply because its correction was forgotten.

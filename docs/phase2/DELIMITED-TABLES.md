@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Scoped delimited-table reader
 
 Phase Two step 08, 16 October 2026. `workspace_read_table` reads UTF-8 CSV, TSV, or a single ASCII delimiter chosen by the caller. It uses the authenticated session workspace and the existing read capability. It preserves string cells, empty cells, quoted separators, escaped quotes, multiline values and Unicode without formula evaluation or inferred types/headers.

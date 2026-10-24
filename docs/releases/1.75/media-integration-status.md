@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../1.9/README.md) · [feature status](../1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Media integration qualification
 
 **Current status:** Thinking is installed, final live audio/speech/reload checks passed, and Echo is idle. Historical pending statements below describe earlier test stages. Current bounded-watch coverage is 24 seconds; no full-film soak or perfect timing interpretation is claimed.

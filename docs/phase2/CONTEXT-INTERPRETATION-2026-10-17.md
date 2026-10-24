@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Context interpretation and source provenance — 17 October 2026
 
 The reported confusion was reproduced in archived model requests and reasoning from the current conversation. Echo treated a historical delegation bug report as present instructions, attributed Codex diagnostic activity to the human conversation partner, and interpreted a conditional future task as permission to proceed after its own test verification.

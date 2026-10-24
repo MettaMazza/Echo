@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord public research runtime — 21 October 2026
 
 The Discord worker launcher omitted ECHO_RESEARCH_RUNTIME and ECHO_RESEARCH_ROOT. The native schema builder consequently omitted web_fetch, web_search and web_follow even though the implementation existed. A real dictionary request exposed this deployment omission. It was not an admin-role denial.

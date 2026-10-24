@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Interactive inference reservation — 17 October 2026
 
 The previous cache/scheduling repair did not establish that ordinary fresh conversations were responsive. Its 14/18-second browser checks used exact-marker replies without tools. They missed contention for admission to the four inference slots.

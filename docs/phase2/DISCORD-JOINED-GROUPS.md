@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Joined Discord conversations — implementation in progress
 
 This implements original step 14 and the group-control row of Discord UI parity. It is not a new completion denominator. Existing personal Discord silos stay the default. The joined-group command is now deployed with bounded live control/routing acceptance recorded below; the full multi-user lifecycle remains unfinished.

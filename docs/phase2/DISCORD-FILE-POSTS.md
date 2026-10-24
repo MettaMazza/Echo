@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord retained-file delivery — 22 October 2026
 
 Status: native qualification, idle deployment and four actual consecutive Discord acceptance turns passed within the scope below.

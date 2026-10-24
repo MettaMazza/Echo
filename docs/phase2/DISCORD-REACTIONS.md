@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord conversational reactions
 
 Phase Two section 4 requires Echo to be able to choose reactions during its ordinary tool loop. The existing queue/steering marker transport was host-owned UI machinery, not a model-callable reaction tool.

@@ -1,3 +1,11 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
+## Current 1.9 operations
+
+This is a configured Mac source deployment, not a qualified universal installer. Build application workers from one source snapshot, retain rollback binaries/configuration and drain active work before replacing services. The web server and Discord workers have separate stores; do not merge them to establish private memory links. Supply the explicit host-owned link map instead. Configure Brave through `ECHO_BRAVE_SEARCH_KEY_FILE`; never commit its contents. Nano speech uses the installed Chatterbox dependency, CPU eight threads and a private reference, with the native resident service and helper guardian. Pocket transport remains in source but is not the selected host voice.
+
+Verify inference, web, Discord and media health and check active runs/tool/speech jobs after restart. A process being alive is not proof of idle or successful delivery. The selected Nano login/reboot startup still needs final qualification; do not infer it from a successful manual restart. The full offline/drive-loss/restore/concurrency matrix remains in the V1 work list.
+
 > **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
 
 # Operations

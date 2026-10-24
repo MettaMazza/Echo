@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Fresh-session and concurrent-agent cache reuse
 
 The fresh run reported after the memory-snapshot fix reached its first model request within about one second. Its initial inference nevertheless processed 155,481 uncached tokens for 260.464 seconds. Later tool-step prompts reused the cache, but generated output also consumed time. The large delegated tasks were intentional.

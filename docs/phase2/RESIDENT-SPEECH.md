@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Resident speech worker
 
 Status on 21 October 2026: native service and real synthesis acceptance passed; Discord now uses the supervised resident Warm worker. Host routing still uses its previously qualified helper and is not yet promoted.

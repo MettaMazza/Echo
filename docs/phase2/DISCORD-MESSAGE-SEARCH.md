@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Authorised local Discord history search
 
 Phase Two Step 15 message-search slice implemented and deployed. Native and actual multi-turn Discord acceptance passed after the two retained failures below. This does not close the full community catalogue or Phase Two.

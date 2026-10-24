@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Local workspace databases
 
 Original step 08 computation includes local databases and data transforms. `workspace_database` runs a SQLite SQL script against an explicit relative path in the current workspace, creating the database when absent. Tables, queries, joins, aggregates and updates use native SQLite through the Ernos `workspace_database` helper. This is a database workflow, not a claim that all data-transform or code/Git workflows are complete.

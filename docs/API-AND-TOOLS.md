@@ -1,3 +1,9 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
+## Current 1.9 contracts
+
+The regenerated [tool catalogue](reference/TOOLS.md), [literal tool schemas](reference/TOOL-SCHEMAS.json), [HTTP routes](reference/HTTP-ROUTES.json) and [environment names](reference/ENVIRONMENT.json) describe the current source. Schemas are not permission grants. New surfaces include Discord voice/audit/AutoMod/onboarding/guild settings, batched continuity reads, private linked recall and checklist final delivery. `task_checklist.final_response` publishes only through the guarded sole-call completion path. See [changes](releases/1.9/CHANGES.md) and [Discord controls](releases/1.9/DISCORD.md).
+
 > **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
 
 # HTTP API and model tools

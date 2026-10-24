@@ -1,3 +1,9 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
+## Current 1.9 architecture
+
+Browser and Discord entry points feed durable authenticated sessions, the native Ernos ReAct loop and scoped tools. Original events persist in SQLite; source-linked compaction and cross-session memory prepare context. Public Discord recall checks current audience and ancestry; private linked archives require explicit owner mapping and are denied in public/group runs. Foreground completion is handed off independently of background memory extraction. Search uses a configured Brave API credential; local media services handle generation/transcription/speech. The selected host TTS is Nano CPU8 with a private Echo reference. Voice membership, media and recording have separate authority/lifecycle records. See [source-mapped capabilities](releases/1.9/FEATURES.md).
+
 > **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
 
 # Architecture

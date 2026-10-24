@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Protected controller host operations
 
 `app/control_protected.ep` connects the isolated controller ledger to the existing protected-operation state machine. It accepts a root-owned configuration path, an action and an existing operation identity. Supported actions are initialize, inspect, apply, reconcile, rollback and rollback-reconcile. This host command is not exposed as a model tool or public HTTP route.

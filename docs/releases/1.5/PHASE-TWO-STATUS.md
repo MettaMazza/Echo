@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../1.9/README.md) · [feature status](../1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Phase Two: original 32-step reconciliation
 
 18 October 2026. Implementation, deployment and verification are separate facts. This is not a percentage inferred from files or test counts. The plan records Step 10 as the active completion boundary; later foundations and user-requested repairs exist but do not close later integrations. The original [plan](../../../phase2.md) supplies the acceptance requirements.

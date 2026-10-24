@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # XLSX workbook reader
 
 Step 08 now has `workspace_read_workbook`: `path`, exact `sheet` name, zero-based stored-cell `offset`, and positive page size `cells`. Empty sheet returns the sheet catalogue. The tool uses the authenticated workspace read boundary, regular-file descriptors, macOS libarchive and libxml2. It never extracts package paths onto the host, executes macros, follows external relationships or recalculates formulas.

@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Retained text parsing — 22 October 2026
 
 The channel acceptance failure exposed an application-wide dependency on the runtime's `string_split`. The retained native crash shows an invalid free during list construction: retaining the returned list does not protect it while the runtime is still allocating its elements. The earlier header-specific direct scanner remains in place. No compiler or runtime source was changed.

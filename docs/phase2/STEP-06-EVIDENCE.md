@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Step 06 — silo storage and independently resumable context
 
 Reviewed 16 October 2026 against the three bullets and exit condition in phase2.md. This records the context foundation; it does not claim that Discord, the later memory engine, or final endurance acceptance is complete.

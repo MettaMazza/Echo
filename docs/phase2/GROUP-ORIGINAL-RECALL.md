@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Scoped original recall and shared-context latency
 
 21 October 2026. Deployed after native and actual-model qualification; extended live acceptance remains open.

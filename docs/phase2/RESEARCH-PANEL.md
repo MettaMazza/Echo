@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Retained web research in conversation messages
 
 The per-message **Web research** disclosure shows observed web_fetch, web_search and web_follow results with their URL, operation status, result event and original-body SHA-256. Open and Download use the existing authenticated attachment endpoints. Remote URLs render as text and never load automatically; fetched HTML is not inserted into the conversation DOM.

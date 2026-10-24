@@ -1,3 +1,9 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
+## 1.9 forensic coverage
+
+`tools/document_release.py` reads every publishable first-party source/fixture byte, records SHA-256 and lexical imports/definitions, maps test references and compares changed files against the exact last pushed community tree. It includes Ernos, native C bridges and Python test/documentation harnesses. Generated manifests exclude themselves from recursive hashing. The Git commit/tree records the complete release. This is exhaustive file accounting, not a claim that every code branch was manually audited or every fixture executed. Measured acceptance is separately linked in [verification](releases/1.9/VERIFICATION.md).
+
 # Forensic method and limits
 
 The scope is the complete first-party application and test tree, retained compiler integration, deployment description, database schema and local evidence catalogue. Third-party source trees and weights are dependencies, not silently included in the first-party file count.

@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Current-channel Discord pins
 
 Phase Two Step 15 candidate. `discord_pins` implements paginated list, single-message status, pin and unpin. Application and tests are Ernos. Native and actual multi-turn Discord acceptance passed for this controller; this document does not close the full community catalogue.

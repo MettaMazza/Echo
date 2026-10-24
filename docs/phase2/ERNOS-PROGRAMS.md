@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Local Ernos compilation and execution
 
 Step 08 computation work uses the existing durable execution guardian. `workspace_execute` with `program: "ernos"` invokes the configured self-hosted compiler. A later invocation runs the resulting workspace binary. Compiler stdout/stderr, raw wait status, output events and process receipts are retained; `workspace_output_next` reads decoded output. Process capture being complete does not prove compilation succeeded: inspect the compiler success line, exit status and resulting program.

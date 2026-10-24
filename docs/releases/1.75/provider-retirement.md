@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../1.9/README.md) · [feature status](../1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Provider selection correction
 
 The host launch configuration selected Qwen3.8, while the persisted provider registry still selected the earlier Omni Instruct profile. Requests use the persisted selection, so changing the launch configuration alone did not change the effective model. This caused a request to reach Instruct after the intended rollback.

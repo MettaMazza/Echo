@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Execution helper catalogue consistency — 22 October 2026
 
 The Discord worker and its separate scoped execution helper must use the same tool-policy catalogue. A rebuilt worker alone is insufficient: the helper rechecks shared history and correctly rejects unknown capabilities. The previously installed 21 October helper did not know the new Discord post/thread/role/member tools. This made a conversation containing their results fail with `workspace-unavailable` even though creating and reading workspace files worked.

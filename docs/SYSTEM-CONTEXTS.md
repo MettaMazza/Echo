@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Echo system contexts
 
 `app/security/system_silo.ep` routes Echo-owned records into dedicated contexts using the host-configured `ECHO_SYSTEM_PRINCIPAL`. An authenticated device must resolve to that exact active principal. A human admin role, device display name or supplied message does not select the system identity. Missing configuration denies admission.

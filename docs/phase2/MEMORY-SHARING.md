@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Deliberate memory sharing — Step 09
 
 Sharing is an authenticated human-selection operation, not a model tool. `app/memory/sharing.ep` prepares a canonical preview of one selected original user message, Echo reply or imported source. The preview includes the exact text and text digest, original event and archive digest, original session/scope/kind, confirming principal, destination session/scope/title/channel and destination participant list. Confirmation supplies that preview's digest. The writer transaction rechecks source access and the current destination audience before committing.

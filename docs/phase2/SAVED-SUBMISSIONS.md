@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Saved submissions
 
 The candidate browser has a Saved submissions section for unresolved private or shared submissions. After a request has settled, the user can keep its exact serialized payload in this browser and release the global pending lock. This enables other chats without claiming the original failed, cancelling it, changing its ID or sending it again.

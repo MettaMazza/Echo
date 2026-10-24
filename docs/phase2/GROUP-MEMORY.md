@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Group memory — Step 09, integration in progress
 
 `app/memory/group_knowledge.ep` provides native audience-scoped semantic and episodic storage, graph traversal and explicit visibility transitions. The common knowledge and visibility entry points now route shared runs to this backend, preserving the private path. Chronological queries now also route through the common timeline entry point. Automatic context now selects current, unexpired, visible claims from earlier objectives and rechecks their source authority. This group-recall stage is deployed.

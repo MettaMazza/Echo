@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord channel administration
 
 Step 15 channel controller passed the four-turn labelled live acceptance on 22 October, including explicit recovery after retained native failures. The native `discord_channels` controller implements paginated same-audience list/inspect, text/voice/category/forum creation, name/topic/slowmode/position/voice-setting edits, category placement, and deletion from another control channel. Permission-overwrite control and its separate qualification are recorded in [Channel permission control](DISCORD-CHANNEL-PERMISSIONS.md). The broader thread/member/role/community/voice catalogue remains open. This is not full Step 15 completion.

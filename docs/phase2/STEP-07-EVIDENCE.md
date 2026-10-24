@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Step 07 - charter enforcement and protected-change controller
 
 This record follows the four requirements in the original phase2.md step 07. It adds no execution steps or completion denominator.

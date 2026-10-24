@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Chronological episodic recall — Step 09
 
 The timeline reads the existing immutable knowledge claims and their original archive events. It does not introduce a second memory store or replace source text with summaries. Deployed in release `phase2-episodes-20261017-001039`; both local HTTP and LAN HTTPS status endpoints returned 200. The model process remained unchanged. This is host-side LAN verification, not a new physical-phone test.

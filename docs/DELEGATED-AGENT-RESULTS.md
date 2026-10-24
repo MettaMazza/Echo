@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Delegated agent results
 
 > 18 October reconciliation: the current [1.5 audit](releases/1.5/SYSTEM-AUDIT.md) supersedes older outstanding-work statements below. Attachment visibility controls now exist in routes and the browser. Later actual two-child parent-return evidence is recorded in [CHECKLIST-DEPLOYMENT-CACHE-2026-10-17.md](phase2/CHECKLIST-DEPLOYMENT-CACHE-2026-10-17.md). Earlier cancelled tests remain historical, not the latest acceptance result.

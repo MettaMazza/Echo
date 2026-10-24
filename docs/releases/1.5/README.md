@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../1.9/README.md) · [feature status](../1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Echo 1.5 — forensic release record
 
 18 October 2026. This is an intermediate release of the working local system. Phase Two is not complete. The original 32-step plan remains the scope; source counts and test cases are not additional roadmap tasks.

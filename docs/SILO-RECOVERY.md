@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Silo recap and recovery qualification
 
 The existing context engine is shared by joined groups, user-in-channel contexts, admin contexts and Echo-system contexts. Their admission and audience checks differ; their durable run, recap and recovery paths must retain those boundaries.

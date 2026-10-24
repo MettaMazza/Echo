@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Delegation protocol and parent-return repair — 18 October 2026
 
 Status: repair deployed and real-browser three-agent acceptance passed. Phase Two returns to its original Step 10 boundary.

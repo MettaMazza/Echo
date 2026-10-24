@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Current-system deployment — 16 October 2026
 
 Release: `phase2-research-20261016-195157`. The host service profile now points to this release. It contains freshly compiled native server, execution guardian, public-fetch helper and operator commands, plus freshly emitted browser/audio/math modules. Existing third-party UI assets are retained. The source manifest records actual application worktree hashes; this release includes earlier uncommitted user-requested changes and is not represented as a clean-checkout build.

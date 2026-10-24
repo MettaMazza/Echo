@@ -1,3 +1,11 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
+## 1.9 build additions
+
+Application logic and orchestration remain `.ep`. Compile the selected server/Discord workers and `app/media_helper_guardian.ep` from the same snapshot. `app/chatterbox_speak.ep` bridges to installed Chatterbox/PyTorch through the native Python ABI; it does not bundle those dependencies or the private reference. `engine/discord_voice/voice_callbacks.c` is a narrow native callback bridge for Discord voice, not a replacement application runtime. C/Python files under tests are qualification fixtures, and `tools/document_release.py` is documentation tooling.
+
+The configured host uses its retained `epc_gc_literal` compiler; earlier `./epc` examples below are historical generic instructions. Compiler provenance and native library compatibility must be preserved. Read each test entry point before running it: some require disposable archives, mock servers or actual model/service inputs. This publication refresh does not claim a complete rebuild or entire-suite pass. Run `python3 tools/document_release.py` to regenerate current source references and the last-push delta without reading a live database.
+
 > **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
 
 # Build and verification

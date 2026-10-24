@@ -1,3 +1,7 @@
+> **24 October, 1.9 publication:** See [the current source-mapped feature matrix](../releases/1.9/FEATURES.md), [verification](../releases/1.9/VERIFICATION.md) and [remaining V1 work](../releases/1.9/REMAINING.md). Earlier step counts and deployment statements below retain their original dates.
+
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 ## 22 October — execution helper regression corrected
 
 Rebuilt the isolated execution helper to match the new community tool catalogue; launcher now rejects stale policy/artifact receipts. Native execute/build/database, cancel and revoke checks passed. Two real same-conversation cat/wc turns returned exact stdout, preserved memory/identity and survived reload. Original failure retained. See `DISCORD-EXECUTION-CATALOG.md`. New lessons, temporal grounding and behaviour-specific autonomous moderation requirements are recorded in `LESSONS-TIME-MODERATION-2026-10-22.md`; not yet qualified. Maria requests pause after full original Step 15, not a controller subtask.

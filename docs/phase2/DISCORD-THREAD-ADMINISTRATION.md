@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Native Discord thread administration — 22 October 2026
 
 Status: native checks and all five worker builds passed; deployed during an idle boundary. Five actual turns completed: creation, lifecycle, membership, post-restart cleanup and ordinary recall/identity. The member-list positive path remains unavailable under the application’s current access. This is not a complete Step 15 or Phase Two acceptance.

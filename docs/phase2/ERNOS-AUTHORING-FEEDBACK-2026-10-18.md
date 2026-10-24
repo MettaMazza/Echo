@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Ernos authoring and actionable feedback — 18 October 2026
 
 Echo's live architecture guidance and portable example now make Ernos Plain the default for generated programs, tools, scripts, calculations, workflows and self-modifications, for parent and delegated runs. Another language requires a demonstrated capability gap or unavoidable integration requirement, with the reason stated. Convenience and assumed limitations are insufficient. Existing dependencies need not be rewritten.

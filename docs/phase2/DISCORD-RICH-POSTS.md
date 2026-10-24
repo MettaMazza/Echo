@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord rich posts — 22 October 2026
 
 Status: deployed and passed the bounded five-turn native/Discord acceptance on 22 October. This closes neither Step 15 nor Phase Two.

@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Chat artifacts and Echo recall names — 16 October 2026
 
 The reply attachment query previously selected only speech_synthesize. image_generate registered its original but its result was omitted from the message. The query now includes successful image_generate and attach_file calls, so previously completed generated images also appear when their conversation is reloaded. Existing authenticated thumbnail, audio, open and download controls handle the files.

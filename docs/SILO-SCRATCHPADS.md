@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Persistent silo scratchpads
 
 Private notes retain their existing principal identity and remain available across that owner's sessions. Shared notes now use the exact recorded audience segment, covering joined groups, user-in-channel, admin and Echo-system contexts through their existing group routing. They never select a participant's private notes. A membership revision creates a distinct segment and does not silently copy previous notes to the new audience.

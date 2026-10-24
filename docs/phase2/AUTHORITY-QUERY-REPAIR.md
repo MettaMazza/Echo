@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Retained authority query construction
 
 Native Git acceptance exposed an intermittent SQLite syntax error during frozen-authority revalidation. The guardian correctly denied execution when the query failed, but this cancelled legitimate work. A captured failed query began its condition with `WHERE ) OR OR …`: the private-owner and group-scope fragments were missing. This was not a recorded privilege revocation.

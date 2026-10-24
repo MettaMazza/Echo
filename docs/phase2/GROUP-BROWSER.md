@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Shared browser HTTP integration
 
 Current deployment: the shared browser interface and schema24 are installed. The latest release is recorded in `PROGRESS.md` and `../../environments/echo-service.json`. The qualification records below describe the isolated schema20/21 builds used when those features were introduced; their references to candidate status or schema10 production are historical, not current deployment status. Shared scratchpads and saved-recap inspection were subsequently deployed; see `../SILO-SCRATCHPADS.md` and `../SILO-RECOVERY.md`.

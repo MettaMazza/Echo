@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Delegated tasks
 
 Deployed on 16 October 2026 in `phase2-delegation-20261016-222245`, schema 26. This implements the delegation portion of original step 08; it does not complete the entire modern tool suite.

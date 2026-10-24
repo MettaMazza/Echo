@@ -1,3 +1,9 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
+## Maintaining 1.9
+
+Regenerate with `python3 tools/document_release.py` from this repository. Review the [release file ledger](releases/1.9/FILE-CHANGES.md), check local Markdown targets, source/manifest hashes and JSON, and scan all publishable bytes for credentials/private data before staging. Keep immutable historical evidence distinct from current status. Publish logical commits on preserved remote ancestry; never force-push around divergent histories. V1 remains gated by completed production-ready Phase Two.
+
 > **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
 
 # Maintainer handover

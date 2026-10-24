@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Attributed continuity source import — Step 09
 
 `app/import_source.ep` is a host operator entry point: database, existing owned run, immutable event ID and UTF-8 JSON envelope. `app/memory/source_import.ep` checks the complete decoded text against its SHA-256, requires origin/revision/path/attribution, rechecks the initiating principal and appends a distinct `source_import` event atomically. Identical retries are idempotent; changed identities/content conflict. It is not exposed as a model tool and cannot select another principal independently of the supplied run.

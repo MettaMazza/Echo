@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Workspace plots
 
 Original step 08 computation includes plots. `workspace_plot` creates a new SVG from labelled numeric line/scatter series. Linear axes span the supplied data; line points connect in input order. Multiple series share axes and have a legend. Constant coordinates appear at the axis centre. Decimal/scientific JSON numbers use native binary64 arithmetic; non-finite values and unrepresentable scaling fail explicitly. Coordinates have normal floating-point rounding. Exact input JSON remains in inert SVG metadata, and each point retains its supplied values in a tooltip. This provides a reproducible specification, not an assertion that input measurements are correct.

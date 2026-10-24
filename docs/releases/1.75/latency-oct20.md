@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../1.9/README.md) · [feature status](../1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # 20 October latency investigation
 
 Status: r35 application changes deployed; latency target remains unresolved. This is not a claim that all replies now finish below 20 seconds.

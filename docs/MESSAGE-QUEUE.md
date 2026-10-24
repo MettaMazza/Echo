@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Message composer, queue and mid-turn guidance
 
 Enter sends; Shift+Enter inserts a newline. IME composition and held-key repeats do not submit. During a running reply the composer remains editable. Queue/Enter saves a separate next-turn message locally, with its stable submission identity, conversation and attachment references. Queue dispatch requires this conversation to remain open; ordinary queued messages wait for explicit Send next after a stopped or failed run.

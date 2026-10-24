@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord schedule controls — 21 October 2026
 
 Deployed with native and bounded live acceptance. Schedule creation continues through Echo's existing scoped `schedule` tool. The new `/schedules` command adds explicit human list, inspect, occurrences and cancel controls, using a conversation ID from `/history`. It does not create a second scheduler.

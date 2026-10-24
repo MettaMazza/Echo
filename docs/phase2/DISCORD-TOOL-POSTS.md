@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Model-callable Discord tool posts — Phase Two Step 15
 
 Status: deployed in the approved testing stage; native option, child-runtime binding and store/recovery tests passed. Five real Qwen3.8 turns, idle worker restart and Discord reload passed. The full message/moderation catalogue remains open.

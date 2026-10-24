@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Error feedback audit — 18 October 2026
 
 Status: error-feedback changes deployed in `phase2-error-feedback-20261018-r2`. Live HTTP and real-model recovery checks passed. No claim that all latency is resolved or every individual source error branch was exercised. The user subsequently authorised verification and relaunch idle.

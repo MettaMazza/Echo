@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Mid-task questions and continuous autonomy
 
 Requested by Maria on 18 October 2026. These are general conversation controls, independent of any paper, project or topic. First-party application and tests remain Ernos Plain.

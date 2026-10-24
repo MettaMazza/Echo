@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Step 08 — local tool foundation
 
 Current release: `phase2-contracts-20261016-233838`, schema 26. This reconciles the original Step 08 families; it does not create a new task count. The complete original Phase Two plan remains in `phase2.md`.

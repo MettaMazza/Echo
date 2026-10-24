@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](../releases/1.9/README.md) · [feature status](../releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Discord message and reaction moderation
 
 Phase Two Step 15 controller deployed at idle and exercised over four actual Discord turns. Adds configured-admin `discord_moderate_message` inspect, single-message delete, one user's reaction removal, one emoji cleanup and full message reaction cleanup. The rest of the community catalogue remains open.

@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Empty reply completion incident — 16 October 2026
 
 A live run ended with provider finish_reason=stop, no tool calls, empty content and a nonempty reasoning trace. Generation publication classified every no-tool response as assistant_final/completed, so the UI displayed no answer and speech synthesis received empty text. This was not a missing user submission.

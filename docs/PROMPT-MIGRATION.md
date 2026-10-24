@@ -1,3 +1,5 @@
+> **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
+
 # Echo prompt migration — 16 October 2026
 
 Installed and activated through ECHO_IDENTITY_FILE. No compiler, application source, model weights, or session records were changed. No Phase 2 work was started.
