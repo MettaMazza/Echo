@@ -1,0 +1,88 @@
+import "qualification_plan"
+import "../workspace/sandbox_process"
+import "../workspace/native_process"
+import "../workspace/sandbox_profile"
+import "../archive/file_digest"
+
+# Controller-only runner. No report supplied by the candidate/model is trusted.
+# Each installed check receives the candidate path as its final argument and
+# executes in a sandbox with no private host data or service/network access.
+define qualification_execute with plan as Str and plan_digest as Str and candidate as Str and candidate_digest as Str and workspace as Str and runtime as Str and output_directory as Str returning Str:
+    if qualification_plan_valid(plan and plan_digest) equals 0:
+        return ""
+    set prefix to concat(workspace and "/")
+    if output_directory equals workspace or else (string_length(output_directory) >= string_length(prefix) and ptr_to_str(substring(output_directory and 0 and string_length(prefix))) equals prefix):
+        return ""
+    set original to file_digest_durable(candidate and 65536)
+    if not (archive_list_text(original and 0) equals "verified") or else not (archive_list_text(original and 1) equals candidate_digest):
+        return ""
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and workspace)
+    if directory < 0:
+        set closed to ep_dlclose(library)
+        return ""
+    set tokens to provider_json_tokens(plan)
+    set checks to provider_items(tokens and provider_member(tokens and 0 and "checks"))
+    set report to concat("{\"plan_sha256\":" and provider_quote(plan_digest))
+    set report to concat(report and concat(",\"candidate_sha256\":" and provider_quote(candidate_digest)))
+    set report to concat(report and ",\"checks\":[")
+    set index to 0
+    for each check in checks:
+        set executable to provider_value(tokens and provider_member(tokens and check and "executable"))
+        set expected to provider_value(tokens and provider_member(tokens and check and "sha256"))
+        set actual to file_digest_durable(executable and 65536)
+        if not (archive_list_text(actual and 0) equals "verified") or else not (archive_list_text(actual and 1) equals expected):
+            set closed to net_close(directory)
+            set closed to ep_dlclose(library)
+            return ""
+        set arguments to create_list()
+        set configured to provider_items(tokens and provider_member(tokens and check and "arguments"))
+        for each argument in configured:
+            set added to append_list(arguments and provider_value(tokens and argument))
+        set added to append_list(arguments and candidate)
+        set output_path to concat(output_directory and concat("/check-" and concat(int_to_string(index) and ".log")))
+        # O_EXCL and O_NOFOLLOW: never overwrite or follow a candidate-created log.
+        set output to native_open_mode(library and output_path and 2817 and 384)
+        if output < 0:
+            set closed to net_close(directory)
+            set closed to ep_dlclose(library)
+            return ""
+        set profile to concat(workspace_compiler_profile() and concat("(allow file-read* file-map-executable process-exec (literal " and concat(provider_quote(executable) and "))\n")))
+        set profile to concat(profile and concat("(allow file-read* file-map-executable process-exec (literal " and concat(provider_quote(candidate) and "))\n")))
+        set profile to concat(profile and concat("(deny file-write* (literal " and concat(provider_quote(candidate) and "))\n")))
+        set environment to ["PATH=/usr/bin:/bin",concat("TMPDIR=" and workspace),"SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"]
+        set handle to workspace_sandbox_start_profile(runtime and workspace and executable and arguments and environment and directory and output and output and profile)
+        set closed to net_close(output)
+        if handle equals 0:
+            set closed to net_close(directory)
+            set closed to ep_dlclose(library)
+            return ""
+        set state to workspace_process_poll(handle)
+        repeat while state equals 0:
+            set slept to sleep_ms(10)
+            set state to workspace_process_poll(handle)
+        if state is not equal to 1:
+            set closed to net_close(directory)
+            set closed to ep_dlclose(library)
+            return ""
+        set waited to get_list(handle and 3)
+        set closed to workspace_process_close(handle)
+        set captured to file_digest_durable(output_path and 65536)
+        set after to file_digest_durable(executable and 65536)
+        if not (archive_list_text(captured and 0) equals "verified") or else not (archive_list_text(after and 1) equals expected):
+            set closed to net_close(directory)
+            set closed to ep_dlclose(library)
+            return ""
+        if index > 0:
+            set report to concat(report and ",")
+        set report to concat(report and concat("{\"name\":" and provider_quote(provider_value(tokens and provider_member(tokens and check and "name")))))
+        set report to concat(report and concat(",\"sha256\":" and provider_quote(expected)))
+        set report to concat(report and concat(",\"wait_status\":" and int_to_string(waited)))
+        set report to concat(report and concat(",\"output_sha256\":" and concat(provider_quote(archive_list_text(captured and 1)) and "}")))
+        set index to index + 1
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    set after to file_digest_durable(candidate and 65536)
+    if not (archive_list_text(after and 0) equals "verified") or else not (archive_list_text(after and 1) equals candidate_digest):
+        return ""
+    return concat(report and "]}")

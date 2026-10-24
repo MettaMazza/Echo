@@ -1,0 +1,69 @@
+import "steward"
+import "../lifecycle/qualification_plan"
+
+external define ep_uuid_v4
+
+# Written only by the independent controller after executing its installed
+# checks. Never registered as a model tool or accepted from a caller report.
+define protected_qualification_record with database as Int and run as Str and proposal as Str and plan as Str and plan_digest as Str and report as Str returning Str:
+    set original to protected_proposal_read(database and run and proposal)
+    set review to protected_review_latest(database and run and proposal)
+    if not (archive_list_text(original and 0) equals "found") or else not (archive_list_text(review and 0) equals "found"):
+        return "proposal-or-review-invalid"
+    set manifest to provider_json_tokens(archive_list_text(original and 1))
+    set candidate to provider_value(manifest and provider_member(manifest and 0 and "proposed_sha256"))
+    if qualification_plan_valid(plan and plan_digest) equals 0:
+        return "qualification-plan-invalid"
+    set passed to qualification_results_valid(plan and plan_digest and report and candidate)
+    set payload to concat("{\"manifest_digest\":" and provider_quote(archive_list_text(original and 2)))
+    set payload to concat(payload and concat(",\"review_digest\":" and provider_quote(ep_sha256(archive_list_text(review and 2)))))
+    set payload to concat(payload and concat(",\"plan_digest\":" and provider_quote(plan_digest)))
+    set payload to concat(payload and concat(",\"passed\":" and int_to_string(passed)))
+    set payload to concat(payload and concat(",\"report\":" and concat(provider_quote(report) and "}")))
+    set session to concat("qualification:" and ep_sha256(proposal))
+    set event to concat(session and concat(":" and ptr_to_str(ep_uuid_v4())))
+    if archive_append(database and session and event and "protected_qualification" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return "qualification-save-failed"
+    if passed equals 0:
+        return "qualification-failed"
+    return "qualified"
+
+# The configuration loader sets these only from OS-protected pinned inputs.
+# Empty configuration retains the legacy path for old installations; a configured
+# autonomous installation cannot fall back to human approval after failed tests.
+define protected_execution_authorization with database as Int and run as Str and proposal as Str returning List:
+    set path to ptr_to_str(get_env("ECHO_CONTROLLER_QUALIFICATION_PLAN"))
+    set pin to ptr_to_str(get_env("ECHO_CONTROLLER_QUALIFICATION_SHA256"))
+    if string_length(path) equals 0 and string_length(pin) equals 0:
+        set status to protected_steward_gate(database and proposal)
+        if not (status equals "steward-authorized"):
+            return history_status(status)
+        set values to create_list()
+        set added to append_list(values and proposal)
+        return history_collect_one(checkpoint_prepare(database and "SELECT receipt_digest FROM echo_protected_steward WHERE proposal=? ORDER BY previous_revision DESC LIMIT 1;" and values))
+    set plan to file_read(path)
+    if qualification_plan_valid(plan and pin) equals 0:
+        return history_status("qualification-plan-invalid")
+    set session to concat("qualification:" and ep_sha256(proposal))
+    if archive_verify(database and session) is not equal to 0:
+        return history_status("qualification-history-invalid")
+    set values to create_list()
+    set added to append_list(values and session)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE session=? AND kind='protected_qualification' ORDER BY sequence DESC LIMIT 1;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("qualification-required")
+    set payload to archive_list_text(row and 1)
+    set tokens to provider_json_tokens(payload)
+    set original to protected_proposal_read(database and run and proposal)
+    set review to protected_review_latest(database and run and proposal)
+    if not (archive_list_text(original and 0) equals "found") or else not (archive_list_text(review and 0) equals "found"):
+        return history_status("proposal-or-review-invalid")
+    if not (provider_value(tokens and provider_member(tokens and 0 and "manifest_digest")) equals archive_list_text(original and 2)) or else not (provider_value(tokens and provider_member(tokens and 0 and "review_digest")) equals ep_sha256(archive_list_text(review and 2))) or else not (provider_value(tokens and provider_member(tokens and 0 and "plan_digest")) equals pin):
+        return history_status("qualification-binding-changed")
+    set manifest to provider_json_tokens(archive_list_text(original and 1))
+    set candidate to provider_value(manifest and provider_member(manifest and 0 and "proposed_sha256"))
+    if qualification_results_valid(plan and pin and provider_value(tokens and provider_member(tokens and 0 and "report")) and candidate) equals 0:
+        return history_status("qualification-failed")
+    set result to history_status("found")
+    set added to append_list(result and ep_sha256(payload))
+    return result

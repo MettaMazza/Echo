@@ -1,0 +1,82 @@
+import "controller_prepare"
+import "qualification_runner"
+
+# A single independently owned maintenance transaction. The caller supplies
+# candidate locations, never acceptance commands, fabricated reports or approval.
+# The configured qualification replaces routine human stewardship; Echo's exact
+# review/consent, inventory, preimage, recovery and Observer gates remain active.
+define controller_autonomous_host with configuration as Str and proposal as Str and identity as Str and directory as Str and target as Str and stage as Str and recovery as Str and audit_request as Str and workspace as Str and runtime as Str and output_directory as Str returning Str:
+    set loaded to controller_configuration_load(configuration)
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return archive_list_text(loaded and 0)
+    set content to archive_list_text(loaded and 1)
+    set config to provider_json_tokens(content)
+    set plan_path to provider_value(config and provider_member(config and 0 and "qualification_plan"))
+    set plan_pin to provider_value(config and provider_member(config and 0 and "qualification_plan_sha256"))
+    set health_path to provider_value(config and provider_member(config and 0 and "health_plan"))
+    set health_pin to provider_value(config and provider_member(config and 0 and "health_plan_sha256"))
+    if string_length(plan_path) equals 0 or else string_length(health_path) equals 0:
+        return "autonomous-qualification-not-configured"
+    set database to controller_ledger_open(archive_list_text(loaded and 6) and archive_list_text(loaded and 7))
+    if database equals 0:
+        return "controller-ledger-unavailable"
+    if controller_service_ready(database and ep_sha256(content)) equals 0:
+        set closed to sql_close(database)
+        return "controller-bootstrap-incomplete-or-changed"
+    set values to create_list()
+    set added to append_list(values and proposal)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_protected_proposals WHERE identity=?;" and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        set closed to sql_close(database)
+        return "controller-proposal-unavailable"
+    set run to archive_list_text(row and 1)
+    set original to protected_proposal_read(database and run and proposal)
+    set manifest to provider_json_tokens(archive_list_text(original and 1))
+    set candidate_digest to provider_value(manifest and provider_member(manifest and 0 and "proposed_sha256"))
+    set before_digest to provider_value(manifest and provider_member(manifest and 0 and "before_sha256"))
+    set target_path to concat(directory and concat("/" and target))
+    set health to file_read(health_path)
+    set baseline to qualification_execute(health and health_pin and target_path and before_digest and workspace and runtime and concat(output_directory and "/baseline"))
+    if qualification_results_valid(health and health_pin and baseline and before_digest) equals 0:
+        set closed to sql_close(database)
+        return "baseline-health-failed"
+    set stage_path to concat(directory and concat("/" and stage))
+    set plan to file_read(plan_path)
+    set report to qualification_execute(plan and plan_pin and stage_path and candidate_digest and workspace and runtime and concat(output_directory and "/qualification"))
+    if string_length(report) equals 0:
+        set closed to sql_close(database)
+        return "qualification-execution-failed"
+    set saved to protected_qualification_record(database and run and proposal and plan and plan_pin and report)
+    if not (saved equals "qualified"):
+        set closed to sql_close(database)
+        return saved
+    set prepared to controller_prepare_record(database and archive_list_text(loaded and 2) and archive_list_text(loaded and 3) and archive_list_text(loaded and 4) and archive_list_text(loaded and 5) and proposal and identity and directory and target and stage and recovery and audit_request)
+    if not (prepared equals "prepared" or else prepared equals "already-prepared"):
+        set closed to sql_close(database)
+        return prepared
+    set applied to protected_operation_apply(database and archive_list_text(loaded and 2) and identity and archive_list_text(loaded and 3) and archive_list_text(loaded and 4) and archive_list_text(loaded and 5))
+    if not (applied equals "applied"):
+        set closed to sql_close(database)
+        return applied
+    set target_path to concat(directory and concat("/" and target))
+    set health to file_read(health_path)
+    set observed to qualification_execute(health and health_pin and target_path and candidate_digest and workspace and runtime and concat(output_directory and "/health"))
+    set healthy to qualification_results_valid(health and health_pin and observed and candidate_digest)
+    set result to "activated-and-verified"
+    if healthy equals 0:
+        set reverted to protected_operation_rollback(database and archive_list_text(loaded and 2) and identity)
+        set result to concat("health-failed:" and reverted)
+        if reverted equals "rolled-back":
+            set recovered to qualification_execute(health and health_pin and target_path and before_digest and workspace and runtime and concat(output_directory and "/recovery-health"))
+            if qualification_results_valid(health and health_pin and recovered and before_digest) equals 0:
+                set result to "rolled-back-recovery-health-failed"
+            else:
+                set result to "health-failed-rolled-back-and-verified"
+    set health_session to concat("autonomous-health:" and ep_sha256(identity))
+    set event to concat(health_session and ":result")
+    set payload to concat("{\"status\":" and provider_quote(result))
+    set payload to concat(payload and concat(",\"report\":" and concat(provider_quote(observed) and "}")))
+    if archive_append(database and health_session and event and "autonomous_health_result" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set result to concat("health-receipt-failed:" and result)
+    set closed to sql_close(database)
+    return result
