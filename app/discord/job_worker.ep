@@ -11,6 +11,7 @@ define discord_job_monitor with journal_path as Str and database_path as Str and
     set database to sql_open(database_path)
     set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
     set status to 0
+    set reason to "monitor-initialization-failed"
     set idle to channel
     set waits to create_list()
     set added to append_list(waits and idle)
@@ -20,7 +21,11 @@ define discord_job_monitor with journal_path as Str and database_path as Str and
         if sql_execute(journal and "PRAGMA busy_timeout=5000; PRAGMA query_only=ON;") is not equal to 0 or else sql_execute(database and "PRAGMA busy_timeout=5000; PRAGMA query_only=ON;") is not equal to 0:
             set status to 1
         repeat while status equals 0:
-            if agent_cancellation_pending(library and stop_reader) is not equal to 0 or else file_exists(stop_file):
+            if agent_cancellation_pending(library and stop_reader) is not equal to 0:
+                set reason to "worker-finished"
+                break
+            if file_exists(stop_file):
+                set reason to "service-stop"
                 break
             set barrier to discord_run_barrier(journal and inbox and cursor and message and room and guild_id)
             if barrier < 0:
@@ -29,8 +34,10 @@ define discord_job_monitor with journal_path as Str and database_path as Str and
                     set waited to select(waits and 100)
                     continue
                 set status to 1
+                set reason to "monitor-database-error"
                 break
             if barrier > 0:
+                set reason to "source-or-audience-barrier"
                 break
             set origin to discord_job_origin(journal and database and run)
             if not (origin equals inbox):
@@ -39,6 +46,7 @@ define discord_job_monitor with journal_path as Str and database_path as Str and
                 if code equals 5 or else code equals 6 or else journal_code equals 5 or else journal_code equals 6:
                     set waited to select(waits and 100)
                     continue
+                set reason to "origin-or-authority-unavailable"
                 break
             set node to node_run_status(database and run)
             if node < 0:
@@ -47,13 +55,16 @@ define discord_job_monitor with journal_path as Str and database_path as Str and
                     set waited to select(waits and 100)
                     continue
                 set status to 1
+                set reason to "monitor-database-error"
                 break
             if node equals 0:
+                set reason to "node-revoked-or-disabled"
                 break
             set values to create_list()
             set added to append_list(values and run)
             set cancel to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_cancel_requests WHERE run=?1;" and values))
             if archive_list_text(cancel and 0) equals "found":
+                set reason to "explicit-cancellation-request"
                 break
             if not (archive_list_text(cancel and 0) equals "end"):
                 set code to sqlite3_extended_errcode(database) modulo 256
@@ -61,6 +72,7 @@ define discord_job_monitor with journal_path as Str and database_path as Str and
                     set waited to select(waits and 100)
                     continue
                 set status to 1
+                set reason to "monitor-database-error"
                 break
             set waited to select(waits and 100)
     if journal is not equal to 0:
@@ -71,7 +83,8 @@ define discord_job_monitor with journal_path as Str and database_path as Str and
         set closed to ep_dlclose(library)
     set closed to net_close(stop_reader)
     set closed to net_close(cancellation_writer)
-    send status to completed
+    set result to [status,reason]
+    send result to completed
     return status
 
 # Invoked only by the host's --job executable role after a durable worker claim.
@@ -164,6 +177,9 @@ define discord_job_execute_owned with journal as Int and database as Int and tok
     set closed to net_close(get_list(stop and 1))
     set monitored to receive from completed
     set closed to net_close(get_list(cancellation and 0))
-    if monitored is not equal to 0:
+    set current to agent_run_read(database and run)
+    set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"reason\":" and concat(provider_quote(archive_list_text(monitored and 1)) and "}"))))
+    set noted to archive_append(database and archive_list_text(current and 0) and concat(run and concat(":monitor:" and agent_identity())) and "worker_monitor_exit" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+    if get_list(monitored and 0) is not equal to 0:
         return "job-monitor-failed"
     return outcome

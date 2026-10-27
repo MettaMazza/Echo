@@ -1,3 +1,5 @@
+import "discord/maintenance_drain"
+import "lifecycle/maintenance"
 import "context/startup_warmup"
 import "retained_text"
 import "discord/worker_delivery"
@@ -9,6 +11,7 @@ import "discord/process"
 import "discord/typing"
 import "discord/job_worker"
 import "discord/job_dispatch"
+import "discord/autonomy_summary"
 import "discord/background_supervisor"
 import "discord/voice_dispatch"
 import "string"
@@ -38,7 +41,7 @@ define discord_agent_main returning Int:
         return 1
     if get_argument_count() equals 15 and not (get_argument(13) equals "--turn"):
         return 1
-    if get_argument_count() equals 16 and not (get_argument(13) equals "--job"):
+    if get_argument_count() equals 16 and not (get_argument(13) equals "--job" or else get_argument(13) equals "--summary"):
         return 1
     set identity_path to ptr_to_str(get_env("ECHO_IDENTITY_FILE"))
     set architecture_path to ptr_to_str(get_env("ECHO_SYSTEM_PROFILE"))
@@ -66,7 +69,14 @@ define discord_agent_main returning Int:
         return 4
     set profile to provider_llama_profile(get_argument(10) and http_decimal(get_argument(11)))
     if get_argument_count() equals 16:
-        set outcome to discord_job_execute(journal and database and token and bot and admins and profile and get_argument(14) and get_argument(15))
+        set outcome to ""
+        if get_argument(13) equals "--summary":
+            set selected to agent_provider_read(database and get_argument(14))
+            if string_length(selected) equals 0:
+                set selected to profile
+            set outcome to discord_autonomy_summary_execute(journal and database and get_argument(14) and get_argument(15) and selected)
+        else:
+            set outcome to discord_job_execute(journal and database and token and bot and admins and profile and get_argument(14) and get_argument(15))
         display outcome
         set closed to sql_close(database)
         set closed to sql_close(journal)
@@ -102,6 +112,7 @@ define discord_agent_main returning Int:
     set children to create_list()
     set memory_children to create_list()
     set background_children to create_list()
+    set summary_process to 0
     set voice_children to create_list()
     set voice_config to discord_voice_launch_config()
     if discord_voice_launch_schema(journal) is not equal to 0 or else discord_voice_launch_recover(journal) is not equal to 0:
@@ -131,6 +142,11 @@ define discord_agent_main returning Int:
         set added to append_list(job_arguments and get_argument(argument_index))
         set argument_index to argument_index + 1
     repeat while not file_exists(get_argument(6)):
+        if summary_process > 0 and discord_process_poll(summary_process) is not equal to 0:
+            set summary_process to 0
+        set summary_active to 0
+        if summary_process > 0:
+            set summary_active to 1
         set remaining_voice to create_list()
         for each voice in voice_children:
             set result to discord_process_poll(get_list(voice and 1))
@@ -139,7 +155,9 @@ define discord_agent_main returning Int:
             else:
                 set settled to discord_voice_launch_settle(journal and archive_list_text(voice and 2) and result)
         set voice_children to remaining_voice
-        set launched_voice to discord_voice_launch_next(journal and voice_arguments and voice_config)
+        set launched_voice to history_status("maintenance")
+        if echo_maintenance_active() equals 0:
+            set launched_voice to discord_voice_launch_next(journal and voice_arguments and voice_config)
         if archive_list_text(launched_voice and 0) equals "voice-worker-started":
             set added to append_list(voice_children and launched_voice)
         set remaining_memory to create_list()
@@ -175,6 +193,12 @@ define discord_agent_main returning Int:
             if result equals 0:
                 set added to append_list(remaining_jobs and job)
         set background_children to remaining_jobs
+        if discord_maintenance_ack(journal and length_list(children) + length_list(memory_children) + length_list(background_children) + length_list(voice_children) + summary_active) is not equal to 0:
+            display "Maintenance drain receipt unavailable."
+            break
+        if echo_maintenance_active():
+            set waited to select(waits and 100)
+            continue
         set background_active to 0
         if jobs_enabled:
             if discord_background_settle(journal and database) is not equal to 0 or else discord_background_orphans(journal and database and background_children) is not equal to 0 or else discord_background_settle(journal and database) is not equal to 0 or else discord_background_retry(journal and database and ep_time_now_ms()) is not equal to 0 or else discord_background_prepare(journal and database and ep_time_now_ms()) is not equal to 0:
@@ -200,7 +224,13 @@ define discord_agent_main returning Int:
         # Use the current provider's reported independent inference slots.
         # Different conversations may progress concurrently; a durable claim
         # serializes each user-in-channel/DM conversation.
-        if length_list(children) + background_active >= slots:
+        if summary_process equals 0 and length_list(children) + background_active < slots:
+            set summary_process to discord_autonomy_summary_dispatch(database and job_arguments)
+            if summary_process < 0:
+                set summary_process to 0
+            if summary_process > 0:
+                set summary_active to 1
+        if length_list(children) + background_active + summary_active >= slots:
             set waited to select(waits and 100)
             continue
         set claimed to discord_worker_claim(journal)
@@ -248,6 +278,9 @@ define discord_agent_main returning Int:
             set waited to select(waits and 100)
     for each job in background_children:
         repeat while discord_process_poll(get_list(job and 1)) equals 0:
+            set waited to select(waits and 100)
+    if summary_process > 0:
+        repeat while discord_process_poll(summary_process) equals 0:
             set waited to select(waits and 100)
     if jobs_enabled:
         set settled to discord_background_settle(journal and database)

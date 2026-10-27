@@ -32,6 +32,22 @@ define discord_background_settle with journal as Int and database as Int returni
         if worker_state equals "running":
             continue
         if not (run_state equals "completed" or else run_state equals "cancelled" or else run_state equals "failed" or else run_state equals "waiting"):
+            # A stopped autonomous period can have a ready recovery boundary
+            # while its separate closing report has already been enqueued.
+            # Release conversation ownership without resuming or cancelling the
+            # archived run. Later guidance or pending effects prevent release.
+            set stopped to history_collect_one(checkpoint_prepare(database and "SELECT EXISTS(SELECT 1 FROM echo_events q JOIN echo_events o ON o.event=q.event||':done' WHERE q.kind='autonomy_summary_requested' AND json_extract(q.payload,'$.run_id')=?1 AND o.kind='autonomy_summary_outcome' AND json_extract(o.payload,'$.status')='enqueued' AND NOT EXISTS(SELECT 1 FROM echo_events later WHERE later.session=q.session AND later.sequence>q.sequence AND later.kind IN ('autonomy_enabled','user_guidance','guidance_received')) AND NOT EXISTS(SELECT 1 FROM echo_tool_calls t WHERE t.run=?1 AND t.state<>'observed'));" and [run]))
+            if run_state equals "ready" and archive_list_text(stopped and 1) equals "1":
+                set released to discord_background_transition(journal and run and state and "released" and worker and 0 and "Stopped autonomous period reported; archived recovery boundary retained")
+                if not (released equals "recorded" or else released equals "state-changed"):
+                    return 1
+                continue
+            # The worker has a durable exit receipt. Keep ownership for recovery,
+            # but never describe a dead process as running.
+            if state equals "running":
+                set held to discord_background_transition(journal and run and state and "recovery" and worker and 0 and concat("Worker exited: " and worker_state))
+                if not (held equals "recorded" or else held equals "state-changed"):
+                    return 1
             continue
         set outcome to concat("archived background state: " and run_state)
         if run_state equals "completed" and not (archive_list_text(receipt and 3) equals "1"):

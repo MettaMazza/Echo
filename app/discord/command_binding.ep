@@ -8,6 +8,23 @@ import "hud_options"
 import "attachment_options"
 import "revision_options"
 
+# Discord API uses an empty guild for bot DMs. Session storage uses the same
+# explicit dm:<application> namespace as ordinary DM messages.
+define discord_command_server with command as List and bot as Str returning Str:
+    set guild to archive_list_text(command and 4)
+    if string_length(guild) equals 0:
+        return concat("dm:" and bot)
+    return guild
+
+define discord_command_registration_scope with tokens as List and guild as Str returning Int:
+    set registered_guild to provider_value(tokens and provider_member(tokens and 0 and "guild_id"))
+    if string_length(guild) > 0:
+        return discord_snowflake(guild) and also registered_guild equals guild
+    if not (registered_guild equals "null" or else string_length(registered_guild) equals 0):
+        return 0
+    set contexts to provider_items(tokens and provider_member(tokens and 0 and "contexts"))
+    return length_list(contexts) equals 1 and also provider_value(tokens and get_list(contexts and 0)) equals "1"
+
 # Registration receipts come from the host's authenticated Discord API call,
 # never from command text or an interaction claiming to register itself.
 define discord_command_schema with journal as Int returning Int:
@@ -49,7 +66,7 @@ define discord_command_observe with journal as Int and body as Str and bot as St
         return "invalid-registration"
     set identity to provider_value(tokens and provider_member(tokens and 0 and "id"))
     set name to provider_value(tokens and provider_member(tokens and 0 and "name"))
-    if discord_snowflake(identity) equals 0 or else discord_snowflake(bot) equals 0 or else discord_snowflake(guild) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "application_id")) equals bot) or else not (provider_value(tokens and provider_member(tokens and 0 and "guild_id")) equals guild) or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "1") or else not (name equals "new" or else name equals "auto" or else name equals "autooff" or else name equals "history" or else name equals "resume" or else name equals "search" or else name equals "export" or else name equals "project" or else name equals "share" or else name equals "hud" or else name equals "attachments" or else name equals "schedules" or else name equals "group" or else name equals "cancel" or else name equals "branch" or else name equals "edit" or else name equals "regenerate" or else name equals "retry" or else name equals "editfile" or else name equals "testing"):
+    if discord_snowflake(identity) equals 0 or else discord_snowflake(bot) equals 0 or else discord_command_registration_scope(tokens and guild) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "application_id")) equals bot) or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "1") or else not (name equals "new" or else name equals "auto" or else name equals "autooff" or else name equals "history" or else name equals "resume" or else name equals "search" or else name equals "export" or else name equals "project" or else name equals "share" or else name equals "hud" or else name equals "attachments" or else name equals "schedules" or else name equals "group" or else name equals "cancel" or else name equals "branch" or else name equals "edit" or else name equals "regenerate" or else name equals "retry" or else name equals "editfile" or else name equals "testing"):
         return "registration-binding-denied"
     set values to create_list()
     set added to append_list(values and identity)
@@ -119,7 +136,15 @@ define discord_command_resolve with journal as Int and body as Str and bot as St
     set room to provider_value(tokens and provider_member(tokens and 0 and "channel_id"))
     set member to provider_member(tokens and 0 and "member")
     set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and member and "user") and "id"))
-    if discord_snowflake(identity) equals 0 or else discord_snowflake(room) equals 0 or else discord_snowflake(actor) equals 0 or else discord_contains(guilds and guild) equals 0 or else not (provider_value(tokens and provider_member(tokens and data and "type")) equals "1"):
+    set scope_allowed to discord_contains(guilds and guild)
+    if guild equals "null" or else string_length(guild) equals 0:
+        set guild to ""
+        set actor to provider_value(tokens and provider_member(tokens and provider_member(tokens and 0 and "user") and "id"))
+        set scope_allowed to discord_contains(admins and actor)
+        set context to provider_value(tokens and provider_member(tokens and 0 and "context"))
+        if not (string_length(context) equals 0 or else context equals "null" or else context equals "1"):
+            set scope_allowed to 0
+    if discord_snowflake(identity) equals 0 or else discord_snowflake(room) equals 0 or else discord_snowflake(actor) equals 0 or else scope_allowed equals 0 or else not (provider_value(tokens and provider_member(tokens and data and "type")) equals "1"):
         return history_status("command-scope-denied")
     set values to create_list()
     set added to append_list(values and identity)
@@ -131,8 +156,11 @@ define discord_command_resolve with journal as Int and body as Str and bot as St
         return history_status("command-binding-denied")
     if (name equals "auto" or else name equals "autooff" or else name equals "testing") and also discord_contains(admins and actor) equals 0:
         return history_status("admin-required")
+    set server to guild
+    if string_length(server) equals 0:
+        set server to concat("dm:" and bot)
     if name equals "editfile":
-        set arguments to discord_revision_file_options(journal and body and actor and guild and room)
+        set arguments to discord_revision_file_options(journal and body and actor and server and room)
         if string_length(arguments) equals 0:
             return history_status("invalid-command-options")
         set result to history_status("command-bound-needs-live-access")
