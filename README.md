@@ -1,3 +1,5 @@
+> Current implementation and measured verification: [October 2026 build status](docs/CURRENT-BUILD.md). Historical release evidence below is not a fresh full-suite claim.
+
 # Echo — a local AI with lasting context and a community home
 
 ![Echo: local AI, lasting context, plain English](docs/assets/echo-cover.svg)
@@ -35,9 +37,9 @@ Use `/new` for a fresh conversation; `/history`, `/resume`, `/search`, `/branch`
 
 Echo stores original conversation and tool events locally. Compaction preserves source-linked continuity rather than deleting the originals. Public community recall must pass current visibility and provenance checks. Private account linking is explicit: admin status alone does not grant access to another person’s private history.
 
-Guest workspaces, host/admin tools, generated tool candidates and protected changes have distinct authority boundaries. The source includes charter, consent, review and rollback machinery. **The complete generated-tool activation and recursive improvement/research lifecycle remains unfinished.**
+Guest workspaces, host/admin tools, generated tool candidates and protected changes have distinct authority boundaries. The source includes charter, consent, review and rollback machinery. **The RSI pipeline is implemented: candidate admission, native rebuild, pinned acceptance, independent review, activation, health verification and rollback are distinct gates. A healthy controller does not prove that any particular request completed. See the current build record for run-level evidence and remaining limits.**
 
-The configured host uses a local primary reasoning model through llama.cpp, with separate configured media services. Reasoning stays at the highest configured setting; the latency work does not lower reasoning effort or impose a response cap. Exact model choice and runtime settings are host configuration, not bundled dependencies.
+The configured host uses a local primary reasoning model through llama.cpp, with separate configured media services. Normal agent reasoning retains its configured setting. Factual closing reports and structured compaction reviews emit their reports directly without a separate reasoning stream on the llama.cpp adapter. No output-token cap is introduced. Exact model choice and runtime settings are host configuration, not bundled dependencies.
 
 ## Start exploring
 
@@ -51,6 +53,6 @@ The configured host uses a local primary reasoning model through llama.cpp, with
 | Review what changed since the last push | [Change narrative](docs/releases/1.9/CHANGES.md), [every changed file](docs/releases/1.9/FILE-CHANGES.md), [hash manifest](docs/releases/1.9/change-manifest.json) |
 | Follow the path to production | [Phase Two plan](phase2.md) and [V1 remaining work](docs/releases/1.9/REMAINING.md) |
 
-This is a source release for a configured Apple Silicon installation, not a one-click installer. Models, credentials, private identity prompts, reference recordings, conversations and live configuration are not included. Research latency remains workload-dependent and can take minutes; 1.9 does not claim that issue is resolved. See [verification and measured limits](docs/releases/1.9/VERIFICATION.md).
+This is a source release with a [setup toolkit](tools/setup/README.md). An existing Apple Silicon installation can be verified and given a desktop shortcut in one launch. Fresh-machine bundles and native Windows/Linux ports are not yet packaged; the toolkit does not claim those systems are ready. Models, credentials, private identity prompts, reference recordings, conversations and live configuration are not included. Research latency remains workload-dependent and can take minutes; 1.9 does not claim that issue is resolved. See [verification and measured limits](docs/releases/1.9/VERIFICATION.md).
 
 Maintained by [MettaMazza](https://github.com/MettaMazza), using [Ernos](https://github.com/MettaMazza/Ernos-Programming-Language). No project-wide software licence has been selected; upstream components retain their own terms.

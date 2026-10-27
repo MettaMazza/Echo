@@ -5,7 +5,7 @@ Documentation tooling only. Echo application and orchestration remain Ernos.
 from pathlib import Path
 import collections, datetime, hashlib, json, os, re, subprocess
 ROOT = Path(__file__).resolve().parents[1]
-BASE = '72fcd9c4b297c0679743ec043547309d7e58d6d7'
+BASE = os.environ.get('ECHO_DOC_BASE', '3466df5')
 NOW = datetime.datetime.now(datetime.timezone.utc).isoformat()
 def git(*args):
     return subprocess.check_output(['git', *args], cwd=ROOT)
@@ -76,7 +76,7 @@ for p in sorted(changed):
     after=symbols(new.decode(errors='replace')) if p.endswith('.ep') else {}
     names=sorted(n for n in before.keys()|after.keys() if before.get(n,{}).get('sha256')!=after.get(n,{}).get('sha256'))
     rows.append({'path':p,'status':'added' if p not in basepaths else 'modified' if new else 'deleted','before_sha256':sha(old) if p in basepaths else None,'after_sha256':sha(new) if new else None,'before_bytes':len(old),'after_bytes':len(new),'changed_definitions':names,'test_references':sorted(set().union(*(refs[n] for n in names)) if names else set())})
-save('docs/releases/1.9/change-manifest.json',{'observed_utc':NOW,'baseline':BASE,'baseline_ref':'origin/phase2/community-20261020 at audit start','equivalent_local_commit':'5823c562391be5c36a170dc4c43d75659737bd82','equivalent_tree':'70f1085f97d5fbd209a93d8dda0e5f510e354044','method':'Every changed publishable file compared byte-for-byte to last pushed community tree; per-definition lexical changes for Ernos. Generated references/forensic/release files excluded from recursive self-hashing; tracked by Git. Test references are lexical, not pass evidence.','files':rows})
+save('docs/releases/1.9/change-manifest.json',{'observed_utc':NOW,'baseline':BASE,'baseline_ref':'origin/release/echo-1.9 at 2026-10-27 task start','method':'Every changed publishable file compared byte-for-byte to last pushed release tree; per-definition lexical changes for Ernos. Generated references/forensic/release files excluded from recursive self-hashing; tracked by Git. Test references are lexical, not pass evidence.','files':rows})
 lines=['# File-by-file change ledger — 1.9','',f'Baseline: `{BASE}`. Each row links to the complete current source; exact before/after hashes and changed definitions are in [the manifest](change-manifest.json). Generated reference files are regenerated separately and covered by Git history.','', '| File | Change | Changed Ernos definitions |','|---|---|---:|']
 lines += [f'| [{x["path"]}](../../../{x["path"]}) | {x["status"]} | {len(x["changed_definitions"])} |' for x in rows]
 save('docs/releases/1.9/FILE-CHANGES.md','\n'.join(lines)+'\n')

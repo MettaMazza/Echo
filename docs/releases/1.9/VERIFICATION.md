@@ -1,8 +1,10 @@
+> Current runtime and October 27 verification: [current build](../../CURRENT-BUILD.md). Earlier dated evidence below remains historical; it does not supersede that record.
+
 # Verification and limits — 1.9
 
-This publication separates fresh release checks from retained functional evidence. It does not restart production, certify every fixture, or declare Phase Two complete.
+The list below describes the earlier publication snapshot. October 27 deployment and verification are recorded in the current build link above. Neither record certifies every fixture or declares Phase Two complete.
 
-## Fresh publication checks
+## Retained October 24 publication checks
 
 - Exact equality of the last pushed community tree and the local committed baseline established before switching to remote ancestry.
 - Complete publishable source-byte inventory and changed-file before/after SHA-256 ledger, including Ernos, C and Python fixtures/support.

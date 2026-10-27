@@ -1,3 +1,5 @@
+> Current runtime and October 27 verification: [current build](../../CURRENT-BUILD.md). Earlier dated evidence below remains historical; it does not supersede that record.
+
 # Echo 1.9 — community, continuity and voice development update
 
 1.9 publishes the accumulated source changes after the last pushed community revision, `72fcd9c4b297c0679743ec043547309d7e58d6d7` (22 October 2026). The corresponding local commit `5823c562391be5c36a170dc4c43d75659737bd82` has the identical tree, `70f1085f97d5fbd209a93d8dda0e5f510e354044`. Publication follows the remote ancestry without rewriting history. The older default-branch 1.75 landing page is not the last pushed community baseline.

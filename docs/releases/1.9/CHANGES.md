@@ -1,3 +1,5 @@
+> Current runtime and October 27 verification: [current build](../../CURRENT-BUILD.md). Earlier dated evidence below remains historical; it does not supersede that record.
+
 # Changes since the last GitHub community push
 
 Baseline and method: [release record](README.md). Every changed file has a hash and definition delta in [change-manifest.json](change-manifest.json). The feature groups below explain the user-visible behavior; they do not replace that exhaustive file ledger.

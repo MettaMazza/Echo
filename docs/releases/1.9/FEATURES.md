@@ -1,3 +1,5 @@
+> Current runtime and October 27 verification: [current build](../../CURRENT-BUILD.md). Earlier dated evidence below remains historical; it does not supersede that record.
+
 # Feature matrix — Echo 1.9
 
 “Implemented” means a callable source path exists; deployment and acceptance may be narrower. “Partial” identifies unfinished integration or qualification. Configuration, permissions and external service availability still apply. Exact schemas: [tool catalogue](../../reference/TOOLS.md).

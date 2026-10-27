@@ -28,7 +28,7 @@ Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/tes
 
 ## `tests/agent/test_attachment_loop.ep`
 
-[tests/agent/test_attachment_loop.ep](../../tests/agent/test_attachment_loop.ep) · 86 lines · SHA-256 `8a65c93bc77c6cb7b2f5bf2563c4dc0e6e508bad8473f189270dadc2d50868ee`
+[tests/agent/test_attachment_loop.ep](../../tests/agent/test_attachment_loop.ep) · 90 lines · SHA-256 `984d0900488d95c0c9a18e6944c3e6b57cb8efffa091a9c55fbfe30aef179738`
 
 Imports: [../../app/web/attachments](../../app/web/attachments.ep), `fs` (toolchain), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../../app/archive/history](../../app/archive/history.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
 
@@ -72,6 +72,18 @@ Imports: [../../app/web/attachments](../../app/web/attachments.ep), `fs` (toolch
 
 ```text
 8: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
+## `tests/agent/test_closing_report_mode.ep`
+
+[tests/agent/test_closing_report_mode.ep](../../tests/agent/test_closing_report_mode.ep) · 26 lines · SHA-256 `2ef8c5a84eca67ad3019015833a6196abcb8ad88b0e3948f348c54ad527b4eaf`
+
+Imports: [../../app/agent/checked_generation](../../app/agent/checked_generation.ep), [../../app/interaction/autonomy](../../app/interaction/autonomy.ep), `os` (toolchain).
+
+```text
+5: define main returning Int:
 ```
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
@@ -166,7 +178,7 @@ Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/tes
 
 ## `tests/agent/test_pdf_loop.ep`
 
-[tests/agent/test_pdf_loop.ep](../../tests/agent/test_pdf_loop.ep) · 97 lines · SHA-256 `8a5a2a1d973fda260704689601f639f1806d100a08a855e3dafd8d07e842de00`
+[tests/agent/test_pdf_loop.ep](../../tests/agent/test_pdf_loop.ep) · 101 lines · SHA-256 `1edcd1a983a1f6e6e90da65be359b743350267a7e9fa34c529c9fc9bee67b613`
 
 Imports: [../../app/web/attachments](../../app/web/attachments.ep), `fs` (toolchain), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../../app/archive/history](../../app/archive/history.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
 
@@ -202,13 +214,13 @@ Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/tes
 
 ## `tests/agent/test_run_state.ep`
 
-[tests/agent/test_run_state.ep](../../tests/agent/test_run_state.ep) · 100 lines · SHA-256 `22fa3442fd9b856bcf61e8caff560238101618d087b9ad18c3685a2620cdf484`
+[tests/agent/test_run_state.ep](../../tests/agent/test_run_state.ep) · 102 lines · SHA-256 `80ca9bd76d92f3c3b0c79e81d30e0d00ead81c6741281421219c2fbf80578db5`
 
-Imports: [../../app/agent/run_state](../../app/agent/run_state.ep), `fs` (toolchain).
+Imports: `os` (toolchain), [../../app/archive/history](../../app/archive/history.ep), [../../app/agent/run_state](../../app/agent/run_state.ep), `fs` (toolchain).
 
 ```text
-5: define run_fixture_event with database as Int and identity as Str and kind as Str and parent as Str returning Int:
-9: define main returning Int:
+7: define run_fixture_event with database as Int and identity as Str and kind as Str and parent as Str returning Int:
+11: define main returning Int:
 ```
 
 Test references: [tests/agent/test_run_state.ep](../../tests/agent/test_run_state.ep), [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
@@ -227,19 +239,19 @@ Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/tes
 
 ## `tests/agent/test_tool_ledger.ep`
 
-[tests/agent/test_tool_ledger.ep](../../tests/agent/test_tool_ledger.ep) · 58 lines · SHA-256 `3b86c2539df927885af6cebd46e5a4d4db948f0be37529e4d8db5ebab3e2204b`
+[tests/agent/test_tool_ledger.ep](../../tests/agent/test_tool_ledger.ep) · 60 lines · SHA-256 `3d646ef69dbe8e5a74ec5622d5e166f55cbf1a4d17662be8efbec820dfdb38a0`
 
-Imports: [../../app/agent/tool_ledger](../../app/agent/tool_ledger.ep), `fs` (toolchain).
+Imports: `os` (toolchain), [../../app/archive/history](../../app/archive/history.ep), [../../app/agent/tool_ledger](../../app/agent/tool_ledger.ep), `fs` (toolchain).
 
 ```text
-4: define main returning Int:
+6: define main returning Int:
 ```
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
 
 ## `tests/agent/test_two_turn_loop.ep`
 
-[tests/agent/test_two_turn_loop.ep](../../tests/agent/test_two_turn_loop.ep) · 98 lines · SHA-256 `9fd3c45d13dac184a259d7a5485ecaaebecbdbc7c4ca0ea467af1a5cfb06c66f`
+[tests/agent/test_two_turn_loop.ep](../../tests/agent/test_two_turn_loop.ep) · 102 lines · SHA-256 `42c72a0a48523437c331ec87d0f88362aa212902dd39afedbb1043bd59297bd1`
 
 Imports: [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../../app/web/run_store](../../app/web/run_store.ep), [../../app/security/tool_authority](../../app/security/tool_authority.ep), [../../app/archive/history](../../app/archive/history.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
 
@@ -995,6 +1007,19 @@ Imports: [../../app/context/system_awareness](../../app/context/system_awareness
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
 
+## `tests/context/test_recap_batch_review.ep`
+
+[tests/context/test_recap_batch_review.ep](../../tests/context/test_recap_batch_review.ep) · 63 lines · SHA-256 `b826bc588d4db218bcc88584b5834b06603e7d2da31081e464a2f8c02aa271b3`
+
+Imports: [../../app/context/recap_review_synthesis](../../app/context/recap_review_synthesis.ep).
+
+```text
+3: define batch_fixture_reply with sources as Str and candidate as Str and assessments as Str returning Str:
+8: define main returning Int:
+```
+
+Test references: [tests/context/test_recap_batch_review.ep](../../tests/context/test_recap_batch_review.ep), [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
 ## `tests/context/test_recap_cache_prefix.ep`
 
 [tests/context/test_recap_cache_prefix.ep](../../tests/context/test_recap_cache_prefix.ep) · 34 lines · SHA-256 `966d9445007c839f615271388f028b1c414ef597944c5ff2c6e82c995502d5b1`
@@ -1171,7 +1196,7 @@ Test references: [tests/context/test_recap_review_coverage.ep](../../tests/conte
 
 ## `tests/context/test_recap_sources.ep`
 
-[tests/context/test_recap_sources.ep](../../tests/context/test_recap_sources.ep) · 55 lines · SHA-256 `c54559a82a6c4acb97c1222b8500b6ed80162de194aaae4ca959286096c81a14`
+[tests/context/test_recap_sources.ep](../../tests/context/test_recap_sources.ep) · 69 lines · SHA-256 `368d1c2556fcf3d76b472b9b4746d609cee2697d2efbd96f5906493e12ca2788`
 
 Imports: [../../app/context/recap_sources](../../app/context/recap_sources.ep), [../fixtures/runner_provider](../../tests/fixtures/runner_provider.ep).
 
@@ -1964,6 +1989,18 @@ Imports: [../../app/discord/background_settle](../../app/discord/background_sett
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
 
+## `tests/discord/test_background_stopped_summary.ep`
+
+[tests/discord/test_background_stopped_summary.ep](../../tests/discord/test_background_stopped_summary.ep) · 42 lines · SHA-256 `3ab8f417128437f62bc5297b19d44432eea63216241f3b7e0e055e3b9933da73`
+
+Imports: [../../app/discord/background_settle](../../app/discord/background_settle.ep), [../../app/web/worker](../../app/web/worker.ep), [../../app/agent/control](../../app/agent/control.ep).
+
+```text
+5: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
 ## `tests/discord/test_background_store.ep`
 
 [tests/discord/test_background_store.ep](../../tests/discord/test_background_store.ep) · 50 lines · SHA-256 `9aa1241cb4a12f6092fc607ce7ccd03e4fe9a04a3e4a47a0d7d93d074bd76ee4`
@@ -2196,6 +2233,32 @@ Imports: [../../app/discord/command_execution](../../app/discord/command_executi
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_command_branch.ep](../../tests/discord/test_command_branch.ep), [tests/discord/test_revision_start.ep](../../tests/discord/test_revision_start.ep), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
 
+## `tests/discord/test_command_dm.ep`
+
+[tests/discord/test_command_dm.ep](../../tests/discord/test_command_dm.ep) · 96 lines · SHA-256 `4ca7a5ae0f04fe15946ff39d7feef46007290a6b4bae600a58c39fe577ec4a88`
+
+Imports: [../../app/discord/command_execution](../../app/discord/command_execution.ep), [../../app/context/session_messages](../../app/context/session_messages.ep).
+
+```text
+4: define new_command_fixture with journal as Int and id as Str and state as Str returning Str:
+17: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_command_dm.ep](../../tests/discord/test_command_dm.ep), [tests/discord/test_command_new.ep](../../tests/discord/test_command_new.ep), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
+## `tests/discord/test_command_dm_resume.ep`
+
+[tests/discord/test_command_dm_resume.ep](../../tests/discord/test_command_dm_resume.ep) · 100 lines · SHA-256 `466bb3f9776ddba6826bb78b964d8662b066dfeb42da54984b81abf0fc362592`
+
+Imports: [../../app/discord/command_execution](../../app/discord/command_execution.ep).
+
+```text
+3: define session_command_fixture with journal as Int and id as Str and state as Str and name as Str and options as Str returning Str:
+27: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_command_dm_resume.ep](../../tests/discord/test_command_dm_resume.ep), [tests/discord/test_command_resume.ep](../../tests/discord/test_command_resume.ep), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
 ## `tests/discord/test_command_new.ep`
 
 [tests/discord/test_command_new.ep](../../tests/discord/test_command_new.ep) · 86 lines · SHA-256 `e9192c6bcfabf7c365e1fdd2231227b7c3b1e2c792962252602952bbe48ea092`
@@ -2207,7 +2270,7 @@ Imports: [../../app/discord/command_execution](../../app/discord/command_executi
 17: define main returning Int:
 ```
 
-Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_command_new.ep](../../tests/discord/test_command_new.ep), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_command_dm.ep](../../tests/discord/test_command_dm.ep), [tests/discord/test_command_new.ep](../../tests/discord/test_command_new.ep), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
 
 ## `tests/discord/test_command_output.ep`
 
@@ -2259,7 +2322,7 @@ Imports: [../../app/discord/command_execution](../../app/discord/command_executi
 27: define main returning Int:
 ```
 
-Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_command_resume.ep](../../tests/discord/test_command_resume.ep), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_command_dm_resume.ep](../../tests/discord/test_command_dm_resume.ep), [tests/discord/test_command_resume.ep](../../tests/discord/test_command_resume.ep), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
 
 ## `tests/discord/test_command_start.ep`
 
@@ -5897,7 +5960,7 @@ Imports: [../../app/agent/generation](../../app/agent/generation.ep).
 3: define generation_fixture with listener as List and data as Str and completed as Int returning Int:
 ```
 
-Test references: [tests/agent/test_attachment_context_visibility.ep](../../tests/agent/test_attachment_context_visibility.ep), [tests/agent/test_attachment_loop.ep](../../tests/agent/test_attachment_loop.ep), [tests/agent/test_checked_generation.ep](../../tests/agent/test_checked_generation.ep), [tests/agent/test_checklist_batch.ep](../../tests/agent/test_checklist_batch.ep), [tests/agent/test_checklist_completion_guards.ep](../../tests/agent/test_checklist_completion_guards.ep), [tests/agent/test_execution_control.ep](../../tests/agent/test_execution_control.ep), [tests/agent/test_execution_loop.ep](../../tests/agent/test_execution_loop.ep), [tests/agent/test_generation.ep](../../tests/agent/test_generation.ep), [tests/agent/test_generation_recovery.ep](../../tests/agent/test_generation_recovery.ep), [tests/agent/test_pdf_loop.ep](../../tests/agent/test_pdf_loop.ep), [tests/agent/test_process_result_recovery.ep](../../tests/agent/test_process_result_recovery.ep), [tests/agent/test_two_turn_loop.ep](../../tests/agent/test_two_turn_loop.ep), [tests/agent/test_workspace_create_loop.ep](../../tests/agent/test_workspace_create_loop.ep), [tests/agent/test_workspace_directory_recovery.ep](../../tests/agent/test_workspace_directory_recovery.ep), [tests/agent/test_workspace_file_recovery.ep](../../tests/agent/test_workspace_file_recovery.ep), [tests/agent/test_workspace_list_loop.ep](../../tests/agent/test_workspace_list_loop.ep), [tests/agent/test_workspace_loop.ep](../../tests/agent/test_workspace_loop.ep), [tests/agent/test_workspace_text_loop.ep](../../tests/agent/test_workspace_text_loop.ep), [tests/context/test_attachment_recap_sources.ep](../../tests/context/test_attachment_recap_sources.ep), [tests/context/test_group_recap_authority.ep](../../tests/context/test_group_recap_authority.ep), [tests/context/test_group_recap_membership.ep](../../tests/context/test_group_recap_membership.ep), [tests/context/test_group_recap_rebuild.ep](../../tests/context/test_group_recap_rebuild.ep), [tests/context/test_live_group_recap.ep](../../tests/context/test_live_group_recap.ep), [tests/context/test_recap_collect.ep](../../tests/context/test_recap_collect.ep), [tests/context/test_recap_fragment_review.ep](../../tests/context/test_recap_fragment_review.ep), [tests/context/test_recap_generate.ep](../../tests/context/test_recap_generate.ep), [tests/context/test_recap_notes.ep](../../tests/context/test_recap_notes.ep), [tests/context/test_recap_rebuild.ep](../../tests/context/test_recap_rebuild.ep), [tests/discord/test_execution_access.ep](../../tests/discord/test_execution_access.ep), [tests/discord/test_execution_control.ep](../../tests/discord/test_execution_control.ep), [tests/discord/test_voice_audio_authority.ep](../../tests/discord/test_voice_audio_authority.ep), [tests/discord/test_voice_audio_job_lifecycle.ep](../../tests/discord/test_voice_audio_job_lifecycle.ep), [tests/discord/test_voice_audio_job_media.ep](../../tests/discord/test_voice_audio_job_media.ep), [tests/discord/test_voice_audio_job_tick.ep](../../tests/discord/test_voice_audio_job_tick.ep), [tests/discord/test_voice_audio_observer.ep](../../tests/discord/test_voice_audio_observer.ep), [tests/discord/test_voice_authorized_poll.ep](../../tests/discord/test_voice_authorized_poll.ep), [tests/discord/test_voice_permission_mailbox_observer.ep](../../tests/discord/test_voice_permission_mailbox_observer.ep), [tests/discord/test_voice_permission_observer.ep](../../tests/discord/test_voice_permission_observer.ep), [tests/discord/test_voice_play_tool.ep](../../tests/discord/test_voice_play_tool.ep), [tests/discord/test_voice_playback_gate.ep](../../tests/discord/test_voice_playback_gate.ep), [tests/discord/test_voice_recording_action.ep](../../tests/discord/test_voice_recording_action.ep), [tests/discord/test_voice_recording_authority.ep](../../tests/discord/test_voice_recording_authority.ep), [tests/discord/test_voice_recording_capture.ep](../../tests/discord/test_voice_recording_capture.ep), [tests/discord/test_voice_recording_controller.ep](../../tests/discord/test_voice_recording_controller.ep), [tests/discord/test_voice_recording_controller_cancellation.ep](../../tests/discord/test_voice_recording_controller_cancellation.ep), [tests/discord/test_voice_recording_controller_worker.ep](../../tests/discord/test_voice_recording_controller_worker.ep), [tests/discord/test_voice_recording_delivery.ep](../../tests/discord/test_voice_recording_delivery.ep), [tests/discord/test_voice_recording_observer.ep](../../tests/discord/test_voice_recording_observer.ep), [tests/discord/test_voice_recording_terminal.ep](../../tests/discord/test_voice_recording_terminal.ep), [tests/discord/test_voice_recording_tool.ep](../../tests/discord/test_voice_recording_tool.ep), [tests/discord/test_voice_request_guard.ep](../../tests/discord/test_voice_request_guard.ep), [tests/discord/test_voice_request_proof.ep](../../tests/discord/test_voice_request_proof.ep), [tests/discord/test_voice_service.ep](../../tests/discord/test_voice_service.ep), [tests/discord/test_voice_tool.ep](../../tests/discord/test_voice_tool.ep), [tests/discord/test_voice_worker_audio.ep](../../tests/discord/test_voice_worker_audio.ep), [tests/discord/test_voice_worker_loop.ep](../../tests/discord/test_voice_worker_loop.ep), [tests/discord/test_voice_worker_step.ep](../../tests/discord/test_voice_worker_step.ep), [tests/fixtures/memory_tool_fixture.ep](../../tests/fixtures/memory_tool_fixture.ep), [tests/fixtures/tool_call_fixture.ep](../../tests/fixtures/tool_call_fixture.ep), [tests/lifecycle/test_controller_operations_privileged.ep](../../tests/lifecycle/test_controller_operations_privileged.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/media/test_group_image_tool.ep](../../tests/media/test_group_image_tool.ep), [tests/media/test_group_voice_tool.ep](../../tests/media/test_group_voice_tool.ep), [tests/media/test_image_control.ep](../../tests/media/test_image_control.ep), [tests/media/test_image_tool.ep](../../tests/media/test_image_tool.ep), [tests/media/test_speech_control.ep](../../tests/media/test_speech_control.ep), [tests/media/test_speech_tool.ep](../../tests/media/test_speech_tool.ep), [tests/media/test_video_tool.ep](../../tests/media/test_video_tool.ep), [tests/media/test_voice_control.ep](../../tests/media/test_voice_control.ep), [tests/media/test_voice_tool.ep](../../tests/media/test_voice_tool.ep), [tests/memory/test_attachment_visibility_recall.ep](../../tests/memory/test_attachment_visibility_recall.ep), [tests/memory/test_group_attachment_visibility_recall.ep](../../tests/memory/test_group_attachment_visibility_recall.ep), [tests/memory/test_live_procedure_lifecycle.ep](../../tests/memory/test_live_procedure_lifecycle.ep), [tests/memory/test_live_procedures.ep](../../tests/memory/test_live_procedures.ep), [tests/memory/test_memory_recovery.ep](../../tests/memory/test_memory_recovery.ep), [tests/projects/test_project_tools.ep](../../tests/projects/test_project_tools.ep), [tests/security/test_attach_file.ep](../../tests/security/test_attach_file.ep), [tests/security/test_continuity_tools.ep](../../tests/security/test_continuity_tools.ep), [tests/security/test_dispatch_revocation.ep](../../tests/security/test_dispatch_revocation.ep), [tests/security/test_group_attach_file.ep](../../tests/security/test_group_attach_file.ep), [tests/security/test_group_media_authority.ep](../../tests/security/test_group_media_authority.ep), [tests/security/test_group_output_policy.ep](../../tests/security/test_group_output_policy.ep), [tests/security/test_host_execute.ep](../../tests/security/test_host_execute.ep), [tests/security/test_host_git_access.ep](../../tests/security/test_host_git_access.ep), [tests/security/test_host_text.ep](../../tests/security/test_host_text.ep), [tests/security/test_knowledge_tools.ep](../../tests/security/test_knowledge_tools.ep), [tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep), [tests/security/test_silo_scratchpad.ep](../../tests/security/test_silo_scratchpad.ep), [tests/security/test_tool_policy.ep](../../tests/security/test_tool_policy.ep), [tests/security/test_tool_role_dispatch.ep](../../tests/security/test_tool_role_dispatch.ep), [tests/security/test_trace_dispatch.ep](../../tests/security/test_trace_dispatch.ep), [tests/tools/test_build_modes.ep](../../tests/tools/test_build_modes.ep), [tests/tools/test_candidate_build_loop.ep](../../tests/tools/test_candidate_build_loop.ep), [tests/tools/test_git_workflow.ep](../../tests/tools/test_git_workflow.ep), [tests/tools/test_group_plot_workbook.ep](../../tests/tools/test_group_plot_workbook.ep), [tests/tools/test_job_control.ep](../../tests/tools/test_job_control.ep), [tests/tools/test_tool_discovery.ep](../../tests/tools/test_tool_discovery.ep), [tests/tools/test_tool_registry.ep](../../tests/tools/test_tool_registry.ep), [tests/tools/test_workspace_database.ep](../../tests/tools/test_workspace_database.ep), [tests/web/group_speech_seed.ep](../../tests/web/group_speech_seed.ep), [tests/web/test_midturn_guidance.ep](../../tests/web/test_midturn_guidance.ep), [tests/workspace/test_execution_request.ep](../../tests/workspace/test_execution_request.ep).
+Test references: [tests/agent/test_attachment_context_visibility.ep](../../tests/agent/test_attachment_context_visibility.ep), [tests/agent/test_attachment_loop.ep](../../tests/agent/test_attachment_loop.ep), [tests/agent/test_checked_generation.ep](../../tests/agent/test_checked_generation.ep), [tests/agent/test_checklist_batch.ep](../../tests/agent/test_checklist_batch.ep), [tests/agent/test_checklist_completion_guards.ep](../../tests/agent/test_checklist_completion_guards.ep), [tests/agent/test_execution_control.ep](../../tests/agent/test_execution_control.ep), [tests/agent/test_execution_loop.ep](../../tests/agent/test_execution_loop.ep), [tests/agent/test_generation.ep](../../tests/agent/test_generation.ep), [tests/agent/test_generation_recovery.ep](../../tests/agent/test_generation_recovery.ep), [tests/agent/test_pdf_loop.ep](../../tests/agent/test_pdf_loop.ep), [tests/agent/test_process_result_recovery.ep](../../tests/agent/test_process_result_recovery.ep), [tests/agent/test_two_turn_loop.ep](../../tests/agent/test_two_turn_loop.ep), [tests/agent/test_workspace_create_loop.ep](../../tests/agent/test_workspace_create_loop.ep), [tests/agent/test_workspace_directory_recovery.ep](../../tests/agent/test_workspace_directory_recovery.ep), [tests/agent/test_workspace_file_recovery.ep](../../tests/agent/test_workspace_file_recovery.ep), [tests/agent/test_workspace_list_loop.ep](../../tests/agent/test_workspace_list_loop.ep), [tests/agent/test_workspace_loop.ep](../../tests/agent/test_workspace_loop.ep), [tests/agent/test_workspace_text_loop.ep](../../tests/agent/test_workspace_text_loop.ep), [tests/context/test_attachment_recap_sources.ep](../../tests/context/test_attachment_recap_sources.ep), [tests/context/test_group_recap_authority.ep](../../tests/context/test_group_recap_authority.ep), [tests/context/test_group_recap_membership.ep](../../tests/context/test_group_recap_membership.ep), [tests/context/test_group_recap_rebuild.ep](../../tests/context/test_group_recap_rebuild.ep), [tests/context/test_live_group_recap.ep](../../tests/context/test_live_group_recap.ep), [tests/context/test_recap_collect.ep](../../tests/context/test_recap_collect.ep), [tests/context/test_recap_fragment_review.ep](../../tests/context/test_recap_fragment_review.ep), [tests/context/test_recap_generate.ep](../../tests/context/test_recap_generate.ep), [tests/context/test_recap_notes.ep](../../tests/context/test_recap_notes.ep), [tests/context/test_recap_rebuild.ep](../../tests/context/test_recap_rebuild.ep), [tests/discord/test_execution_access.ep](../../tests/discord/test_execution_access.ep), [tests/discord/test_execution_control.ep](../../tests/discord/test_execution_control.ep), [tests/discord/test_voice_audio_authority.ep](../../tests/discord/test_voice_audio_authority.ep), [tests/discord/test_voice_audio_job_lifecycle.ep](../../tests/discord/test_voice_audio_job_lifecycle.ep), [tests/discord/test_voice_audio_job_media.ep](../../tests/discord/test_voice_audio_job_media.ep), [tests/discord/test_voice_audio_job_tick.ep](../../tests/discord/test_voice_audio_job_tick.ep), [tests/discord/test_voice_audio_observer.ep](../../tests/discord/test_voice_audio_observer.ep), [tests/discord/test_voice_authorized_poll.ep](../../tests/discord/test_voice_authorized_poll.ep), [tests/discord/test_voice_permission_mailbox_observer.ep](../../tests/discord/test_voice_permission_mailbox_observer.ep), [tests/discord/test_voice_permission_observer.ep](../../tests/discord/test_voice_permission_observer.ep), [tests/discord/test_voice_play_tool.ep](../../tests/discord/test_voice_play_tool.ep), [tests/discord/test_voice_playback_gate.ep](../../tests/discord/test_voice_playback_gate.ep), [tests/discord/test_voice_recording_action.ep](../../tests/discord/test_voice_recording_action.ep), [tests/discord/test_voice_recording_authority.ep](../../tests/discord/test_voice_recording_authority.ep), [tests/discord/test_voice_recording_capture.ep](../../tests/discord/test_voice_recording_capture.ep), [tests/discord/test_voice_recording_controller.ep](../../tests/discord/test_voice_recording_controller.ep), [tests/discord/test_voice_recording_controller_cancellation.ep](../../tests/discord/test_voice_recording_controller_cancellation.ep), [tests/discord/test_voice_recording_controller_worker.ep](../../tests/discord/test_voice_recording_controller_worker.ep), [tests/discord/test_voice_recording_delivery.ep](../../tests/discord/test_voice_recording_delivery.ep), [tests/discord/test_voice_recording_observer.ep](../../tests/discord/test_voice_recording_observer.ep), [tests/discord/test_voice_recording_terminal.ep](../../tests/discord/test_voice_recording_terminal.ep), [tests/discord/test_voice_recording_tool.ep](../../tests/discord/test_voice_recording_tool.ep), [tests/discord/test_voice_request_guard.ep](../../tests/discord/test_voice_request_guard.ep), [tests/discord/test_voice_request_proof.ep](../../tests/discord/test_voice_request_proof.ep), [tests/discord/test_voice_service.ep](../../tests/discord/test_voice_service.ep), [tests/discord/test_voice_tool.ep](../../tests/discord/test_voice_tool.ep), [tests/discord/test_voice_worker_audio.ep](../../tests/discord/test_voice_worker_audio.ep), [tests/discord/test_voice_worker_loop.ep](../../tests/discord/test_voice_worker_loop.ep), [tests/discord/test_voice_worker_step.ep](../../tests/discord/test_voice_worker_step.ep), [tests/fixtures/memory_tool_fixture.ep](../../tests/fixtures/memory_tool_fixture.ep), [tests/fixtures/tool_call_fixture.ep](../../tests/fixtures/tool_call_fixture.ep), [tests/lifecycle/test_autonomous_qualification.ep](../../tests/lifecycle/test_autonomous_qualification.ep), [tests/lifecycle/test_autonomous_recovery.ep](../../tests/lifecycle/test_autonomous_recovery.ep), [tests/lifecycle/test_controller_operations_privileged.ep](../../tests/lifecycle/test_controller_operations_privileged.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/media/test_group_image_tool.ep](../../tests/media/test_group_image_tool.ep), [tests/media/test_group_voice_tool.ep](../../tests/media/test_group_voice_tool.ep), [tests/media/test_image_control.ep](../../tests/media/test_image_control.ep), [tests/media/test_image_tool.ep](../../tests/media/test_image_tool.ep), [tests/media/test_speech_control.ep](../../tests/media/test_speech_control.ep), [tests/media/test_speech_tool.ep](../../tests/media/test_speech_tool.ep), [tests/media/test_video_tool.ep](../../tests/media/test_video_tool.ep), [tests/media/test_voice_control.ep](../../tests/media/test_voice_control.ep), [tests/media/test_voice_tool.ep](../../tests/media/test_voice_tool.ep), [tests/memory/test_attachment_visibility_recall.ep](../../tests/memory/test_attachment_visibility_recall.ep), [tests/memory/test_group_attachment_visibility_recall.ep](../../tests/memory/test_group_attachment_visibility_recall.ep), [tests/memory/test_live_procedure_lifecycle.ep](../../tests/memory/test_live_procedure_lifecycle.ep), [tests/memory/test_live_procedures.ep](../../tests/memory/test_live_procedures.ep), [tests/memory/test_memory_recovery.ep](../../tests/memory/test_memory_recovery.ep), [tests/projects/test_project_tools.ep](../../tests/projects/test_project_tools.ep), [tests/security/test_attach_file.ep](../../tests/security/test_attach_file.ep), [tests/security/test_continuity_tools.ep](../../tests/security/test_continuity_tools.ep), [tests/security/test_dispatch_revocation.ep](../../tests/security/test_dispatch_revocation.ep), [tests/security/test_group_attach_file.ep](../../tests/security/test_group_attach_file.ep), [tests/security/test_group_media_authority.ep](../../tests/security/test_group_media_authority.ep), [tests/security/test_group_output_policy.ep](../../tests/security/test_group_output_policy.ep), [tests/security/test_host_execute.ep](../../tests/security/test_host_execute.ep), [tests/security/test_host_git_access.ep](../../tests/security/test_host_git_access.ep), [tests/security/test_host_text.ep](../../tests/security/test_host_text.ep), [tests/security/test_knowledge_tools.ep](../../tests/security/test_knowledge_tools.ep), [tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep), [tests/security/test_public_source_read.ep](../../tests/security/test_public_source_read.ep), [tests/security/test_public_system_execute.ep](../../tests/security/test_public_system_execute.ep), [tests/security/test_silo_scratchpad.ep](../../tests/security/test_silo_scratchpad.ep), [tests/security/test_tool_policy.ep](../../tests/security/test_tool_policy.ep), [tests/security/test_tool_role_dispatch.ep](../../tests/security/test_tool_role_dispatch.ep), [tests/security/test_trace_dispatch.ep](../../tests/security/test_trace_dispatch.ep), [tests/tools/test_build_modes.ep](../../tests/tools/test_build_modes.ep), [tests/tools/test_candidate_build_loop.ep](../../tests/tools/test_candidate_build_loop.ep), [tests/tools/test_git_workflow.ep](../../tests/tools/test_git_workflow.ep), [tests/tools/test_group_plot_workbook.ep](../../tests/tools/test_group_plot_workbook.ep), [tests/tools/test_job_control.ep](../../tests/tools/test_job_control.ep), [tests/tools/test_tool_discovery.ep](../../tests/tools/test_tool_discovery.ep), [tests/tools/test_tool_registry.ep](../../tests/tools/test_tool_registry.ep), [tests/tools/test_workspace_database.ep](../../tests/tools/test_workspace_database.ep), [tests/web/group_speech_seed.ep](../../tests/web/group_speech_seed.ep), [tests/web/test_midturn_guidance.ep](../../tests/web/test_midturn_guidance.ep), [tests/workspace/test_execution_request.ep](../../tests/workspace/test_execution_request.ep).
 
 ## `tests/fixtures/json_fixture.ep`
 
@@ -5951,17 +6014,17 @@ Test references: [tests/context/test_attachment_recap_sources.ep](../../tests/co
 
 ## `tests/fixtures/runner_provider.ep`
 
-[tests/fixtures/runner_provider.ep](../../tests/fixtures/runner_provider.ep) · 336 lines · SHA-256 `a23a4b97458cd9792a8e854d8ac64129417a1f061cff5a169dfba134f5c1b0f2`
+[tests/fixtures/runner_provider.ep](../../tests/fixtures/runner_provider.ep) · 342 lines · SHA-256 `d91e6e613a266b3f89df7c2aa9230971e57d4f438fa01de94f5b03c201b8c376`
 
 Imports: [../../app/security/groups](../../app/security/groups.ep), [../../app/agent/runner](../../app/agent/runner.ep), `os` (toolchain).
 
 ```text
 7: define compaction_fixture_content with state as List and tokens as List and messages as List returning Str:
-128: define runner_fixture_call with name as Str and identity as Str and arguments as Str returning Str:
-133: define runner_fixture_exchange with listener as List and state as List returning Int:
-263: define runner_fixture with listener as List and objective as Str and completed as Int returning Int:
-283: define compaction_fixture with listener as List and mode as Int and completed as Int returning Int:
-314: define compaction_recovery_fixture with listener as List and candidate as Str and endpoint as Str and review_saved as Int and completed as Int returning Int:
+134: define runner_fixture_call with name as Str and identity as Str and arguments as Str returning Str:
+139: define runner_fixture_exchange with listener as List and state as List returning Int:
+269: define runner_fixture with listener as List and objective as Str and completed as Int returning Int:
+289: define compaction_fixture with listener as List and mode as Int and completed as Int returning Int:
+320: define compaction_recovery_fixture with listener as List and candidate as Str and endpoint as Str and review_saved as Int and completed as Int returning Int:
 ```
 
 Test references: [tests/agent/test_runner.ep](../../tests/agent/test_runner.ep), [tests/context/test_automatic_compaction.ep](../../tests/context/test_automatic_compaction.ep), [tests/context/test_compaction_crash.ep](../../tests/context/test_compaction_crash.ep), [tests/context/test_group_recap_authority.ep](../../tests/context/test_group_recap_authority.ep), [tests/context/test_group_recap_membership.ep](../../tests/context/test_group_recap_membership.ep), [tests/context/test_group_recap_rebuild.ep](../../tests/context/test_group_recap_rebuild.ep), [tests/context/test_merge_resume.ep](../../tests/context/test_merge_resume.ep), [tests/context/test_progressive_merge.ep](../../tests/context/test_progressive_merge.ep), [tests/context/test_recap_rebuild.ep](../../tests/context/test_recap_rebuild.ep), [tests/context/test_recap_sources.ep](../../tests/context/test_recap_sources.ep), [tests/fixtures/runner_provider.ep](../../tests/fixtures/runner_provider.ep), [tests/web/serve_partial_fixture.ep](../../tests/web/serve_partial_fixture.ep), [tests/web/serve_provider_fixture.ep](../../tests/web/serve_provider_fixture.ep), [tests/web/serve_recovery_fixture.ep](../../tests/web/serve_recovery_fixture.ep), [tests/web/test_retry.ep](../../tests/web/test_retry.ep), [tests/web/test_worker_recovery.ep](../../tests/web/test_worker_recovery.ep).
@@ -6268,6 +6331,32 @@ Imports: [../../app/lifecycle/startup](../../app/lifecycle/startup.ep).
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
 
+## `tests/lifecycle/test_autonomous_qualification.ep`
+
+[tests/lifecycle/test_autonomous_qualification.ep](../../tests/lifecycle/test_autonomous_qualification.ep) · 88 lines · SHA-256 `8233bafb66252eade3acd525f46061f6581456d812e28829f8dcb7b8ca81ffcb`
+
+Imports: [../../app/lifecycle/controller_autonomous](../../app/lifecycle/controller_autonomous.ep), [../../app/agent/tool_recovery](../../app/agent/tool_recovery.ep), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
+
+```text
+6: define protected_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
+27: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/lifecycle/test_autonomous_qualification.ep](../../tests/lifecycle/test_autonomous_qualification.ep), [tests/lifecycle/test_autonomous_recovery.ep](../../tests/lifecycle/test_autonomous_recovery.ep), [tests/lifecycle/test_controller_operations_privileged.ep](../../tests/lifecycle/test_controller_operations_privileged.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep).
+
+## `tests/lifecycle/test_autonomous_recovery.ep`
+
+[tests/lifecycle/test_autonomous_recovery.ep](../../tests/lifecycle/test_autonomous_recovery.ep) · 96 lines · SHA-256 `fd92c5ee786f4c68bc3d45fc52fc797e0bb4b80b3698404f8d6fb00c30b6aee1`
+
+Imports: [../../app/lifecycle/controller_autonomous](../../app/lifecycle/controller_autonomous.ep), [../../app/agent/tool_recovery](../../app/agent/tool_recovery.ep), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
+
+```text
+6: define protected_fixture_call with database as Int and run as Str and request as Str and call_id as Str and name as Str and arguments as Str returning Int:
+27: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/lifecycle/test_autonomous_qualification.ep](../../tests/lifecycle/test_autonomous_qualification.ep), [tests/lifecycle/test_autonomous_recovery.ep](../../tests/lifecycle/test_autonomous_recovery.ep), [tests/lifecycle/test_controller_operations_privileged.ep](../../tests/lifecycle/test_controller_operations_privileged.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep).
+
 ## `tests/lifecycle/test_controller_bootstrap.ep`
 
 [tests/lifecycle/test_controller_bootstrap.ep](../../tests/lifecycle/test_controller_bootstrap.ep) · 24 lines · SHA-256 `99827e4775ef31df8139abaabb3ae042206f831d195b3808fc27432859a7d84c`
@@ -6412,7 +6501,7 @@ Imports: [../../app/lifecycle/controller_operations](../../app/lifecycle/control
 34: define main returning Int:
 ```
 
-Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/lifecycle/test_controller_operations_privileged.ep](../../tests/lifecycle/test_controller_operations_privileged.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep).
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/lifecycle/test_autonomous_qualification.ep](../../tests/lifecycle/test_autonomous_qualification.ep), [tests/lifecycle/test_autonomous_recovery.ep](../../tests/lifecycle/test_autonomous_recovery.ep), [tests/lifecycle/test_controller_operations_privileged.ep](../../tests/lifecycle/test_controller_operations_privileged.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep).
 
 ## `tests/lifecycle/test_controller_release.ep`
 
@@ -6442,7 +6531,7 @@ Imports: [../../app/lifecycle/controller_prepare](../../app/lifecycle/controller
 152: define main returning Int:
 ```
 
-Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/lifecycle/test_controller_operations_privileged.ep](../../tests/lifecycle/test_controller_operations_privileged.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep).
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/lifecycle/test_autonomous_qualification.ep](../../tests/lifecycle/test_autonomous_qualification.ep), [tests/lifecycle/test_autonomous_recovery.ep](../../tests/lifecycle/test_autonomous_recovery.ep), [tests/lifecycle/test_controller_operations_privileged.ep](../../tests/lifecycle/test_controller_operations_privileged.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep).
 
 ## `tests/lifecycle/test_controller_review_inputs.ep`
 
@@ -6536,6 +6625,66 @@ Imports: [../../app/lifecycle/protected_path](../../app/lifecycle/protected_path
 
 ```text
 5: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
+## `tests/lifecycle/test_qualification_plan.ep`
+
+[tests/lifecycle/test_qualification_plan.ep](../../tests/lifecycle/test_qualification_plan.ep) · 25 lines · SHA-256 `852843743076712769035ce1c60ab51dda0147d8cbcd47e0de2c59f4ab781ed7`
+
+Imports: [../../app/lifecycle/qualification_plan](../../app/lifecycle/qualification_plan.ep).
+
+```text
+3: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
+## `tests/lifecycle/test_qualification_runner.ep`
+
+[tests/lifecycle/test_qualification_runner.ep](../../tests/lifecycle/test_qualification_runner.ep) · 13 lines · SHA-256 `9773ee4a6a06b795559c57f7403c63347ddd0c5af7e56c3c704d4c36583d3219`
+
+Imports: [../../app/lifecycle/qualification_runner](../../app/lifecycle/qualification_runner.ep).
+
+```text
+3: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
+## `tests/lifecycle/test_rsi_admission.ep`
+
+[tests/lifecycle/test_rsi_admission.ep](../../tests/lifecycle/test_rsi_admission.ep) · 61 lines · SHA-256 `133bef0143bd729f6ccb8dea5818fbefc96bb54478a964e30f21338712d5596e`
+
+Imports: [../../app/lifecycle/rsi_archive](../../app/lifecycle/rsi_archive.ep), [../../app/web/run_store](../../app/web/run_store.ep), [../../app/agent/tool_ledger](../../app/agent/tool_ledger.ep).
+
+```text
+6: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
+## `tests/lifecycle/test_rsi_build.ep`
+
+[tests/lifecycle/test_rsi_build.ep](../../tests/lifecycle/test_rsi_build.ep) · 32 lines · SHA-256 `b3a53fe98e5a6e906c3fecfa2c398c080a502b613cb27413c37f728ee6344ba3`
+
+Imports: [../../app/lifecycle/rsi_build](../../app/lifecycle/rsi_build.ep), [../../app/lifecycle/rsi_source_manifest](../../app/lifecycle/rsi_source_manifest.ep).
+
+```text
+4: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
+## `tests/lifecycle/test_rsi_request.ep`
+
+[tests/lifecycle/test_rsi_request.ep](../../tests/lifecycle/test_rsi_request.ep) · 16 lines · SHA-256 `d674b0faed06eb8216dd99ac1bb2cd0d991914aab397c3b955dda71b35dd0f55`
+
+Imports: [../../app/tools/rsi_request](../../app/tools/rsi_request.ep).
+
+```text
+3: define main returning Int:
 ```
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
@@ -6707,6 +6856,18 @@ Imports: [../../app/media/resident_protocol](../../app/media/resident_protocol.e
 
 ```text
 4: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
+## `tests/media/test_speech_chunks.ep`
+
+[tests/media/test_speech_chunks.ep](../../tests/media/test_speech_chunks.ep) · 14 lines · SHA-256 `552c097d8a50c57ee72638fac79272b5e41f567fc3c814996b57a898ba0003cb`
+
+Imports: [../../app/media/speech_chunks](../../app/media/speech_chunks.ep), `fs` (toolchain), [../../app/providers/archived_stream](../../app/providers/archived_stream.ep).
+
+```text
+5: define main returning Int:
 ```
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
@@ -7087,12 +7248,12 @@ Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/tes
 
 ## `tests/memory/test_group_knowledge.ep`
 
-[tests/memory/test_group_knowledge.ep](../../tests/memory/test_group_knowledge.ep) · 81 lines · SHA-256 `575d6125b1621cbe81fc8ea76424d98aecc8491657b4d46c9a31159de3e7db9b`
+[tests/memory/test_group_knowledge.ep](../../tests/memory/test_group_knowledge.ep) · 90 lines · SHA-256 `8ab0b9c7961016de85fb28518aae87511cbff2b7581521d25db511d2faba31f8`
 
-Imports: [../../app/memory/knowledge_lifecycle](../../app/memory/knowledge_lifecycle.ep), [../../app/memory/episodes](../../app/memory/episodes.ep), [../../app/security/group_runs](../../app/security/group_runs.ep), [../../app/jobs/delegation_schema](../../app/jobs/delegation_schema.ep), [../../app/web/run_store](../../app/web/run_store.ep).
+Imports: [../../app/memory/knowledge_lifecycle](../../app/memory/knowledge_lifecycle.ep), [../../app/agent/user_content](../../app/agent/user_content.ep), [../../app/memory/episodes](../../app/memory/episodes.ep), [../../app/security/group_runs](../../app/security/group_runs.ep), [../../app/jobs/delegation_schema](../../app/jobs/delegation_schema.ep), [../../app/web/run_store](../../app/web/run_store.ep).
 
 ```text
-7: define main returning Int:
+8: define main returning Int:
 ```
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
@@ -7354,7 +7515,7 @@ Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/tes
 
 ## `tests/memory/test_recall_encoding.py`
 
-[tests/memory/test_recall_encoding.py](../../tests/memory/test_recall_encoding.py) · 43 lines · SHA-256 `0a774466dccbd515fd9e48baa542ed202dda84abc9bc153e708008db10bdc4c9`
+[tests/memory/test_recall_encoding.py](../../tests/memory/test_recall_encoding.py) · 50 lines · SHA-256 `5be836b2363e817d36ec7530c3a29a30f173f58f909bf758af3a6ffec046094f`
 
 Imports: none.
 
@@ -7433,6 +7594,19 @@ Imports: [../../app/memory/source_import](../../app/memory/source_import.ep), [.
 ```
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
+## `tests/memory/test_write_regressions.ep`
+
+[tests/memory/test_write_regressions.ep](../../tests/memory/test_write_regressions.ep) · 100 lines · SHA-256 `85e1e16e2f458722549fad1d0794057cfc347260f258cf79244bc1a894ac1d1d`
+
+Imports: [../../app/web/run_store](../../app/web/run_store.ep), [../../app/security/channel_silo](../../app/security/channel_silo.ep), [../../app/tools/scratchpad](../../app/tools/scratchpad.ep), [../../app/memory/linked_record](../../app/memory/linked_record.ep).
+
+```text
+6: define record_fixture with database as Int and run as Str and event as Str and digest as Str and evidence as Str returning Str:
+9: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/memory/test_write_regressions.ep](../../tests/memory/test_write_regressions.ep).
 
 ## `tests/network/inspect_html_reading.ep`
 
@@ -8084,6 +8258,18 @@ Imports: [../../app/providers/registry](../../app/providers/registry.ep).
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
 
+## `tests/providers/test_rejected_request.ep`
+
+[tests/providers/test_rejected_request.ep](../../tests/providers/test_rejected_request.ep) · 26 lines · SHA-256 `a3a084481d4ecc7b1f298bc367f1c9da89f91a849f85febfa8e1404cdb7ddde2`
+
+Imports: [../../app/providers/prepare](../../app/providers/prepare.ep).
+
+```text
+3: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
 ## `tests/providers/test_saved_request_monitor.ep`
 
 [tests/providers/test_saved_request_monitor.ep](../../tests/providers/test_saved_request_monitor.ep) · 67 lines · SHA-256 `1bb0c742b43220c9d07ac2cf3da6766cc820af4889d176598a0743d39043ce12`
@@ -8511,7 +8697,7 @@ Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/tes
 
 ## `tests/security/test_group_output_policy.ep`
 
-[tests/security/test_group_output_policy.ep](../../tests/security/test_group_output_policy.ep) · 108 lines · SHA-256 `4c08ace968326bee97e28f4e8a1669ed6a69fa2c0dfaf04183e03f70b57bbc8c`
+[tests/security/test_group_output_policy.ep](../../tests/security/test_group_output_policy.ep) · 108 lines · SHA-256 `88c515d9ed558ed160c6a36f4f8b3cfec49e769f2774bc2305f3dfaae06db449`
 
 Imports: [../../app/web/export](../../app/web/export.ep), [../../app/security/group_output_policy](../../app/security/group_output_policy.ep), [../../app/web/attachments](../../app/web/attachments.ep), [../../app/agent/tool_recovery](../../app/agent/tool_recovery.ep), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../../app/context/recap_sources](../../app/context/recap_sources.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
 
@@ -8520,7 +8706,7 @@ Imports: [../../app/web/export](../../app/web/export.ep), [../../app/security/gr
 23: define main returning Int:
 ```
 
-Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_group_output_policy.ep](../../tests/security/test_group_output_policy.ep).
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_group_output_policy.ep](../../tests/security/test_group_output_policy.ep), [tests/security/test_public_source_read.ep](../../tests/security/test_public_source_read.ep), [tests/security/test_public_system_execute.ep](../../tests/security/test_public_system_execute.ep).
 
 ## `tests/security/test_group_output_read.ep`
 
@@ -8657,7 +8843,7 @@ Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/tes
 
 ## `tests/security/test_host_text.ep`
 
-[tests/security/test_host_text.ep](../../tests/security/test_host_text.ep) · 99 lines · SHA-256 `97cb5e1f43bd5087d3878c684819d54da6900c73544acf098e40578b5e97d114`
+[tests/security/test_host_text.ep](../../tests/security/test_host_text.ep) · 99 lines · SHA-256 `6ffe033d03486954b3260438e77cef8efd4fe02306a9156a0f4d3fc253b0e470`
 
 Imports: [../../app/archive/snapshot](../../app/archive/snapshot.ep), [../../app/web/attachments](../../app/web/attachments.ep), `fs` (toolchain), [../../app/security/tool_authority](../../app/security/tool_authority.ep), [../../app/agent/tool_recovery](../../app/agent/tool_recovery.ep), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../../app/archive/history](../../app/archive/history.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
 
@@ -9182,7 +9368,45 @@ Imports: [../../app/web/attachments](../../app/web/attachments.ep), [../../app/a
 31: define main returning Int:
 ```
 
-Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/lifecycle/test_controller_operations_privileged.ep](../../tests/lifecycle/test_controller_operations_privileged.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep).
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/lifecycle/test_autonomous_qualification.ep](../../tests/lifecycle/test_autonomous_qualification.ep), [tests/lifecycle/test_autonomous_recovery.ep](../../tests/lifecycle/test_autonomous_recovery.ep), [tests/lifecycle/test_controller_operations_privileged.ep](../../tests/lifecycle/test_controller_operations_privileged.ep), [tests/lifecycle/test_controller_requests.ep](../../tests/lifecycle/test_controller_requests.ep), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_protected_tools.ep](../../tests/security/test_protected_tools.ep).
+
+## `tests/security/test_public_source_read.ep`
+
+[tests/security/test_public_source_read.ep](../../tests/security/test_public_source_read.ep) · 52 lines · SHA-256 `8e2c866735e1f1afe7b52a0f8ee077b5737252e6935bd21ec7186c3540400353`
+
+Imports: [../../app/web/export](../../app/web/export.ep), [../../app/security/group_output_policy](../../app/security/group_output_policy.ep), [../../app/web/attachments](../../app/web/attachments.ep), [../../app/agent/tool_recovery](../../app/agent/tool_recovery.ep), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../../app/context/recap_sources](../../app/context/recap_sources.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
+
+```text
+9: define audience_fixture_run with database as Int and identity as Str and path as Str returning Int:
+23: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_group_output_policy.ep](../../tests/security/test_group_output_policy.ep), [tests/security/test_public_source_read.ep](../../tests/security/test_public_source_read.ep), [tests/security/test_public_system_execute.ep](../../tests/security/test_public_system_execute.ep).
+
+## `tests/security/test_public_system_execute.ep`
+
+[tests/security/test_public_system_execute.ep](../../tests/security/test_public_system_execute.ep) · 52 lines · SHA-256 `5959f1a22b7fbac56862f4178a61e61e0c1989c4c92b332ebfa467a88db38145`
+
+Imports: [../../app/web/export](../../app/web/export.ep), [../../app/security/group_output_policy](../../app/security/group_output_policy.ep), [../../app/web/attachments](../../app/web/attachments.ep), [../../app/agent/tool_recovery](../../app/agent/tool_recovery.ep), [../../app/agent/run_messages](../../app/agent/run_messages.ep), [../../app/context/recap_sources](../../app/context/recap_sources.ep), [../fixtures/generation_fixture](../../tests/fixtures/generation_fixture.ep).
+
+```text
+9: define audience_fixture_run with database as Int and identity as Str and path as Str returning Int:
+23: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py), [tests/security/test_group_output_policy.ep](../../tests/security/test_group_output_policy.ep), [tests/security/test_public_source_read.ep](../../tests/security/test_public_source_read.ep), [tests/security/test_public_system_execute.ep](../../tests/security/test_public_system_execute.ep).
+
+## `tests/security/test_public_system_profile.ep`
+
+[tests/security/test_public_system_profile.ep](../../tests/security/test_public_system_profile.ep) · 10 lines · SHA-256 `cccb0c84fc7df129da5dd73e9c68fdca8942546875f67f20574f7220a6c56819`
+
+Imports: [../../app/workspace/resource_profile](../../app/workspace/resource_profile.ep), `fs` (toolchain).
+
+```text
+4: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
 
 ## `tests/security/test_reasoning_existing.ep`
 
@@ -11131,6 +11355,18 @@ Imports: [../../app/workspace/output_archive](../../app/workspace/output_archive
 
 ```text
 4: define main returning Int:
+```
+
+Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).
+
+## `tests/workspace/test_output_preview.ep`
+
+[tests/workspace/test_output_preview.ep](../../tests/workspace/test_output_preview.ep) · 25 lines · SHA-256 `9a29261e4b7b278d70f32e875418af2dcfd9a647812a4deb16100a5450a77b37`
+
+Imports: [../../app/tools/execution_output](../../app/tools/execution_output.ep).
+
+```text
+3: define main returning Int:
 ```
 
 Test references: [tests/discord/test_access_snapshot.py](../../tests/discord/test_access_snapshot.py), [tests/discord/test_snapshot_delivery.py](../../tests/discord/test_snapshot_delivery.py), [tests/discord/test_speech_encoding.py](../../tests/discord/test_speech_encoding.py), [tests/discord/test_speech_worker_failures.py](../../tests/discord/test_speech_worker_failures.py), [tests/discord/voice_dave_thread_lifetime_fixture.c](../../tests/discord/voice_dave_thread_lifetime_fixture.c), [tests/discord/voice_recording_transcription_fixture.c](../../tests/discord/voice_recording_transcription_fixture.c), [tests/memory/test_rank_stable_native.py](../../tests/memory/test_rank_stable_native.py).

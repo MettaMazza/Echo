@@ -1,8 +1,11 @@
+> Current runtime and October 27 verification: [current build](../../CURRENT-BUILD.md). Earlier dated evidence below remains historical; it does not supersede that record.
+
 # Remaining work before production V1
 
 V1 requires completion and production readiness of the agreed Phase Two scope. This is a requirements list, not a percentage or an estimate of engineering time. Partial implementations retain their credit; cross-cutting acceptance is not a second implementation of each feature.
 
-- Resolve unacceptable long research-request latency while preserving highest reasoning and source fidelity.
+- Finish full-workload latency qualification. Closing reports and compaction reviews now use direct structured output; ordinary agent reasoning retains its configured setting. RSI compaction repairs and actual candidate deployment still require end-to-end verification.
+- Complete fresh-machine installation and native Windows/Linux packaging; existing macOS installation verification is not a universal installer.
 - Finish Gmail mailbox/OAuth/action/recovery integration; account authorization remains operator-supplied.
 - Complete generated-tool activation, same-task use, restart/reload, quarantine, rollback and retirement.
 - Qualify successive recursive code-improvement cycles, including rejected candidates and recovery.
