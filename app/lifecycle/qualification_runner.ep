@@ -47,18 +47,71 @@ define qualification_execute with plan as Str and plan_digest as Str and candida
             set closed to net_close(directory)
             set closed to ep_dlclose(library)
             return ""
-        set profile to concat(workspace_compiler_profile() and concat("(allow file-read* file-map-executable process-exec (literal " and concat(provider_quote(executable) and "))\n")))
+        set profile to concat(concat(workspace_compiler_profile() and "(allow signal (target children))\n") and concat("(allow file-read* file-map-executable process-exec (literal " and concat(provider_quote(executable) and "))\n")))
         set profile to concat(profile and concat("(allow file-read* file-map-executable process-exec (literal " and concat(provider_quote(candidate) and "))\n")))
         set profile to concat(profile and concat("(deny file-write* (literal " and concat(provider_quote(candidate) and "))\n")))
-        set environment to ["PATH=/usr/bin:/bin",concat("TMPDIR=" and workspace),"SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"]
+        # Only installed plans can grant these immutable acceptance inputs.
+        # The candidate tree is read/execute-only; test state stays in workspace.
+        if provider_kind(tokens and provider_member(tokens and check and "candidate_tree")) equals "true":
+            set release_fields to provider_json_tokens(file_read(candidate))
+            if release_fields equals 0 or else provider_unique_objects(release_fields) equals 0:
+                return ""
+            set tree to provider_value(release_fields and provider_member(release_fields and 0 and "source_root"))
+            if string_length(tree) < 8 or else get_character(tree and 0) is not equal to 47 or else not (substring(tree and string_length(tree) - 7 and 7) equals "/source"):
+                return ""
+            if workspace equals tree or else string_index_of(workspace and concat(tree and "/")) equals 0:
+                return ""
+            set tree_filter to concat("(subpath " and concat(provider_quote(tree) and ")"))
+            set profile to concat(profile and concat("(allow file-read* file-map-executable process-exec " and concat(tree_filter and ")\n")))
+            set profile to concat(profile and concat("(deny file-write* " and concat(tree_filter and ")\n")))
+            set release_root to substring(tree and 0 and string_length(tree) - 7)
+            set inputs to [provider_value(release_fields and provider_member(release_fields and 0 and "source_manifest"))]
+            set services to provider_items(release_fields and provider_member(release_fields and 0 and "services"))
+            if services equals 0:
+                return ""
+            # Candidate-linked acceptance tests must never inherit access to
+            # credential-bearing profiles. Only a separately pinned immutable
+            # integrity evaluator may receive this explicit installed grant.
+            if provider_kind(tokens and provider_member(tokens and check and "service_profiles")) equals "true":
+                for each service in services:
+                    set added to append_list(inputs and provider_value(release_fields and provider_member(release_fields and service and "profile")))
+            for each input in inputs:
+                set path to ptr_to_str(input)
+                set prefix to concat(release_root and "/")
+                if string_index_of(path and prefix) is not equal to 0:
+                    return ""
+                set leaf to substring(path and string_length(prefix) and string_length(path) - string_length(prefix))
+                set parts to workspace_path_parts(leaf)
+                if parts equals 0 or else length_list(parts) is not equal to 1:
+                    return ""
+                set profile to concat(profile and concat("(allow file-read* (literal " and concat(provider_quote(path) and "))\n")))
+                set profile to concat(profile and concat("(deny file-write* (literal " and concat(provider_quote(path) and "))\n")))
+        set read_files to provider_items(tokens and provider_member(tokens and check and "read_files"))
+        if read_files is not equal to 0:
+            for each item in read_files:
+                set path to provider_value(tokens and item)
+                set profile to concat(profile and concat("(allow file-read* (literal " and concat(provider_quote(path) and "))\n")))
+        set environment to ["PATH=/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin",concat("TMPDIR=" and workspace),"SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"]
         set handle to workspace_sandbox_start_profile(runtime and workspace and executable and arguments and environment and directory and output and output and profile)
         set closed to net_close(output)
         if handle equals 0:
             set closed to net_close(directory)
             set closed to ep_dlclose(library)
             return ""
+        set timeout_ms to 900000
+        set timeout_field to provider_member(tokens and check and "timeout_ms")
+        if timeout_field >= 0:
+            set timeout_ms to string_to_int(provider_value(tokens and timeout_field))
+        set deadline to ep_time_now_ms() + timeout_ms
+        set timed_out to 0
         set state to workspace_process_poll(handle)
         repeat while state equals 0:
+            if ep_time_now_ms() >= deadline:
+                set timed_out to 1
+                repeat while workspace_process_abort(handle) is not equal to 0:
+                    set slept to sleep_ms(10)
+                set state to 1
+                break
             set slept to sleep_ms(10)
             set state to workspace_process_poll(handle)
         if state is not equal to 1:
@@ -66,6 +119,11 @@ define qualification_execute with plan as Str and plan_digest as Str and candida
             set closed to ep_dlclose(library)
             return ""
         set waited to get_list(handle and 3)
+        if timed_out equals 1:
+            set waited to 124
+        set descendants to workspace_process_group_cleanup(handle)
+        if descendants is not equal to 0:
+            set waited to 125
         set closed to workspace_process_close(handle)
         set captured to file_digest_durable(output_path and 65536)
         set after to file_digest_durable(executable and 65536)

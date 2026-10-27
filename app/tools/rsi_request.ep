@@ -1,0 +1,108 @@
+import "../security/tool_policy"
+import "../workspace/files"
+import "../rights/proposals"
+
+# Model data contains source changes and their measured objective, never test
+# commands, service commands, approval receipts or replacement gate settings.
+define rsi_request_valid with arguments as Str returning Int:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 0
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "objective" or else key equals "changes"):
+            return 0
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set objective to provider_member(tokens and 0 and "objective")
+    if not (provider_kind(tokens and objective) equals "string") or else string_length(provider_value(tokens and objective)) equals 0:
+        return 0
+    set changes to provider_items(tokens and provider_member(tokens and 0 and "changes"))
+    if changes equals 0 or else length_list(changes) equals 0:
+        return 0
+    set paths to create_list()
+    for each change in changes:
+        if not (provider_kind(tokens and change) equals "{"):
+            return 0
+        set index to change + 1
+        set fields to 0
+        repeat while not (provider_kind(tokens and index) equals "}"):
+            set key to provider_value(tokens and index)
+            if not (key equals "path" or else key equals "before_sha256" or else key equals "source") or else not (provider_kind(tokens and index + 2) equals "string"):
+                return 0
+            set fields to fields + 1
+            set index to provider_after(tokens and index + 2)
+            if provider_kind(tokens and index) equals ",":
+                set index to index + 1
+        if fields is not equal to 3:
+            return 0
+        set path to provider_value(tokens and provider_member(tokens and change and "path"))
+        if string_length(path) < 8 or else not (ptr_to_str(substring(path and 0 and 4)) equals "app/") or else not (ptr_to_str(substring(path and string_length(path) - 3 and 3)) equals ".ep") or else workspace_path_parts(path) equals 0:
+            return 0
+        for each previous in paths:
+            if ptr_to_str(previous) equals path:
+                return 0
+        set added to append_list(paths and path)
+        if protected_digest_valid(provider_value(tokens and provider_member(tokens and change and "before_sha256"))) equals 0 or else string_length(provider_value(tokens and provider_member(tokens and change and "source"))) equals 0:
+            return 0
+    return 1
+
+# Dispatch's durable call identity and current frozen authority own the request.
+# The external controller independently rechecks it before staging/activation.
+define rsi_request_execute with database as Int and run as Str and call_id as Str returning Str:
+    if tool_policy_allows(database and run and call_id and "self_improve") equals 0:
+        return "{\"audience\":\"public-system\",\"status\":\"not-authorized\",\"effects\":\"none\"}"
+    if not (ptr_to_str(get_env("ECHO_RSI_ENABLED")) equals "1"):
+        return "{\"audience\":\"public-system\",\"status\":\"controller-not-installed\",\"effects\":\"none\"}"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "{\"audience\":\"public-system\",\"status\":\"archive-busy\",\"effects\":\"none\"}"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.session,json_extract(e.payload,'$.arguments') FROM echo_tool_calls t JOIN echo_runs r ON r.run=t.run JOIN echo_events e ON e.event=t.request_event WHERE t.run=?1 AND t.call_id=?2 AND t.state='running' AND r.state='tools';" and [run,call_id]))
+    if not (archive_list_text(row and 0) equals "found") or else rsi_request_valid(archive_list_text(row and 2)) equals 0 or else tool_policy_allows(database and run and call_id and "self_improve") equals 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"audience\":\"public-system\",\"status\":\"invalid-or-revoked-request\",\"effects\":\"none\"}"
+    set identity to concat("rsi-request:" and ep_sha256(concat(archive_hash_field(run) and archive_hash_field(call_id))))
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"request\":" and concat(archive_list_text(row and 2) and "}")))
+    set prior to archive_read_event(database and identity)
+    if prior is not equal to 0:
+        if not (archive_list_text(prior and 0) equals archive_list_text(row and 1)) or else not (archive_list_text(prior and 2) equals "rsi_candidate_request") or else not (archive_list_text(prior and 3) equals payload):
+            set ignored to sql_execute(database and "ROLLBACK;")
+            return "{\"audience\":\"public-system\",\"status\":\"request-conflict\",\"effects\":\"none\"}"
+    else if archive_append_pending(database and archive_list_text(row and 1) and identity and "rsi_candidate_request" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"audience\":\"public-system\",\"status\":\"archive-error\",\"effects\":\"none\"}"
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"audience\":\"public-system\",\"status\":\"archive-error\",\"effects\":\"none\"}"
+    return concat("{\"status\":\"queued\",\"audience\":\"public-system\",\"request\":" and concat(provider_quote(identity) and ",\"deployment\":\"pending independent build, fixed acceptance, Echo review and healthy activation\"}"))
+
+define rsi_request_schema returning Str:
+    return "{\"type\":\"function\",\"function\":{\"name\":\"self_improve\",\"description\":\"Admin: submit an isolated application source candidate to the installed autonomous improvement controller. First inspect actual source and record the measured defect. Supply full replacement Ernos source for changed app files and their observed preimage hashes. The controller owns build commands, frozen acceptance, exact Echo review, deployment, draining, health checks and rollback. Queued is not deployed. Cannot modify private memory, credentials, test definitions or the controller installation.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"objective\":{\"type\":\"string\"},\"changes\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"before_sha256\":{\"type\":\"string\"},\"source\":{\"type\":\"string\"}},\"required\":[\"path\",\"before_sha256\",\"source\"],\"additionalProperties\":false}}},\"required\":[\"objective\",\"changes\"],\"additionalProperties\":false}}}"
+
+# Read only the public controller receipt; never expose its private ledger.
+define rsi_status_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if tool_policy_allows(database and run and call_id and "rsi_status") equals 0:
+        return "{\"audience\":\"public-system\",\"status\":\"not-authorized\"}"
+    set tokens to provider_json_tokens(arguments)
+    set request to provider_value(tokens and provider_member(tokens and 0 and "request"))
+    if string_length(request) is not equal to 76 or else not (substring(request and 0 and 12) equals "rsi-request:"):
+        return "{\"audience\":\"public-system\",\"status\":\"invalid-request\"}"
+    set suffix to substring(request and 12 and 64)
+    if protected_digest_valid(suffix) equals 0:
+        return "{\"audience\":\"public-system\",\"status\":\"invalid-request\"}"
+    set root to ptr_to_str(get_env("ECHO_RSI_STATUS_ROOT"))
+    if string_length(root) equals 0:
+        return "{\"audience\":\"public-system\",\"status\":\"controller-not-installed\"}"
+    set receipt to file_read(concat(root and concat("/" and concat(suffix and ".json"))))
+    if string_length(receipt) equals 0:
+        return "{\"audience\":\"public-system\",\"status\":\"awaiting-controller-receipt\"}"
+    set fields to provider_json_tokens(receipt)
+    if fields equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "request")) equals request):
+        return "{\"audience\":\"public-system\",\"status\":\"receipt-invalid\"}"
+    return receipt
+
+define rsi_status_schema returning Str:
+    return "{\"type\":\"function\",\"function\":{\"name\":\"rsi_status\",\"description\":\"Read the controller receipt for a self_improve request. Only activated-and-verified confirms deployment. Queued is not deployed. Return the exact status and request ID.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"request\":{\"type\":\"string\"}},\"required\":[\"request\"],\"additionalProperties\":false}}}"

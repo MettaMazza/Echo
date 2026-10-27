@@ -1,0 +1,145 @@
+import "rsi_source_manifest"
+import "service_profile"
+
+# Installed profile templates contain only host configuration. Replace explicit
+# deployment placeholders, never arbitrary model-selected environment fields.
+define rsi_release_manifest with templates as Str and build_report as Str and source_manifest as Str and source_root as Str and release_root as Str returning Str:
+    set configured to provider_json_tokens(templates)
+    set built to provider_json_tokens(build_report)
+    set services to provider_items(configured and provider_member(configured and 0 and "services"))
+    set artifacts to provider_items(built and provider_member(built and 0 and "artifacts"))
+    if services equals 0 or else artifacts equals 0 or else length_list(services) equals 0 or else string_length(source_manifest) equals 0:
+        return ""
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and release_root)
+    if directory < 0:
+        set closed to ep_dlclose(library)
+        return ""
+    set result to rsi_release_profiles(library and directory and configured and services and built and artifacts and source_manifest and source_root and release_root)
+    if string_length(result) > 0:
+        set result to substring(result and 0 and string_length(result) - 1)
+        set result to concat(result and ",\"build_report\":")
+        set result to concat(result and build_report)
+        set result to concat(result and "}")
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    return result
+
+define rsi_release_profiles with library as Int and directory as Int and config as List and services as List and built as List and artifacts as List and source_manifest as Str and source_root as Str and root as Str returning Str:
+    if rsi_source_write(library and directory and "source-manifest.json" and source_manifest) is not equal to 0:
+        return ""
+    set result to concat("{\"source_root\":" and provider_quote(source_root))
+    set result to concat(result and concat(",\"source_manifest\":" and provider_quote(concat(root and "/source-manifest.json"))))
+    set result to concat(result and concat(",\"source_manifest_sha256\":" and provider_quote(ep_sha256(source_manifest))))
+    set result to concat(result and ",\"services\":[")
+    set count to 0
+    set names to create_list()
+    for each service in services:
+        set name to provider_value(config and provider_member(config and service and "name"))
+        set entry to provider_value(config and provider_member(config and service and "entry"))
+        set profile_text to provider_value(config and provider_member(config and service and "profile"))
+        set parts to workspace_path_parts(name)
+        if parts equals 0 or else length_list(parts) is not equal to 1 or else string_length(profile_text) equals 0:
+            return ""
+        for each prior in names:
+            if ptr_to_str(prior) equals name:
+                return ""
+        set added to append_list(names and name)
+        set binary_pin to ""
+        for each artifact in artifacts:
+            if provider_value(built and provider_member(built and artifact and "name")) equals entry:
+                if string_length(binary_pin) > 0:
+                    return ""
+                set binary_pin to provider_value(built and provider_member(built and artifact and "sha256"))
+        if protected_digest_valid(binary_pin) equals 0:
+            return ""
+        set rendered to ptr_to_str(string_replace(profile_text and "__ECHO_RELEASE__" and root))
+        set rendered to ptr_to_str(string_replace(rendered and "__ECHO_SOURCE__" and source_root))
+        set rendered to ptr_to_str(string_replace(rendered and "__ECHO_BUILD_SHA256__" and binary_pin))
+        set profile to provider_json_tokens(rendered)
+        set executable to concat(source_root and concat("/" and entry))
+        if service_profile_valid(profile) equals 0 or else not (provider_value(profile and provider_member(profile and 0 and "executable")) equals executable):
+            return ""
+        set binary to file_digest_durable(executable and 65536)
+        if not (archive_list_text(binary and 0) equals "verified") or else not (archive_list_text(binary and 1) equals binary_pin):
+            return ""
+        set profile_name to concat(name and ".json")
+        if rsi_source_write(library and directory and profile_name and rendered) is not equal to 0:
+            return ""
+        if count > 0:
+            set result to concat(result and ",")
+        set result to concat(result and concat("{\"name\":" and provider_quote(name)))
+        set result to concat(result and concat(",\"profile\":" and provider_quote(concat(root and concat("/" and profile_name)))))
+        set result to concat(result and concat(",\"profile_sha256\":" and provider_quote(ep_sha256(rendered))))
+        set result to concat(result and concat(",\"executable_sha256\":" and provider_quote(binary_pin)))
+        set result to concat(result and "}")
+        set count to count + 1
+    return concat(result and "]}")
+
+# Source/binaries are readable to the unprivileged service account. Deployment
+# profiles remain root-private and are read only by the immutable launcher.
+define rsi_release_readable with source_manifest as Str and specification as Str and build_report as Str and source_root as Str and release_root as Str returning Int:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and source_root)
+    set release_directory to workspace_root_open(library and release_root)
+    if directory < 0 or else release_directory < 0:
+        return 1
+    set failed to 0
+    for each document in [source_manifest,specification]:
+        set config to provider_json_tokens(ptr_to_str(document))
+        set files to provider_items(config and provider_member(config and 0 and "files"))
+        if files equals 0:
+            set failed to 1
+            break
+        for each item in files:
+            set path to provider_value(config and provider_member(config and item and "path"))
+            set parts to workspace_path_parts(path)
+            if parts equals 0:
+                set failed to 1
+                break
+            set prefix to ""
+            set index to 0
+            repeat while index < length_list(parts) - 1:
+                if index > 0:
+                    set prefix to concat(prefix and "/")
+                set prefix to concat(prefix and archive_list_text(parts and index))
+                set parent to workspace_directory_open(library and directory and prefix and 0)
+                if parent < 0:
+                    set failed to 1
+                    break
+                set changed to ep_dlcall2(ep_dlsym(library and "fchmod") and parent and 493)
+                set closed to net_close(parent)
+                if changed is not equal to 0:
+                    set failed to 1
+                    break
+                set index to index + 1
+            set file to workspace_file_open(library and directory and path and 0)
+            if file < 0:
+                set failed to 1
+                break
+            set changed to ep_dlcall2(ep_dlsym(library and "fchmod") and file and 292)
+            set closed to net_close(file)
+            if changed is not equal to 0:
+                set failed to 1
+                break
+    set build to provider_json_tokens(build_report)
+    set artifacts to provider_items(build and provider_member(build and 0 and "artifacts"))
+    for each item in artifacts:
+        set name to provider_value(build and provider_member(build and item and "name"))
+        set file to workspace_file_open(library and directory and name and 0)
+        if file < 0:
+            set failed to 1
+            break
+        set changed to ep_dlcall2(ep_dlsym(library and "fchmod") and file and 365)
+        set closed to net_close(file)
+        if changed is not equal to 0:
+            set failed to 1
+            break
+    set failed to failed + ep_dlcall2(ep_dlsym(library and "fchmod") and directory and 493)
+    set failed to failed + ep_dlcall2(ep_dlsym(library and "fchmod") and release_directory and 493)
+    set flushed to ep_dlcall1(ep_dlsym(library and "fsync") and directory)
+    set flushed to flushed + ep_dlcall1(ep_dlsym(library and "fsync") and release_directory)
+    set closed to net_close(directory)
+    set closed to net_close(release_directory)
+    set closed to ep_dlclose(library)
+    return failed + flushed

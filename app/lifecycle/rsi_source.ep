@@ -1,0 +1,101 @@
+import "../tools/rsi_request"
+import "../rights/staging"
+import "../workspace/ernos_runtime"
+import "../workspace/directories"
+
+# Source manifest is pinned by the installed controller, not supplied by the
+# candidate. Only application source can change; tests and runtime stay external.
+define rsi_source_parent with library as Int and root as Int and path as Str returning Int:
+    set parts to workspace_path_parts(path)
+    if parts equals 0 or else length_list(parts) < 2:
+        return -1
+    set parent to ""
+    set index to 0
+    repeat while index < length_list(parts) - 1:
+        if index > 0:
+            set parent to concat(parent and "/")
+        set parent to concat(parent and archive_list_text(parts and index))
+        set index to index + 1
+    return workspace_directory_open(library and root and parent and 1)
+
+define rsi_source_stage with manifest as Str and manifest_pin as Str and request as Str and source_root as Str and stage_root as Str returning Str:
+    if not (ep_sha256(manifest) equals manifest_pin) or else rsi_request_valid(request) equals 0 or else source_root equals stage_root:
+        return "invalid-source-request"
+    set baseline to provider_json_tokens(manifest)
+    set tokens to provider_json_tokens(request)
+    if baseline equals 0 or else provider_unique_objects(baseline) equals 0:
+        return "invalid-source-manifest"
+    set files to provider_items(baseline and provider_member(baseline and 0 and "files"))
+    set changes to provider_items(tokens and provider_member(tokens and 0 and "changes"))
+    if files equals 0 or else length_list(files) equals 0:
+        return "invalid-source-manifest"
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_root_open(library and stage_root)
+    if root < 0:
+        set closed to ep_dlclose(library)
+        return "stage-unavailable"
+    set outcome to rsi_source_stage_files(library and root and baseline and files and tokens and changes and source_root and stage_root)
+    set closed to net_close(root)
+    set closed to ep_dlclose(library)
+    return outcome
+
+define rsi_source_stage_files with library as Int and root as Int and baseline as List and files as List and tokens as List and changes as List and source_root as Str and stage_root as Str returning Str:
+    set paths to create_list()
+    set matched to create_list()
+    for each entry in files:
+        set path to provider_value(baseline and provider_member(baseline and entry and "path"))
+        set digest to provider_value(baseline and provider_member(baseline and entry and "sha256"))
+        if workspace_path_parts(path) equals 0 or else string_length(path) < 8 or else not (substring(path and 0 and 4) equals "app/") or else not (substring(path and string_length(path) - 3 and 3) equals ".ep") or else protected_digest_valid(digest) equals 0:
+            return "invalid-source-manifest"
+        for each prior in paths:
+            if ptr_to_str(prior) equals path:
+                return "duplicate-source-path"
+        set added to append_list(paths and path)
+        set source to concat(source_root and concat("/" and path))
+        set observed to file_digest_durable(source and 65536)
+        if not (archive_list_text(observed and 0) equals "verified") or else not (archive_list_text(observed and 1) equals digest):
+            return "source-baseline-changed"
+        set changed_source to ""
+        for each change in changes:
+            if provider_value(tokens and provider_member(tokens and change and "path")) equals path:
+                if not (provider_value(tokens and provider_member(tokens and change and "before_sha256")) equals digest):
+                    return "candidate-preimage-mismatch"
+                set changed_source to provider_value(tokens and provider_member(tokens and change and "source"))
+                set added to append_list(matched and path)
+        set parent to rsi_source_parent(library and root and path)
+        if parent < 0:
+            return "stage-directory-unavailable"
+        set closed to net_close(parent)
+        if string_length(changed_source) equals 0:
+            set copied to protected_stage_copy(source and concat(stage_root and concat("/" and path)) and digest)
+            if not (copied equals "staged" or else copied equals "already-staged"):
+                return concat("source-copy:" and copied)
+        else:
+            if rsi_source_write(library and root and path and changed_source) is not equal to 0:
+                return "candidate-write-conflict"
+    for each change in changes:
+        set path to provider_value(tokens and provider_member(tokens and change and "path"))
+        set found to 0
+        for each existing in matched:
+            if ptr_to_str(existing) equals path:
+                set found to 1
+        if found equals 0:
+            if not (provider_value(tokens and provider_member(tokens and change and "before_sha256")) equals "0000000000000000000000000000000000000000000000000000000000000000"):
+                return "new-source-requires-zero-preimage"
+            set parent to rsi_source_parent(library and root and path)
+            if parent < 0:
+                return "stage-directory-unavailable"
+            set closed to net_close(parent)
+            if rsi_source_write(library and root and path and provider_value(tokens and provider_member(tokens and change and "source"))) is not equal to 0:
+                return "new-source-write-conflict"
+    return "source-staged"
+
+define rsi_source_write with library as Int and root as Int and path as Str and content as Str returning Int:
+    set descriptor to workspace_file_open(library and root and path and 1)
+    if descriptor < 0:
+        return 1
+    set written to file_stage_write(library and descriptor and str_to_ptr(content) and string_length(content))
+    set finished to file_stage_finish(library and descriptor)
+    if written is not equal to 0 or else finished is not equal to 0:
+        return 1
+    return 0

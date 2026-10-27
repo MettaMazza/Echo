@@ -1,0 +1,237 @@
+import "rsi_archive"
+import "rsi_build"
+import "rsi_release"
+import "controller_autonomous"
+import "../rights/observer_audit"
+
+# Every external input is installed and pinned; the queue supplies only source
+# replacements plus an objective. The controller never imports runtime roles.
+define rsi_pinned_input with config as List and key as Str returning Str:
+    set path to provider_value(config and provider_member(config and 0 and key))
+    set expected to provider_value(config and provider_member(config and 0 and concat(key and "_sha256")))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set descriptor to protected_path_open(library and path and 0)
+    if descriptor < 0:
+        set closed to ep_dlclose(library)
+        return ""
+    set content to file_read(path)
+    set closed to net_close(descriptor)
+    set closed to ep_dlclose(library)
+    if not (ep_sha256(content) equals expected):
+        return ""
+    return content
+
+define rsi_test_inputs_stage with specification as Str and source as Str and destination as Str returning Int:
+    set config to provider_json_tokens(specification)
+    set files to provider_items(config and provider_member(config and 0 and "files"))
+    if files equals 0 or else length_list(files) equals 0:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_root_open(library and destination)
+    if root < 0:
+        set closed to ep_dlclose(library)
+        return 1
+    set failed to 0
+    for each entry in files:
+        set path to provider_value(config and provider_member(config and entry and "path"))
+        set pin to provider_value(config and provider_member(config and entry and "sha256"))
+        if workspace_path_parts(path) equals 0 or else string_index_of(path and "tests/") is not equal to 0:
+            set failed to 1
+            break
+        set parent to rsi_source_parent(library and root and path)
+        if parent < 0:
+            set failed to 1
+            break
+        set closed to net_close(parent)
+        set source_path to concat(source and concat("/" and path))
+        set target to concat(destination and concat("/" and path))
+        set copied to protected_stage_copy(source_path and target and pin)
+        if not (copied equals "staged" or else copied equals "already-staged"):
+            set failed to 1
+            break
+    set closed to net_close(root)
+    set closed to ep_dlclose(library)
+    return failed
+
+# Durable candidate receipt precedes review/activation. Restart resumes that
+# exact candidate; an interrupted build without a receipt gets a fresh directory.
+define rsi_pipeline_candidate with database as Int and config as List and identity as Str and request as Str returning List:
+    set session to concat("rsi:" and identity)
+    set receipt_id to concat(session and ":candidate")
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=? AND kind='rsi_candidate';" and [receipt_id]))
+    if archive_list_text(prior and 0) equals "found":
+        return ["candidate",archive_list_text(prior and 1)]
+    if not (archive_list_text(prior and 0) equals "end"):
+        return history_status("candidate-read-failed")
+    set parent to provider_value(config and provider_member(config and 0 and "release_directory"))
+    set active_path to concat(parent and "/active.json")
+    set active_text to file_read(active_path)
+    set active to provider_json_tokens(active_text)
+    if active equals 0 or else provider_unique_objects(active) equals 0:
+        return history_status("active-release-invalid")
+    set source_root to provider_value(active and provider_member(active and 0 and "source_root"))
+    set baseline to file_read(provider_value(active and provider_member(active and 0 and "source_manifest")))
+    set baseline_pin to provider_value(active and provider_member(active and 0 and "source_manifest_sha256"))
+    if not (ep_sha256(baseline) equals baseline_pin):
+        return history_status("source-manifest-changed")
+    set plan to rsi_pinned_input(config and "build_plan")
+    set specification to rsi_pinned_input(config and "acceptance_spec")
+    set templates to rsi_pinned_input(config and "service_templates")
+    if string_length(plan) equals 0 or else string_length(specification) equals 0 or else string_length(templates) equals 0:
+        return history_status("installed-build-input-changed")
+    set attempt to ptr_to_str(ep_uuid_v4())
+    set release_name to concat("release-" and attempt)
+    set release_root to concat(parent and concat("/" and release_name))
+    set stage_root to concat(release_root and "/source")
+    set work_parent to provider_value(config and provider_member(config and 0 and "work_directory"))
+    set work_root to concat(work_parent and concat("/" and attempt))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set releases to protected_path_open(library and parent and 1)
+    set work to protected_path_open(library and work_parent and 1)
+    if releases < 0 or else work < 0:
+        set closed to ep_dlclose(library)
+        return history_status("controller-directories-unavailable")
+    set source_directory to workspace_directory_open(library and releases and concat(release_name and "/source") and 1)
+    set job_directory to workspace_directory_open(library and work and attempt and 1)
+    if source_directory < 0 or else job_directory < 0:
+        return history_status("candidate-directory-create-failed")
+    for each name in ["build-logs","qualification","workspace"]:
+        set created to workspace_directory_open(library and job_directory and ptr_to_str(name) and 1)
+        if created < 0:
+            return history_status("candidate-directory-create-failed")
+        set closed to net_close(created)
+    set closed to net_close(source_directory)
+    set closed to net_close(job_directory)
+    set closed to net_close(releases)
+    set closed to net_close(work)
+    set closed to ep_dlclose(library)
+    set staged to rsi_source_stage(baseline and baseline_pin and request and source_root and stage_root)
+    if not (staged equals "source-staged"):
+        return history_status(staged)
+    set test_root to provider_value(config and provider_member(config and 0 and "test_source_root"))
+    if rsi_test_inputs_stage(specification and test_root and stage_root) is not equal to 0:
+        return history_status("fixed-test-input-changed")
+    set support_library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set support_root to workspace_root_open(support_library and stage_root)
+    set build_fields to provider_json_tokens(plan)
+    set runtime_path to provider_value(build_fields and provider_member(build_fields and 0 and "runtime"))
+    set ernos_path to concat(runtime_path and "/ernos")
+    set linked to ep_dlcall3(ep_dlsym(support_library and "symlinkat") and str_to_ptr(ernos_path) and support_root and str_to_ptr("ernos"))
+    set closed to net_close(support_root)
+    set closed to ep_dlclose(support_library)
+    if linked is not equal to 0:
+        return history_status("compiler-support-link-failed")
+    set report to rsi_build_candidate(plan and ep_sha256(plan) and stage_root and concat(work_root and "/build-logs"))
+    if string_length(report) equals 0:
+        return history_status("candidate-build-failed")
+    set next_source to rsi_source_manifest(baseline and request and stage_root)
+    if string_length(next_source) equals 0:
+        return history_status("candidate-source-changed-during-build")
+    set release_text to rsi_release_manifest(templates and report and next_source and stage_root and release_root)
+    if string_length(release_text) equals 0:
+        return history_status("candidate-profile-invalid")
+    if rsi_release_readable(next_source and specification and report and stage_root and release_root) is not equal to 0:
+        return history_status("release-permissions-failed")
+    set stage_name to concat("candidate-" and concat(identity and concat("-" and concat(attempt and ".json"))))
+    set recovery_name to concat("recovery-" and concat(identity and concat("-" and concat(attempt and ".json"))))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set releases to protected_path_open(library and parent and 1)
+    if releases < 0:
+        return history_status("release-directory-unavailable")
+    set stored to rsi_source_write(library and releases and stage_name and release_text)
+    set recovery_stored to rsi_source_write(library and releases and recovery_name and active_text)
+    set closed to net_close(releases)
+    set closed to ep_dlclose(library)
+    if stored is not equal to 0 or else recovery_stored is not equal to 0:
+        return history_status("candidate-publication-conflict")
+    set receipt to concat("{\"stage\":" and provider_quote(stage_name))
+    set receipt to concat(receipt and concat(",\"recovery\":" and provider_quote(concat(parent and concat("/" and recovery_name)))))
+    set receipt to concat(receipt and concat(",\"work\":" and provider_quote(work_root)))
+    set receipt to concat(receipt and concat(",\"before_sha256\":" and provider_quote(ep_sha256(active_text))))
+    set receipt to concat(receipt and concat(",\"after_sha256\":" and provider_quote(ep_sha256(release_text))))
+    set receipt to concat(receipt and "}")
+    if archive_append(database and session and receipt_id and "rsi_candidate" and receipt and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return history_status("candidate-receipt-failed")
+    return ["candidate",receipt]
+
+define rsi_pipeline_run with database as Int and config as List and loaded as List and identity as Str and request as Str returning Str:
+    set candidate to rsi_pipeline_candidate(database and config and identity and request)
+    if not (archive_list_text(candidate and 0) equals "candidate"):
+        return archive_list_text(candidate and 0)
+    set fields to provider_json_tokens(archive_list_text(candidate and 1))
+    set parent to provider_value(config and provider_member(config and 0 and "release_directory"))
+    set target to concat(parent and "/active.json")
+    set proposal to concat("rsi-proposal:" and identity)
+    set run to concat("rsi-review:" and identity)
+    set disclosure to rsi_review_disclosure(fields and parent and request)
+    if string_length(disclosure) equals 0:
+        return "review-release-evidence-changed"
+    set device to provider_value(config and provider_member(config and 0 and "review_device"))
+    set objective to concat("Review the exact source improvement proposal " and proposal)
+    set objective to concat(objective and ". Inspect its manifest and record your own decision. Deployment independently requires the installed acceptance suite, Observer approval, idle activation and verified recovery. No human approval is requested.")
+    set submitted to web_submit_owned(database and device and run and "" and objective)
+    if not (archive_list_text(submitted and 0) equals "accepted"):
+        return "review-submission-failed"
+    set manifest to protected_inventory_manifest(archive_list_text(loaded and 2) and archive_list_text(loaded and 3) and archive_list_text(loaded and 4) and target and provider_value(fields and provider_member(fields and 0 and "before_sha256")) and provider_value(fields and provider_member(fields and 0 and "after_sha256")) and disclosure)
+    set stored to protected_proposal_store(database and archive_list_text(loaded and 2) and run and proposal and manifest)
+    if not (stored equals "recorded" or else stored equals "already-recorded"):
+        return stored
+    set controller_path to provider_value(config and provider_member(config and 0 and "controller_configuration"))
+    set inputs to controller_review_inputs_load(controller_path)
+    if not (archive_list_text(inputs and 0) equals "ready"):
+        return archive_list_text(inputs and 0)
+    set reviewed to controller_review_run(database and run and archive_list_text(inputs and 1) and archive_list_text(inputs and 2) and 1 and -1 and 65536)
+    if not (reviewed equals "completed"):
+        return concat("review:" and reviewed)
+    set audit_receipt to concat("rsi:" and concat(identity and ":observer-request"))
+    set retained to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=? AND kind='rsi_observer_request';" and [audit_receipt]))
+    set audit to ""
+    if archive_list_text(retained and 0) equals "found":
+        set audit to archive_list_text(retained and 1)
+    else if archive_list_text(retained and 0) equals "end":
+        set audit to concat("rsi-audit:" and concat(identity and concat(":" and ptr_to_str(ep_uuid_v4()))))
+        set audited to protected_observer_generate(database and run and proposal and audit and archive_list_text(loaded and 5) and ep_sha256(archive_list_text(loaded and 5)) and archive_list_text(inputs and 1) and 1 and -1 and 65536)
+        if not (audited equals "audit-recorded"):
+            return concat("observer:" and audited)
+        if archive_append(database and concat("rsi:" and identity) and audit_receipt and "rsi_observer_request" and audit and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return "observer-receipt-failed"
+    else:
+        return "observer-receipt-unavailable"
+    set admission to archive_read_event(database and concat("rsi:" and concat(identity and ":admitted")))
+    if admission equals 0:
+        return "source-admission-unavailable"
+    set original to provider_json_tokens(archive_list_text(admission and 3))
+    set source_path to provider_value(original and provider_member(original and 0 and "source"))
+    set sources to provider_items(config and provider_member(config and 0 and "sources"))
+    set gate to ""
+    for each source in sources:
+        if provider_value(config and provider_member(config and source and "path")) equals source_path:
+            set principals to provider_value(config and provider_member(config and source and "principals"))
+            set gate to concat("{\"source\":" and provider_quote(source_path))
+            set gate to concat(gate and concat(",\"event\":" and provider_quote(provider_value(original and provider_member(original and 0 and "event")))))
+            set gate to concat(gate and concat(",\"principals\":" and concat(provider_quote(principals) and "}")))
+    if string_length(gate) equals 0:
+        return "source-no-longer-enrolled"
+    set admitted_loaded to create_list()
+    set index to 0
+    repeat while index < 8:
+        set added to append_list(admitted_loaded and get_list(loaded and index))
+        set index to index + 1
+    set added to append_list(admitted_loaded and gate)
+    set work to provider_value(fields and provider_member(fields and 0 and "work"))
+    set runtime to provider_value(config and provider_member(config and 0 and "runtime"))
+    return controller_autonomous_run(database and admitted_loaded and proposal and concat("rsi-operation:" and identity) and parent and "active.json" and provider_value(fields and provider_member(fields and 0 and "stage")) and provider_value(fields and provider_member(fields and 0 and "recovery")) and audit and concat(work and "/workspace") and runtime and concat(work and "/qualification"))
+
+# Hash-bound complete target disclosure shared by both independent reviewers.
+define rsi_review_disclosure with fields as List and parent as Str and request as Str returning Str:
+    # Review the exact release pointer bytes, not only the source request. Service
+    # profiles remain private: manifests disclose their paths and hashes only.
+    set before_release to file_read(provider_value(fields and provider_member(fields and 0 and "recovery")))
+    set after_release to file_read(concat(parent and concat("/" and provider_value(fields and provider_member(fields and 0 and "stage")))))
+    if not (ep_sha256(before_release) equals provider_value(fields and provider_member(fields and 0 and "before_sha256"))) or else not (ep_sha256(after_release) equals provider_value(fields and provider_member(fields and 0 and "after_sha256"))):
+        return ""
+    set disclosure to concat("{\"source_request\":" and request)
+    set disclosure to concat(disclosure and concat(",\"target_before_bytes\":" and provider_quote(before_release)))
+    set disclosure to concat(disclosure and concat(",\"target_after_bytes\":" and provider_quote(after_release)))
+    set disclosure to concat(disclosure and ",\"execution_conditions\":\"Authenticated enrolled administrator request; independent current authority recheck, Echo consent, Observer approval, pinned acceptance, idle activation and verified recovery are all required. This review alone does not authorize execution.\"}")
+    return disclosure

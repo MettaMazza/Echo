@@ -1,0 +1,76 @@
+import "lifecycle/protected_path"
+import "transport/http_head"
+import "lifecycle/service_profile"
+import "archive/file_digest"
+
+# Launchd starts this immutable entry as root; it drops to Echo before exec. A controller
+# atomically publishes one manifest for the complete release. Each service reads
+# it on restart; candidate code cannot replace this launcher or its configuration.
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set descriptor to protected_path_open(library and get_argument(1) and 0)
+    if descriptor < 0:
+        return 2
+    set configuration to file_read(get_argument(1))
+    set closed to net_close(descriptor)
+    set config to provider_json_tokens(configuration)
+    if config equals 0 or else provider_unique_objects(config) equals 0:
+        return 3
+    set active to provider_value(config and provider_member(config and 0 and "active_manifest"))
+    set descriptor to protected_path_open(library and active and 0)
+    if descriptor < 0:
+        return 4
+    set content to file_read(active)
+    set closed to net_close(descriptor)
+    set manifest to provider_json_tokens(content)
+    if manifest equals 0 or else provider_unique_objects(manifest) equals 0:
+        return 5
+    set services to provider_items(manifest and provider_member(manifest and 0 and "services"))
+    if services equals 0:
+        return 6
+    set selected to ""
+    set selected_pin to ""
+    set binary_pin to ""
+    for each service in services:
+        if provider_value(manifest and provider_member(manifest and service and "name")) equals get_argument(2):
+            if string_length(selected) > 0:
+                return 7
+            set selected to provider_value(manifest and provider_member(manifest and service and "profile"))
+            set selected_pin to provider_value(manifest and provider_member(manifest and service and "profile_sha256"))
+            set binary_pin to provider_value(manifest and provider_member(manifest and service and "executable_sha256"))
+    if string_length(selected) equals 0 or else string_length(selected_pin) is not equal to 64 or else string_length(binary_pin) is not equal to 64:
+        return 8
+    set descriptor to protected_path_open(library and selected and 0)
+    if descriptor < 0:
+        return 9
+    set profile to file_read(selected)
+    set closed to net_close(descriptor)
+    if not (ep_sha256(profile) equals selected_pin):
+        return 10
+    set parsed to provider_json_tokens(profile)
+    if service_profile_valid(parsed) equals 0:
+        return 11
+    set executable to provider_value(parsed and provider_member(parsed and 0 and "executable"))
+    set descriptor to protected_path_open(library and executable and 0)
+    if descriptor < 0:
+        return 12
+    set observed to file_digest_owned_descriptor(library and descriptor and 65536 and 0)
+    if not (archive_list_text(observed and 0) equals "verified") or else not (archive_list_text(observed and 1) equals binary_pin):
+        return 13
+    # Read root-private profiles first, then permanently drop all root identity
+    # before any replaceable application binary runs. Secrets stay mode0600.
+    set uid to http_decimal(provider_value(config and provider_member(config and 0 and "uid")))
+    set gid to http_decimal(provider_value(config and provider_member(config and 0 and "gid")))
+    if uid < 501 or else gid < 1 or else ep_dlcall0(ep_dlsym(library and "geteuid")) is not equal to 0:
+        set closed to ep_dlclose(library)
+        return 14
+    if ep_dlcall2(ep_dlsym(library and "setgroups") and 0 and 0) is not equal to 0 or else ep_dlcall1(ep_dlsym(library and "setgid") and gid) is not equal to 0 or else ep_dlcall1(ep_dlsym(library and "setuid") and uid) is not equal to 0:
+        set closed to ep_dlclose(library)
+        return 15
+    if ep_dlcall0(ep_dlsym(library and "getuid")) is not equal to uid or else ep_dlcall0(ep_dlsym(library and "geteuid")) is not equal to uid:
+        set closed to ep_dlclose(library)
+        return 16
+    set closed to ep_dlclose(library)
+    return service_profile_run(profile and 0)

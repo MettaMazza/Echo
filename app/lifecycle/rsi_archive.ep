@@ -1,0 +1,65 @@
+import "rsi_admission"
+
+# Installed controller configuration supplies this path. Open without CREATE or
+# write flags, and never run schema migrations against a runtime archive.
+define rsi_archive_open with path as Str returning Int:
+    if string_length(path) < 2 or else get_character(path and 0) is not equal to 47:
+        return 0
+    set library to ep_dlopen("/usr/lib/libsqlite3.dylib")
+    if library equals 0:
+        return 0
+    set handle to create_list()
+    set added to append_list(handle and 0)
+    set opened to ep_dlcall4(ep_dlsym(library and "sqlite3_open_v2") and str_to_ptr(path) and get_list_data_ptr(handle) and 1 and 0)
+    set database to get_list(handle and 0)
+    if opened is not equal to 0:
+        if database is not equal to 0:
+            set closed to sql_close(database)
+        set closed to ep_dlclose(library)
+        return 0
+    set configured to sql_execute(database and "PRAGMA query_only=ON; PRAGMA busy_timeout=5000;")
+    set closed to ep_dlclose(library)
+    if configured is not equal to 0:
+        set closed to sql_close(database)
+        return 0
+    return database
+
+# Copy only a revalidated admin request, never user memories or runtime authority
+# tables. Durable admission binds the original archive and exact request bytes.
+define rsi_archive_admit with controller as Int and source_path as Str and event as Str and principals as Str returning List:
+    set source to rsi_archive_open(source_path)
+    if source equals 0:
+        return history_status("source-unavailable")
+    set request to rsi_request_admit(source and event and principals)
+    set closed to sql_close(source)
+    if closed is not equal to 0:
+        return history_status("source-close-failed")
+    if not (archive_list_text(request and 0) equals "authorized"):
+        return request
+    set source_field to archive_hash_field(source_path)
+    set event_field to archive_hash_field(event)
+    set identity to ep_sha256(concat(source_field and event_field))
+    set session to concat("rsi:" and identity)
+    set admission_event to concat(session and ":admitted")
+    set payload to concat("{\"source\":" and provider_quote(source_path))
+    set payload to concat(payload and concat(",\"event\":" and provider_quote(event)))
+    set payload to concat(payload and concat(",\"principal\":" and provider_quote(archive_list_text(request and 2))))
+    set payload to concat(payload and concat(",\"request\":" and archive_list_text(request and 1)))
+    set payload to concat(payload and "}")
+    if sql_execute(controller and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("controller-busy")
+    set prior to history_collect_one(checkpoint_prepare(controller and "SELECT session,kind,payload FROM echo_events WHERE event=?;" and [admission_event]))
+    if archive_list_text(prior and 0) equals "found":
+        if not (archive_list_text(prior and 1) equals session) or else not (archive_list_text(prior and 2) equals "rsi_admission") or else not (archive_list_text(prior and 3) equals payload):
+            set ignored to sql_execute(controller and "ROLLBACK;")
+            return history_status("admission-conflict")
+    else if not (archive_list_text(prior and 0) equals "end") or else archive_append_pending(controller and session and admission_event and "rsi_admission" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        set ignored to sql_execute(controller and "ROLLBACK;")
+        return history_status("admission-save-failed")
+    if sql_execute(controller and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(controller and "ROLLBACK;")
+        return history_status("admission-save-failed")
+    set result to history_status("admitted")
+    set added to append_list(result and identity)
+    set added to append_list(result and archive_list_text(request and 1))
+    return result

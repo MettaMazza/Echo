@@ -1,0 +1,49 @@
+import "../tools/rsi_request"
+
+# Called against an installed source archive opened read-only by the controller.
+# Do not import caller-provided principals, role strings, manifests or approvals.
+# Admission waits for the originating turn to finish, avoiding self-drain deadlock.
+define rsi_request_admit with database as Int and event as Str and allowed_principals as Str returning List:
+    set allowed to provider_json_tokens(allowed_principals)
+    if allowed equals 0 or else not (provider_kind(allowed and 0) equals "["):
+        return history_status("invalid-controller-principals")
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return history_status("source-busy")
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT e.session,e.payload,r.run,r.state,t.call_id,t.state,a.principal,q.payload FROM echo_events e JOIN echo_runs r ON r.run=json_extract(e.payload,'$.run_id') AND r.session=e.session JOIN echo_tool_calls t ON t.run=r.run AND t.call_id=json_extract(e.payload,'$.call_id') JOIN echo_events q ON q.event=t.request_event AND q.session=r.session JOIN echo_run_authority a ON a.run=r.run WHERE e.event=? AND e.kind='rsi_candidate_request' AND q.kind='tool_call' AND json_extract(q.payload,'$.name')='self_improve';" and [event]))
+    set result to history_status("request-not-authorized")
+    if archive_list_text(row and 0) equals "found":
+        if archive_list_text(row and 4) equals "completed" and archive_list_text(row and 6) equals "observed":
+            set result to rsi_admission_bind(database and event and row and allowed_principals)
+        else if not (archive_list_text(row and 4) equals "failed" or else archive_list_text(row and 4) equals "cancelled"):
+            set result to history_status("awaiting-origin-completion")
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return history_status("source-read-failed")
+    return result
+
+define rsi_admission_bind with database as Int and event as Str and row as List and allowed_principals as Str returning List:
+    set session to archive_list_text(row and 1)
+    set run to archive_list_text(row and 3)
+    set call_id to archive_list_text(row and 5)
+    if archive_verify(database and session) is not equal to 0 or else tool_authority_allows(database and run and call_id and "admin") equals 0:
+        return history_status("request-authority-revoked")
+    set permitted to history_collect_one(checkpoint_prepare(database and "SELECT value FROM json_each(?1) WHERE type='text' AND value=?2 LIMIT 1;" and [allowed_principals,archive_list_text(row and 7)]))
+    if not (archive_list_text(permitted and 0) equals "found"):
+        return history_status("principal-not-enrolled-for-improvement")
+    set expected to concat("rsi-request:" and ep_sha256(concat(archive_hash_field(run) and archive_hash_field(call_id))))
+    if not (expected equals event):
+        return history_status("request-identity-mismatch")
+    set original to provider_json_tokens(archive_list_text(row and 8))
+    set arguments to provider_value(original and provider_member(original and 0 and "arguments"))
+    if rsi_request_valid(arguments) equals 0:
+        return history_status("request-invalid")
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"call_id\":" and provider_quote(call_id)))
+    set payload to concat(payload and concat(",\"request\":" and concat(arguments and "}")))
+    if not (payload equals archive_list_text(row and 2)):
+        return history_status("request-source-mismatch")
+    set result to history_status("authorized")
+    set added to append_list(result and arguments)
+    set added to append_list(result and archive_list_text(row and 7))
+    set added to append_list(result and run)
+    return result

@@ -1,0 +1,123 @@
+import "lifecycle/rsi_source_manifest"
+import "workspace/native_process"
+
+# Immutable acceptance entry. The installed plan pins both this executable and
+# its test specification. Candidate source cannot select or omit a test.
+define main returning Int:
+    if get_argument_count() is not equal to 4:
+        return 1
+    set specification to file_read(get_argument(1))
+    if not (ep_sha256(specification) equals get_argument(2)):
+        return 2
+    set config to provider_json_tokens(specification)
+    set release to provider_json_tokens(file_read(get_argument(3)))
+    if config equals 0 or else release equals 0 or else provider_unique_objects(config) equals 0 or else provider_unique_objects(release) equals 0:
+        return 3
+    set root to provider_value(release and provider_member(release and 0 and "source_root"))
+    set protected_sources to provider_items(config and provider_member(config and 0 and "protected_sources"))
+    if protected_sources is not equal to 0:
+        for each input in protected_sources:
+            set path to provider_value(config and provider_member(config and input and "path"))
+            if workspace_path_parts(path) equals 0 or else string_index_of(path and "app/") is not equal to 0:
+                return 19
+            set observed to file_digest_durable(concat(root and concat("/" and path)) and 65536)
+            set expected to provider_value(config and provider_member(config and input and "sha256"))
+            if not (archive_list_text(observed and 0) equals "verified") or else not (archive_list_text(observed and 1) equals expected):
+                return 20
+    set inputs to provider_items(config and provider_member(config and 0 and "files"))
+    set tests to provider_items(config and provider_member(config and 0 and "tests"))
+    set build to provider_member(release and 0 and "build_report")
+    set artifacts to provider_items(release and provider_member(release and build and "artifacts"))
+    if inputs equals 0 or else tests equals 0 or else artifacts equals 0 or else length_list(tests) equals 0:
+        return 4
+    for each input in inputs:
+        set path to provider_value(config and provider_member(config and input and "path"))
+        if workspace_path_parts(path) equals 0 or else string_index_of(path and "tests/") is not equal to 0:
+            return 5
+        set full_path to concat(root and concat("/" and path))
+        set observed to file_digest_durable(full_path and 65536)
+        set expected to provider_value(config and provider_member(config and input and "sha256"))
+        if not (archive_list_text(observed and 0) equals "verified") or else not (archive_list_text(observed and 1) equals expected):
+            return 6
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set workspace to ptr_to_str(get_env("TMPDIR"))
+    set directory to workspace_root_open(library and workspace)
+    if directory < 0:
+        set closed to ep_dlclose(library)
+        return 7
+    set result to rsi_acceptance_tests(library and directory and workspace and root and config and tests and release and artifacts)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    return result
+
+define rsi_acceptance_tests with library as Int and directory as Int and workspace as Str and root as Str and config as List and tests as List and release as List and artifacts as List returning Int:
+    for each test in tests:
+        set entry to provider_value(config and provider_member(config and test and "entry"))
+        set parts to workspace_path_parts(entry)
+        if parts equals 0 or else length_list(parts) is not equal to 1:
+            return 8
+        set pin to ""
+        for each artifact in artifacts:
+            if provider_value(release and provider_member(release and artifact and "name")) equals entry:
+                if string_length(pin) > 0:
+                    return 9
+                set pin to provider_value(release and provider_member(release and artifact and "sha256"))
+        set executable to concat(root and concat("/" and entry))
+        set observed to file_digest_durable(executable and 65536)
+        if protected_digest_valid(pin) equals 0 or else not (archive_list_text(observed and 0) equals "verified") or else not (archive_list_text(observed and 1) equals pin):
+            return 10
+        set case_name to concat(entry and concat("-" and ptr_to_str(ep_uuid_v4())))
+        set case_directory to workspace_directory_open(library and directory and case_name and 1)
+        if case_directory < 0:
+            return 11
+        set case_root to concat(workspace and concat("/" and case_name))
+        set arguments to create_list()
+        set configured to provider_items(config and provider_member(config and test and "arguments"))
+        if configured equals 0:
+            set closed to net_close(case_directory)
+            return 12
+        for each item in configured:
+            if not (provider_kind(config and item) equals "string"):
+                set closed to net_close(case_directory)
+                return 13
+            set argument to ptr_to_str(string_replace(provider_value(config and item) and "__TEST_ROOT__" and case_root))
+            set argument to ptr_to_str(string_replace(argument and "__ECHO_SOURCE__" and root))
+            set added to append_list(arguments and argument)
+        set log_path to concat(case_root and "/output.log")
+        set output to native_open_mode(library and log_path and 2817 and 384)
+        if output < 0:
+            set closed to net_close(case_directory)
+            return 14
+        set environment to ["PATH=/usr/bin:/bin",concat("TMPDIR=" and case_root)]
+        set configured_environment to provider_items(config and provider_member(config and test and "environment"))
+        if configured_environment is not equal to 0:
+            for each item in configured_environment:
+                if not (provider_kind(config and item) equals "string"):
+                    return 18
+                set value to ptr_to_str(string_replace(provider_value(config and item) and "__TEST_ROOT__" and case_root))
+                set value to ptr_to_str(string_replace(value and "__ECHO_SOURCE__" and root))
+                set added to append_list(environment and value)
+        set process to workspace_process_start(executable and arguments and environment and case_directory and output and output)
+        set closed to net_close(output)
+        set closed to net_close(case_directory)
+        if process equals 0:
+            return 15
+        set deadline to ep_time_now_ms() + 300000
+        set state to workspace_process_poll(process)
+        repeat while state equals 0 and ep_time_now_ms() < deadline:
+            set slept to sleep_ms(10)
+            set state to workspace_process_poll(process)
+        if state is not equal to 1:
+            set stopped to workspace_process_abort(process)
+            set closed to workspace_process_close(process)
+            return 16
+        set waited to get_list(process and 3)
+        set descendants to workspace_process_group_cleanup(process)
+        if descendants is not equal to 0:
+            set waited to 125
+        set closed to workspace_process_close(process)
+        display entry
+        display waited
+        if waited is not equal to 0:
+            return 17
+    return 0

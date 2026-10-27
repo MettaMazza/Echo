@@ -1,0 +1,80 @@
+import "rsi_source"
+import "qualification_runner"
+
+# Installed build plan chooses the pinned compiler and entrypoints. Candidate
+# source cannot select shell commands or add/replace an acceptance evaluator.
+define rsi_build_candidate with plan as Str and pin as Str and stage_root as Str and output_root as Str returning Str:
+    if not (ep_sha256(plan) equals pin):
+        return ""
+    set tokens to provider_json_tokens(plan)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set runtime to provider_value(tokens and provider_member(tokens and 0 and "runtime"))
+    set compiler to provider_value(tokens and provider_member(tokens and 0 and "compiler"))
+    set compiler_pin to provider_value(tokens and provider_member(tokens and 0 and "compiler_sha256"))
+    set entries to provider_items(tokens and provider_member(tokens and 0 and "entries"))
+    if entries equals 0 or else length_list(entries) equals 0 or else not (compiler equals concat(runtime and "/ernos/epc")) or else protected_digest_valid(compiler_pin) equals 0:
+        return ""
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and stage_root)
+    set logs to workspace_root_open(library and output_root)
+    if directory < 0 or else logs < 0:
+        if directory >= 0:
+            set closed to net_close(directory)
+        if logs >= 0:
+            set closed to net_close(logs)
+        set closed to ep_dlclose(library)
+        return ""
+    set configured to set_env("ECHO_ERNOS_COMPILER_SHA256" and compiler_pin)
+    set configured to set_env("ECHO_ERNOS_RUNTIME" and concat(runtime and "/ernos"))
+    set ready to workspace_ernos_prepare(library and directory and concat(runtime and "/ernos"))
+    set report to ""
+    if ready equals "ready":
+        set report to rsi_build_entries(library and directory and logs and tokens and entries and compiler and compiler_pin and runtime and stage_root and output_root)
+    set closed to net_close(directory)
+    set closed to net_close(logs)
+    set closed to ep_dlclose(library)
+    return report
+
+define rsi_build_entries with library as Int and directory as Int and logs as Int and tokens as List and entries as List and compiler as Str and compiler_pin as Str and runtime as Str and stage_root as Str and output_root as Str returning Str:
+    set result to "{\"artifacts\":["
+    set names to create_list()
+    set index to 0
+    for each entry in entries:
+        if not (provider_kind(tokens and entry) equals "string"):
+            return ""
+        set path to provider_value(tokens and entry)
+        if not (workspace_ernos_arguments(library and directory and [path]) equals "ready"):
+            return ""
+        set parts to workspace_path_parts(path)
+        set leaf to archive_list_text(parts and length_list(parts) - 1)
+        set name to ptr_to_str(substring(leaf and 0 and string_length(leaf) - 3))
+        for each prior in names:
+            if ptr_to_str(prior) equals name:
+                return ""
+        set added to append_list(names and name)
+        set source to concat(stage_root and concat("/" and path))
+        set before to file_digest_durable(source and 65536)
+        if not (archive_list_text(before and 0) equals "verified"):
+            return ""
+        set log_directory to workspace_directory_open(library and logs and name and 1)
+        if log_directory < 0:
+            return ""
+        set closed to net_close(log_directory)
+        set check to concat("{\"version\":1,\"checks\":[{\"name\":\"compile\",\"executable\":" and provider_quote(compiler))
+        set check to concat(check and concat(",\"sha256\":" and provider_quote(compiler_pin)))
+        set check to concat(check and ",\"arguments\":[],\"timeout_ms\":1800000}]}")
+        set report to qualification_execute(check and ep_sha256(check) and source and archive_list_text(before and 1) and stage_root and runtime and concat(output_root and concat("/" and name)))
+        if qualification_results_valid(check and ep_sha256(check) and report and archive_list_text(before and 1)) equals 0:
+            return ""
+        set artifact to file_digest_durable(concat(stage_root and concat("/" and name)) and 65536)
+        if not (archive_list_text(artifact and 0) equals "verified"):
+            return ""
+        if index > 0:
+            set result to concat(result and ",")
+        set result to concat(result and concat("{\"name\":" and provider_quote(name)))
+        set result to concat(result and concat(",\"sha256\":" and provider_quote(archive_list_text(artifact and 1))))
+        set result to concat(result and concat(",\"source_sha256\":" and provider_quote(archive_list_text(before and 1))))
+        set result to concat(result and concat(",\"build_report\":" and concat(provider_quote(report) and "}")))
+        set index to index + 1
+    return concat(result and "]}")

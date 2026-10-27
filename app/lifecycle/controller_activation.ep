@@ -1,0 +1,247 @@
+import "protected_path"
+import "rsi_archive"
+import "service_profile"
+import "../workspace/native_process"
+import "../workspace/directories"
+import "../providers/local_json"
+
+# Optional installed activation policy. Candidate text never chooses services.
+define controller_activation_policy with content as Str returning Str:
+    set config to provider_json_tokens(content)
+    set field to provider_member(config and 0 and "activation_policy")
+    if field < 0:
+        return ""
+    set path to provider_value(config and field)
+    set pin to provider_value(config and provider_member(config and 0 and "activation_policy_sha256"))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set descriptor to protected_path_open(library and path and 0)
+    if descriptor < 0:
+        set closed to ep_dlclose(library)
+        return "invalid"
+    set policy to file_read(path)
+    set closed to net_close(descriptor)
+    set closed to ep_dlclose(library)
+    if not (ep_sha256(policy) equals pin):
+        return "invalid"
+    return policy
+
+# Locks are held from the idle check through manifest exchange and service
+# restart. An incoming submission cannot race the idle decision and be killed.
+define controller_activation_lock with policy as Str returning List:
+    set result to create_list()
+    if string_length(policy) equals 0:
+        return result
+    set config to provider_json_tokens(policy)
+    set archives to provider_items(config and provider_member(config and 0 and "archives"))
+    if archives equals 0 or else length_list(archives) equals 0:
+        return 0
+    for each item in archives:
+        set path to provider_value(config and item)
+        set database to sql_open(path)
+        if database equals 0:
+            set released to controller_activation_unlock(result)
+            return 0
+        set added to append_list(result and database)
+        if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+            set released to controller_activation_unlock(result)
+            return 0
+        set checks to [["echo_runs","SELECT COUNT(*) FROM echo_runs WHERE state NOT IN ('completed','cancelled','failed');"],["echo_tool_calls","SELECT COUNT(*) FROM echo_tool_calls WHERE state IN ('queued','running','uncertain');"],["discord_outbox","SELECT COUNT(*) FROM discord_outbox WHERE state='sending';"],["discord_voice_intents","SELECT COUNT(*) FROM discord_voice_intents WHERE state NOT IN ('queued','closed','cancelled');"],["discord_voice_recordings","SELECT COUNT(*) FROM discord_voice_recordings WHERE state='active';"],["discord_interaction_jobs","SELECT COUNT(*) FROM discord_interaction_jobs WHERE state='acknowledging';"]]
+        for each check in checks:
+            set exists to history_collect_one(checkpoint_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name=?;" and [archive_list_text(check and 0)]))
+            if archive_list_text(exists and 0) equals "found":
+                set active to history_collect_one(archive_prepare(database and archive_list_text(check and 1)))
+                if not (archive_list_text(active and 0) equals "found") or else not (archive_list_text(active and 1) equals "0"):
+                    set released to controller_activation_unlock(result)
+                    return 0
+            else if not (archive_list_text(exists and 0) equals "end"):
+                set released to controller_activation_unlock(result)
+                return 0
+        set discord to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='discord_inbox';"))
+        if archive_list_text(discord and 0) equals "found":
+            set marker to provider_value(config and provider_member(config and 0 and "maintenance_file"))
+            set token to file_read(marker)
+            set drain to history_collect_one(archive_prepare(database and "SELECT token FROM discord_maintenance_drain WHERE singleton=1;"))
+            if string_length(token) equals 0 or else not (archive_list_text(drain and 0) equals "found") or else not (archive_list_text(drain and 1) equals token):
+                set released to controller_activation_unlock(result)
+                return 0
+        set workers to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_web_workers';"))
+        if archive_list_text(workers and 0) equals "found":
+            set running to history_collect_one(archive_prepare(database and "SELECT COUNT(*) FROM echo_web_workers WHERE status='running';"))
+            if not (archive_list_text(running and 0) equals "found") or else not (archive_list_text(running and 1) equals "0"):
+                set released to controller_activation_unlock(result)
+                return 0
+    return result
+
+define controller_activation_unlock with connections as List returning Int:
+    set failed to 0
+    for each database in connections:
+        set released to sql_execute(database and "ROLLBACK;")
+        set failed to failed + sql_close(database)
+    return failed
+
+# This is a fixed host command, not the model's general execution path.
+# launchd owns the service tree and reads the atomically selected manifest.
+define controller_activation_restart with policy as Str returning Int:
+    if string_length(policy) equals 0:
+        return 0
+    set config to provider_json_tokens(policy)
+    set labels to provider_items(config and provider_member(config and 0 and "labels"))
+    if labels equals 0 or else length_list(labels) equals 0:
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and "/")
+    set output to native_open_mode(library and "/dev/null" and 1 and 0)
+    if directory < 0 or else output < 0:
+        set closed to ep_dlclose(library)
+        return 1
+    set failed to 0
+    for each entry in labels:
+        set label to provider_value(config and entry)
+        if string_length(label) < 18 or else not (substring(label and 0 and 18) equals "system/local.echo.") or else service_native_text(label) equals 0:
+            set failed to 1
+            break
+        set arguments to ["kickstart","-k",label]
+        set environment to ["PATH=/usr/bin:/bin"]
+        set process to workspace_process_start("/bin/launchctl" and arguments and environment and directory and output and output)
+        if process equals 0:
+            set failed to 1
+            break
+        set deadline to ep_time_now_ms() + 30000
+        set state to workspace_process_poll(process)
+        repeat while state equals 0 and ep_time_now_ms() < deadline:
+            set slept to sleep_ms(25)
+            set state to workspace_process_poll(process)
+        if state is not equal to 1:
+            set stopped to workspace_process_abort(process)
+            set failed to 1
+        else if get_list(process and 3) is not equal to 0:
+            set failed to 1
+        set closed to workspace_process_close(process)
+        if failed is not equal to 0:
+            break
+    set closed to net_close(output)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    return failed
+
+# Readiness checks use only installed loopback HTTP ports and bounded curl jobs.
+# Candidate requests cannot supply URLs, credentials, flags or commands.
+define controller_activation_health with policy as Str returning Int:
+    if string_length(policy) equals 0:
+        return 1
+    set config to provider_json_tokens(policy)
+    set checks to provider_items(config and provider_member(config and 0 and "health"))
+    if checks equals 0 or else length_list(checks) equals 0:
+        return 0
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and "/")
+    set output to native_open_mode(library and "/dev/null" and 1 and 0)
+    if directory < 0 or else output < 0:
+        set closed to ep_dlclose(library)
+        return 0
+    set deadline to ep_time_now_ms() + 180000
+    set healthy to 0
+    repeat while ep_time_now_ms() < deadline:
+        set healthy to 1
+        for each entry in checks:
+            set port_text to provider_value(config and provider_member(config and entry and "port"))
+            set port to string_to_int(port_text)
+            set path to provider_value(config and provider_member(config and entry and "path"))
+            if port < 1 or else port > 65535 or else not (int_to_string(port) equals port_text) or else not (path equals "/" or else path equals "/health"):
+                set closed to net_close(output)
+                set closed to net_close(directory)
+                set closed to ep_dlclose(library)
+                return 0
+            set url to concat("http://127.0.0.1:" and port_text)
+            set url to concat(url and path)
+            set arguments to ["--silent","--fail","--max-time","5",url]
+            set environment to ["PATH=/usr/bin:/bin"]
+            set process to workspace_process_start("/usr/bin/curl" and arguments and environment and directory and output and output)
+            if process equals 0:
+                set healthy to 0
+                break
+            set state to workspace_process_poll(process)
+            repeat while state equals 0:
+                set slept to sleep_ms(25)
+                set state to workspace_process_poll(process)
+            if state is not equal to 1 or else get_list(process and 3) is not equal to 0:
+                set healthy to 0
+            set closed to workspace_process_close(process)
+            if healthy equals 0:
+                break
+        if healthy equals 1:
+            break
+        set slept to sleep_ms(500)
+    set closed to net_close(output)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    return healthy
+
+# A protected maintenance marker survives a controller crash. Recovery clears it
+# only after a verified active or restored release is serving again.
+define controller_activation_marker with policy as Str and enabled as Int returning Int:
+    if string_length(policy) equals 0:
+        return 0
+    set fields to provider_json_tokens(policy)
+    set path to provider_value(fields and provider_member(fields and 0 and "maintenance_file"))
+    if string_length(path) < 2 or else get_character(path and 0) is not equal to 47:
+        return 1
+    set parts to workspace_path_parts(substring(path and 1 and string_length(path) - 1))
+    if parts equals 0 or else length_list(parts) < 2:
+        return 1
+    set parent to ""
+    set index to 0
+    repeat while index < length_list(parts) - 1:
+        set parent to concat(parent and "/")
+        set parent to concat(parent and archive_list_text(parts and index))
+        set index to index + 1
+    set leaf to archive_list_text(parts and index)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to protected_path_open(library and parent and 1)
+    if directory < 0:
+        set closed to ep_dlclose(library)
+        return 1
+    set result to 0
+    if enabled equals 1:
+        set file to native_open_at(library and directory and leaf and 16780033 and 420)
+        if file >= 0:
+            set token to ptr_to_str(ep_uuid_v4())
+            set written to ep_dlcall3(ep_dlsym(library and "write") and file and str_to_ptr(token) and string_length(token))
+            if written is not equal to string_length(token):
+                set result to 1
+            set flushed to ep_dlcall1(ep_dlsym(library and "fsync") and file)
+            set closed to net_close(file)
+            if flushed is not equal to 0:
+                set result to 1
+        else:
+            set file to protected_path_open(library and path and 0)
+            if file < 0:
+                set result to 1
+            else:
+                set closed to net_close(file)
+    else:
+        set removed to ep_dlcall3(ep_dlsym(library and "unlinkat") and directory and str_to_ptr(leaf) and 0)
+        if removed is not equal to 0 and socket_errno(library) is not equal to 2:
+            set result to 1
+    set flushed to ep_dlcall1(ep_dlsym(library and "fsync") and directory)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    if flushed is not equal to 0:
+        return 1
+    return result
+
+# Called while activation holds the originating archive's writer reservation.
+define controller_activation_authority with loaded as List returning Int:
+    if length_list(loaded) < 9:
+        return 1
+    set gate to provider_json_tokens(archive_list_text(loaded and 8))
+    if gate equals 0:
+        return 0
+    set source to rsi_archive_open(provider_value(gate and provider_member(gate and 0 and "source")))
+    if source equals 0:
+        return 0
+    set decision to rsi_request_admit(source and provider_value(gate and provider_member(gate and 0 and "event")) and provider_value(gate and provider_member(gate and 0 and "principals")))
+    set closed to sql_close(source)
+    if closed equals 0 and archive_list_text(decision and 0) equals "authorized":
+        return 1
+    return 0

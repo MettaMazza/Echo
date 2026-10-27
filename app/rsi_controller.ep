@@ -1,0 +1,138 @@
+import "lifecycle/rsi_pipeline"
+
+# Root-owned launchd service. Runtime requests contain no configuration paths,
+# test commands, authority grants, deployment reports or acceptance decisions.
+define main returning Int:
+    if get_argument_count() < 2 or else get_argument_count() > 3:
+        return 1
+    if get_argument_count() equals 3 and not (get_argument(2) equals "--once"):
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if ep_dlcall0(ep_dlsym(library and "geteuid")) is not equal to 0:
+        set closed to ep_dlclose(library)
+        return 2
+    set descriptor to protected_path_open(library and get_argument(1) and 0)
+    if descriptor < 0:
+        set closed to ep_dlclose(library)
+        return 3
+    set content to file_read(get_argument(1))
+    set closed to net_close(descriptor)
+    set closed to ep_dlclose(library)
+    set config to provider_json_tokens(content)
+    if config equals 0 or else provider_unique_objects(config) equals 0:
+        return 4
+    set loaded to controller_configuration_load(provider_value(config and provider_member(config and 0 and "controller_configuration")))
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        display archive_list_text(loaded and 0)
+        return 5
+    set policy to controller_activation_policy(archive_list_text(loaded and 1))
+    if string_length(policy) equals 0 or else policy equals "invalid":
+        return 6
+    set database to controller_ledger_open(archive_list_text(loaded and 6) and archive_list_text(loaded and 7))
+    if database equals 0 or else controller_service_ready(database and ep_sha256(archive_list_text(loaded and 1))) equals 0:
+        return 7
+    repeat while 1 equals 1:
+        if not (ep_sha256(file_read(get_argument(1))) equals ep_sha256(content)):
+            set closed to sql_close(database)
+            return 8
+        set result to rsi_controller_tick(database and config and loaded)
+        if get_argument_count() equals 3:
+            set closed to sql_close(database)
+            return result + closed
+        if result is not equal to 0:
+            display "RSI scan requires attention; no unverified activation."
+        set slept to sleep_ms(1000)
+    return 0
+
+define rsi_controller_tick with database as Int and config as List and loaded as List returning Int:
+    set sources to provider_items(config and provider_member(config and 0 and "sources"))
+    if sources equals 0 or else length_list(sources) equals 0:
+        return 1
+    for each source in sources:
+        set path to provider_value(config and provider_member(config and source and "path"))
+        set principals to provider_value(config and provider_member(config and source and "principals"))
+        set runtime to rsi_archive_open(path)
+        if runtime equals 0:
+            return 2
+        set statement to archive_prepare(runtime and "SELECT event FROM echo_events WHERE kind='rsi_candidate_request' ORDER BY sequence;")
+        if statement equals 0:
+            set closed to sql_close(runtime)
+            return 3
+        set events to create_list()
+        set step to ep_sqlite3_step(statement)
+        repeat while step equals 100:
+            set event to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+            set added to append_list(events and event)
+            set step to ep_sqlite3_step(statement)
+        set closed to ep_sqlite3_finalize(statement)
+        set closed to closed + sql_close(runtime)
+        if step is not equal to 101 or else closed is not equal to 0:
+            return 4
+        for each event in events:
+            set source_field to archive_hash_field(path)
+            set event_field to archive_hash_field(ptr_to_str(event))
+            set identity to ep_sha256(concat(source_field and event_field))
+            set session to concat("rsi:" and identity)
+            set terminal_id to concat(session and ":terminal")
+            set terminal to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=? AND kind='rsi_terminal';" and [terminal_id]))
+            if archive_list_text(terminal and 0) equals "found":
+                continue
+            if not (archive_list_text(terminal and 0) equals "end"):
+                return 5
+            set admitted to rsi_archive_admit(database and path and ptr_to_str(event) and principals)
+            set result to archive_list_text(admitted and 0)
+            if result equals "awaiting-origin-completion" or else result equals "source-busy":
+                continue
+            if result equals "admitted":
+                if rsi_status_publish(config and ptr_to_str(event) and "building-reviewing-qualifying") is not equal to 0:
+                    return 7
+                set result to rsi_pipeline_run(database and config and loaded and identity and archive_list_text(admitted and 2))
+            if rsi_status_publish(config and ptr_to_str(event) and result) is not equal to 0:
+                return 7
+            display identity
+            display result
+            if result equals "awaiting-idle" or else result equals "review:review-owner-busy":
+                return 0
+            set activation_text to controller_activation_policy(archive_list_text(loaded and 1))
+            set activation_fields to provider_json_tokens(activation_text)
+            set marker to provider_value(activation_fields and provider_member(activation_fields and 0 and "maintenance_file"))
+            if string_length(marker) > 0 and file_exists(marker):
+                # Activation/recovery is not terminal while intake remains held.
+                # Resume the recorded operation before considering another job.
+                return 0
+            if archive_append(database and session and terminal_id and "rsi_terminal" and result and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+                return 6
+    return 0
+
+# Fixed public metadata only. Publish atomically from the protected controller.
+define rsi_status_publish with config as List and event as Str and status as Str returning Int:
+    if string_length(event) is not equal to 76 or else not (substring(event and 0 and 12) equals "rsi-request:"):
+        return 1
+    set suffix to substring(event and 12 and 64)
+    if protected_digest_valid(suffix) equals 0:
+        return 1
+    set path to provider_value(config and provider_member(config and 0 and "status_directory"))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to protected_path_open(library and path and 1)
+    if directory < 0:
+        set closed to ep_dlclose(library)
+        return 1
+    set temporary to concat(suffix and concat("-" and ptr_to_str(ep_uuid_v4())))
+    set payload to concat("{\"audience\":\"public-system\",\"request\":" and provider_quote(event))
+    set payload to concat(payload and concat(",\"status\":" and provider_quote(status)))
+    set payload to concat(payload and concat(",\"updated_unix_ms\":" and concat(int_to_string(ep_time_now_ms()) and "}")))
+    set stored to rsi_source_write(library and directory and temporary and payload)
+    if stored equals 0:
+        set file to workspace_file_open(library and directory and temporary and 0)
+        if file < 0:
+            set stored to 1
+        else:
+            set stored to ep_dlcall2(ep_dlsym(library and "fchmod") and file and 420)
+            set closed to net_close(file)
+    if stored equals 0:
+        set final_name to concat(suffix and ".json")
+        set stored to ep_dlcall4(ep_dlsym(library and "renameat") and directory and str_to_ptr(temporary) and directory and str_to_ptr(final_name))
+    set flushed to ep_dlcall1(ep_dlsym(library and "fsync") and directory)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(library)
+    return stored + flushed
