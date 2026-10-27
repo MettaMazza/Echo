@@ -4,10 +4,10 @@ import "../discord/channel_options"
 
 # Caller holds the abandoned worker and execution-guardian locks and writer
 # transaction. Record interruption only: no network request or replay occurs.
-# Only validated message reads and channel inspect/list can be reconciled.
+# Only message reads, attachment text reads and channel inspect/list qualify.
 # Mutations are never replayed or labelled as reads.
 define agent_recover_interrupted_read with database as Int and run as Str and call_id as Str returning Str:
-    set row to history_collect_one(checkpoint_prepare(database and "SELECT t.session,t.request_event,e.payload FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event AND e.session=t.session AND e.kind='tool_call' WHERE t.run=?1 AND t.call_id=?2 AND t.state IN ('running','uncertain') AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.call_id')=?2 AND json_extract(e.payload,'$.name') IN ('discord_message_read','discord_channels');" and [run,call_id]))
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT t.session,t.request_event,e.payload FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event AND e.session=t.session AND e.kind='tool_call' WHERE t.run=?1 AND t.call_id=?2 AND t.state IN ('running','uncertain') AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.call_id')=?2 AND json_extract(e.payload,'$.name') IN ('discord_message_read','discord_channels','attachment_read_text');" and [run,call_id]))
     if not (archive_list_text(row and 0) equals "found"):
         return ""
     set current to agent_run_read(database and run)
@@ -32,6 +32,11 @@ define agent_recover_interrupted_read with database as Int and run as Str and ca
         set options to discord_channel_options(arguments)
         if not (archive_list_text(options and 1) equals "inspect" or else archive_list_text(options and 1) equals "list"):
             return ""
+    if tool_name equals "attachment_read_text":
+        set parsed to provider_json_tokens(arguments)
+        if parsed equals 0 or else provider_unique_objects(parsed) equals 0:
+            return ""
+        set options to ["valid"]
     if not (archive_list_text(options and 0) equals "valid"):
         return ""
     set request to archive_list_text(row and 2)
@@ -54,5 +59,5 @@ define agent_recovered_read_phase with database as Int and run as Str returning 
     set observed_recovery to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_events WHERE kind='tool_result' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.parent_event')=?2 AND json_extract(payload,'$.result.status')='interrupted-read' AND json_extract(payload,'$.result.replayed')=0;" and [run,archive_list_text(current and 3)]))
     if http_decimal(archive_list_text(observed_recovery and 1)) < 1:
         return 0
-    set unsafe to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run=?1 AND t.state<>'observed' AND (t.state<>'queued' OR NOT COALESCE(json_extract(e.payload,'$.name')='discord_message_read' OR (json_extract(e.payload,'$.name')='discord_channels' AND json_extract(json_extract(e.payload,'$.arguments'),'$.operation') IN ('inspect','list')),0));" and [run]))
+    set unsafe to history_collect_one(checkpoint_prepare(database and "SELECT COUNT(*) FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run=?1 AND t.state<>'observed' AND (t.state<>'queued' OR NOT COALESCE(json_extract(e.payload,'$.name') IN ('discord_message_read','attachment_read_text') OR (json_extract(e.payload,'$.name')='discord_channels' AND json_extract(json_extract(e.payload,'$.arguments'),'$.operation') IN ('inspect','list')),0));" and [run]))
     return archive_list_text(unsafe and 0) equals "found" and also archive_list_text(unsafe and 1) equals "0"
