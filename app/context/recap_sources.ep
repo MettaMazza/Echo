@@ -29,7 +29,13 @@ define recap_source_record with database as Int and row as List returning Str:
                 set record to concat(record and concat(",\"selected_sources\":" and manifest))
             else if not (archive_list_text(binding and 0) equals "end"):
                 return ""
-    return concat(record and concat(",\"original_payload\":" and concat(provider_quote(archive_list_text(row and 3)) and "}")))
+    set original_payload to archive_list_text(row and 3)
+    set projection_values to create_list()
+    set added to append_list(projection_values and original_payload)
+    set projection to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN json_valid(?1) THEN json_remove(?1,'$.reasoning_content') ELSE NULL END;" and projection_values))
+    if archive_list_text(projection and 0) equals "found" and string_length(archive_list_text(projection and 1)) > 0:
+        return concat(record and concat(",\"payload_representation\":\"structured-without-model-reasoning\",\"original_payload\":" and concat(archive_list_text(projection and 1) and "}")))
+    return concat(record and concat(",\"original_payload\":" and concat(provider_quote(original_payload) and "}")))
 
 # Read one consistent view of accepted run ancestry through a frozen endpoint.
 # Transport copies and nested model requests stay in the original archive but
@@ -43,6 +49,25 @@ define recap_sources_snapshot with database as Int and session as Str and endpoi
     if not (archive_list_text(end_row and 0) equals session):
         return ""
     set boundary to http_decimal(archive_list_text(end_row and 7))
+    set prior_boundary to 0
+    set previous to checkpoint_read_active(database and session)
+    set prior_record to ""
+    set inherited_sources to "[]"
+    if previous is not equal to 0 and attachment_checkpoint_current(database and session and previous) is not equal to 0:
+        set prior_endpoint to archive_read_event(database and archive_list_text(previous and 1))
+        if prior_endpoint is not equal to 0 and http_decimal(archive_list_text(prior_endpoint and 7)) < boundary:
+            set prior_boundary to http_decimal(archive_list_text(prior_endpoint and 7))
+            set prior_values to create_list()
+            set added to append_list(prior_values and archive_list_text(previous and 5))
+            set refs to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_group_array(DISTINCT value),'[]') FROM json_tree(?1) WHERE type='text' AND path GLOB '$.*[[]*].sources';" and prior_values))
+            if not (archive_list_text(refs and 0) equals "found"):
+                return ""
+            set inherited_sources to archive_list_text(refs and 1)
+            set prior_record to concat("{\"event\":" and provider_quote(archive_list_text(previous and 1)))
+            set prior_record to concat(prior_record and concat(",\"kind\":\"accepted_checkpoint\",\"digest\":" and provider_quote(archive_list_text(previous and 2))))
+            set prior_record to concat(prior_record and concat(",\"checkpoint\":" and provider_quote(archive_list_text(previous and 0))))
+            set prior_record to concat(prior_record and concat(",\"accepted_summary\":" and provider_quote(archive_list_text(previous and 4))))
+            set prior_record to concat(prior_record and concat(",\"accepted_state\":" and concat(archive_list_text(previous and 5) and "}")))
     set values to create_list()
     set added to append_list(values and session)
     set added to append_list(values and int_to_string(boundary))
@@ -64,9 +89,12 @@ define recap_sources_snapshot with database as Int and session as Str and endpoi
         return ""
     set builder to create_builder()
     set count to 0
-    set added to builder_append(builder and concat("{\"source_end\":" and provider_quote(endpoint)))
-    set added to builder_append(builder and concat(",\"source_digest\":" and provider_quote(archive_list_text(end_row and 6))))
-    set added to builder_append(builder and ",\"records\":[")
+    # Endpoint metadata changes when steering adds a record. Keep the accepted
+    # records first so unchanged source tokens remain a reusable model prefix.
+    set added to builder_append(builder and "{\"records\":[")
+    if string_length(prior_record) > 0:
+        set added to builder_append(builder and prior_record)
+        set count to 1
     set run_index to 0
     repeat while run_index is less than length_list(runs):
         set run to archive_list_text(runs and run_index)
@@ -83,7 +111,7 @@ define recap_sources_snapshot with database as Int and session as Str and endpoi
             set row to get_list(lineage and index)
             set kind to archive_list_text(row and 2)
             set sequence to http_decimal(archive_list_text(row and 7))
-            if sequence <= boundary and (kind equals "user" or else kind equals "user_guidance" or else kind equals "assistant_final" or else kind equals "delegation_results" or else kind equals "assistant_tool_calls" or else kind equals "agent_cancelled" or else kind equals "agent_failure"):
+            if sequence > prior_boundary and sequence <= boundary and (kind equals "user" or else kind equals "user_guidance" or else kind equals "assistant_final" or else kind equals "delegation_results" or else kind equals "assistant_tool_calls" or else kind equals "agent_cancelled" or else kind equals "agent_failure"):
                 if count is greater than 0:
                     set added to builder_append(builder and ",")
                 set source_record to recap_source_record(database and row)
@@ -133,7 +161,9 @@ define recap_sources_snapshot with database as Int and session as Str and endpoi
                         set call_index to call_index + 1
             set index to index - 1
         set run_index to run_index + 1
-    set added to builder_append(builder and "]}")
+    set added to builder_append(builder and concat("],\"source_end\":" and provider_quote(endpoint)))
+    set added to builder_append(builder and concat(",\"source_digest\":" and provider_quote(archive_list_text(end_row and 6))))
+    set added to builder_append(builder and concat(",\"inherited_sources\":" and concat(inherited_sources and "}")))
     return ptr_to_str(builder_to_string(builder))
 
 define recap_sources with database as Int and session as Str and endpoint as Str returning Str:

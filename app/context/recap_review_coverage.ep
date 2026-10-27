@@ -1,5 +1,6 @@
 import "../retained_text"
 import "recap_fragment_review"
+import "recap_batch_review"
 import "recap_jobs"
 import "../agent/control"
 
@@ -101,6 +102,15 @@ define recap_review_collect_provider with database as Int and session as Str and
         set offset to get_list(progress and 1)
         set source to archive_list_text(progress and 2)
         set request to concat(job and concat(":fragment-review:" and agent_identity()))
+        set pending to recap_review_pending(database and session and endpoint and job and candidate)
+        if pending equals 0 or else length_list(pending) equals 0:
+            return "invalid-review-batch"
+        if length_list(pending) > 1:
+            set batched to recap_batch_generate(database and session and endpoint and job and candidate and pending and request and profile and reserve and cancellation_reader and read_size)
+            if batched equals "batch-reviewed":
+                continue
+            if not (batched equals "single-source-required"):
+                return batched
         set reviewed to recap_fragment_review_generate_provider(database and session and endpoint and job and source and offset and candidate and request and profile and reserve and cancellation_reader and read_size)
         set status to archive_list_text(reviewed and 0)
         if not (status equals "fragment-review-pass" or else status equals "fragment-review-repair"):
@@ -113,3 +123,32 @@ define recap_review_collect_provider with database as Int and session as Str and
 define recap_review_collect with database as Int and session as Str and endpoint as Str and job as Str and candidate as Str and model as Str and port as Int and reserve as Int and cancellation_reader as Int and read_size as Int and library as Int returning Str:
     set profile to provider_llama_profile(model and port)
     return recap_review_collect_provider(database and session and endpoint and job and candidate and profile and reserve and cancellation_reader and read_size and library)
+
+# Exact remaining source ranges. Receipts for this candidate remain reusable;
+# never transfer a semantic verdict to changed candidate bytes.
+define recap_review_pending with database as Int and session as Str and endpoint as Str and job as Str and candidate as Str returning List:
+    set manifest to archive_read_event(database and job)
+    if manifest equals 0:
+        return 0
+    set tokens to provider_json_tokens(archive_list_text(manifest and 3))
+    set records to provider_items(tokens and provider_member(tokens and 0 and "records"))
+    if records equals 0:
+        return 0
+    set pending to create_list()
+    for each record in records:
+        set source to provider_value(tokens and provider_member(tokens and record and "event"))
+        set digest to provider_value(tokens and provider_member(tokens and record and "digest"))
+        set original to recap_read_piece(database and session and source and 0 and 1)
+        if not (archive_list_text(original and 0) equals "found") or else not (archive_list_text(original and 5) equals digest):
+            return 0
+        set total to http_decimal(archive_list_text(original and 4))
+        set progress to recap_review_cursor(database and session and endpoint and job and source and digest and total and candidate)
+        if archive_list_text(progress and 0) equals "coverage-conflict":
+            return 0
+        set offset to get_list(progress and 1)
+        if offset < total:
+            set original to recap_read_piece(database and session and source and offset and total - offset)
+            if not (archive_list_text(original and 0) equals "found"):
+                return 0
+            set added to append_list(pending and recap_fragment_source(endpoint and original and offset and total))
+    return pending

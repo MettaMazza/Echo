@@ -75,10 +75,26 @@ define provider_prepare with database as Int and session as Str and identity as 
         return provider_prepared_error(profile_status)
     set config to provider_json_tokens(profile)
     set request to provider_json_tokens(body)
-    if config equals 0 or else request equals 0:
+    if config equals 0 or else provider_unique_objects(config) equals 0:
         return provider_prepared_error("invalid-provider-profile")
-    if provider_unique_objects(config) equals 0 or else provider_unique_objects(request) equals 0:
-        return provider_prepared_error("invalid-provider-profile")
+    set request_status to "ready"
+    if request equals 0:
+        set request_status to "invalid-provider-request-json"
+    else if provider_unique_objects(request) equals 0:
+        set request_status to "duplicate-provider-request-member"
+    if not (request_status equals "ready"):
+        # Keep the exact rejected body in its own authorized archive. A request
+        # construction failure must not be mislabeled as a provider setting.
+        set rejected_body to provider_quote(body)
+        set rejected_status to provider_quote(request_status)
+        set rejection to concat("{\"status\":" and rejected_status)
+        set rejection to concat(rejection and ",\"request_body\":")
+        set rejection to concat(rejection and rejected_body)
+        set rejection to concat(rejection and "}")
+        set recorded to archive_append(database and session and concat(identity and ":request-rejected") and "provider_request_rejected" and rejection and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+        if recorded is not equal to 0:
+            return provider_prepared_error("archive-error")
+        return provider_prepared_error(request_status)
     set model to provider_value(config and provider_member(config and 0 and "model"))
     set port to http_decimal(provider_index(config and provider_member(config and 0 and "port")))
     set adapter to provider_value(config and provider_member(config and 0 and "adapter"))
@@ -100,7 +116,7 @@ define provider_prepare with database as Int and session as Str and identity as 
         set media_props to local_json_request(port and "GET" and "/props" and "" and cancellation and batch)
         if archive_list_text(media_props and 0) equals "ready":
             set body to llama_modalities_notice(body and archive_list_text(media_props and 2))
-            if not (string_index_of(identity and "memory:") equals 0 or else string_index_of(identity and "compaction:") equals 0):
+            if not (string_index_of(identity and "memory:") equals 0):
                 set body to llama_native_audio_deduplicate(body)
                 set body to llama_native_audio_context(body and archive_list_text(media_props and 2))
                 set body to llama_native_audio_receipt(body and archive_list_text(media_props and 2))
@@ -135,9 +151,11 @@ define provider_prepare with database as Int and session as Str and identity as 
         set changed to set_list(result and 5 and get_list(decision and 1))
     return result
 
-# Local inference admission only; remote adapters retain their original request.
+# Only deferrable memory/task work is background. Compaction blocks the
+# originating user request and must receive foreground scheduling.
+# Remote adapters retain their original request.
 define provider_scheduled_body with session as Str and identity as Str and body as Str returning Str:
-    if string_index_of(session and "task:") equals 0 or else string_index_of(identity and "memory:") equals 0 or else string_index_of(identity and "compaction:") equals 0:
+    if string_index_of(session and "task:") equals 0 or else string_index_of(identity and "memory:") equals 0:
         set scheduled to provider_json_tokens(body)
         if provider_member(scheduled and 0 and "echo_background") >= 0:
             return body
