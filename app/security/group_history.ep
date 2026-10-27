@@ -1,5 +1,6 @@
 import "tool_policy"
 import "data_platform"
+import "../feedback"
 
 # A shared privileged result can be repeated in later replies, recaps and tool
 # arguments. Check the complete source scope before exposing any derived text;
@@ -31,7 +32,7 @@ define group_history_allows with database as Int and session as Str returning In
     if ep_sqlite3_finalize(imports) is not equal to 0:
         return 0
     set values to [session]
-    set query to concat(session_scope_sql() and "SELECT DISTINCT g.run,json_extract(q.payload,'$.name') FROM scopes s JOIN echo_group_run_origins g ON g.session=s.session JOIN echo_tool_calls t ON t.run=g.run JOIN echo_events q ON q.event=t.request_event JOIN echo_events e ON e.event=t.result_event WHERE e.sequence<=s.boundary AND NOT (COALESCE(json_extract(e.payload,'$.result.stage'),'')='tool-dispatch' AND COALESCE(json_extract(e.payload,'$.result.effects'),'')='none' AND COALESCE(json_extract(e.payload,'$.result.status'),'') IN ('not-authorized','tool-unavailable','admin-required','audience-restricted')) AND NOT (json_extract(q.payload,'$.name')='host_read_text' AND json_extract(e.payload,'$.result.status')='found' AND COALESCE(json_extract(e.payload,'$.result.audience'),'')='public-application-source') AND NOT (json_extract(q.payload,'$.name') IN ('host_execute','host_git') AND COALESCE(json_extract(e.payload,'$.result.audience'),'')='public-system');")
+    set query to concat(session_scope_sql() and "SELECT DISTINCT g.run,json_extract(q.payload,'$.name'),json_extract(e.payload,'$.result'),q.event FROM scopes s JOIN echo_group_run_origins g ON g.session=s.session JOIN echo_tool_calls t ON t.run=g.run JOIN echo_events q ON q.event=t.request_event JOIN echo_events e ON e.event=t.result_event WHERE e.sequence<=s.boundary AND NOT (COALESCE(json_extract(e.payload,'$.result.stage'),'')='tool-dispatch' AND COALESCE(json_extract(e.payload,'$.result.effects'),'')='none' AND COALESCE(json_extract(e.payload,'$.result.status'),'') IN ('not-authorized','tool-unavailable','admin-required','audience-restricted')) AND NOT (json_extract(q.payload,'$.name')='host_read_text' AND json_extract(e.payload,'$.result.status')='found' AND COALESCE(json_extract(e.payload,'$.result.audience'),'')='public-application-source') AND NOT (json_extract(q.payload,'$.name') IN ('host_execute','host_git','self_improve','rsi_status') AND COALESCE(json_extract(e.payload,'$.result.audience'),'')='public-system');")
     set statement to checkpoint_prepare(database and query and values)
     if statement equals 0:
         return 0
@@ -45,8 +46,13 @@ define group_history_allows with database as Int and session as Str returning In
             return 0
         set run to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
         set name to concat(ptr_to_str(ep_sqlite3_column_text(statement and 1)) and "")
-        set added to append_list(calls and run)
-        set added to append_list(calls and name)
+        set result to concat(ptr_to_str(ep_sqlite3_column_text(statement and 2)) and "")
+        set request to concat(ptr_to_str(ep_sqlite3_column_text(statement and 3)) and "")
+        # Recognize only the exact old runtime-generated empty-result envelope.
+        # No original bytes, arbitrary extra fields or model classification pass.
+        if group_history_empty_failure(name and request and result) equals 0:
+            set added to append_list(calls and run)
+            set added to append_list(calls and name)
     if ep_sqlite3_finalize(statement) is not equal to 0:
         return 0
     set index to 0
@@ -58,3 +64,9 @@ define group_history_allows with database as Int and session as Str returning In
             return 0
         set index to index + 2
     return 1
+
+define group_history_empty_failure with name as Str and request as Str and result as Str returning Int:
+    if not (name equals "host_execute" or else name equals "host_git"):
+        return 0
+    set empty to "{\"status\":\"invalid-tool-result\",\"raw_result\":\"\"}"
+    return result equals feedback_enrich(empty and name and request)

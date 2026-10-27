@@ -1,0 +1,80 @@
+import "knowledge"
+import "private_bridge"
+
+# Retain an attributed source copy only for an already-authorized private link.
+# The source archive stays read-only. No caller chooses a path or principal.
+define linked_record_source with database as Int and run as Str and event as Str and digest as Str and evidence as Str returning List:
+    set identity to private_bridge_identity(database and run)
+    set opened to private_bridge_open(database and run)
+    if string_length(identity) equals 0 or else length_list(opened) is not equal to 3:
+        return ["linked-source-not-authorized"]
+    set remote to get_list(opened and 0)
+    set owners to archive_list_text(opened and 1)
+    set before to private_bridge_owners(remote and owners)
+    set query to concat(private_bridge_scope() and "SELECT e.session,e.kind,e.payload,e.occurred,e.digest,COALESCE((SELECT principal FROM echo_session_principals WHERE session=e.session),(SELECT g.creator FROM echo_group_sessions gs JOIN echo_groups g ON g.identity=gs.group_id WHERE gs.session=e.session)) FROM echo_events e JOIN permitted p ON p.session=e.session WHERE e.event=?2 AND e.kind IN ('user','assistant_final','source_import');")
+    set row to history_collect_one(checkpoint_prepare(remote and query and [owners,event]))
+    set status to "ready"
+    if not (archive_list_text(row and 0) equals "found"):
+        set status to "linked-source-not-authorized"
+    else if not (archive_list_text(row and 5) equals digest):
+        set status to "source-digest-mismatch"
+    set source_kind to memory_source_evidence_kind(archive_list_text(row and 2) and archive_list_text(row and 3))
+    if status equals "ready" and (evidence equals "tool-observation" or else (source_kind equals "assistant_final" and not (evidence equals "inference"))):
+        set status to "evidence-kind-mismatch"
+    # Refuse sources with a verified later correction; copying cannot erase it.
+    if status equals "ready":
+        set correction_query to concat(private_bridge_scope() and concat("SELECT 1 FROM (" and concat(memory_correction_links_sql() and ") l JOIN echo_events e ON e.event=l.correction JOIN permitted p ON p.session=e.session WHERE l.source=?2 LIMIT 1;")))
+        set correction to history_collect_one(checkpoint_prepare(remote and correction_query and [owners,event]))
+        if archive_list_text(correction and 0) equals "found":
+            set status to "corrected-source: read and cite the correction; this historical source cannot establish a new claim"
+        else if not (archive_list_text(correction and 0) equals "end"):
+            set status to "linked-source-read-error"
+    set ended to sql_execute(remote and "COMMIT;")
+    set after to private_bridge_owners(remote and owners)
+    set closed to sql_close(remote)
+    set path to ptr_to_str(get_env("ECHO_PRIVATE_MEMORY_LINKS"))
+    if ended is not equal to 0 or else closed is not equal to 0 or else string_length(before) equals 0 or else not (before equals after) or else not (private_bridge_identity(database and run) equals identity) or else not file_exists(path) or else not (ep_sha256(ptr_to_str(read_file(path))) equals archive_list_text(opened and 2)):
+        return ["authorization-changed"]
+    if not (status equals "ready"):
+        return [status]
+    set current to agent_run_read(database and run)
+    set session to archive_list_text(current and 0)
+    set content to archive_list_text(row and 3)
+    if archive_list_text(row and 2) equals "assistant_final":
+        set fields to provider_json_tokens(content)
+        set content to provider_value(fields and provider_member(fields and 0 and "content"))
+    # Preserve the exact original payload, digest, authorship and source session.
+    set values to [content,ep_sha256(content),event,digest,archive_list_text(row and 1),archive_list_text(row and 4),source_kind,archive_list_text(row and 3),identity,archive_list_text(opened and 2),archive_list_text(row and 6)]
+    set payload_row to history_collect_one(checkpoint_prepare(database and "SELECT json_object('origin','verified-private-archive-copy','archive','linked','content',?1,'sha256',?2,'source_event',?3,'source_digest',?4,'source_session',?5,'source_occurred',?6,'source_kind',?7,'original_authorship',?7,'original_payload',?8,'attribution',?9,'link_digest',?10,'source_principal',?11);" and values))
+    if not (archive_list_text(payload_row and 0) equals "found"):
+        return ["linked-source-read-error"]
+    set payload to archive_list_text(payload_row and 1)
+    set imported to concat("linked-source:" and ep_sha256(concat(provider_quote(session) and payload)))
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return ["database-busy"]
+    if not (private_bridge_identity(database and run) equals identity) or else not file_exists(path) or else not (ep_sha256(ptr_to_str(read_file(path))) equals archive_list_text(opened and 2)):
+        set rolled_back to archive_rollback(database)
+        return ["authorization-changed"]
+    set existing to archive_read_event(database and imported)
+    if existing is not equal to 0:
+        set rolled_back to archive_rollback(database)
+        if not (archive_list_text(existing and 0) equals session and archive_list_text(existing and 2) equals "source_import" and archive_list_text(existing and 3) equals payload):
+            return ["event-conflict"]
+        return ["ready",imported,archive_list_text(existing and 6)]
+    if archive_append_pending(database and session and imported and "source_import" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled_back to archive_rollback(database)
+        return ["archive-error"]
+    set saved to archive_read_event(database and imported)
+    return ["ready",imported,archive_list_text(saved and 6)]
+
+# Local IDs retain existing ownership checks. Only absent local originals may
+# resolve through the host's explicit owner link; public runs cannot use it.
+define knowledge_record_linked with database as Int and run as Str and kind as Str and subject as Str and predicate as Str and object as Str and evidence as Str and source_event as Str and source_digest as Str and event_time as Str and valid_until as Str and supersedes as Str returning Str:
+    if archive_read_event(database and source_event) is not equal to 0:
+        return knowledge_record(database and run and kind and subject and predicate and object and evidence and source_event and source_digest and event_time and valid_until and supersedes)
+    if not (kind equals "semantic" or else kind equals "episodic") or else string_length(subject) equals 0 or else string_length(predicate) equals 0 or else string_length(object) equals 0 or else not (evidence equals "source-account" or else evidence equals "inference" or else evidence equals "tool-observation"):
+        return "invalid-arguments"
+    set source to linked_record_source(database and run and source_event and source_digest and evidence)
+    if not (archive_list_text(source and 0) equals "ready"):
+        return archive_list_text(source and 0)
+    return knowledge_record(database and run and kind and subject and predicate and object and evidence and archive_list_text(source and 1) and archive_list_text(source and 2) and event_time and valid_until and supersedes)

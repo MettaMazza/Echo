@@ -74,12 +74,14 @@ define execution_output_execute_snapshot with database as Int and session as Str
 # Hex is validated before use as a SQLite blob literal. NUL or incomplete
 # Unicode stays explicit binary; original bytes and cursor remain available.
 define execution_decode_hex with database as Int and encoded as Str returning Str:
-    if string_length(encoded) modulo 2 is not equal to 0:
+    set size to string_length(encoded)
+    set pointer to str_to_ptr(encoded)
+    if size modulo 2 is not equal to 0:
         return ""
     set index to 0
-    repeat while index < string_length(encoded):
-        set high to json_hex_val(get_character(encoded and index))
-        set low to json_hex_val(get_character(encoded and index + 1))
+    repeat while index < size:
+        set high to json_hex_val(peek_byte(pointer and index))
+        set low to json_hex_val(peek_byte(pointer and index + 1))
         if high < 0 or else low < 0 or else high * 16 + low equals 0:
             return ""
         set index to index + 2
@@ -98,3 +100,31 @@ define execution_output_execute with database as Int and session as Str and argu
         set ignored to sql_execute(database and "RELEASE echo_output_read;")
         return "{\"status\":\"archive-error\"}"
     return result
+
+# Inline bounded output from this exact invocation, joining pipe chunks before
+# UTF-8 validation. Original bytes remain archived; incomplete previews expose
+# their cursor and never pretend to be the complete output.
+define execution_output_preview with database as Int and run as Str and call_id as Str and stream as Str returning Str:
+    set values to create_list()
+    set added to append_list(values and run)
+    set added to append_list(values and call_id)
+    set added to append_list(values and stream)
+    set query to "SELECT COALESCE(group_concat(part,''),''),COALESCE(MAX(sequence),0) FROM (SELECT sequence,substr(json_extract(payload,'$.data'),1,(8192-CAST(json_extract(payload,'$.offset') AS INTEGER))*2) AS part FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.call_id')=?2 AND json_extract(payload,'$.stream')=?3 AND CAST(json_extract(payload,'$.offset') AS INTEGER)<8192 ORDER BY sequence);"
+    set row to history_collect_one(checkpoint_prepare(database and query and values))
+    if not (archive_list_text(row and 0) equals "found"):
+        return "{\"status\":\"unavailable\"}"
+    set encoded to archive_list_text(row and 1)
+    set text to execution_decode_hex(database and encoded)
+    set ending_row to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.offset') FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.call_id')=?2 AND json_extract(payload,'$.stream')=?3 AND json_extract(payload,'$.eof')=1 ORDER BY sequence DESC LIMIT 1;" and values))
+    set preview_complete to 0
+    if archive_list_text(ending_row and 0) equals "found" and string_to_int(archive_list_text(ending_row and 1)) equals string_length(encoded) / 2:
+        set preview_complete to 1
+    set result to concat("{\"complete\":" and int_to_string(preview_complete))
+    set result to concat(result and concat(",\"bytes\":" and int_to_string(string_length(encoded) / 2)))
+    set result to concat(result and concat(",\"text\":" and provider_quote(text)))
+    if string_length(text) equals 0 and string_length(encoded) > 0:
+        set result to concat(result and concat(",\"encoding\":\"binary-or-split-utf8\",\"hex\":" and provider_quote(encoded)))
+    else:
+        set result to concat(result and ",\"encoding\":\"utf-8\"")
+    # Restart the original cursor if a preview ended inside a capture chunk.
+    return concat(result and ",\"continuation_after\":0}")

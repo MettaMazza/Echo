@@ -9,17 +9,17 @@ define execution_tool_execute with database as Int and run as Str and call_id as
     if not (archive_list_text(authority and 0) equals "authorized"):
         # Preserve validation/recovery status. Invalid argv is not revocation
         # and must not cancel the run as an authority failure.
-        return concat("{\"status\":" and concat(provider_quote(archive_list_text(authority and 0)) and ",\"effects\":\"none\"}"))
+        return execution_guardian_failure(archive_list_text(authority and 0) and "none")
     set runtime to ptr_to_str(get_env("ECHO_EXECUTION_RUNTIME"))
     set root to ptr_to_str(get_env("ECHO_WORKSPACE_ROOT"))
     if string_length(runtime) equals 0 or else string_length(root) equals 0:
-        return "{\"status\":\"not-configured\"}"
+        return execution_guardian_failure("not-configured" and "none")
     set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
     if not (archive_list_text(location and 0) equals "found"):
-        return ""
+        return execution_guardian_failure("guardian-database-unavailable" and "none")
     set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
     if library equals 0:
-        return ""
+        return execution_guardian_failure("guardian-platform-unavailable" and "none")
     set directory to workspace_root_open(library and runtime)
     set output to native_open_mode(library and "/dev/null" and 1 and 0)
     set owner to socket_cancellation_create(library)
@@ -31,7 +31,7 @@ define execution_tool_execute with database as Int and run as Str and call_id as
         if owner is not equal to 0:
             set closed to socket_cancellation_close(owner)
         set closed to ep_dlclose(library)
-        return ""
+        return execution_guardian_failure("guardian-resources-unavailable" and "none")
     set arguments to [archive_list_text(location and 1), run, call_id]
     set environment to [concat("ECHO_EXECUTION_RUNTIME=" and runtime), concat("ECHO_WORKSPACE_ROOT=" and root), "PATH=/usr/bin:/bin"]
     set compiler_runtime to ptr_to_str(get_env("ECHO_ERNOS_RUNTIME"))
@@ -51,7 +51,7 @@ define execution_tool_execute with database as Int and run as Str and call_id as
     if handle equals 0:
         set closed to socket_cancellation_close(owner)
         set closed to ep_dlclose(library)
-        return "{\"status\":\"guardian-launch-failed\",\"effects\":\"none\"}"
+        return execution_guardian_failure("guardian-launch-failed" and "none")
     set state to workspace_process_poll(handle)
     repeat while state equals 0:
         if get_list(owner and 1) >= 0 and agent_cancellation_pending(library and cancellation) is not equal to 0:
@@ -63,5 +63,17 @@ define execution_tool_execute with database as Int and run as Str and call_id as
     if state equals 1:
         set result to workspace_guardian_receipt(database and run and call_id)
         set closed to workspace_process_close(handle)
+    # Missing receipt is uncertainty, never evidence that the command did not run.
+    if string_length(result) equals 0:
+        set result to execution_guardian_failure("guardian-receipt-unavailable" and "unknown")
+        if state equals 1:
+            set result to concat(substring(result and 0 and string_length(result) - 1) and concat(",\"guardian_wait_status\":" and concat(int_to_string(get_list(handle and 3)) and "}")))
+    if state < 0:
+        set result to execution_guardian_failure("guardian-wait-failed" and "unknown")
     set closed to ep_dlclose(library)
     return result
+
+# Contains only fixed native diagnostic labels, no command output or arguments.
+# Safe for a public audience even when effects require reconciliation.
+define execution_guardian_failure with status as Str and effects as Str returning Str:
+    return concat("{\"audience\":\"public-system\",\"status\":" and concat(provider_quote(status) and concat(",\"effects\":" and concat(provider_quote(effects) and ",\"recovery\":\"Inspect the durable process and guardian receipts before repeating this command.\"}"))))

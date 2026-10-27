@@ -20,8 +20,12 @@ define attachment_text_execute with database as Int and session as Str and argum
         if provider_kind(tokens and index) equals ",":
             set index to index + 1
     set field to provider_member(tokens and 0 and "attachment")
-    set offset to history_tool_integer(tokens and "offset")
-    set characters to history_tool_integer(tokens and "characters")
+    set offset to 0
+    if provider_member(tokens and 0 and "offset") >= 0:
+        set offset to history_tool_integer(tokens and "offset")
+    set characters to 65536
+    if provider_member(tokens and 0 and "characters") >= 0:
+        set characters to history_tool_integer(tokens and "characters")
     if not (provider_kind(tokens and field) equals "string") or else offset is less than 0 or else characters is less than 1:
         return "{\"status\":\"invalid-arguments\"}"
     set mode to "read"
@@ -62,9 +66,13 @@ define attachment_text_execute with database as Int and session as Str and argum
     set pages to 0
     set extractor to ""
     set read to create_list()
+    set extracted to create_list()
     if archive_list_text(row and 5) equals "application/pdf":
         set representation to "pdfkit-page-text"
         set extracted to pdf_cached_page(database and archive_list_text(row and 4) and archive_list_text(row and 1) and archive_list_text(row and 2) and http_decimal(archive_list_text(row and 3)) and page)
+        if provider_member(tokens and 0 and "page") equals -1:
+            set representation to "pdfkit-document-text"
+            set extracted to pdf_document_window_source(database and archive_list_text(row and 4) and archive_list_text(row and 1) and archive_list_text(row and 2) and http_decimal(archive_list_text(row and 3)) and scan_offset and scan_characters)
         set pages to get_list(extracted and 2)
         set extractor to archive_list_text(extracted and 3)
         if not (archive_list_text(extracted and 0) equals "extracted"):
@@ -81,7 +89,7 @@ define attachment_text_execute with database as Int and session as Str and argum
         set full_text to archive_list_text(read and 1)
         set match_offset to attachment_text_find(full_text and mode and query and offset)
         if match_offset < 0:
-            return concat("{\"status\":\"end\",\"attachment\":" and concat(provider_quote(identity) and concat(",\"sha256\":" and concat(provider_quote(archive_list_text(row and 2)) and ",\"recovery\":\"No further match in this text or PDF page. For PDFs continue with the next page.\"}"))))
+            return concat("{\"status\":\"end\",\"attachment\":" and concat(provider_quote(identity) and concat(",\"sha256\":" and concat(provider_quote(archive_list_text(row and 2)) and ",\"recovery\":\"No further match in the selected text. An explicit PDF page limits the search to that page.\"}"))))
         set read to attachment_unicode_window(full_text and match_offset and characters)
     set text to archive_list_text(read and 1)
     set received to get_list(read and 2)
@@ -97,6 +105,14 @@ define attachment_text_execute with database as Int and session as Str and argum
     set payload to concat(payload and concat(",\"mode\":" and provider_quote(mode)))
     set payload to concat(payload and concat(",\"text\":" and provider_quote(text)))
     set payload to concat(payload and concat(",\"representation\":" and provider_quote(representation)))
+    if representation equals "pdfkit-document-text":
+        set payload to concat(payload and concat(",\"extractor\":" and provider_quote(extractor)))
+        set payload to concat(payload and concat(",\"pages\":" and provider_quote(int_to_string(pages))))
+        set remaining to attachment_unicode_window(archive_list_text(extracted and 1) and next_offset and 1)
+        if get_list(remaining and 2) equals 0:
+            set payload to concat(payload and ",\"complete\":true")
+        else:
+            set payload to concat(payload and ",\"complete\":false")
     if representation equals "pdfkit-page-text":
         set payload to concat(payload and concat(",\"extractor\":" and provider_quote(extractor)))
         set payload to concat(payload and concat(",\"page\":" and provider_quote(int_to_string(page))))
@@ -128,25 +144,67 @@ define attachment_unicode_window with text as Str and offset as Int and characte
 
 
 # Search verified source locally; only the selected passage enters model context.
+# KMP compares bytes without allocating substrings or rescanning source length.
+# Convert the matched byte position to the public Unicode-scalar offset once.
 define attachment_text_find with text as Str and mode as Str and query as Str and offset as Int returning Int:
     set pointer to str_to_ptr(text)
+    set size to string_length(text)
     set position to 0
     set scalar to 0
-    set size to string_length(text)
+    if offset < 0:
+        return -1
+    if mode equals "search":
+        set width to string_length(query)
+        if width equals 0:
+            return -1
+        set needle to str_to_ptr(query)
+        set prefix to create_list()
+        set added to append_list(prefix and 0)
+        set index to 1
+        set matched to 0
+        repeat while index < width:
+            repeat while matched > 0 and peek_byte(needle and index) is not equal to peek_byte(needle and matched):
+                set matched to get_list(prefix and matched - 1)
+            if peek_byte(needle and index) equals peek_byte(needle and matched):
+                set matched to matched + 1
+            set added to append_list(prefix and matched)
+            set index to index + 1
+        repeat while position < size:
+            set code to peek_byte(pointer and position)
+            if code < 128 or else code >= 192:
+                if scalar >= offset:
+                    break
+                set scalar to scalar + 1
+            set position to position + 1
+        set matched to 0
+        repeat while position < size:
+            set code to peek_byte(pointer and position)
+            repeat while matched > 0 and code is not equal to peek_byte(needle and matched):
+                set matched to get_list(prefix and matched - 1)
+            if code equals peek_byte(needle and matched):
+                set matched to matched + 1
+            if matched equals width:
+                set start to position + 1 - width
+                set index to 0
+                set scalar to 0
+                repeat while index < start:
+                    set code to peek_byte(pointer and index)
+                    if code < 128 or else code >= 192:
+                        set scalar to scalar + 1
+                    set index to index + 1
+                return scalar
+            set position to position + 1
+        return -1
     set line_start to 1
     repeat while position < size:
         set code to peek_byte(pointer and position)
         if code < 128 or else code >= 192:
-            if scalar >= offset:
-                if mode equals "search" and string_length(query) <= size - position:
-                    if ptr_to_str(substring(text and position and string_length(query))) equals query:
-                        return scalar
-                if mode equals "headings" and line_start equals 1 and code equals 35:
-                    set marker to position
-                    repeat while marker < size and peek_byte(pointer and marker) equals 35:
-                        set marker to marker + 1
-                    if marker - position <= 6 and marker < size and (peek_byte(pointer and marker) equals 32 or else peek_byte(pointer and marker) equals 9):
-                        return scalar
+            if scalar >= offset and mode equals "headings" and line_start equals 1 and code equals 35:
+                set marker to position
+                repeat while marker < size and peek_byte(pointer and marker) equals 35:
+                    set marker to marker + 1
+                if marker - position <= 6 and marker < size and (peek_byte(pointer and marker) equals 32 or else peek_byte(pointer and marker) equals 9):
+                    return scalar
             set scalar to scalar + 1
         set line_start to code equals 10
         set position to position + 1
