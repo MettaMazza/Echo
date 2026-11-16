@@ -1,0 +1,54 @@
+import "transport"
+
+# Gmail mutations may return 204 or an empty successful response. Keep the
+# existing inference/discovery collector's stricter contract unchanged.
+# Copy complete bounded chunks instead of one FFI call per JSON byte.
+define gmail_response_body with reader as List and method as Str and allow_empty as Int returning List:
+    set head to http_response_head(reader and method)
+    repeat while archive_list_text(head and 0) equals "ready" and also get_list(head and 1) < 200:
+        set head to http_response_head(reader and method)
+    if not (archive_list_text(head and 0) equals "ready"):
+        return local_json_result(archive_list_text(head and 0) and 0 and "")
+    set code to get_list(head and 1)
+    set framed to http_body_create(archive_list_text(head and 2) and get_list(head and 3))
+    set builder to create_builder()
+    set copy to ep_dlsym(get_list(reader and 0) and "strndup")
+    set release to ep_dlsym(get_list(reader and 0) and "free")
+    if copy equals 0 or else release equals 0:
+        return local_json_result("platform-error" and code and "")
+    repeat while 1 equals 1:
+        set piece to http_body_next(reader and framed and 65536)
+        set status to archive_list_text(piece and 0)
+        if status equals "done":
+            break
+        if not (status equals "data"):
+            return local_json_result(status and code and "")
+        set text to provider_token_slice(ptr_to_str(get_list(piece and 1)) and 0 and get_list(piece and 2) and copy and release)
+        if string_length(text) is not equal to get_list(piece and 2):
+            return local_json_result("invalid-json" and code and "")
+        set added to builder_append(builder and text)
+    set text to ptr_to_str(builder_to_string(builder))
+    if code < 200 or else code >= 300:
+        return local_json_result("http-error" and code and text)
+    if string_length(text) equals 0 and also (allow_empty or else code equals 204):
+        return local_json_result("ready" and code and "")
+    if provider_valid_utf8(text) equals 0:
+        return local_json_result("invalid-json" and code and "")
+    set tokens to provider_json_tokens(text)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return local_json_result("invalid-json" and code and "")
+    return local_json_result("ready" and code and text)
+
+define gmail_response_collect with database as Int and session as Str and identity as Str and transfer as List and method as Str and allow_empty as Int returning List:
+    set result to local_json_result(archive_list_text(transfer and 0) and 0 and "")
+    if archive_list_text(transfer and 0) equals "streaming":
+        set result to gmail_response_body(get_list(transfer and 2) and method and allow_empty)
+        set status to archive_list_text(result and 0)
+        set terminal to external_transport_finish(database and session and identity and transfer and (status equals "ready" or else status equals "http-error"))
+        if terminal equals "cleanup-pending" or else terminal equals "cleanup-error" or else ((status equals "ready" or else status equals "http-error") and also not (terminal equals "complete")):
+            set changed to set_list(result and 0 and terminal)
+    set retained to 0
+    if get_list(transfer and 1) is not equal to 0:
+        set retained to transfer
+    set added to append_list(result and retained)
+    return result

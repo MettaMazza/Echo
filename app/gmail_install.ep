@@ -1,0 +1,68 @@
+import "mail/credentials"
+import "mail/actions"
+import "mail/composition_store"
+import "mail/sync"
+import "providers/anthropic_json"
+
+# Human-run setup helper, not a model tool. Args: private mailbox root, existing
+# Echo archive, private grant directory, grant filename, new mailbox identity.
+# The Python OAuth helper prepares the grant; all installed account state and
+# runtime credential storage are handled here using the same Ernos modules.
+define main returning Int:
+    if get_argument_count() is not equal to 6:
+        display "Expected private mailbox root, Echo archive, grant directory, grant filename and mailbox identity."
+        return 1
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to get_argument(1)
+    set directory to workspace_root_open(system and root)
+    set vault to workspace_root_open(system and concat(root and "/credentials"))
+    set grants to workspace_root_open(system and get_argument(3))
+    if external_vault_inode(system and directory and 1) equals 0 or else external_vault_inode(system and vault and 1) equals 0 or else external_vault_inode(system and grants and 1) equals 0:
+        display "Mailbox, credential and grant directories must be private."
+        return 2
+    set input to workspace_file_open(system and grants and get_argument(4) and 0)
+    if input < 0 or else external_vault_inode(system and input and 0) equals 0:
+        display "Private grant unavailable."
+        return 3
+    set loaded to file_text_descriptor_window(system and input and "" and -1 and 4096 and 0 and -1)
+    set closed to net_close(input)
+    if not (archive_list_text(loaded and 0) equals "read"):
+        return 4
+    set raw to archive_list_text(loaded and 1)
+    set tokens to provider_json_tokens(raw)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_index(tokens and provider_member(tokens and 0 and "format")) equals "1"):
+        return 5
+    set owner to provider_value(tokens and provider_member(tokens and 0 and "principal"))
+    set email to provider_value(tokens and provider_member(tokens and 0 and "email"))
+    set credential to anthropic_json_source(raw and tokens and provider_member(tokens and 0 and "credential"))
+    set archive to sql_open(get_argument(2))
+    set allowed to history_collect_one(checkpoint_prepare(archive and "SELECT identity FROM echo_principals WHERE identity=?1 AND revoked=0 AND role IN ('admin','steward');" and [owner]))
+    if not (archive_list_text(allowed and 0) equals "found"):
+        display "Grant owner is not a current Echo admin."
+        return 6
+    set stored to gmail_credential_store(system and vault and credential)
+    if not (archive_list_text(stored and 0) equals "stored"):
+        display archive_list_text(stored and 0)
+        return 7
+    set file to workspace_file_open(system and directory and "mailbox.sqlite" and 1)
+    if file < 0:
+        set file to workspace_file_open(system and directory and "mailbox.sqlite" and 0)
+    if file < 0 or else external_vault_inode(system and file and 0) equals 0:
+        display "Mailbox database is not private."
+        return 8
+    set closed to net_close(file)
+    set database to archive_open(concat(root and "/mailbox.sqlite"))
+    if database equals 0 or else gmail_account_schema(database) is not equal to 0 or else gmail_outbox_schema(database) is not equal to 0 or else gmail_action_schema(database) is not equal to 0 or else gmail_composition_schema(database) is not equal to 0 or else gmail_sync_schema(database) is not equal to 0:
+        return 9
+    set connected to gmail_account_connect(database and get_argument(5) and owner and email and archive_list_text(stored and 1))
+    set closed to sql_close(database)
+    set closed to sql_close(archive)
+    set closed to net_close(grants)
+    set closed to net_close(vault)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(system)
+    if not (connected equals "connected"):
+        display connected
+        return 10
+    display "Private Gmail account installed. No mail sent; service activation remains separate."
+    return 0

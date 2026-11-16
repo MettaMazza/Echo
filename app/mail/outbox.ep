@@ -1,0 +1,81 @@
+import "os"
+import "../archive/history"
+import "../context/checkpoint"
+
+# Private mailbox database, not conversation memory. The authenticated mailbox
+# adapter owns these calls. This store grants no authority and never sends mail.
+# Before any network send, commit 'uncertain'. A crash, timeout or empty search
+# result must never change that back to ready. Positive Gmail receipt evidence
+# reconciles it to sent. Keep exact bytes and Message-ID for reconciliation.
+define gmail_outbox_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_mail_intents(mailbox TEXT NOT NULL,identity TEXT NOT NULL,message_id TEXT NOT NULL,payload TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(mailbox,identity),UNIQUE(mailbox,message_id)); CREATE TABLE IF NOT EXISTS echo_mail_delivery(mailbox TEXT NOT NULL,identity TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('ready','uncertain','sent')),remote_id TEXT NOT NULL DEFAULT '',thread_id TEXT NOT NULL DEFAULT '',PRIMARY KEY(mailbox,identity),FOREIGN KEY(mailbox,identity) REFERENCES echo_mail_intents(mailbox,identity)); CREATE TRIGGER IF NOT EXISTS echo_mail_intent_immutable_update BEFORE UPDATE ON echo_mail_intents BEGIN SELECT RAISE(ABORT,'Mail intent is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_mail_intent_immutable_delete BEFORE DELETE ON echo_mail_intents BEGIN SELECT RAISE(ABORT,'Mail intent is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_mail_delivery_no_rewind BEFORE UPDATE ON echo_mail_delivery WHEN NOT ((OLD.state='ready' AND NEW.state='uncertain') OR (OLD.state='uncertain' AND NEW.state='sent')) OR NEW.mailbox != OLD.mailbox OR NEW.identity != OLD.identity BEGIN SELECT RAISE(ABORT,'Mail delivery cannot be replayed'); END; CREATE TRIGGER IF NOT EXISTS echo_mail_delivery_no_delete BEFORE DELETE ON echo_mail_delivery BEGIN SELECT RAISE(ABORT,'Mail delivery cannot be forgotten'); END;")
+
+define gmail_outbox_prepare with database as Int and mailbox as Str and identity as Str and message_id as Str and payload as Str returning Str:
+    if string_length(mailbox) equals 0 or else string_length(identity) equals 0 or else string_length(message_id) equals 0 or else string_length(payload) equals 0:
+        return "invalid-intent"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT message_id,payload,digest FROM echo_mail_intents WHERE mailbox=?1 AND identity=?2;" and [mailbox,identity]))
+    set status to archive_list_text(prior and 0)
+    if status equals "found":
+        set ignored to archive_rollback(database)
+        if archive_list_text(prior and 1) equals message_id and also archive_list_text(prior and 2) equals payload and also archive_list_text(prior and 3) equals ep_sha256(payload):
+            return "prepared"
+        return "intent-conflict"
+    if not (status equals "end"):
+        set ignored to archive_rollback(database)
+        return "database-error"
+    set duplicate to history_collect_one(checkpoint_prepare(database and "SELECT identity FROM echo_mail_intents WHERE mailbox=?1 AND message_id=?2;" and [mailbox,message_id]))
+    if not (archive_list_text(duplicate and 0) equals "end"):
+        set ignored to archive_rollback(database)
+        if archive_list_text(duplicate and 0) equals "found":
+            return "message-id-conflict"
+        return "database-error"
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_intents(mailbox,identity,message_id,payload,digest) VALUES(?1,?2,?3,?4,?5);" and [mailbox,identity,message_id,payload,ep_sha256(payload)]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_delivery(mailbox,identity,state) VALUES(?1,?2,'ready');" and [mailbox,identity]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return "prepared"
+
+define gmail_outbox_claim with database as Int and mailbox as Str and identity as Str returning List:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return ["database-busy"]
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT d.state,i.message_id,i.payload,i.digest FROM echo_mail_delivery d JOIN echo_mail_intents i USING(mailbox,identity) WHERE d.mailbox=?1 AND d.identity=?2;" and [mailbox,identity]))
+    if not (archive_list_text(row and 0) equals "found"):
+        set ignored to archive_rollback(database)
+        return [archive_list_text(row and 0)]
+    set state to archive_list_text(row and 1)
+    if not (state equals "ready"):
+        set ignored to archive_rollback(database)
+        return [state]
+    if not (ep_sha256(archive_list_text(row and 3)) equals archive_list_text(row and 4)):
+        set ignored to archive_rollback(database)
+        return ["intent-integrity-failed"]
+    if archive_finish(checkpoint_prepare(database and "UPDATE echo_mail_delivery SET state='uncertain' WHERE mailbox=?1 AND identity=?2 AND state='ready';" and [mailbox,identity]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return ["database-error"]
+    return ["claimed",archive_list_text(row and 2),archive_list_text(row and 3)]
+
+# Only a verified send response or matching sent-mail lookup may call this.
+# message_id must match the immutable intent even after process restart.
+define gmail_outbox_receipt with database as Int and mailbox as Str and identity as Str and message_id as Str and remote_id as Str and thread_id as Str returning Str:
+    if string_length(remote_id) equals 0 or else string_length(thread_id) equals 0:
+        return "invalid-receipt"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT d.state,d.remote_id,d.thread_id,i.message_id FROM echo_mail_delivery d JOIN echo_mail_intents i USING(mailbox,identity) WHERE d.mailbox=?1 AND d.identity=?2;" and [mailbox,identity]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 4) equals message_id):
+        set ignored to archive_rollback(database)
+        return "intent-mismatch"
+    set state to archive_list_text(row and 1)
+    if state equals "sent":
+        set ignored to archive_rollback(database)
+        if archive_list_text(row and 2) equals remote_id and also archive_list_text(row and 3) equals thread_id:
+            return "sent"
+        return "receipt-conflict"
+    if not (state equals "uncertain"):
+        set ignored to archive_rollback(database)
+        return "send-not-started"
+    if archive_finish(checkpoint_prepare(database and "UPDATE echo_mail_delivery SET state='sent',remote_id=?3,thread_id=?4 WHERE mailbox=?1 AND identity=?2 AND state='uncertain';" and [mailbox,identity,remote_id,thread_id]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return "sent"

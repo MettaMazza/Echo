@@ -1,0 +1,76 @@
+import "payload"
+import "../network/search_query"
+import "../providers/archived_stream"
+
+# Read-only recipient resolution, separately authorized from Gmail. These
+# routes never address another Google user, mutate contacts or search profiles.
+define gmail_contacts_method with operation as Str returning Int:
+    return operation equals "people.searchContacts" or else operation equals "people.connections.list"
+
+define gmail_contacts_endpoint with url as Str returning Int:
+    return string_index_of(url and "https://people.googleapis.com/v1/people:searchContacts?") equals 0 or else string_index_of(url and "https://people.googleapis.com/v1/people/me/connections?") equals 0
+
+define gmail_contacts_plan with operation as Str and parameters as Str and body as Str and granted as List returning List:
+    if gmail_contacts_method(operation) equals 0:
+        return ["unknown-operation"]
+    if string_length(body) > 0:
+        return ["unexpected-request-body"]
+    set authorized to 0
+    for each scope in granted:
+        if ptr_to_str(scope) equals "https://www.googleapis.com/auth/contacts.readonly" or else ptr_to_str(scope) equals "https://www.googleapis.com/auth/contacts":
+            set authorized to 1
+    if authorized equals 0:
+        return ["contacts-scope-required"]
+    set tokens to provider_json_tokens(parameters)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return ["invalid-parameters"]
+    set search to operation equals "people.searchContacts"
+    set fields to "names,nicknames,emailAddresses,organizations,metadata"
+    set url to concat("https://people.googleapis.com/v1/people/me/connections?personFields=" and network_query_encode(fields))
+    if search:
+        set query to provider_member(tokens and 0 and "query")
+        if not (provider_kind(tokens and query) equals "string"):
+            return ["required-query"]
+        set url to concat("https://people.googleapis.com/v1/people:searchContacts?readMask=" and network_query_encode(fields))
+        set url to concat(url and concat("&query=" and network_query_encode(provider_value(tokens and query))))
+    set url to concat(url and "&sources=READ_SOURCE_TYPE_CONTACT")
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set name to provider_value(tokens and index)
+        set value to index + 2
+        if name equals "query" and search:
+            if not (provider_kind(tokens and value) equals "string"):
+                return ["invalid-parameters"]
+        else if name equals "pageToken" and search equals 0:
+            if not (provider_kind(tokens and value) equals "string"):
+                return ["invalid-parameters"]
+            set url to concat(url and concat("&pageToken=" and network_query_encode(provider_value(tokens and value))))
+        else if name equals "pageSize":
+            set maximum to 1000
+            if search:
+                set maximum to 30
+            set text to provider_value(tokens and value)
+            if not (provider_kind(tokens and value) equals "number") or else gmail_payload_integer(text and "int32") equals 0 or else string_to_int(text) < 1 or else string_to_int(text) > maximum:
+                return ["invalid-page-size"]
+            set url to concat(url and concat("&pageSize=" and text))
+        else:
+            return ["unknown-parameter",name]
+        set index to provider_after(tokens and value)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    return ["planned","GET",url,"","read",""]
+
+# Returned alongside the existing Gmail method catalogue. Limits are explicit:
+# search is prefix matching and capped; use paginated connections for full scan.
+define gmail_contacts_description with operation as Str returning Str:
+    if gmail_contacts_method(operation) equals 0:
+        return "{\"status\":\"unknown-method\"}"
+    set parameters to "{\"pageToken\":{\"type\":\"string\"},\"pageSize\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000}}"
+    set required to "[]"
+    if operation equals "people.searchContacts":
+        set parameters to "{\"query\":{\"type\":\"string\"},\"pageSize\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":30}}"
+        set required to "[\"query\"]"
+    set result to concat("{\"status\":\"ready\",\"contract\":{\"operation\":" and provider_quote(operation))
+    set result to concat(result and ",\"method\":\"GET\",\"scopes\":[\"https://www.googleapis.com/auth/contacts.readonly\",\"https://www.googleapis.com/auth/contacts\"],\"parameters\":")
+    set result to concat(result and concat(parameters and concat(",\"required\":" and required)))
+    return concat(result and ",\"fields\":[\"names\",\"nicknames\",\"emailAddresses\",\"organizations\",\"metadata\"],\"sources\":[\"CONTACT\"]},\"request_schema\":null}")

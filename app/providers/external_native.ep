@@ -1,0 +1,52 @@
+import "../context/checkpoint"
+import "anthropic_request"
+import "openai_responses_request"
+
+# Context emits source request IDs only for accepted assistant lineage. Consume
+# those host bindings here, validate archived native blocks, and strip markers
+# before provider translation. No source IDs are sent upstream.
+define external_native_request with database as Int and session as Str and profile as Str and body as Str returning List:
+    set config to provider_json_tokens(profile)
+    set request to provider_json_tokens(body)
+    if request equals 0 or else provider_unique_objects(request) equals 0 or else anthropic_fields(request and 0 and ["model","stream","messages","tools","tool_choice"]) equals 0:
+        return anthropic_translation("unsupported-external-request" and "")
+    set family to provider_value(config and provider_member(config and 0 and "adapter"))
+    if not (family equals "anthropic-messages" or else family equals "openai-responses"):
+        return anthropic_translation("unsupported-external-adapter" and "")
+    set model to provider_value(config and provider_member(config and 0 and "model"))
+    if not (provider_value(request and provider_member(request and 0 and "model")) equals model):
+        return anthropic_translation("request-model-mismatch" and "")
+    set choice to provider_member(request and 0 and "tool_choice")
+    if choice >= 0 and not (provider_kind(request and choice) equals "string" and also provider_value(request and choice) equals "auto"):
+        return anthropic_translation("unsupported-tool-choice" and "")
+    set messages to anthropic_json_source(body and request and provider_member(request and 0 and "messages"))
+    set tokens to provider_json_tokens(messages)
+    set items to provider_items(tokens and 0)
+    if items equals 0:
+        return anthropic_translation("invalid-messages" and "")
+    set bindings to create_list()
+    set clean to create_list()
+    set position to 0
+    for each item in items:
+        set original to anthropic_json_source(messages and tokens and item)
+        set marker to provider_member(tokens and item and "echo_native_request")
+        if marker >= 0:
+            if not (provider_kind(tokens and marker) equals "string") or else not (provider_value(tokens and provider_member(tokens and item and "role")) equals "assistant"):
+                return anthropic_translation("invalid-native-replay-binding" and "")
+            set binding to create_list()
+            set added to append_list(binding and position)
+            set added to append_list(binding and provider_value(tokens and marker))
+            set added to append_list(bindings and binding)
+            set stripped to history_collect_one(checkpoint_prepare(database and "SELECT json_remove(?1,'$.echo_native_request');" and [original]))
+            if not (archive_list_text(stripped and 0) equals "found"):
+                return anthropic_translation("invalid-native-replay-binding" and "")
+            set original to archive_list_text(stripped and 1)
+        set added to append_list(clean and original)
+        set position to position + 1
+    set tools to anthropic_json_source(body and request and provider_member(request and 0 and "tools"))
+    if string_length(tools) equals 0:
+        set tools to "[]"
+    set options to anthropic_json_source(profile and config and provider_member(config and 0 and "options"))
+    if family equals "openai-responses":
+        return responses_request_create_archived(database and session and model and anthropic_array(clean) and tools and options and bindings)
+    return anthropic_request_create_archived(database and session and model and anthropic_array(clean) and tools and options and bindings)

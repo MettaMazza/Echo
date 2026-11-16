@@ -1,0 +1,81 @@
+import "anthropic_json"
+import "openai_responses_metadata"
+
+# Native discovery data, not a guessed model-name catalogue. Retain the exact
+# response separately from the normalized view. Unreported limits stay unknown.
+# Result: status, canonical model ID, input limit, output limit, capabilities,
+# original response. This is metadata, not authorization to start a request.
+define external_model_info with family as Str and body as Str returning List:
+    set result to create_list()
+    set added to append_list(result and "invalid-model-metadata")
+    set added to append_list(result and "")
+    set added to append_list(result and -1)
+    set added to append_list(result and -1)
+    set added to append_list(result and "null")
+    set added to append_list(result and body)
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return result
+    set identity to provider_member(tokens and 0 and "id")
+    if not (provider_kind(tokens and identity) equals "string") or else string_length(provider_value(tokens and identity)) equals 0:
+        return result
+    if family equals "openai-chat":
+        if not (provider_value(tokens and provider_member(tokens and 0 and "object")) equals "model"):
+            return result
+        # OpenAI /models reports identity, not context limits or capabilities.
+        # These require separately verified accounting before profile activation.
+        set changed to set_list(result and 0 and "accounting-unresolved")
+        set changed to set_list(result and 1 and provider_value(tokens and identity))
+        set contract to responses_model_contract(provider_value(tokens and identity))
+        if string_length(contract) > 0:
+            set metadata to provider_json_tokens(contract)
+            set changed to set_list(result and 0 and "documented")
+            set changed to set_list(result and 2 and http_decimal(provider_index(metadata and provider_member(metadata and 0 and "context_window"))))
+            set changed to set_list(result and 3 and http_decimal(provider_index(metadata and provider_member(metadata and 0 and "max_output_tokens"))))
+            set changed to set_list(result and 4 and contract)
+        return result
+    if not (family equals "anthropic-messages") or else not (provider_value(tokens and provider_member(tokens and 0 and "type")) equals "model"):
+        return result
+    set changed to set_list(result and 1 and provider_value(tokens and identity))
+    set resolved to 1
+    set position to 2
+    for each field in ["max_input_tokens","max_tokens"]:
+        set member to provider_member(tokens and 0 and field)
+        set count to -1
+        if provider_kind(tokens and member) equals "number":
+            set count to http_decimal(provider_index(tokens and member))
+        if count < 1:
+            set resolved to 0
+            set count to -1
+        set changed to set_list(result and position and count)
+        set position to position + 1
+    set capabilities to provider_member(tokens and 0 and "capabilities")
+    if provider_kind(tokens and capabilities) equals "{":
+        set changed to set_list(result and 4 and anthropic_json_source(body and tokens and capabilities))
+    else:
+        set resolved to 0
+    set status to "accounting-unresolved"
+    if resolved equals 1:
+        set status to "discovered"
+    set changed to set_list(result and 0 and status)
+    return result
+
+# Three states are intentional: an omitted capability is not an advertised no.
+# Paths are provider-contract fields supplied by host integration code.
+define external_model_capability with capabilities as Str and path as List returning Str:
+    set tokens to provider_json_tokens(capabilities)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "unreported"
+    set member to 0
+    for each field in path:
+        if not (provider_kind(tokens and member) equals "{"):
+            return "unreported"
+        set member to provider_member(tokens and member and field)
+    if not (provider_kind(tokens and member) equals "{"):
+        return "unreported"
+    set supported to provider_member(tokens and member and "supported")
+    if provider_kind(tokens and supported) equals "true":
+        return "supported"
+    if provider_kind(tokens and supported) equals "false":
+        return "unsupported"
+    return "unreported"

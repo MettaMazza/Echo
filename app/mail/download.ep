@@ -1,0 +1,61 @@
+import "download_part"
+import "attachments"
+import "authority"
+import "read"
+import "../web/attachments"
+
+# Network reads retain the existing cancellation/cleanup ownership contract.
+define gmail_download_account with authority as Int and run as Str and call_id as Str and session as Str and request as Str and account as Str and parameters as Str and environment as List and cancellation as Int returning List:
+    set owner to gmail_tool_owner(authority and run and call_id)
+    set database to get_list(environment and 6)
+    if string_length(owner) equals 0 or else gmail_owner_active(authority and database and account and owner) equals 0:
+        return gmail_read_denied("mailbox-not-authorized")
+    set tokens to provider_json_tokens(parameters)
+    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    set part_id to provider_value(tokens and provider_member(tokens and 0 and "part_id"))
+    set system to get_list(environment and 1)
+    set source_parameters to concat("{\"id\":" and concat(provider_quote(message) and ",\"format\":\"full\"}"))
+    set source to gmail_read_account(authority and database and session and concat(request and ":message") and account and owner and "messages.get" and source_parameters and ep_time_now_ms() / 1000 and system and get_list(environment and 3) and get_list(environment and 2) and archive_list_text(environment and 5) and get_list(environment and 4) and cancellation)
+    if get_list(source and 3) is not equal to 0 or else not (archive_list_text(source and 0) equals "ready"):
+        return source
+    set part to gmail_download_part(archive_list_text(source and 2) and message and part_id)
+    if not (archive_list_text(part and 0) equals "selected"):
+        return gmail_read_denied(archive_list_text(part and 0))
+    set data to archive_list_text(part and 5)
+    if string_length(archive_list_text(part and 4)) > 0:
+        set query to concat("{\"messageId\":" and concat(provider_quote(message) and concat(",\"id\":" and concat(provider_quote(archive_list_text(part and 4)) and "}"))))
+        set response to gmail_read_account(authority and database and session and concat(request and ":attachment") and account and owner and "messages.attachments.get" and query and ep_time_now_ms() / 1000 and system and get_list(environment and 3) and get_list(environment and 2) and archive_list_text(environment and 5) and get_list(environment and 4) and cancellation)
+        if get_list(response and 3) is not equal to 0 or else not (archive_list_text(response and 0) equals "ready"):
+            return response
+        set decoded to gmail_download_data(archive_list_text(response and 2) and archive_list_text(part and 3))
+        if not (archive_list_text(decoded and 0) equals "ready"):
+            return gmail_read_denied(archive_list_text(decoded and 0))
+        set data to archive_list_text(decoded and 1)
+    if provider_helper_cancelled(system and cancellation) is not equal to 0 or else not (gmail_tool_owner(authority and run and call_id) equals owner):
+        return gmail_read_denied("mailbox-authority-changed")
+    set root to concat(external_environment_path("ECHO_MAIL_ROOT") and "/attachments")
+    set directory to workspace_directory_open(system and get_list(environment and 7) and "attachments" and 1)
+    if directory < 0:
+        return gmail_read_denied("attachment-storage-unavailable")
+    set stored to gmail_attachment_store(system and directory and root and request and data and string_to_int(archive_list_text(part and 3)))
+    set closed to net_close(directory)
+    if not (archive_list_text(stored and 0) equals "stored"):
+        return gmail_read_denied(archive_list_text(stored and 0))
+    set actor to history_collect_one(checkpoint_prepare(authority and "SELECT device FROM echo_tool_authority WHERE run=?1 AND call_id=?2;" and [run,call_id]))
+    if not (archive_list_text(actor and 0) equals "found") or else not (gmail_tool_owner(authority and run and call_id) equals owner) or else gmail_owner_active(authority and database and account and owner) equals 0 or else provider_helper_cancelled(system and cancellation) is not equal to 0:
+        return gmail_read_denied("mailbox-authority-changed")
+    set id to concat("mail-attachment:" and ep_sha256(request))
+    set receipt to concat("{\"kind\":\"gmail\",\"account\":" and provider_quote(account))
+    set receipt to concat(receipt and concat(",\"message_id\":" and provider_quote(message)))
+    set receipt to concat(receipt and concat(",\"part_id\":" and provider_quote(part_id)))
+    set receipt to concat(receipt and concat(",\"received_sha256\":" and provider_quote(archive_list_text(stored and 2))))
+    set receipt to concat(receipt and concat(",\"received_bytes\":" and archive_list_text(stored and 3)))
+    set receipt to concat(receipt and concat(",\"received_media\":" and concat(provider_quote(archive_list_text(part and 2)) and "}")))
+    if web_attachment_publish_source(authority and archive_list_text(actor and 1) and session and id and archive_list_text(stored and 1) and archive_list_text(part and 1) and archive_list_text(part and 2) and run and call_id and "" and 0 and receipt) is not equal to 0:
+        return gmail_read_denied("attachment-publication-failed")
+    set body to concat("{\"attachment\":" and provider_quote(id))
+    set body to concat(body and concat(",\"name\":" and provider_quote(archive_list_text(part and 1))))
+    set body to concat(body and concat(",\"source\":" and concat(receipt and "}")))
+    set result to local_json_result("ready" and 0 and body)
+    set added to append_list(result and 0)
+    return result

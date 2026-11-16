@@ -71,10 +71,22 @@ define llama_preflight with database as Int and session as Str and identity as S
             set capability to llama_modalities_check(body and archive_list_text(props and 2))
             if capability equals "ready":
                 set counted to local_json_request(port and "POST" and "/v1/chat/completions/input_tokens" and body and cancellation_reader and read_size)
-                # Token counting is read-only. Preserve and retry one empty
-                # transport-level 400; semantic errors with bodies are not retried.
-                if archive_list_text(counted and 0) equals "http-error" and get_list(counted and 1) equals 400 and string_length(archive_list_text(counted and 2)) equals 0:
-                    set retry_receipt to archive_append(database and session and concat(identity and ":empty-count-retry") and "provider_token_count_retry" and "{\"http_status\":400,\"body\":\"\",\"operation\":\"input-token-count\",\"retry\":1}" and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+                # Token counting has no generation or tool effects. Preserve a
+                # disconnected/empty transport attempt before repeating the
+                # exact read-only request once. Never retry cancellation,
+                # malformed JSON, or a semantic HTTP rejection with a body.
+                set count_status to archive_list_text(counted and 0)
+                set empty_transport to 0
+                if string_length(archive_list_text(counted and 2)) equals 0:
+                    if count_status equals "http-error" and get_list(counted and 1) equals 400:
+                        set empty_transport to 1
+                    else if get_list(counted and 1) equals 0:
+                        if count_status equals "error" or else count_status equals "eof" or else count_status equals "connect-error":
+                            set empty_transport to 1
+                if empty_transport:
+                    set retry_payload to concat("{\"operation\":\"input-token-count\",\"retry\":1,\"status\":" and provider_quote(count_status))
+                    set retry_payload to concat(retry_payload and concat(",\"http_status\":" and concat(int_to_string(get_list(counted and 1)) and "}")))
+                    set retry_receipt to archive_append(database and session and concat(identity and ":empty-count-retry") and "provider_token_count_retry" and retry_payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
                     if retry_receipt is not equal to 0:
                         set changed to set_list(decision and 0 and "archive-error")
                         return decision

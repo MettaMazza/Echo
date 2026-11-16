@@ -1,0 +1,84 @@
+import "compose_tool"
+import "reconcile"
+import "policy"
+
+# The successful HTTP response must contain actual Gmail message/thread IDs.
+# Malformed success remains uncertain and is recovered through SENT lookup.
+define gmail_send_receipt with response as Str returning List:
+    set tokens to provider_json_tokens(response)
+    set message to provider_member(tokens and 0 and "id")
+    set thread to provider_member(tokens and 0 and "threadId")
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and message) equals "string") or else not (provider_kind(tokens and thread) equals "string") or else string_length(provider_value(tokens and message)) equals 0 or else string_length(provider_value(tokens and thread)) equals 0:
+        return ["invalid-send-receipt"]
+    return ["sent",provider_value(tokens and message),provider_value(tokens and thread)]
+
+define gmail_send_account with authority as Int and database as Int and run as Str and call_id as Str and session as Str and request as Str and account as Str and intent as Str and basis as Str and now as Int and system as Int and vault as Int and spool as Int and root as Str and errors as Int and cancellation as Int returning List:
+    set owner to gmail_tool_owner(authority and run and call_id)
+    if string_length(owner) equals 0 or else gmail_owner_active(authority and database and account and owner) equals 0:
+        return gmail_read_denied("mailbox-not-authorized")
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT state,remote_id,thread_id FROM echo_mail_delivery WHERE mailbox=?1 AND identity=?2;" and [account,intent]))
+    if not (archive_list_text(prior and 0) equals "found"):
+        return gmail_read_denied("intent-unavailable")
+    if archive_list_text(prior and 1) equals "sent":
+        return gmail_reconciliation_result("sent" and archive_list_text(prior and 2) and archive_list_text(prior and 3))
+    if archive_list_text(prior and 1) equals "uncertain":
+        return gmail_send_reconcile(authority and database and run and call_id and session and request and account and intent and now and system and vault and spool and root and errors and cancellation)
+    if not (archive_list_text(prior and 1) equals "ready"):
+        return gmail_read_denied("invalid-delivery-state")
+    set prepared to gmail_prepared_payload(database and account and intent)
+    if not (archive_list_text(prepared and 0) equals "ready"):
+        return gmail_read_denied(archive_list_text(prepared and 0))
+    set body to archive_list_text(prepared and 1)
+    # Check before credential/network work; check again under the writer just
+    # before claiming. A policy rejection never consumes a ready intent.
+    if sql_execute(authority and "BEGIN IMMEDIATE;") is not equal to 0:
+        return gmail_read_denied("authority-writer-unavailable")
+    set decision to gmail_send_policy_check(authority and database and run and owner and account and intent and body and basis)
+    set rolled to archive_rollback(authority)
+    if not (decision equals "decisions-satisfied"):
+        return gmail_read_denied(decision)
+    if gmail_composition_sources_allowed(authority and database and run and call_id and account and intent) equals 0:
+        return gmail_read_denied("composition-source-authority-changed")
+    set refresh_identity to concat(request and ":refresh")
+    set credential to gmail_refresh_account(database and session and refresh_identity and account and owner and 0 and now and system and vault and spool and root and errors and cancellation)
+    if get_list(credential and 2) is not equal to 0:
+        return gmail_read_cleanup(archive_list_text(credential and 0) and get_list(credential and 2) and get_list(credential and 3) and refresh_identity and 1)
+    if not (archive_list_text(credential and 0) equals "ready"):
+        return gmail_read_denied(archive_list_text(credential and 0))
+    set tokens to provider_json_tokens(archive_list_text(credential and 1))
+    set scopes to create_list()
+    set split to retained_text_split(scopes and provider_value(tokens and provider_member(tokens and 0 and "scope")) and " ")
+    set plan to gmail_request_plan("messages.send" and "{}" and body and scopes)
+    if not (archive_list_text(plan and 0) equals "planned"):
+        return gmail_read_denied(archive_list_text(plan and 0))
+    if sql_execute(authority and "BEGIN IMMEDIATE;") is not equal to 0:
+        return gmail_read_denied("authority-writer-unavailable")
+    if not (gmail_tool_owner(authority and run and call_id) equals owner) or else gmail_owner_active(authority and database and account and owner) equals 0 or else gmail_composition_sources_allowed(authority and database and run and call_id and account and intent) equals 0 or else provider_helper_cancelled(system and cancellation) is not equal to 0:
+        set rolled to archive_rollback(authority)
+        return gmail_read_denied("mailbox-authority-changed")
+    set decision to gmail_send_policy_check(authority and database and run and owner and account and intent and body and basis)
+    if not (decision equals "decisions-satisfied"):
+        set rolled to archive_rollback(authority)
+        return gmail_read_denied(decision)
+    set claim to gmail_outbox_claim(database and account and intent)
+    if sql_execute(authority and "COMMIT;") is not equal to 0:
+        set rolled to archive_rollback(authority)
+        return gmail_read_denied("authority-commit-failed")
+    if not (archive_list_text(claim and 0) equals "claimed"):
+        return gmail_read_denied(archive_list_text(claim and 0))
+    if not (archive_list_text(claim and 2) equals body):
+        return gmail_read_denied("intent-integrity-failed")
+    set response to gmail_http_call(database and session and request and provider_value(tokens and provider_member(tokens and 0 and "access_token")) and "POST" and archive_list_text(plan and 2) and body and 0 and system and spool and root and errors and cancellation)
+    if get_list(response and 3) is not equal to 0:
+        return gmail_read_cleanup(archive_list_text(response and 0) and get_list(response and 3) and -1 and request and 1)
+    if not (archive_list_text(response and 0) equals "ready"):
+        return response
+    set receipt to gmail_send_receipt(archive_list_text(response and 2))
+    if not (archive_list_text(receipt and 0) equals "sent"):
+        return gmail_read_denied("send-uncertain-invalid-receipt")
+    set saved to gmail_outbox_receipt(database and account and intent and archive_list_text(claim and 1) and archive_list_text(receipt and 1) and archive_list_text(receipt and 2))
+    if not (saved equals "sent"):
+        return gmail_read_denied(saved)
+    if not (gmail_tool_owner(authority and run and call_id) equals owner) or else gmail_owner_active(authority and database and account and owner) equals 0:
+        return gmail_read_denied("mailbox-authority-changed")
+    return gmail_reconciliation_result("sent" and archive_list_text(receipt and 1) and archive_list_text(receipt and 2))

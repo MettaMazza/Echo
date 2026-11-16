@@ -1,0 +1,69 @@
+import "generation"
+import "../providers/external_chat"
+
+# External transport uses the same guidance wake ownership and publication
+# lifecycle as local generation; no response bypasses the accepted run head.
+define agent_generate_external_interruptible with database as Int and run as Str and session as Str and request as Str and profile as Str and body as Str and root as Str and system as Int and spool as Int and vault as Int and errors as Int and cancellation as Int and read_size as Int returning List:
+    set location to history_collect_one(archive_prepare(database and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return provider_collected("guidance-monitor-unavailable" and chat_stream_create())
+    if not (archive_list_text(location and 0) equals "found") or else string_length(archive_list_text(location and 1)) equals 0:
+        set closed to ep_dlclose(library)
+        return provider_collected("guidance-monitor-unavailable" and chat_stream_create())
+    set wake to socket_cancellation_create(library)
+    set finished to socket_cancellation_create(library)
+    if wake equals 0 or else finished equals 0:
+        if wake is not equal to 0:
+            set closed to socket_cancellation_close(wake)
+        if finished is not equal to 0:
+            set closed to socket_cancellation_close(finished)
+        set closed to ep_dlclose(library)
+        return provider_collected("guidance-monitor-unavailable" and chat_stream_create())
+    set completed to channel
+    set monitor_path to concat(archive_list_text(location and 1) and "")
+    set monitor_run to concat(run and "")
+    spawn guidance_interrupt_monitor(monitor_path and monitor_run and cancellation and get_list(finished and 0) and get_list(wake and 1) and completed)
+    set response to external_chat_generate(database and run and session and request and profile and body and root and system and spool and vault and errors and get_list(wake and 0) and read_size)
+    set closed to net_close(get_list(finished and 1))
+    set reason to receive from completed
+    set closed to net_close(get_list(wake and 0))
+    set cancelled to agent_cancellation_pending(library and cancellation)
+    set closed to ep_dlclose(library)
+    if reason equals 1 and cancelled equals 0:
+        return provider_collected("guidance-interrupted" and get_list(response and 1))
+    if reason equals 3:
+        return provider_collected("guidance-monitor-unavailable" and get_list(response and 1))
+    return response
+
+define agent_generate_external_at with database as Int and run as Str and expected_parent as Str and request as Str and profile as Str and body as Str and root as Str and system as Int and spool as Int and vault as Int and errors as Int and cancellation_reader as Int and read_size as Int and choice_index as Str returning Int:
+    set row to agent_run_read(database and run)
+    if row equals 0:
+        return 1
+    if not (archive_list_text(row and 2) equals "ready"):
+        return 1
+    set session to archive_list_text(row and 0)
+    set parent to archive_list_text(row and 3)
+    if not (parent equals expected_parent):
+        return 1
+    if external_profile_run_allows(database and run and profile) equals 0:
+        return 1
+    set payload to agent_request_envelope(run and parent and body)
+    if archive_append(database and session and request and "model_request" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return 1
+    if agent_run_transition(database and run and "ready" and parent and "generating" and request) is not equal to 0:
+        return 1
+    set response to agent_generate_external_interruptible(database and run and session and request and profile and body and root and system and spool and vault and errors and cancellation_reader and read_size)
+    set status to archive_list_text(response and 0)
+    if status equals "guidance-interrupted":
+        return agent_guidance_recover(database and run and session and request)
+    if not (status equals "complete"):
+        set failed to agent_generation_fail(database and run and session and request and status)
+        return 1
+    set published to agent_generation_publish(database and run and session and request and get_list(response and 1) and choice_index)
+    if published equals 2:
+        return agent_guidance_recover(database and run and session and request)
+    if published is not equal to 0:
+        set failed to agent_generation_fail(database and run and session and request and "response-publication-failed")
+        return 1
+    return 0

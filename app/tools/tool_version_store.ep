@@ -1,0 +1,76 @@
+import "tool_versions"
+import "../lifecycle/protected_path"
+
+# Read the exact retained inode; no pathname reopen after ownership inspection.
+# This shares the installed controller's root ownership/ancestor/ACL boundary.
+define tool_store_text with path as Str and expected as Str returning List:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return history_status("store-unavailable")
+    set descriptor to protected_path_open(library and path and 0)
+    if descriptor < 0:
+        set closed to ep_dlclose(library)
+        return history_status("store-not-protected")
+    set read to file_text_descriptor_window(library and descriptor and expected and -1 and 65536 and 0 and -1)
+    set closed to net_close(descriptor)
+    set released to ep_dlclose(library)
+    if closed is not equal to 0 or else released is not equal to 0:
+        return history_status("store-read-failed")
+    return read
+
+# The host supplies this path from its installed service configuration. Never
+# accept a model-supplied registry path or treat a parsed document as trusted.
+define tool_versions_installed_read with path as Str returning List:
+    if string_length(path) equals 0:
+        return history_status("not-configured")
+    set read to tool_store_text(path and "")
+    if not (archive_list_text(read and 0) equals "read"):
+        return read
+    set document to archive_list_text(read and 1)
+    if tool_versions_valid(document) equals 0:
+        return history_status("registry-invalid")
+    set result to history_status("ready")
+    set added to append_list(result and document)
+    set added to append_list(result and ep_sha256(document))
+    return result
+
+# Hash a protected executable through the same validated descriptor. The caller
+# still needs the guardian's authority/cancellation checks at process launch.
+define tool_store_binary_check with path as Str and expected as Str returning Int:
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 0
+    set descriptor to protected_path_open(library and path and 0)
+    if descriptor < 0:
+        set closed to ep_dlclose(library)
+        return 0
+    set checked to file_digest_owned_descriptor(library and descriptor and 65536 and 0)
+    return archive_list_text(checked and 0) equals "verified" and also archive_list_text(checked and 1) equals expected
+
+# Revalidate source, accepted binary and the independently published receipt.
+# No passing receipt supplied through a conversation or caller JSON is accepted.
+define tool_version_files_check with tokens as List and entry as Int returning Str:
+    if tool_version_entry_valid(tokens and entry) equals 0:
+        return "entry-invalid"
+    set manifest_text to provider_value(tokens and provider_member(tokens and entry and "manifest_text"))
+    set manifest to provider_json_tokens(manifest_text)
+    set source_pin to provider_value(manifest and provider_member(manifest and 0 and "source_sha256"))
+    set binary_pin to provider_value(tokens and provider_member(tokens and entry and "artifact_sha256"))
+    set source to tool_store_text(provider_value(tokens and provider_member(tokens and entry and "source_path")) and source_pin)
+    if not (archive_list_text(source and 0) equals "read"):
+        return "accepted-source-unavailable-or-changed"
+    if tool_store_binary_check(provider_value(tokens and provider_member(tokens and entry and "artifact_path")) and binary_pin) equals 0:
+        return "accepted-artifact-unavailable-or-changed"
+    set receipt to tool_store_text(provider_value(tokens and provider_member(tokens and entry and "qualification_path")) and provider_value(tokens and provider_member(tokens and entry and "qualification_sha256")))
+    if not (archive_list_text(receipt and 0) equals "read"):
+        return "qualification-unavailable-or-changed"
+    set proof to provider_json_tokens(archive_list_text(receipt and 1))
+    if proof equals 0 or else provider_unique_objects(proof) equals 0 or else not (provider_value(proof and provider_member(proof and 0 and "status")) equals "qualified"):
+        return "qualification-invalid"
+    for each key in ["principal", "session", "manifest_sha256", "artifact_sha256"]:
+        set field to ptr_to_str(key)
+        if not (provider_value(proof and provider_member(proof and 0 and field)) equals provider_value(tokens and provider_member(tokens and entry and field))):
+            return "qualification-binding-mismatch"
+    if not (provider_value(proof and provider_member(proof and 0 and "source_sha256")) equals source_pin):
+        return "qualification-source-mismatch"
+    return "accepted-files-verified"

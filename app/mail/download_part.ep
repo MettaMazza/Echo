@@ -1,0 +1,65 @@
+import "payload"
+import "../providers/archived_stream"
+
+# Select an exact server-provided MIME leaf, traversing nested multipart trees.
+# The model supplies only message/part IDs; names, sizes and attachment IDs
+# come from the authenticated message response.
+define gmail_download_part with source as Str and message as Str and part_id as Str returning List:
+    set tokens to provider_json_tokens(source)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_value(tokens and provider_member(tokens and 0 and "id")) equals message):
+        return ["attachment-source-mismatch"]
+    set payload to provider_member(tokens and 0 and "payload")
+    if not (provider_kind(tokens and payload) equals "{"):
+        return ["invalid-message-payload"]
+    set pending to create_list()
+    set added to append_list(pending and payload)
+    set selected to -1
+    set index to 0
+    repeat while index < length_list(pending):
+        set part to get_list(pending and index)
+        set index to index + 1
+        if not (provider_kind(tokens and part) equals "{"):
+            return ["invalid-message-part"]
+        set id to provider_member(tokens and part and "partId")
+        if provider_kind(tokens and id) equals "string" and also provider_value(tokens and id) equals part_id:
+            if selected >= 0:
+                return ["ambiguous-message-part"]
+            set selected to part
+        set children to provider_member(tokens and part and "parts")
+        if children >= 0:
+            if not (provider_kind(tokens and children) equals "["):
+                return ["invalid-message-part"]
+            for each child in provider_items(tokens and children):
+                set added to append_list(pending and child)
+    if selected < 0:
+        return ["message-part-not-found"]
+    set children to provider_member(tokens and selected and "parts")
+    if children >= 0 and also length_list(provider_items(tokens and children)) > 0:
+        return ["message-part-is-container"]
+    set body to provider_member(tokens and selected and "body")
+    set size to provider_member(tokens and body and "size")
+    if not (provider_kind(tokens and body) equals "{") or else not (provider_kind(tokens and size) equals "number") or else gmail_payload_integer(provider_value(tokens and size) and "int32") equals 0 or else string_to_int(provider_value(tokens and size)) < 0:
+        return ["invalid-attachment-size"]
+    set remote to provider_member(tokens and body and "attachmentId")
+    set data to provider_member(tokens and body and "data")
+    if remote >= 0 and also not (provider_kind(tokens and remote) equals "string"):
+        return ["invalid-attachment-body"]
+    if data >= 0 and also not (provider_kind(tokens and data) equals "string"):
+        return ["invalid-attachment-body"]
+    if string_length(provider_value(tokens and remote)) equals 0 and also data < 0 and also string_to_int(provider_value(tokens and size)) > 0:
+        return ["missing-attachment-data"]
+    set name to provider_value(tokens and provider_member(tokens and selected and "filename"))
+    if string_length(name) equals 0:
+        set name to "message-part.bin"
+    set media to provider_value(tokens and provider_member(tokens and selected and "mimeType"))
+    if string_length(media) equals 0:
+        set media to "application/octet-stream"
+    return ["selected",name,media,provider_value(tokens and size),provider_value(tokens and remote),provider_value(tokens and data)]
+
+define gmail_download_data with response as Str and expected as Str returning List:
+    set tokens to provider_json_tokens(response)
+    set size to provider_member(tokens and 0 and "size")
+    set data to provider_member(tokens and 0 and "data")
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and size) equals "number") or else not (provider_value(tokens and size) equals expected) or else not (provider_kind(tokens and data) equals "string"):
+        return ["attachment-response-mismatch"]
+    return ["ready",provider_value(tokens and data)]

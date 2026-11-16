@@ -1,0 +1,49 @@
+import "./sync"
+import "read"
+
+# One host-owned sync step, no model call. Its caller must schedule further
+# steps and own cancellation/retained transport cleanup. Errors leave
+# the checkpoint and pending message work intact for the next scheduled step.
+define gmail_sync_step with authority as Int and database as Int and session as Str and identity as Str and account as Str and principal as Str and now as Int and system as Int and vault as Int and spool as Int and root as Str and errors as Int and cancellation as Int returning List:
+    if gmail_owner_active(authority and database and account and principal) equals 0:
+        return gmail_read_denied("mailbox-not-authorized")
+    set plan to gmail_sync_next(database and account)
+    set status to archive_list_text(plan and 0)
+    if status equals "idle":
+        return gmail_read_denied("idle")
+    if status equals "advance":
+        return gmail_read_denied(gmail_sync_advance(database and account and archive_list_text(plan and 3) and archive_list_text(plan and 4) and archive_list_text(plan and 5)))
+    if not (status equals "request"):
+        return gmail_read_denied(status)
+    set result to gmail_read_account(authority and database and session and identity and account and principal and archive_list_text(plan and 1) and archive_list_text(plan and 2) and now and system and vault and spool and root and errors and cancellation)
+    if get_list(result and 3) is not equal to 0:
+        return result
+    if gmail_owner_active(authority and database and account and principal) equals 0:
+        return gmail_read_denied("mailbox-authority-changed")
+    return gmail_read_denied(gmail_sync_apply_response(database and account and plan and result))
+
+# Kept separate to qualify protocol/restart behavior with captured API bodies
+# without using a real account or sending any correspondence.
+define gmail_sync_apply_response with database as Int and account as Str and plan as List and response as List returning Str:
+    set status to archive_list_text(response and 0)
+    if not (status equals "ready" or else status equals "http-error"):
+        return status
+    set operation to archive_list_text(plan and 1)
+    set body to archive_list_text(response and 2)
+    set code to get_list(response and 1)
+    if operation equals "history.list" and also code equals 404:
+        return gmail_sync_history_expired(database and account and archive_list_text(plan and 3) and archive_list_text(plan and 5))
+    if operation equals "messages.get":
+        set parameters to provider_json_tokens(archive_list_text(plan and 2))
+        set message to provider_value(parameters and provider_member(parameters and 0 and "id"))
+        return gmail_sync_message(database and account and archive_list_text(plan and 3) and archive_list_text(plan and 4) and archive_list_text(plan and 5) and message and code and body)
+    if code is not equal to 200:
+        return "sync-http-error"
+    if operation equals "getProfile":
+        set tokens to provider_json_tokens(body)
+        if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (ptr_to_str(string_to_lower(provider_value(tokens and provider_member(tokens and 0 and "emailAddress")))) equals "echo.ernos.smith@gmail.com"):
+            return "mailbox-profile-mismatch"
+        return gmail_sync_begin(database and account and provider_value(tokens and provider_member(tokens and 0 and "historyId")))
+    if operation equals "messages.list" or else operation equals "history.list":
+        return gmail_sync_stage(database and account and archive_list_text(plan and 3) and archive_list_text(plan and 4) and archive_list_text(plan and 5) and body)
+    return "invalid-sync-operation"

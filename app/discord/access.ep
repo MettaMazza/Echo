@@ -5,10 +5,17 @@ import "delivery"
 # Host-only authenticated inspection/typing with private evidence and shared rate
 # deadlines. The model never supplies routes or receives credentials.
 define discord_access_get with library as Str and token as Str and journal as Int and directory_path as Str and route as Str and bucket as Str and major as Str returning List:
+    return discord_access_get_receipted(library and token and journal and directory_path and route and bucket and major and 0)
+
+define discord_access_get_receipted with library as Str and token as Str and journal as Int and directory_path as Str and route as Str and bucket as Str and major as Str and journal_receipt as Int returning List:
     set budget to ep_time_now_ms() + 15000
     set attempt to 0
     repeat while attempt < 5:
-        set result to discord_access_request(library and token and journal and directory_path and "GET" and route and bucket and major)
+        set result to create_list()
+        if journal_receipt:
+            set result to discord_access_observe_journal(library and token and journal and route and bucket and major)
+        else:
+            set result to discord_access_request(library and token and journal and directory_path and "GET" and route and bucket and major)
         set delay to discord_access_retry_delay(archive_list_text(result and 0) and discord_rate_deadline(journal and bucket and major) and ep_time_now_ms() and budget)
         if delay < 0 or else attempt equals 4:
             return result
@@ -109,8 +116,11 @@ define discord_access_bytes_audit with library as Str and token as Str and journ
         set retained_value_added to append_list(rooted_literal_7 and filename)
         return rooted_literal_7
     set body to ptr_to_str(body_file)
+    return discord_access_observed(journal and bucket and major and result and body and ptr_to_str(headers_file) and filename)
+
+define discord_access_observed with journal as Int and bucket as Str and major as Str and result as List and body as Str and headers as Str and filename as Str returning List:
     set status to archive_list_text(result and 1)
-    if not (discord_rate_observe(journal and bucket and major and status and ptr_to_str(headers_file) and body and ep_time_now_ms()) equals "recorded"):
+    if not (discord_rate_observe(journal and bucket and major and status and headers and body and ep_time_now_ms()) equals "recorded"):
         set rooted_literal_8 to create_list()
         set retained_value_added to append_list(rooted_literal_8 and "rate-response-unresolved")
         set retained_value_added to append_list(rooted_literal_8 and filename)
@@ -321,14 +331,36 @@ define discord_access_mode_snapshot with library as Str and token as Str and jou
     set retained_value_added to append_list(retained_values_2 and ep_sha256(evidence))
     return retained_values_2
 
-# Reuse GET evidence only inside the caller-owned pass. Any Gateway audience
-# update invalidates earlier entries; failures are never cached. A new pass
-# starts with an empty list and therefore performs new network observations.
+# Reuse GET evidence in a caller-owned snapshot. Gateway audience changes
+# invalidate entries; failures are never cached. Cross-pass retention uses the
+# bounded resource allowlist below, never membership observations.
 define discord_access_snapshot_epoch with journal as Int returning Str:
     set row to history_collect_one(archive_prepare(journal and "SELECT CAST(COALESCE(MAX(rowid),0) AS TEXT) FROM discord_inbox WHERE identity LIKE 'audience:%';"))
     if not (archive_list_text(row and 0) equals "found"):
         return ""
-    return archive_list_text(row and 1)
+    set epoch to archive_list_text(row and 1)
+    set installed to history_collect_one(archive_prepare(journal and "SELECT name FROM sqlite_master WHERE type='table' AND name='discord_gateway_health';"))
+    if not (archive_list_text(installed and 0) equals "found"):
+        return epoch
+    set health to history_collect_one(archive_prepare(journal and "SELECT generation,status,observed_ms FROM discord_gateway_health WHERE singleton=1;"))
+    set age to ep_time_now_ms() - http_decimal(archive_list_text(health and 3))
+    if not (archive_list_text(health and 0) equals "found") or else not (archive_list_text(health and 2) equals "heartbeat-ack") or else age < 0 or else age > 90000:
+        return concat(epoch and concat(":uncertain:" and int_to_string(ep_time_now_ms())))
+    return concat(epoch and concat(":" and archive_list_text(health and 1)))
+
+# Only stable audience resources cross model passes. Membership observations
+# are refreshed every pass, since the Gateway does not subscribe to member
+# updates. A disconnected/stale Gateway cannot authorize cross-pass reuse.
+define discord_access_continuation_snapshot with previous as List returning List:
+    set retained to create_list()
+    for each entry in previous:
+        if length_list(entry) >= 6:
+            set bucket to archive_list_text(entry and 1)
+            set epoch to archive_list_text(entry and 3)
+            set age to ep_time_now_ms() - get_list(entry and 5)
+            if (bucket equals "GET:channel" or else bucket equals "GET:guild" or else bucket equals "GET:roles") and age >= 0 and age < 120000 and string_contains(epoch and ":") and not (string_contains(epoch and ":uncertain:")):
+                set added to append_list(retained and entry)
+    return retained
 
 define discord_access_snapshot_get with library as Str and token as Str and journal as Int and directory_path as Str and route as Str and bucket as Str and major as Str and snapshot as List returning List:
     set epoch to discord_access_snapshot_epoch(journal)
@@ -337,7 +369,40 @@ define discord_access_snapshot_get with library as Str and token as Str and jour
     for each entry in snapshot:
         if archive_list_text(entry and 0) equals route and archive_list_text(entry and 1) equals bucket and archive_list_text(entry and 2) equals major and archive_list_text(entry and 3) equals epoch:
             return get_list(entry and 4)
-    set observed to discord_access_get(library and token and journal and directory_path and route and bucket and major)
+    set observed to discord_access_get_receipted(library and token and journal and directory_path and route and bucket and major and 1)
     if archive_list_text(observed and 0) equals "observed" and discord_access_snapshot_epoch(journal) equals epoch:
-        set added to append_list(snapshot and [route,bucket,major,epoch,observed])
+        set added to append_list(snapshot and [route,bucket,major,epoch,observed,ep_time_now_ms()])
     return observed
+
+# Durable permission-read evidence in the existing private Discord journal avoids
+# creating two tiny files and a random directory for every REST observation.
+# No authorization is returned if the receipt cannot be committed. Existing
+# file receipts remain readable; mutation and delivery transport is unchanged.
+define discord_access_observe_journal with library as Str and token as Str and journal as Int and route as Str and bucket as Str and major as Str returning List:
+    if discord_delivery_schema(journal) is not equal to 0:
+        return history_status("rate-store-unavailable")
+    set deadline to discord_rate_deadline(journal and bucket and major)
+    if deadline < 0:
+        return history_status("rate-store-unavailable")
+    if deadline > ep_time_now_ms():
+        return ["rate-limited",int_to_string(deadline)]
+    if sql_execute(journal and "CREATE TABLE IF NOT EXISTS discord_access_receipts(identity TEXT PRIMARY KEY,route TEXT NOT NULL,bucket TEXT NOT NULL,major TEXT NOT NULL,transport TEXT NOT NULL,status TEXT NOT NULL,code TEXT NOT NULL,timing TEXT NOT NULL,body TEXT NOT NULL,headers TEXT NOT NULL,observed_ms INTEGER NOT NULL); CREATE TRIGGER IF NOT EXISTS discord_access_receipts_no_update BEFORE UPDATE ON discord_access_receipts BEGIN SELECT RAISE(ABORT,'Permission receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS discord_access_receipts_no_delete BEFORE DELETE ON discord_access_receipts BEGIN SELECT RAISE(ABORT,'Permission receipts persist'); END;") is not equal to 0:
+        return history_status("receipt-store-unavailable")
+    set identity to ptr_to_str(ep_uuid_v4())
+    set result to discord_rest_observe_memory(library and token and route)
+    set body to archive_list_text(result and 4)
+    set headers to archive_list_text(result and 5)
+    set values to [identity,route,bucket,major,archive_list_text(result and 0),archive_list_text(result and 1),archive_list_text(result and 2),archive_list_text(result and 3),body,headers,int_to_string(ep_time_now_ms())]
+    if sql_execute(journal and "BEGIN IMMEDIATE;") is not equal to 0:
+        return history_status("receipt-store-unavailable")
+    if archive_finish(checkpoint_prepare(journal and "INSERT INTO discord_access_receipts(identity,route,bucket,major,transport,status,code,timing,body,headers,observed_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,CAST(?11 AS INTEGER));" and values) and 101) is not equal to 0:
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        return history_status("receipt-store-unavailable")
+    if sql_execute(journal and "COMMIT;") is not equal to 0:
+        set rolled_back to sql_execute(journal and "ROLLBACK;")
+        return history_status("receipt-store-unavailable")
+    set receipt to concat("journal:discord_access_receipts:" and identity)
+    if not (archive_list_text(result and 0) equals "complete"):
+        set diagnostic to concat("transfer-unresolved:" and concat(archive_list_text(result and 0) and concat(":curl=" and concat(archive_list_text(result and 2) and concat(":http=" and archive_list_text(result and 1))))))
+        return [diagnostic,receipt]
+    return discord_access_observed(journal and bucket and major and result and body and headers and receipt)

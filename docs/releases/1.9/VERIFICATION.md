@@ -1,4 +1,6 @@
-> Current runtime and October 27 verification: [current build](../../CURRENT-BUILD.md). Earlier dated evidence below remains historical; it does not supersede that record.
+> **16 November publication:** [current build](../../CURRENT-BUILD.md), [runtime source mapping](runtime-source-manifest.json), [restoration](../../feature-restoration-20261116.md), [cache](../../persistent-session-cache-20261116.md), [QoL](../../echo-qol-20261116.md) and [monitor](../../self-monitor.md) supersede dated deployment/pending-work statements below. The older narrative is retained as history, not the current backlog.
+
+> Current runtime and 16 November verification: [current build](../../CURRENT-BUILD.md). Earlier dated evidence below remains historical; it does not supersede that record.
 
 # Verification and limits — 1.9
 

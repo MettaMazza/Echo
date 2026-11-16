@@ -1,0 +1,71 @@
+import "transport"
+
+# Private-only records. Never append these return values to a conversation,
+# tool ledger, diagnostics or a web response. The account store keeps them in
+# the excluded credential directory; only opaque references enter its database.
+define gmail_oauth_refresh_form with credential as Str returning Str:
+    set tokens to provider_json_tokens(credential)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set client to provider_value(tokens and provider_member(tokens and 0 and "client_id"))
+    set refresh to provider_value(tokens and provider_member(tokens and 0 and "refresh_token"))
+    set secret to provider_value(tokens and provider_member(tokens and 0 and "client_secret"))
+    if gmail_token_valid(client) equals 0 or else gmail_token_valid(refresh) equals 0:
+        return ""
+    set form to concat("grant_type=refresh_token&client_id=" and network_query_encode(client))
+    set form to concat(form and concat("&refresh_token=" and network_query_encode(refresh)))
+    if string_length(secret) > 0:
+        set form to concat(form and concat("&client_secret=" and network_query_encode(secret)))
+    return form
+
+define gmail_oauth_revoke_form with credential as Str returning Str:
+    set tokens to provider_json_tokens(credential)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set token to provider_value(tokens and provider_member(tokens and 0 and "refresh_token"))
+    if gmail_token_valid(token) equals 0:
+        return ""
+    return concat("token=" and network_query_encode(token))
+
+# Merge a successful Google response with the existing private client record.
+# Refresh responses may omit refresh_token or scope: preserve the exact prior
+# values. Explicit invalid_grant requires reconnection; offline/HTTP failures
+# are handled separately and must not erase a usable refresh credential.
+define gmail_oauth_merge with previous as Str and response as Str and now as Int returning List:
+    set prior to provider_json_tokens(previous)
+    set tokens to provider_json_tokens(response)
+    if prior equals 0 or else tokens equals 0 or else provider_unique_objects(prior) equals 0 or else provider_unique_objects(tokens) equals 0 or else now < 0:
+        return ["invalid-token-response",""]
+    set error to provider_member(tokens and 0 and "error")
+    if error >= 0:
+        if provider_value(tokens and error) equals "invalid_grant":
+            return ["reconnect-required",""]
+        return ["oauth-error",""]
+    set client to provider_value(prior and provider_member(prior and 0 and "client_id"))
+    set secret to provider_value(prior and provider_member(prior and 0 and "client_secret"))
+    set access to provider_value(tokens and provider_member(tokens and 0 and "access_token"))
+    set refresh_field to provider_member(tokens and 0 and "refresh_token")
+    set refresh to provider_value(tokens and refresh_field)
+    if refresh_field < 0:
+        set refresh to provider_value(prior and provider_member(prior and 0 and "refresh_token"))
+    set scope_field to provider_member(tokens and 0 and "scope")
+    set scopes to provider_value(tokens and scope_field)
+    if scope_field < 0:
+        set scopes to provider_value(prior and provider_member(prior and 0 and "scope"))
+    set duration to provider_index(tokens and provider_member(tokens and 0 and "expires_in"))
+    set kind to ptr_to_str(string_to_lower(provider_value(tokens and provider_member(tokens and 0 and "token_type"))))
+    if gmail_token_valid(client) equals 0 or else gmail_token_valid(access) equals 0 or else gmail_token_valid(refresh) equals 0 or else string_length(string_trim(scopes)) equals 0 or else not (kind equals "bearer") or else string_length(duration) equals 0 or else string_length(duration) > 10:
+        return ["invalid-token-response",""]
+    set expires to string_to_int(duration)
+    if expires < 1 or else expires > 2147483647 or else now > 9223372034707292160:
+        return ["invalid-token-response",""]
+    for each pair in [[tokens,provider_member(tokens and 0 and "access_token")],[tokens,refresh_field],[tokens,scope_field]]:
+        if get_list(pair and 1) >= 0 and also not (provider_kind(get_list(pair and 0) and get_list(pair and 1)) equals "string"):
+            return ["invalid-token-response",""]
+    set record to concat("{\"client_id\":" and provider_quote(client))
+    set record to concat(record and concat(",\"client_secret\":" and provider_quote(secret)))
+    set record to concat(record and concat(",\"access_token\":" and provider_quote(access)))
+    set record to concat(record and concat(",\"refresh_token\":" and provider_quote(refresh)))
+    set record to concat(record and concat(",\"scope\":" and provider_quote(scopes)))
+    set record to concat(record and concat(",\"expires_at\":" and concat(int_to_string(now + expires) and "}")))
+    return ["ready",record]

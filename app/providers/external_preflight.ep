@@ -1,0 +1,105 @@
+import "external_profiles"
+import "external_request_file"
+import "anthropic_count"
+import "openai_responses_count"
+import "context_admission"
+
+# Anthropic reports an estimate; retain that fact rather than relabeling it an
+# exact count. Admission keeps the configured output unchanged. The provider
+# can still reject a request at its real boundary; never truncate or fallback.
+# Caller owns system/root descriptors and has already built the native request.
+define external_preflight with database as Int and run as Str and identity as Str and profile as Str and body as Str and root as Str and system as Int and spool as Int and vault as Int and errors as Int and cancellation as Int and batch as Int returning List:
+    return external_preflight_program("/usr/bin/curl" and database and run and identity and profile and body and root and system and spool and vault and errors and cancellation and batch)
+
+define external_preflight_program with executable as Str and database as Int and run as Str and identity as Str and profile as Str and body as Str and root as Str and system as Int and spool as Int and vault as Int and errors as Int and cancellation as Int and batch as Int returning List:
+    set decision to history_status("not-authorized")
+    if batch < 1 or else external_profile_run_allows(database and run and profile) equals 0:
+        return decision
+    if external_request_root_matches(system and spool and root) equals 0:
+        return history_status("spool-root-mismatch")
+    set config to provider_json_tokens(profile)
+    set family to provider_value(config and provider_member(config and 0 and "adapter"))
+    if not (family equals "anthropic-messages" or else family equals "openai-responses"):
+        return history_status("unsupported-external-accounting")
+    set native to provider_json_tokens(body)
+    if native equals 0 or else provider_unique_objects(native) equals 0 or else not (provider_value(native and provider_member(native and 0 and "model")) equals provider_value(config and provider_member(config and 0 and "model"))) or else not (provider_kind(native and provider_member(native and 0 and "stream")) equals "true"):
+        return history_status("invalid-external-request")
+    set options to provider_member(config and 0 and "options")
+    set option_fields to ["max_tokens","thinking","output_config"]
+    set reserve_field to "max_tokens"
+    set count_kind to "provider-estimate"
+    if family equals "openai-responses":
+        set option_fields to ["max_output_tokens","reasoning","text","parallel_tool_calls"]
+        set reserve_field to "max_output_tokens"
+        set count_kind to "provider-exact"
+    for each key in option_fields:
+        set selected to provider_member(config and options and key)
+        set requested to provider_member(native and 0 and key)
+        if selected < 0 and also requested >= 0:
+            return history_status("external-profile-options-mismatch")
+        if selected >= 0 and also (requested < 0 or else not (anthropic_json_source(profile and config and selected) equals anthropic_json_source(body and native and requested))):
+            return history_status("external-profile-options-mismatch")
+    set counted_body to ""
+    if family equals "openai-responses":
+        set counted_body to openai_responses_count_request(body)
+    else:
+        set counted_body to anthropic_count_request(body)
+    if string_length(counted_body) equals 0:
+        return history_status("unsupported-counting-request")
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_runs WHERE run=?1;" and [run]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("invalid-run")
+    set session to archive_list_text(row and 1)
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"profile_sha256\":" and provider_quote(ep_sha256(profile))))
+    set payload to concat(payload and concat(",\"generation_body\":" and provider_quote(body)))
+    set payload to concat(payload and concat(",\"count_body\":" and concat(provider_quote(counted_body) and "}")))
+    # A repeated attempt ID never replays a possibly completed network request.
+    if archive_append(database and session and concat(identity and ":count-request") and "external_token_count_request" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return history_status("archive-error-or-duplicate-attempt")
+    set stored to external_request_file(system and spool and identity and counted_body)
+    if not (stored equals "stored"):
+        return history_status(stored)
+    set path to concat(root and concat("/request-" and concat(ep_sha256(identity) and ".json")))
+    set credential to external_account_resolve(database and run and profile and system and vault)
+    set transfer to external_transport_result("not-authorized" and 0 and 0)
+    if archive_list_text(credential and 0) equals "ready" and also external_profile_run_allows(database and run and profile) equals 1:
+        set arguments to anthropic_count_arguments(path)
+        if family equals "openai-responses":
+            set arguments to openai_responses_count_arguments(path)
+        set transfer to external_transport_start_arguments(executable and family and archive_list_text(credential and 1) and arguments and spool and errors and cancellation)
+    set counted to external_json_collect(database and session and identity and transfer and "POST" and batch)
+    if get_list(counted and 3) is not equal to 0:
+        set retained to get_list(counted and 3)
+        set idle to channel
+        set waits to [idle]
+        repeat while get_list(retained and 1) is not equal to 0:
+            set finished to external_transport_finish(database and session and identity and retained and 0)
+            if get_list(retained and 1) is not equal to 0:
+                set waited to select(waits and 100)
+    set removed to external_request_file_remove(system and spool and identity)
+    set decision to history_status(archive_list_text(counted and 0))
+    if archive_list_text(counted and 0) equals "ready":
+        set input to -1
+        if family equals "openai-responses":
+            set input to openai_responses_count_value(archive_list_text(counted and 2))
+        else:
+            set input to anthropic_count_value(archive_list_text(counted and 2))
+        set limit to http_decimal(provider_index(config and provider_member(config and 0 and "input_limit")))
+        set ceiling to http_decimal(provider_index(config and provider_member(config and 0 and "output_limit")))
+        set reserve to http_decimal(provider_index(config and provider_member(config and options and reserve_field)))
+        set decision to provider_context_admission(limit and limit and input and ceiling and reserve)
+    if removed is not equal to 0:
+        set decision to history_status("spool-cleanup-failed")
+    if external_profile_run_allows(database and run and profile) equals 0:
+        set decision to history_status("not-authorized")
+    set receipt to concat("{\"run_id\":" and provider_quote(run))
+    set receipt to concat(receipt and concat(",\"input_count_kind\":" and provider_quote(count_kind)))
+    set receipt to concat(receipt and ",\"request\":")
+    set receipt to concat(receipt and provider_quote(concat(identity and ":count-request")))
+    set receipt to concat(receipt and concat(",\"status\":" and provider_quote(archive_list_text(decision and 0))))
+    set receipt to concat(receipt and concat(",\"http_code\":" and int_to_string(get_list(counted and 1))))
+    set receipt to concat(receipt and concat(",\"response_body\":" and concat(provider_quote(archive_list_text(counted and 2)) and "}")))
+    if archive_append(database and session and identity and "external_provider_preflight" and receipt and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return history_status("archive-error")
+    return decision

@@ -1,0 +1,245 @@
+import "outbox"
+import "../providers/archived_stream"
+import "../providers/json_access"
+
+# Private mailbox cache plus immutable source versions. A sync page is staged
+# durably, then each affected message is fetched without additional model turns.
+# Only after every fetch commits may the page/history checkpoint advance.
+define gmail_sync_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_mail_sync(account TEXT PRIMARY KEY REFERENCES echo_mail_accounts(identity),epoch INTEGER NOT NULL,mode TEXT NOT NULL CHECK(mode IN ('full','history','idle','full-required')),cursor TEXT NOT NULL,page TEXT NOT NULL DEFAULT '',pending_page TEXT NOT NULL DEFAULT '',pending_cursor TEXT NOT NULL DEFAULT '',applying INTEGER NOT NULL DEFAULT 0 CHECK(applying IN (0,1))); CREATE TABLE IF NOT EXISTS echo_mail_sync_work(account TEXT NOT NULL REFERENCES echo_mail_sync(account),message_id TEXT NOT NULL,done INTEGER NOT NULL DEFAULT 0 CHECK(done IN (0,1)),PRIMARY KEY(account,message_id)); CREATE TABLE IF NOT EXISTS echo_mail_sync_receipts(account TEXT NOT NULL,epoch INTEGER NOT NULL,mode TEXT NOT NULL,page TEXT NOT NULL,body TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(account,epoch,mode,page)); CREATE TABLE IF NOT EXISTS echo_mail_message_versions(sequence INTEGER PRIMARY KEY AUTOINCREMENT,account TEXT NOT NULL,message_id TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('stored','missing')),body TEXT NOT NULL,digest TEXT NOT NULL); CREATE TABLE IF NOT EXISTS echo_mail_cache(account TEXT NOT NULL,message_id TEXT NOT NULL,version INTEGER NOT NULL REFERENCES echo_mail_message_versions(sequence),epoch INTEGER NOT NULL,PRIMARY KEY(account,message_id)); CREATE TRIGGER IF NOT EXISTS echo_mail_versions_no_update BEFORE UPDATE ON echo_mail_message_versions BEGIN SELECT RAISE(ABORT,'Mail source versions are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_mail_versions_no_delete BEFORE DELETE ON echo_mail_message_versions BEGIN SELECT RAISE(ABORT,'Mail source versions are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_mail_sync_receipts_no_update BEFORE UPDATE ON echo_mail_sync_receipts BEGIN SELECT RAISE(ABORT,'Mail sync receipts are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_mail_sync_receipts_no_delete BEFORE DELETE ON echo_mail_sync_receipts BEGIN SELECT RAISE(ABORT,'Mail sync receipts are immutable'); END;")
+
+define gmail_history_valid with value as Str returning Int:
+    set size to string_length(value)
+    if size < 1 or else size > 20 or else (size > 1 and also get_character(value and 0) equals 48):
+        return 0
+    set index to 0
+    set compared to 0
+    repeat while index < size:
+        set code to get_character(value and index)
+        if code < 48 or else code > 57:
+            return 0
+        if size equals 20 and also compared equals 0:
+            set upper to get_character("18446744073709551615" and index)
+            if code > upper:
+                return 0
+            if code < upper:
+                set compared to 1
+        set index to index + 1
+    return 1
+
+define gmail_sync_state with database as Int and account as Str returning List:
+    return history_collect_one(checkpoint_prepare(database and "SELECT CAST(epoch AS TEXT),mode,cursor,page,CAST(applying AS TEXT),pending_page,pending_cursor FROM echo_mail_sync WHERE account=?1;" and [account]))
+
+# baseline is observed from getProfile BEFORE listing messages, so changes
+# during a full scan are caught by subsequent history replay from that point.
+define gmail_sync_begin with database as Int and account as Str and baseline as Str returning Str:
+    if gmail_history_valid(baseline) equals 0:
+        return "invalid-history-cursor"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set state to gmail_sync_state(database and account)
+    if archive_list_text(state and 0) equals "found" and also not (archive_list_text(state and 2) equals "full-required"):
+        set ignored to archive_rollback(database)
+        return "sync-already-started"
+    if not (archive_list_text(state and 0) equals "found" or else archive_list_text(state and 0) equals "end"):
+        set ignored to archive_rollback(database)
+        return "database-error"
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_sync(account,epoch,mode,cursor) VALUES(?1,1,'full',?2) ON CONFLICT(account) DO UPDATE SET epoch=epoch+1,mode='full',cursor=excluded.cursor,page='',pending_page='',pending_cursor='',applying=0;" and [account,baseline]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "DELETE FROM echo_mail_sync_work WHERE account=?1;" and [account]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return "started"
+
+# Message IDs are deduplicated by the work table. History messages is the
+# server's changed-message collection; typed changes are also read explicitly.
+define gmail_sync_ids with tokens as List and array as Int and nested as Int and ids as List returning Int:
+    if array equals -1:
+        return 1
+    if not (provider_kind(tokens and array) equals "["):
+        return 0
+    for each entry in provider_items(tokens and array):
+        set message to entry
+        if nested:
+            set message to provider_member(tokens and entry and "message")
+        set field to provider_member(tokens and message and "id")
+        if not (provider_kind(tokens and field) equals "string") or else string_length(provider_value(tokens and field)) equals 0:
+            return 0
+        set added to append_list(ids and provider_value(tokens and field))
+    return 1
+
+define gmail_sync_stage with database as Int and account as Str and epoch as Str and mode as Str and page as Str and body as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{") or else not (mode equals "full" or else mode equals "history"):
+        return "invalid-sync-page"
+    set next_field to provider_member(tokens and 0 and "nextPageToken")
+    if next_field >= 0 and also not (provider_kind(tokens and next_field) equals "string"):
+        return "invalid-sync-page"
+    set next_page to provider_value(tokens and next_field)
+    set target to ""
+    set ids to create_list()
+    if mode equals "full":
+        if gmail_sync_ids(tokens and provider_member(tokens and 0 and "messages") and 0 and ids) equals 0:
+            return "invalid-sync-page"
+    else:
+        set target to provider_value(tokens and provider_member(tokens and 0 and "historyId"))
+        if not (provider_kind(tokens and provider_member(tokens and 0 and "historyId")) equals "string") or else gmail_history_valid(target) equals 0:
+            return "invalid-sync-page"
+        set history to provider_member(tokens and 0 and "history")
+        if history >= 0:
+            if not (provider_kind(tokens and history) equals "["):
+                return "invalid-sync-page"
+            for each record in provider_items(tokens and history):
+                if gmail_sync_ids(tokens and provider_member(tokens and record and "messages") and 0 and ids) equals 0:
+                    return "invalid-sync-page"
+                for each kind in ["messagesAdded","messagesDeleted","labelsAdded","labelsRemoved"]:
+                    if gmail_sync_ids(tokens and provider_member(tokens and record and ptr_to_str(kind)) and 1 and ids) equals 0:
+                        return "invalid-sync-page"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set state to gmail_sync_state(database and account)
+    if not (archive_list_text(state and 0) equals "found") or else not (archive_list_text(state and 1) equals epoch) or else not (archive_list_text(state and 2) equals mode) or else not (archive_list_text(state and 4) equals page):
+        set ignored to archive_rollback(database)
+        return "stale-sync-page"
+    if mode equals "history" and also gmail_history_not_before(target and archive_list_text(state and 3)) equals 0:
+        set ignored to archive_rollback(database)
+        return "regressed-history-cursor"
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT digest FROM echo_mail_sync_receipts WHERE account=?1 AND epoch=CAST(?2 AS INTEGER) AND mode=?3 AND page=?4;" and [account,epoch,mode,page]))
+    if archive_list_text(state and 5) equals "1":
+        set ignored to archive_rollback(database)
+        if archive_list_text(prior and 0) equals "found" and also archive_list_text(prior and 1) equals ep_sha256(body):
+            return "staged"
+        return "sync-page-conflict"
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_sync_receipts(account,epoch,mode,page,body,digest) VALUES(?1,CAST(?2 AS INTEGER),?3,?4,?5,?6);" and [account,epoch,mode,page,body,ep_sha256(body)]) and 101) is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    for each identity in ids:
+        if archive_finish(checkpoint_prepare(database and "INSERT OR IGNORE INTO echo_mail_sync_work(account,message_id) VALUES(?1,?2);" and [account,ptr_to_str(identity)]) and 101) is not equal to 0:
+            set ignored to archive_rollback(database)
+            return "database-error"
+    if archive_finish(checkpoint_prepare(database and "UPDATE echo_mail_sync SET applying=1,pending_page=?2,pending_cursor=?3 WHERE account=?1;" and [account,next_page,target]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return "staged"
+
+# Only successful full message fetches or definite message-not-found responses
+# complete work. Network/auth failures leave the durable work pending.
+define gmail_sync_message with database as Int and account as Str and epoch as Str and mode as Str and page as Str and message_id as Str and code as Int and body as Str returning Str:
+    set message_state to "missing"
+    if code equals 200:
+        set tokens to provider_json_tokens(body)
+        if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{") or else not (provider_value(tokens and provider_member(tokens and 0 and "id")) equals message_id):
+            return "invalid-message-result"
+        set message_state to "stored"
+    else if code is not equal to 404:
+        return "fetch-not-complete"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set state to gmail_sync_state(database and account)
+    set work to history_collect_one(checkpoint_prepare(database and "SELECT CAST(done AS TEXT) FROM echo_mail_sync_work WHERE account=?1 AND message_id=?2;" and [account,message_id]))
+    if not (archive_list_text(state and 0) equals "found") or else not (archive_list_text(state and 1) equals epoch) or else not (archive_list_text(state and 2) equals mode) or else not (archive_list_text(state and 4) equals page) or else not (archive_list_text(state and 5) equals "1") or else not (archive_list_text(work and 0) equals "found"):
+        set ignored to archive_rollback(database)
+        return "stale-message-result"
+    if archive_list_text(work and 1) equals "1":
+        set ignored to archive_rollback(database)
+        return "work-already-complete"
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_message_versions(account,message_id,state,body,digest) VALUES(?1,?2,?3,?4,?5);" and [account,message_id,message_state,body,ep_sha256(body)]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_cache(account,message_id,version,epoch) VALUES(?1,?2,last_insert_rowid(),CAST(?3 AS INTEGER)) ON CONFLICT(account,message_id) DO UPDATE SET version=excluded.version,epoch=excluded.epoch;" and [account,message_id,epoch]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "UPDATE echo_mail_sync_work SET done=1 WHERE account=?1 AND message_id=?2;" and [account,message_id]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return "stored"
+
+define gmail_sync_advance with database as Int and account as Str and epoch as Str and mode as Str and page as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set state to gmail_sync_state(database and account)
+    set pending to history_collect_one(checkpoint_prepare(database and "SELECT message_id FROM echo_mail_sync_work WHERE account=?1 AND done=0 LIMIT 1;" and [account]))
+    if not (archive_list_text(state and 0) equals "found") or else not (archive_list_text(state and 1) equals epoch) or else not (archive_list_text(state and 2) equals mode) or else not (archive_list_text(state and 4) equals page) or else not (archive_list_text(state and 5) equals "1"):
+        set ignored to archive_rollback(database)
+        return "stale-sync-page"
+    if not (archive_list_text(pending and 0) equals "end"):
+        set ignored to archive_rollback(database)
+        return "messages-pending"
+    set next_page to archive_list_text(state and 6)
+    set next_mode to mode
+    set cursor to archive_list_text(state and 3)
+    if string_length(next_page) equals 0:
+        if mode equals "full":
+            # Missing from a completed full inventory: retain prior originals
+            # and add tombstones. Replay changes from the pre-scan baseline.
+            if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_message_versions(account,message_id,state,body,digest) SELECT c.account,c.message_id,'missing','',?3 FROM echo_mail_cache c JOIN echo_mail_message_versions v ON v.sequence=c.version WHERE c.account=?1 AND c.epoch!=CAST(?2 AS INTEGER) AND v.state!='missing';" and [account,epoch,ep_sha256("")]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "UPDATE echo_mail_cache SET version=(SELECT MAX(sequence) FROM echo_mail_message_versions v WHERE v.account=echo_mail_cache.account AND v.message_id=echo_mail_cache.message_id),epoch=CAST(?2 AS INTEGER) WHERE account=?1 AND epoch!=CAST(?2 AS INTEGER);" and [account,epoch]) and 101) is not equal to 0:
+                set ignored to archive_rollback(database)
+                return "database-error"
+            set next_mode to "history"
+        else:
+            set cursor to archive_list_text(state and 7)
+            set next_mode to "idle"
+    if archive_finish(checkpoint_prepare(database and "DELETE FROM echo_mail_sync_work WHERE account=?1;" and [account]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "UPDATE echo_mail_sync SET mode=?2,cursor=?3,page=?4,pending_page='',pending_cursor='',applying=0 WHERE account=?1;" and [account,next_mode,cursor,next_page]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return next_mode
+
+define gmail_sync_poll with database as Int and account as Str returning Str:
+    if archive_finish(checkpoint_prepare(database and "UPDATE echo_mail_sync SET epoch=epoch+1,mode='history' WHERE account=?1 AND mode='idle' AND applying=0;" and [account]) and 101) is not equal to 0:
+        return "database-error"
+    return "scheduled"
+
+# A 404 on history.list means its old cursor is unavailable. Do not erase
+# cached mail or pretend the mailbox is empty; request a new profile baseline.
+define gmail_sync_history_expired with database as Int and account as Str and epoch as Str and page as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set state to gmail_sync_state(database and account)
+    if not (archive_list_text(state and 0) equals "found") or else not (archive_list_text(state and 1) equals epoch) or else not (archive_list_text(state and 2) equals "history") or else not (archive_list_text(state and 4) equals page) or else not (archive_list_text(state and 5) equals "0"):
+        set ignored to archive_rollback(database)
+        return "stale-sync-page"
+    if archive_finish(checkpoint_prepare(database and "UPDATE echo_mail_sync SET mode='full-required' WHERE account=?1;" and [account]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return "full-required"
+
+# This is a host worker plan, not an agent-facing message-by-message loop.
+# Result fields: disposition, API operation, parameters, epoch, mode, page.
+define gmail_sync_next with database as Int and account as Str returning List:
+    set state to gmail_sync_state(database and account)
+    if archive_list_text(state and 0) equals "end" or else archive_list_text(state and 2) equals "full-required":
+        return ["request","getProfile","{}","","full-required",""]
+    if not (archive_list_text(state and 0) equals "found"):
+        return ["database-error"]
+    set epoch to archive_list_text(state and 1)
+    set mode to archive_list_text(state and 2)
+    set page to archive_list_text(state and 4)
+    if mode equals "idle":
+        return ["idle"]
+    if archive_list_text(state and 5) equals "1":
+        set work to history_collect_one(checkpoint_prepare(database and "SELECT message_id FROM echo_mail_sync_work WHERE account=?1 AND done=0 ORDER BY message_id LIMIT 1;" and [account]))
+        if archive_list_text(work and 0) equals "end":
+            return ["advance","","",epoch,mode,page]
+        if not (archive_list_text(work and 0) equals "found"):
+            return ["database-error"]
+        set parameters to concat("{\"id\":" and concat(provider_quote(archive_list_text(work and 1)) and ",\"format\":\"full\"}"))
+        return ["request","messages.get",parameters,epoch,mode,page]
+    set parameters to "{\"maxResults\":500"
+    set operation to "messages.list"
+    if mode equals "full":
+        set parameters to concat(parameters and ",\"includeSpamTrash\":true")
+    else:
+        set operation to "history.list"
+        set parameters to concat(parameters and concat(",\"startHistoryId\":" and provider_quote(archive_list_text(state and 3))))
+    if string_length(page) > 0:
+        set parameters to concat(parameters and concat(",\"pageToken\":" and provider_quote(page)))
+    set parameters to concat(parameters and "}")
+    return ["request",operation,parameters,epoch,mode,page]
+
+# Compare unsigned decimal history identifiers without conversion to signed
+# machine integers and without assuming contiguous or fixed-increment IDs.
+define gmail_history_not_before with candidate as Str and baseline as Str returning Int:
+    if gmail_history_valid(candidate) equals 0 or else gmail_history_valid(baseline) equals 0:
+        return 0
+    if string_length(candidate) is not equal to string_length(baseline):
+        return string_length(candidate) > string_length(baseline)
+    set index to 0
+    repeat while index < string_length(candidate):
+        set left to get_character(candidate and index)
+        set right to get_character(baseline and index)
+        if left is not equal to right:
+            return left > right
+        set index to index + 1
+    return 1

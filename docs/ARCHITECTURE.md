@@ -1,6 +1,6 @@
 > **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
 
-## Current 1.9 architecture
+## Current architecture — 16 November 2026
 
 Browser and Discord entry points feed durable authenticated sessions, the native Ernos ReAct loop and scoped tools. Original events persist in SQLite; source-linked compaction and cross-session memory prepare context. Public Discord recall checks current audience and ancestry; private linked archives require explicit owner mapping and are denied in public/group runs. Foreground completion is handed off independently of background memory extraction. Search uses a configured Brave API credential; local media services handle generation/transcription/speech. The selected host TTS is Nano CPU8 with a private Echo reference. Voice membership, media and recording have separate authority/lifecycle records. See [source-mapped capabilities](releases/1.9/FEATURES.md).
 
@@ -10,6 +10,10 @@ Browser and Discord entry points feed durable authenticated sessions, the native
 
 > Current 1.5 additions and boundaries: [system audit](releases/1.5/SYSTEM-AUDIT.md), [status](releases/1.5/PHASE-TWO-STATUS.md), [verification](releases/1.5/VERIFICATION.md). Historical build/acceptance examples below retain their original dates. Current exact source contracts are in [the generated reference](reference/APPLICATION.md).
 
+
+## Deployed additions
+
+Optional native OpenAI Responses and Anthropic adapters preserve scoped replay and context accounting. Private Gmail/Contacts and the research HUD use owner-bound authorization. Generated tools pass the protected qualification/registration/version lifecycle. All four QoL features reuse existing context/history/scratchpad machinery. Persistent engine caches retain compatible token/KV state across restarts. A separate bounded Python self-monitor reviews settled, scoped archived evidence and publishes findings for Echo; it cannot automatically submit or deploy RSI changes. See [current build](CURRENT-BUILD.md) and [monitor design](self-monitor.md).
 
 ## A message from browser to archive and back
 

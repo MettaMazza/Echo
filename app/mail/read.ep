@@ -1,0 +1,100 @@
+import "refresh"
+
+# Trusted host admission for mailbox reads/background sync. Public tool entry
+# points additionally bind the current/frozen run and private audience; a
+# principal string supplied by a model is never sufficient to call this layer.
+define gmail_owner_active with authority as Int and database as Int and account as Str and principal as Str returning Int:
+    set owner to history_collect_one(checkpoint_prepare(authority and "SELECT identity FROM echo_principals WHERE identity=?1 AND role IN ('admin','steward') AND revoked=0;" and [principal]))
+    if not (archive_list_text(owner and 0) equals "found"):
+        return 0
+    set mailbox to history_collect_one(checkpoint_prepare(database and "SELECT identity FROM echo_mail_accounts WHERE identity=?1 AND principal=?2 AND state='connected';" and [account,principal]))
+    return archive_list_text(mailbox and 0) equals "found"
+
+define gmail_read_denied with status as Str returning List:
+    return gmail_empty_http(status)
+
+# This adapter accepts GET contracts only. Mail writes/sends must enter the
+# separate action/policy/outbox path and cannot be smuggled through a read.
+define gmail_read_account with authority as Int and database as Int and session as Str and identity as Str and account as Str and principal as Str and operation as Str and parameters as Str and now as Int and system as Int and vault as Int and spool as Int and root as Str and errors as Int and cancellation as Int returning List:
+    set descriptor to provider_json_tokens(gmail_method_contract(operation))
+    if gmail_contacts_method(operation) equals 0 and also (descriptor equals 0 or else not (provider_value(descriptor and provider_member(descriptor and 0 and "method")) equals "GET")):
+        return gmail_read_denied("read-operation-required")
+    if gmail_owner_active(authority and database and account and principal) equals 0:
+        return gmail_read_denied("mailbox-not-authorized")
+    set refresh_identity to concat(identity and ":refresh")
+    set credential to gmail_refresh_account(database and session and refresh_identity and account and principal and 0 and now and system and vault and spool and root and errors and cancellation)
+    if get_list(credential and 2) is not equal to 0:
+        return gmail_read_cleanup(archive_list_text(credential and 0) and get_list(credential and 2) and get_list(credential and 3) and refresh_identity and 1)
+    if not (archive_list_text(credential and 0) equals "ready"):
+        return gmail_read_denied(archive_list_text(credential and 0))
+    set result to gmail_read_credential(authority and database and session and identity and account and principal and operation and parameters and archive_list_text(credential and 1) and system and spool and root and errors and cancellation)
+    # An actual 401 permits one explicit refresh/retry of this read. Offline,
+    # rate-limit, permission and malformed responses never start a retry loop.
+    if get_list(result and 3) equals 0 and also archive_list_text(result and 0) equals "http-error" and also get_list(result and 1) equals 401:
+        set refresh_identity to concat(identity and ":refresh-after-401")
+        set credential to gmail_refresh_account(database and session and refresh_identity and account and principal and 1 and now and system and vault and spool and root and errors and cancellation)
+        if get_list(credential and 2) is not equal to 0:
+            return gmail_read_cleanup(archive_list_text(credential and 0) and get_list(credential and 2) and get_list(credential and 3) and refresh_identity and 1)
+        if not (archive_list_text(credential and 0) equals "ready"):
+            return gmail_read_denied(archive_list_text(credential and 0))
+        set result to gmail_read_credential(authority and database and session and concat(identity and ":after-401") and account and principal and operation and parameters and archive_list_text(credential and 1) and system and spool and root and errors and cancellation)
+    return result
+
+define gmail_read_credential with authority as Int and database as Int and session as Str and identity as Str and account as Str and principal as Str and operation as Str and parameters as Str and credential as Str and system as Int and spool as Int and root as Str and errors as Int and cancellation as Int returning List:
+    if gmail_owner_active(authority and database and account and principal) equals 0:
+        return gmail_read_denied("mailbox-not-authorized")
+    set tokens to provider_json_tokens(credential)
+    set scopes to create_list()
+    set split to retained_text_split(scopes and provider_value(tokens and provider_member(tokens and 0 and "scope")) and " ")
+    set plan to gmail_request_plan(operation and parameters and "" and scopes)
+    if not (archive_list_text(plan and 0) equals "planned") or else not (archive_list_text(plan and 1) equals "GET"):
+        return gmail_read_denied("invalid-or-unscoped-read")
+    set access to provider_value(tokens and provider_member(tokens and 0 and "access_token"))
+    # Google requires an empty search before the actual query to refresh its
+    # contact search cache. This is internal, not an extra model/tool turn.
+    if operation equals "people.searchContacts":
+        set fields to provider_json_tokens(parameters)
+        if string_length(provider_value(fields and provider_member(fields and 0 and "query"))) > 0:
+            set warm_plan to gmail_contacts_plan(operation and "{\"query\":\"\"}" and "" and scopes)
+            set warm_identity to concat(identity and ":contacts-warmup")
+            set warm to gmail_http_call(database and session and warm_identity and access and "GET" and archive_list_text(warm_plan and 2) and "" and 0 and system and spool and root and errors and cancellation)
+            if get_list(warm and 3) is not equal to 0:
+                return gmail_read_cleanup(archive_list_text(warm and 0) and get_list(warm and 3) and -1 and warm_identity and 0)
+            if not (archive_list_text(warm and 0) equals "ready"):
+                return warm
+            if gmail_owner_active(authority and database and account and principal) equals 0:
+                return gmail_read_denied("mailbox-authority-changed")
+    set result to gmail_http_call(database and session and identity and access and "GET" and archive_list_text(plan and 2) and "" and 0 and system and spool and root and errors and cancellation)
+    if get_list(result and 3) is not equal to 0:
+        return gmail_read_cleanup(archive_list_text(result and 0) and get_list(result and 3) and -1 and identity and 0)
+    if gmail_owner_active(authority and database and account and principal) equals 0:
+        return gmail_read_denied("mailbox-authority-changed")
+    return result
+
+# Retain all cleanup resources without retaining credential response strings.
+# Ownership: transfer, lock descriptor (or -1), request identity, body-file flag.
+define gmail_read_cleanup with status as Str and transfer as List and lock as Int and identity as Str and has_body as Int returning List:
+    set ownership to create_list()
+    set added to append_list(ownership and transfer)
+    set added to append_list(ownership and lock)
+    set added to append_list(ownership and identity)
+    set added to append_list(ownership and has_body)
+    set result to local_json_result(status and 0 and "")
+    set added to append_list(result and ownership)
+    return result
+
+define gmail_read_cleanup_finish with database as Int and session as Str and ownership as List and system as Int and spool as Int returning Str:
+    set transfer to get_list(ownership and 0)
+    set identity to archive_list_text(ownership and 2)
+    set finished to external_transport_finish(database and session and identity and transfer and 0)
+    if get_list(transfer and 1) is not equal to 0:
+        return "cleanup-pending"
+    set lock to get_list(ownership and 1)
+    if lock >= 0:
+        set closed to net_close(lock)
+        set changed to set_list(ownership and 1 and -1)
+    if get_list(ownership and 3) equals 1:
+        if external_request_file_remove(system and spool and identity) is not equal to 0:
+            return "private-spool-cleanup-failed"
+        set changed to set_list(ownership and 3 and 0)
+    return "cleaned"

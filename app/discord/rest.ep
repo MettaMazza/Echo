@@ -21,12 +21,58 @@ define discord_rest_transfer_bytes with library_path as Str and token as Str and
     return discord_rest_transfer_bytes_audit(library_path and token and method and route and body_pointer and body_size and content_type and output_fd and headers_fd and connect_ms and total_ms and "")
 
 define discord_rest_transfer_bytes_audit with library_path as Str and token as Str and method as Str and route as Str and body_pointer as Int and body_size as Int and content_type as Str and output_fd as Int and headers_fd as Int and connect_ms as Int and total_ms as Int and audit_reason as Str returning List:
-    set entered_ms to ep_time_now_ms()
     set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
-    set library to discord_library_open(library_path)
-    if system equals 0 or else library equals 0:
+    if system equals 0:
         set closed to net_close(output_fd)
         set closed to net_close(headers_fd)
+        return ["platform-unavailable","0","-1"]
+    set output to ep_dlcall2(ep_dlsym(system and "fdopen") and output_fd and str_to_ptr("wb"))
+    set header_output to ep_dlcall2(ep_dlsym(system and "fdopen") and headers_fd and str_to_ptr("wb"))
+    if output equals 0:
+        set closed to net_close(output_fd)
+    if header_output equals 0:
+        set closed to net_close(headers_fd)
+    set result to discord_rest_transfer_streams_audit(library_path and token and method and route and body_pointer and body_size and content_type and system and output and header_output and 1 and connect_ms and total_ms and audit_reason)
+    set closed to ep_dlclose(system)
+    return result
+
+# Permission observations use libc memory streams. Their caller must commit the
+# complete response to the Discord journal before returning any authorization.
+# Mutation/delivery callers retain durable descriptor-backed receipts above.
+define discord_rest_observe_memory with library_path as Str and token as Str and route as Str returning List:
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return ["platform-unavailable","0","-1"]
+    set output_pointer to [0]
+    set output_size to [0]
+    set headers_pointer to [0]
+    set headers_size to [0]
+    set output to ep_dlcall2(ep_dlsym(system and "open_memstream") and get_list_data_ptr(output_pointer) and get_list_data_ptr(output_size))
+    set header_output to ep_dlcall2(ep_dlsym(system and "open_memstream") and get_list_data_ptr(headers_pointer) and get_list_data_ptr(headers_size))
+    set result to discord_rest_transfer_streams_audit(library_path and token and "GET" and route and 0 and 0 and "application/json" and system and output and header_output and 0 and 20000 and 60000 and "")
+    set body to ""
+    set headers to ""
+    if get_list(output_pointer and 0) is not equal to 0:
+        set body to concat(ptr_to_str(get_list(output_pointer and 0)) and "")
+        set freed to ep_dlcall1(ep_dlsym(system and "free") and get_list(output_pointer and 0))
+    if get_list(headers_pointer and 0) is not equal to 0:
+        set headers to concat(ptr_to_str(get_list(headers_pointer and 0)) and "")
+        set freed to ep_dlcall1(ep_dlsym(system and "free") and get_list(headers_pointer and 0))
+    set added to append_list(result and body)
+    set added to append_list(result and headers)
+    set closed to ep_dlclose(system)
+    return result
+
+# Both receipt forms share the exact transport, TLS, routing, redaction,
+# rate-observation inputs and cleanup. This function owns the supplied streams.
+define discord_rest_transfer_streams_audit with library_path as Str and token as Str and method as Str and route as Str and body_pointer as Int and body_size as Int and content_type as Str and system as Int and output as Int and header_output as Int and durable as Int and connect_ms as Int and total_ms as Int and audit_reason as Str returning List:
+    set entered_ms to ep_time_now_ms()
+    set library to discord_library_open(library_path)
+    if system equals 0 or else library equals 0:
+        if output is not equal to 0:
+            set closed to ep_dlcall1(ep_dlsym(system and "fclose") and output)
+        if header_output is not equal to 0:
+            set closed to ep_dlcall1(ep_dlsym(system and "fclose") and header_output)
         set rooted_literal_1 to create_list()
         set retained_value_added to append_list(rooted_literal_1 and "platform-unavailable")
         set retained_value_added to append_list(rooted_literal_1 and "0")
@@ -59,17 +105,16 @@ define discord_rest_transfer_bytes_audit with library_path as Str and token as S
         else:
             set audit_reason to archive_list_text(reason_checked and 1)
     if safe equals 0:
-        set closed to net_close(output_fd)
-        set closed to net_close(headers_fd)
+        if output is not equal to 0:
+            set closed to ep_dlcall1(ep_dlsym(system and "fclose") and output)
+        if header_output is not equal to 0:
+            set closed to ep_dlcall1(ep_dlsym(system and "fclose") and header_output)
         set closed to ep_dlclose(library)
-        set closed to ep_dlclose(system)
         set denied to create_list()
         set added to append_list(denied and "secret-check-failed")
         set added to append_list(denied and "0")
         set added to append_list(denied and "-1")
         return denied
-    set output to ep_dlcall2(ep_dlsym(system and "fdopen") and output_fd and str_to_ptr("wb"))
-    set header_output to ep_dlcall2(ep_dlsym(system and "fdopen") and headers_fd and str_to_ptr("wb"))
     set easy to ep_dlcall0(ep_dlsym(library and "curl_easy_init"))
     set valid to 1
     set setup_error to "unknown"
@@ -227,17 +272,13 @@ define discord_rest_transfer_bytes_audit with library_path as Str and token as S
         if stream is not equal to 0:
             if ep_dlcall1(ep_dlsym(system and "fflush") and stream) is not equal to 0:
                 set status to "flush-failed"
-            set fd to ep_dlcall1(ep_dlsym(system and "fileno") and stream)
-            if ep_dlcall1(ep_dlsym(system and "fsync") and fd) is not equal to 0:
-                set status to "flush-failed"
+            if durable:
+                set fd to ep_dlcall1(ep_dlsym(system and "fileno") and stream)
+                if ep_dlcall1(ep_dlsym(system and "fsync") and fd) is not equal to 0:
+                    set status to "flush-failed"
             if ep_dlcall1(ep_dlsym(system and "fclose") and stream) is not equal to 0:
                 set status to "close-failed"
-    if output equals 0:
-        set closed to net_close(output_fd)
-    if header_output equals 0:
-        set closed to net_close(headers_fd)
     set closed to ep_dlclose(library)
-    set closed to ep_dlclose(system)
     set retained_values_20 to create_list()
     set retained_value_added to append_list(retained_values_20 and status)
     set retained_value_added to append_list(retained_values_20 and response)

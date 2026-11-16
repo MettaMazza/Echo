@@ -1,0 +1,165 @@
+import "tool_registration_publish"
+
+# Read an actual observed dispatcher request, not model-supplied approvals or a
+# table claiming success. The registry preimage is read from protected storage.
+define tool_version_request_bind with database as Int and run as Str and call_id as Str and principals as Str and document as Str returning List:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(q.payload,'$.arguments'),a.principal,r.session,r.state,json_extract(e.payload,'$.result.request_sha256') FROM echo_tool_calls t JOIN echo_runs r ON r.run=t.run JOIN echo_run_authority a ON a.run=r.run JOIN echo_events q ON q.event=t.request_event AND q.session=t.session JOIN echo_events e ON e.event=t.result_event AND e.session=t.session WHERE t.run=?1 AND t.call_id=?2 AND t.state='observed' AND q.kind='tool_call' AND json_extract(q.payload,'$.run_id')=?1 AND json_extract(q.payload,'$.call_id')=?2 AND json_extract(q.payload,'$.name')='tool_version_manage' AND json_extract(e.payload,'$.result.status')='requested-not-applied';" and [run,call_id]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("awaiting-observed-version-request")
+    if archive_list_text(row and 4) equals "cancelled" or else archive_list_text(row and 4) equals "failed":
+        return history_status("origin-cancelled-or-failed")
+    set arguments to archive_list_text(row and 1)
+    if registered_manage_arguments_valid(arguments) equals 0 or else not (ep_sha256(arguments) equals archive_list_text(row and 5)):
+        return history_status("version-request-invalid")
+    set enrolled to history_collect_one(checkpoint_prepare(database and "SELECT value FROM json_each(?1) WHERE type='text' AND value=?2 LIMIT 1;" and [principals,archive_list_text(row and 2)]))
+    if not (archive_list_text(enrolled and 0) equals "found"):
+        return history_status("version-principal-not-enrolled")
+    if archive_verify(database and archive_list_text(row and 3)) is not equal to 0 or else tool_policy_allows(database and run and call_id and "tool_version_manage") equals 0:
+        return history_status("version-authority-revoked")
+    set args to provider_json_tokens(arguments)
+    if tool_versions_valid(document) equals 0 or else not (ep_sha256(document) equals provider_value(args and provider_member(args and 0 and "registry_sha256"))):
+        return history_status("requested-registry-changed")
+    set registry to provider_json_tokens(document)
+    set entry to registered_managed_entry_find(database and run and registry and provider_value(args and provider_member(args and 0 and "digest")))
+    if entry < 0:
+        return history_status("version-scope-revoked")
+    set encoded to tool_version_encode(registry and entry and provider_value(registry and provider_member(registry and entry and "state")))
+    return ["authorized",arguments,encoded]
+
+define tool_version_work_directory with parent as Str and identity as Str returning Str:
+    if protected_digest_valid(identity) equals 0:
+        return ""
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to protected_path_open(library and parent and 1)
+    if root < 0:
+        set released to ep_dlclose(library)
+        return ""
+    set work to workspace_directory_open(library and root and identity and 1)
+    set status to 0
+    if work < 0:
+        set status to 1
+    else:
+        for each part in ["workspace","publication"]:
+            set child to workspace_directory_open(library and work and ptr_to_str(part) and 1)
+            if child < 0:
+                set status to 1
+            else:
+                set closed to net_close(child)
+        set closed to net_close(work)
+    set closed to net_close(root)
+    set released to ep_dlclose(library)
+    if status is not equal to 0:
+        return ""
+    return concat(parent and concat("/" and identity))
+
+define tool_version_job with database as Int and config as List and loaded as List and source_config as Int and run as Str and call_id as Str returning Str:
+    if string_length(controller_activation_policy(archive_list_text(loaded and 1))) > 0:
+        return "registry-only-controller-required"
+    set path to provider_value(config and provider_member(config and source_config and "path"))
+    set principals to provider_value(config and provider_member(config and source_config and "principals"))
+    set identity to ep_sha256(concat("version:" and concat(archive_hash_field(path) and concat(archive_hash_field(run) and archive_hash_field(call_id)))))
+    set session to concat("tool-registration:" and identity)
+    if archive_read_event(database and concat(session and ":terminal")) is not equal to 0:
+        return "already-terminal"
+    set parent to provider_value(config and provider_member(config and 0 and "registry_directory"))
+    set target to provider_value(config and provider_member(config and 0 and "registry_name"))
+    set installed to tool_versions_installed_read(concat(parent and concat("/" and target)))
+    if not (archive_list_text(installed and 0) equals "ready"):
+        return archive_list_text(installed and 0)
+    set document to archive_list_text(installed and 1)
+    # Retry only from the protected controller's original preimage. An already
+    # applied exchange is reconciled by controller_autonomous_run, never replayed.
+    set retained to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=? AND kind='tool_registry_prepared';" and [concat(session and ":prepared")]))
+    if archive_list_text(retained and 0) equals "found":
+        set receipt to provider_json_tokens(archive_list_text(retained and 1))
+        set original to tool_store_text(provider_value(receipt and provider_member(receipt and 0 and "recovery")) and provider_value(receipt and provider_member(receipt and 0 and "before_sha256")))
+        if not (archive_list_text(original and 0) equals "read"):
+            return "version-recovery-changed"
+        set document to archive_list_text(original and 1)
+    else if not (archive_list_text(retained and 0) equals "end"):
+        return "version-receipt-unavailable"
+    set source to rsi_archive_open(path)
+    if source equals 0:
+        return "source-unavailable"
+    set admitted to tool_version_request_bind(source and run and call_id and principals and document)
+    set closed to sql_close(source)
+    if not (archive_list_text(admitted and 0) equals "authorized"):
+        return archive_list_text(admitted and 0)
+    set args to provider_json_tokens(archive_list_text(admitted and 1))
+    set action to provider_value(args and provider_member(args and 0 and "action"))
+    set entry to archive_list_text(admitted and 2)
+    set prepared to tool_registry_prepare_change(database and identity and parent and target and entry and action)
+    if not (archive_list_text(prepared and 0) equals "prepared"):
+        return archive_list_text(prepared and 0)
+    set fields to provider_json_tokens(archive_list_text(prepared and 1))
+    if not (provider_value(fields and provider_member(fields and 0 and "before_sha256")) equals ep_sha256(document)):
+        return "requested-registry-changed"
+    # Preserve the exact request and rationale in the private review ledger.
+    set retained_request to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=? AND kind='tool_version_request';" and [concat(session and ":request")]))
+    if archive_list_text(retained_request and 0) equals "found":
+        if not (archive_list_text(retained_request and 1) equals archive_list_text(admitted and 1)):
+            return "version-request-receipt-conflict"
+    else if not (archive_list_text(retained_request and 0) equals "end") or else archive_append(database and session and concat(session and ":request") and "tool_version_request" and archive_list_text(admitted and 1) and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return "version-request-receipt-failed"
+    set reviewed to tool_registration_review(database and config and loaded and identity and prepared and entry)
+    if not (archive_list_text(reviewed and 0) equals "reviewed"):
+        return archive_list_text(reviewed and 0)
+    set work to tool_version_work_directory(provider_value(config and provider_member(config and 0 and "work_directory")) and identity)
+    if string_length(work) equals 0:
+        return "version-work-directory-unavailable"
+    set source to sql_open(path)
+    if source equals 0:
+        return "source-unavailable"
+    if sql_execute(source and "BEGIN IMMEDIATE;") is not equal to 0:
+        set closed to sql_close(source)
+        return "source-busy"
+    set fresh to tool_version_request_bind(source and run and call_id and principals and document)
+    set result to "version-authority-changed"
+    if archive_list_text(fresh and 0) equals "authorized" and archive_list_text(fresh and 1) equals archive_list_text(admitted and 1) and archive_list_text(fresh and 2) equals entry:
+        set stage to tool_store_text(concat(parent and concat("/" and provider_value(fields and provider_member(fields and 0 and "stage")))) and provider_value(fields and provider_member(fields and 0 and "after_sha256")))
+        set valid to 0
+        if archive_list_text(stage and 0) equals "read":
+            set registry to provider_json_tokens(archive_list_text(stage and 1))
+            set selected to registered_managed_entry_find(source and run and registry and provider_value(args and provider_member(args and 0 and "digest")))
+            if selected >= 0:
+                if provider_value(registry and provider_member(registry and selected and "state")) equals action:
+                    if action equals "quarantined" or else action equals "retired":
+                        set valid to 1
+                    else if registered_closure_check(source and run and registry and selected and create_list()) equals "accepted-files-verified":
+                        set valid to 1
+        if valid equals 1:
+            set result to controller_autonomous_run(database and loaded and archive_list_text(reviewed and 1) and concat("tool-operation:" and identity) and parent and target and provider_value(fields and provider_member(fields and 0 and "stage")) and provider_value(fields and provider_member(fields and 0 and "recovery")) and archive_list_text(reviewed and 2) and concat(work and "/workspace") and provider_value(config and provider_member(config and 0 and "runtime")) and concat(work and "/publication"))
+        else:
+            set result to "version-stage-or-dependencies-changed"
+    set rolled to sql_execute(source and "ROLLBACK;")
+    set closed to sql_close(source)
+    if rolled is not equal to 0 or else closed is not equal to 0:
+        return concat("source-lock-release-failed-after:" and result)
+    return result
+
+define tool_version_tick with database as Int and config as List and loaded as List returning Int:
+    for each source_config in provider_items(config and provider_member(config and 0 and "sources")):
+        set path to provider_value(config and provider_member(config and source_config and "path"))
+        set cursor to "0"
+        repeat while 1 equals 1:
+            set source to rsi_archive_open(path)
+            if source equals 0:
+                return 1
+            set row to history_collect_one(checkpoint_prepare(source and "SELECT q.sequence,t.run,t.call_id FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event WHERE t.state='observed' AND q.sequence>CAST(? AS INTEGER) AND json_extract(q.payload,'$.name')='tool_version_manage' ORDER BY q.sequence LIMIT 1;" and [cursor]))
+            set closed to sql_close(source)
+            if archive_list_text(row and 0) equals "end":
+                break
+            if not (archive_list_text(row and 0) equals "found"):
+                return 2
+            set cursor to archive_list_text(row and 1)
+            set run to archive_list_text(row and 2)
+            set call_id to archive_list_text(row and 3)
+            set result to tool_version_job(database and config and loaded and source_config and run and call_id)
+            if not (result equals "already-terminal" or else result equals "source-busy" or else result equals "review:review-owner-busy"):
+                set identity to ep_sha256(concat("version:" and concat(archive_hash_field(path) and concat(archive_hash_field(run) and archive_hash_field(call_id)))))
+                set session to concat("tool-registration:" and identity)
+                if archive_append(database and session and concat(session and ":terminal") and "tool_version_terminal" and result and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+                    return 3
+                display identity
+                display result
+    return 0

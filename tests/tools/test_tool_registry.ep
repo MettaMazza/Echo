@@ -1,8 +1,23 @@
+import "../../app/lifecycle/tool_registration_admission"
 import "../../app/tools/tool_registry"
 import "../../app/web/run_store"
 import "fs"
 import "../../app/agent/tool_dispatch"
 import "../fixtures/generation_fixture"
+import "../fixtures/tool_call_fixture"
+
+define registry_discover_dormant with database as Int returning Int:
+    set listener to local_socket_listen(0)
+    set arguments to "{\"query\":\"different fixture capability\",\"after\":0}"
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"dormant\",\"function\":{\"name\":\"tool_candidates\",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set generated to agent_generate_local(database and "admin-run" and "dormant-request" and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    set closed to local_socket_close(listener)
+    if generated is not equal to 0 or else served is not equal to 0:
+        return 1
+    return agent_tool_step(database and "admin-run")
 
 define main returning Int:
     if get_argument_count() is not equal to 3 or else file_exists(get_argument(1)):
@@ -55,6 +70,11 @@ define main returning Int:
     set other to web_submit_owned(database and "admin" and "other-run" and "" and "Separate authoring run.")
     if not (tool_candidate_save(database and "other-run" and manifest) equals "discovery-receipt-not-observed-for-run"):
         return 22
+    if not (tool_candidate_save(database and "admin-run" and manifest) equals "dormant-discovery-required"):
+        return 35
+    if agent_tool_step(database and "admin-run") is not equal to 0 or else registry_discover_dormant(database) is not equal to 0:
+        return 36
+    set manifest to ptr_to_str(string_replace(manifest and "\"discovery-request:call:0:result\"" and "\"discovery-request:call:0:result\",\"dormant-request:call:0:result\""))
     set missing to ptr_to_str(string_replace(manifest and "discovery-request:call:0:result" and "nonexistent"))
     if not (tool_candidate_save(database and "admin-run" and missing) equals "discovery-receipt-not-observed-for-run"):
         return 23
@@ -74,8 +94,24 @@ define main returning Int:
     set released to ep_dlclose(library)
     if not (changed equals "discovery-catalog-changed-or-result-invalid") or else restored is not equal to 0:
         return 26
-    if not (tool_candidate_save(database and "admin-run" and manifest) equals "candidate-saved-not-activated") or else not (tool_candidate_save(database and "admin-run" and manifest) equals "candidate-already-saved-not-activated"):
+    if agent_tool_step(database and "admin-run") is not equal to 0:
+        return 33
+    set save_arguments to concat("{\"manifest_text\":" and concat(provider_quote(manifest) and "}"))
+    set dispatched to tool_fixture_call(database and "admin" and "admin-run" and "tool_candidate_save" and save_arguments)
+    set saved_tokens to provider_json_tokens(dispatched)
+    if not (provider_value(saved_tokens and provider_member(saved_tokens and 0 and "status")) equals "candidate-saved-not-activated") or else not (provider_value(saved_tokens and provider_member(saved_tokens and 0 and "digest")) equals ep_sha256(manifest)) or else not (provider_kind(saved_tokens and provider_member(saved_tokens and 0 and "runnable")) equals "false"):
+        display dispatched
         return 9
+    set admission to tool_registration_admit(database and "admin-run" and ep_sha256(manifest) and "[\"device:admin\"]")
+    if not (archive_list_text(admission and 0) equals "authorized") or else not (archive_list_text(admission and 1) equals manifest) or else not (archive_list_text(admission and 2) equals "device:admin") or else string_length(archive_list_text(admission and 3)) > 0:
+        display archive_list_text(admission and 0)
+        return 35
+    if archive_list_text(agent_run_read(database and "admin-run") and 2) equals "completed":
+        return 36
+    if not (archive_list_text(tool_registration_admit(database and "admin-run" and ep_sha256(manifest) and "[]") and 0) equals "principal-not-enrolled-for-tool-creation"):
+        return 37
+    if not (tool_candidate_save(database and "admin-run" and manifest) equals "candidate-already-saved-not-activated"):
+        return 34
     if not (tool_candidate_save(database and "admin-run" and concat(manifest and " ")) equals "version-conflict"):
         return 10
     set next_version to ptr_to_str(string_replace(manifest and "\"version\": 1" and "\"version\": 2"))
@@ -91,6 +127,8 @@ define main returning Int:
         return 32
     if not (tool_candidate_save(database and "admin-run" and next_version) equals "candidate-saved-not-activated"):
         return 19
+    if not (archive_list_text(tool_registration_admit(database and "admin-run" and ep_sha256(next_version) and "[\"device:admin\"]") and 0) equals "awaiting-observed-candidate-save"):
+        return 38
     if sql_execute(database and "UPDATE echo_tool_candidates SET name='changed';") equals 0 or else sql_execute(database and "DELETE FROM echo_tool_candidates;") equals 0:
         return 11
     if sql_close(database) is not equal to 0:
@@ -110,5 +148,8 @@ define main returning Int:
         return 29
     if not (principal_host_revocation(database and "revoke" and "device:admin" and 1 and "fixture") equals "recorded") or else not (tool_candidate_save(database and "admin-run" and manifest) equals "not-authorized"):
         return 15
-    display "PASS: candidate manifests persist exact bytes and hashes, reject builtin shadowing, enforce author authority, retain immutable versions, survive reopen and deny revocation. Discovery requires observed same-run results, intact provenance and an unchanged catalog. Candidates are not activated tools."
+    if not (archive_list_text(tool_registration_admit(database and "admin-run" and ep_sha256(manifest) and "[\"device:admin\"]") and 0) equals "candidate-authority-revoked"):
+        return 39
+    display "PASS: controller admission accepts the observed save before origin completion, binds exact manifest/private owner, requires installed enrollment, rejects unobserved candidates and rechecks revocation."
+    display "PASS: actual candidate-save tool dispatch and candidate manifests persist exact bytes and hashes, reject builtin shadowing, enforce author authority, retain immutable versions, survive reopen and deny revocation. Discovery requires observed same-run results, intact provenance and an unchanged catalog. Candidates are not activated tools."
     return sql_close(database)

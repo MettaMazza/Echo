@@ -1,0 +1,279 @@
+import "mime"
+
+# Unfold only RFC continuation whitespace; a new header line is not accepted.
+define gmail_header_unfold with text as Str returning List:
+    set result to create_builder()
+    set index to 0
+    repeat while index < string_length(text):
+        set code to get_character(text and index)
+        if code equals 13:
+            if index + 2 >= string_length(text) or else get_character(text and index + 1) is not equal to 10 or else not (get_character(text and index + 2) equals 32 or else get_character(text and index + 2) equals 9):
+                return ["invalid-header"]
+            set index to index + 2
+            set added to builder_append(result and " ")
+        else if code equals 9:
+            set added to builder_append(result and " ")
+        else if code < 32 or else code equals 127:
+            return ["invalid-header"]
+        else:
+            set added to builder_append(result and substring(text and index and 1))
+        set index to index + 1
+    return ["unfolded",ptr_to_str(builder_to_string(result))]
+
+define gmail_reference_chain with text as Str returning List:
+    set unfolded to gmail_header_unfold(text)
+    if not (archive_list_text(unfolded and 0) equals "unfolded"):
+        return ["invalid-references"]
+    set text to archive_list_text(unfolded and 1)
+    set references to ["parsed"]
+    set index to 0
+    repeat while index < string_length(text):
+        if get_character(text and index) equals 32:
+            set index to index + 1
+            continue
+        if get_character(text and index) is not equal to 60:
+            return ["invalid-references"]
+        set start to index
+        repeat while index < string_length(text) and also get_character(text and index) is not equal to 62:
+            set index to index + 1
+        if index >= string_length(text):
+            return ["invalid-references"]
+        set value to substring(text and start and index - start + 1)
+        if gmail_references_valid([value]) equals 0:
+            return ["invalid-references"]
+        set added to append_list(references and value)
+        set index to index + 1
+    return references
+
+# Preserve quoted display names and comments while finding address separators.
+# Unsupported/malformed mailbox syntax is reported, never guessed into a recipient.
+define gmail_address_piece with text as Str returning Str:
+    set text to string_trim(text)
+    set opening to string_index_of(text and "<")
+    set closing to string_index_of(text and ">")
+    set address to text
+    if opening >= 0:
+        if closing <= opening or else string_length(string_trim(substring(text and closing + 1 and string_length(text) - closing - 1))) > 0:
+            return ""
+        set prefix to substring(text and 0 and opening)
+        set quoted to 0
+        set escaped to 0
+        set index to 0
+        repeat while index < string_length(prefix):
+            set code to get_character(prefix and index)
+            if escaped:
+                set escaped to 0
+            else if quoted and also code equals 92:
+                set escaped to 1
+            else if code equals 34:
+                set quoted to 1 - quoted
+            else if quoted equals 0 and also (code equals 64 or else code equals 60 or else code equals 62):
+                return ""
+            set index to index + 1
+        if quoted or else escaped:
+            return ""
+        set address to substring(text and opening + 1 and closing - opening - 1)
+    else if closing >= 0:
+        return ""
+    if gmail_address_valid(address) equals 0:
+        return ""
+    return address
+
+# Result starts with parsed; remaining items are canonical addr-spec values.
+# RFC group labels, quoted commas and nested comments do not become addresses.
+define gmail_header_addresses with text as Str returning List:
+    set unfolded to gmail_header_unfold(text)
+    if not (archive_list_text(unfolded and 0) equals "unfolded"):
+        return ["invalid-address-header"]
+    set text to archive_list_text(unfolded and 1)
+    if gmail_header_text_valid(text) equals 0:
+        return ["invalid-address-header"]
+    set result to ["parsed"]
+    set piece to ""
+    set quoted to 0
+    set escaped to 0
+    set comment to 0
+    set angle to 0
+    set group to 0
+    set index to 0
+    repeat while index <= string_length(text):
+        set code to 44
+        if index < string_length(text):
+            set code to get_character(text and index)
+        if escaped:
+            if comment equals 0:
+                set piece to concat(piece and substring(text and index and 1))
+            set escaped to 0
+        else if (quoted or else comment > 0) and also code equals 92:
+            if comment equals 0:
+                set piece to concat(piece and "\\")
+            set escaped to 1
+        else if comment > 0:
+            if code equals 40:
+                set comment to comment + 1
+            else if code equals 41:
+                set comment to comment - 1
+        else if code equals 34:
+            set quoted to 1 - quoted
+            set piece to concat(piece and "\"")
+        else if quoted:
+            set piece to concat(piece and substring(text and index and 1))
+        else if code equals 40:
+            set comment to 1
+            set piece to concat(piece and " ")
+        else if code equals 60:
+            if angle:
+                return ["invalid-address-header"]
+            set angle to 1
+            set piece to concat(piece and "<")
+        else if code equals 62:
+            if angle equals 0:
+                return ["invalid-address-header"]
+            set angle to 0
+            set piece to concat(piece and ">")
+        else if code equals 58 and also angle equals 0:
+            if group or else string_length(string_trim(piece)) equals 0:
+                return ["invalid-address-header"]
+            set label to piece
+            if string_contains(label and "@") or else string_contains(label and "<") or else string_contains(label and ">"):
+                return ["invalid-address-header"]
+            set group to 1
+            set piece to ""
+        else if (code equals 44 or else code equals 59) and also angle equals 0:
+            if code equals 59 and also group equals 0:
+                return ["invalid-address-header"]
+            set value to string_trim(piece)
+            if string_length(value) > 0:
+                set address to gmail_address_piece(value)
+                if string_length(address) equals 0:
+                    return ["unsupported-address-header"]
+                set added to append_list(result and address)
+            set piece to ""
+            if code equals 59:
+                set group to 0
+        else:
+            set piece to concat(piece and substring(text and index and 1))
+        set index to index + 1
+    if quoted or else escaped or else comment > 0 or else angle or else group:
+        return ["invalid-address-header"]
+    return result
+
+# Header duplicates are not silently resolved by taking the last value.
+define gmail_source_header with tokens as List and headers as Int and name as Str returning List:
+    set found to ""
+    set count to 0
+    for each header in provider_items(tokens and headers):
+        if ptr_to_str(string_to_lower(provider_value(tokens and provider_member(tokens and header and "name")))) equals name:
+            set field to provider_member(tokens and header and "value")
+            if not (provider_kind(tokens and field) equals "string"):
+                return ["invalid-header"]
+            set found to provider_value(tokens and field)
+            set count to count + 1
+    if count > 1:
+        return ["ambiguous-header"]
+    if count equals 0:
+        return ["absent",""]
+    return ["found",found]
+
+define gmail_reply_add with target as List and prior as List and address as Str returning Int:
+    if ptr_to_str(string_to_lower(address)) equals "echo.ernos.smith@gmail.com":
+        return 0
+    for each existing in prior:
+        if ptr_to_str(existing) equals address:
+            return 0
+    for each existing in target:
+        if ptr_to_str(existing) equals address:
+            return 0
+    set added to append_list(target and address)
+    return 0
+
+define gmail_reply_plan with source as Str and reply_all as Int returning Str:
+    set tokens to provider_json_tokens(source)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "{\"status\":\"invalid-source-message\"}"
+    set payload to provider_member(tokens and 0 and "payload")
+    set headers to provider_member(tokens and payload and "headers")
+    set thread to provider_value(tokens and provider_member(tokens and 0 and "threadId"))
+    set message to provider_value(tokens and provider_member(tokens and 0 and "id"))
+    if not (provider_kind(tokens and headers) equals "[") or else string_length(thread) equals 0 or else string_length(message) equals 0:
+        return "{\"status\":\"reply-metadata-unavailable\"}"
+    set recipients_to to create_list()
+    set cc to create_list()
+    set reply to gmail_source_header(tokens and headers and "reply-to")
+    if archive_list_text(reply and 0) equals "absent":
+        set reply to gmail_source_header(tokens and headers and "from")
+    if not (archive_list_text(reply and 0) equals "found"):
+        return "{\"status\":\"reply-sender-unavailable\"}"
+    set addresses to gmail_header_addresses(archive_list_text(reply and 1))
+    if not (archive_list_text(addresses and 0) equals "parsed"):
+        return "{\"status\":\"reply-sender-unsupported\"}"
+    set index to 1
+    repeat while index < length_list(addresses):
+        set added to gmail_reply_add(recipients_to and cc and archive_list_text(addresses and index))
+        set index to index + 1
+    # Replying to Echo's own sent message addresses its original visible To
+    # recipients. Bcc is never recovered or copied into a reply-all envelope.
+    set from_header to gmail_source_header(tokens and headers and "from")
+    set from_addresses to gmail_header_addresses(archive_list_text(from_header and 1))
+    set sent_by_echo to archive_list_text(from_header and 0) equals "found" and also archive_list_text(from_addresses and 0) equals "parsed" and also length_list(from_addresses) equals 2 and also ptr_to_str(string_to_lower(archive_list_text(from_addresses and 1))) equals "echo.ernos.smith@gmail.com"
+    if sent_by_echo and also length_list(recipients_to) equals 0 and also length_list(addresses) > 1:
+        set original_to to gmail_source_header(tokens and headers and "to")
+        if not (archive_list_text(original_to and 0) equals "found"):
+            return "{\"status\":\"reply-recipient-required\"}"
+        set sent_recipients to gmail_header_addresses(archive_list_text(original_to and 1))
+        if not (archive_list_text(sent_recipients and 0) equals "parsed"):
+            return "{\"status\":\"reply-recipients-unsupported\"}"
+        set index to 1
+        repeat while index < length_list(sent_recipients):
+            set added to gmail_reply_add(recipients_to and cc and archive_list_text(sent_recipients and index))
+            set index to index + 1
+    if reply_all:
+        for each field in ["to","cc"]:
+            set original to gmail_source_header(tokens and headers and ptr_to_str(field))
+            if not (archive_list_text(original and 0) equals "found" or else archive_list_text(original and 0) equals "absent"):
+                return "{\"status\":\"reply-recipients-ambiguous\"}"
+            set addresses to gmail_header_addresses(archive_list_text(original and 1))
+            if not (archive_list_text(addresses and 0) equals "parsed"):
+                return "{\"status\":\"reply-recipients-unsupported\"}"
+            set index to 1
+            repeat while index < length_list(addresses):
+                set added to gmail_reply_add(cc and recipients_to and archive_list_text(addresses and index))
+                set index to index + 1
+    set id to gmail_source_header(tokens and headers and "message-id")
+    if not (archive_list_text(id and 0) equals "found") or else gmail_references_valid([archive_list_text(id and 1)]) equals 0:
+        return "{\"status\":\"reply-message-id-unavailable\"}"
+    set original_references to gmail_source_header(tokens and headers and "references")
+    if not (archive_list_text(original_references and 0) equals "found" or else archive_list_text(original_references and 0) equals "absent"):
+        return "{\"status\":\"reply-references-ambiguous\"}"
+    set references to gmail_reference_chain(archive_list_text(original_references and 1))
+    if not (archive_list_text(references and 0) equals "parsed"):
+        return "{\"status\":\"reply-references-unsupported\"}"
+    set subject to gmail_source_header(tokens and headers and "subject")
+    if not (archive_list_text(subject and 0) equals "found" or else archive_list_text(subject and 0) equals "absent"):
+        return "{\"status\":\"reply-subject-ambiguous\"}"
+    if length_list(recipients_to) + length_list(cc) equals 0:
+        return "{\"status\":\"reply-recipient-required\"}"
+    set body to concat("{\"status\":\"planned\",\"source_message\":" and provider_quote(message))
+    set body to concat(body and concat(",\"thread_id\":" and provider_quote(thread)))
+    set body to concat(body and concat(",\"in_reply_to\":" and provider_quote(archive_list_text(id and 1))))
+    set body to concat(body and concat(",\"source_subject_header\":" and provider_quote(archive_list_text(subject and 1))))
+    set body to concat(body and ",\"references\":[")
+    set index to 1
+    repeat while index < length_list(references):
+        if not (archive_list_text(references and index) equals archive_list_text(id and 1)):
+            set body to concat(body and concat(provider_quote(archive_list_text(references and index)) and ","))
+        set index to index + 1
+    set body to concat(body and concat(provider_quote(archive_list_text(id and 1)) and "]"))
+    for each group in [recipients_to,cc]:
+        set name to "to"
+        if group equals cc:
+            set name to "cc"
+        set body to concat(body and concat("," and concat(provider_quote(name) and ":[")))
+        set index to 0
+        for each address in group:
+            if index > 0:
+                set body to concat(body and ",")
+            set body to concat(body and provider_quote(ptr_to_str(address)))
+            set index to index + 1
+        set body to concat(body and "]")
+    return concat(body and "}")

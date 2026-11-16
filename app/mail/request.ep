@@ -1,0 +1,153 @@
+import "api_contract"
+import "contacts"
+import "payload"
+import "../providers/json_access"
+import "../providers/archived_stream"
+import "../network/search_query"
+
+# Wire construction only: the caller must separately establish mailbox owner,
+# audience, standing communication policy and durable intent before transport.
+# OAuth credentials, arbitrary hosts and global Google auth/query parameters
+# are deliberately absent from this interface. All routes address users/me.
+define gmail_scalar_valid with tokens as List and value as Int and contract as List and field as Int returning Int:
+    set expected to provider_value(contract and provider_member(contract and field and "type"))
+    set kind to provider_kind(tokens and value)
+    if expected equals "string":
+        if not (kind equals "string"):
+            return 0
+    else if expected equals "boolean":
+        if not (kind equals "true" or else kind equals "false"):
+            return 0
+    else if expected equals "integer":
+        set number to provider_index(tokens and value)
+        if string_length(number) equals 0:
+            return 0
+        # Gmail integer query fields use uint32. Compare decimal spelling,
+        # avoiding machine overflow and silently rounded JSON numbers.
+        if string_length(number) > 10:
+            return 0
+        if string_length(number) equals 10 and also string_to_int(number) > 4294967295:
+            return 0
+    else:
+        return 0
+    set options to provider_member(contract and field and "enum")
+    if options >= 0:
+        set matched to 0
+        for each option in provider_items(contract and options):
+            if provider_value(tokens and value) equals provider_value(contract and option):
+                set matched to 1
+        if matched equals 0:
+            return 0
+    set format to provider_value(contract and provider_member(contract and field and "format"))
+    if format equals "uint64":
+        set text to provider_value(tokens and value)
+        if string_length(text) equals 0:
+            return 0
+        if string_length(text) > 20:
+            return 0
+        if string_length(text) > 1 and also get_character(text and 0) equals 48:
+            return 0
+        if string_length(text) equals 20:
+            set position to 0
+            set compared to 0
+            repeat while position < 20 and also compared equals 0:
+                set actual to get_character(text and position)
+                set maximum to get_character("18446744073709551615" and position)
+                if actual > maximum:
+                    return 0
+                if actual < maximum:
+                    set compared to 1
+                set position to position + 1
+        set offset to 0
+        repeat while offset < string_length(text):
+            if provider_digit(text and offset) equals 0:
+                return 0
+            set offset to offset + 1
+    return 1
+
+define gmail_request_plan with operation as Str and parameters as Str and body as Str and granted as List returning List:
+    if gmail_contacts_method(operation):
+        return gmail_contacts_plan(operation and parameters and body and granted)
+    set descriptor to gmail_method_contract(operation)
+    if string_length(descriptor) equals 0:
+        return ["unknown-operation"]
+    set contract to provider_json_tokens(descriptor)
+    set fields to provider_member(contract and 0 and "parameters")
+    set tokens to provider_json_tokens(parameters)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return ["invalid-parameters"]
+    set scoped to 0
+    for each acceptable in provider_items(contract and provider_member(contract and 0 and "scopes")):
+        for each scope in granted:
+            if provider_value(contract and acceptable) equals ptr_to_str(scope):
+                set scoped to 1
+    if scoped equals 0:
+        return ["scope-required"]
+    if operation equals "messages.list" and also provider_member(tokens and 0 and "q") >= 0:
+        set searchable to 0
+        for each scope in granted:
+            if ptr_to_str(scope) equals "https://mail.google.com/" or else ptr_to_str(scope) equals "https://www.googleapis.com/auth/gmail.modify" or else ptr_to_str(scope) equals "https://www.googleapis.com/auth/gmail.readonly":
+                set searchable to 1
+        if searchable equals 0:
+            return ["search-scope-required"]
+    set path to provider_value(contract and provider_member(contract and 0 and "path"))
+    set path to ptr_to_str(string_replace(path and "{userId}" and "me"))
+    set query to ""
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set name to provider_value(tokens and index)
+        set field to provider_member(contract and fields and name)
+        if field < 0:
+            return ["unknown-parameter",name]
+        set value to index + 2
+        set location to provider_value(contract and provider_member(contract and field and "location"))
+        set repeated to provider_value(contract and provider_member(contract and field and "repeated")) equals "true"
+        set values to create_list()
+        if repeated:
+            if not (provider_kind(tokens and value) equals "["):
+                return ["invalid-parameter",name]
+            set values to provider_items(tokens and value)
+        else:
+            set added to append_list(values and value)
+        for each item in values:
+            if gmail_scalar_valid(tokens and item and contract and field) equals 0:
+                return ["invalid-parameter",name]
+            set text to provider_value(tokens and item)
+            if location equals "path":
+                # Dot-only segments could be normalized by HTTP clients.
+                if string_length(text) equals 0 or else text equals "." or else text equals "..":
+                    return ["invalid-path-parameter",name]
+                set path to ptr_to_str(string_replace(path and concat("{" and concat(name and "}")) and network_query_encode(text)))
+            else if location equals "query":
+                if string_length(query) > 0:
+                    set query to concat(query and "&")
+                set query to concat(query and concat(network_query_encode(name) and concat("=" and network_query_encode(text))))
+            else:
+                return ["invalid-contract"]
+        set index to provider_after(tokens and value)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set field to fields + 1
+    repeat while not (provider_kind(contract and field) equals "}"):
+        set name to provider_value(contract and field)
+        if provider_value(contract and provider_member(contract and field + 2 and "required")) equals "true" and also provider_member(tokens and 0 and name) < 0:
+            return ["required-parameter",name]
+        set field to provider_after(contract and field + 2)
+        if provider_kind(contract and field) equals ",":
+            set field to field + 1
+    set request to provider_value(contract and provider_member(contract and 0 and "request"))
+    if string_length(request) equals 0:
+        if string_length(body) > 0:
+            return ["unexpected-body"]
+    else:
+        set payload to provider_json_tokens(body)
+        if payload equals 0 or else provider_unique_objects(payload) equals 0 or else not (provider_kind(payload and 0) equals "{"):
+            return ["invalid-body"]
+    if gmail_payload_valid(operation and body) equals 0:
+        return ["invalid-payload-schema"]
+    set url to concat("https://gmail.googleapis.com/" and path)
+    if string_length(query) > 0:
+        set url to concat(url and concat("?" and query))
+    # Original validated body bytes are retained. Action authority, disclosure
+    # review and semantic/resource preconditions remain the adapter's job.
+    return ["planned",provider_value(contract and provider_member(contract and 0 and "method")),url,body,provider_value(contract and provider_member(contract and 0 and "effect")),request]

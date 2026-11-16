@@ -1,0 +1,68 @@
+import "external_vault"
+
+# Private immutable spool, separately configured from credential storage.
+# Caller supplies a pinned 0700 directory excluded from ordinary host tools.
+# Originals already belong in the authorized session archive before transfer.
+define external_request_file with system as Int and directory as Int and identity as Str and body as Str returning Str:
+    if external_vault_inode(system and directory and 1) equals 0:
+        return "spool-not-private"
+    set name to concat("request-" and concat(ep_sha256(identity) and ".json"))
+    set descriptor to workspace_file_open(system and directory and name and 1)
+    if descriptor < 0:
+        set descriptor to workspace_file_open(system and directory and name and 0)
+        if descriptor < 0:
+            return "spool-unavailable"
+        if external_vault_inode(system and descriptor and 0) equals 0:
+            set closed to net_close(descriptor)
+            return "spool-not-private"
+        set existing to file_text_descriptor_window(system and descriptor and "" and -1 and 4096 and 0 and -1)
+        set closed to net_close(descriptor)
+        if closed is not equal to 0 or else not (archive_list_text(existing and 0) equals "read") or else not (archive_list_text(existing and 1) equals body):
+            return "spool-content-conflict"
+        return "stored"
+    if external_vault_inode(system and descriptor and 0) equals 0:
+        set closed to net_close(descriptor)
+        return "spool-not-private"
+    set written to file_stage_write(system and descriptor and str_to_ptr(body) and string_length(body))
+    set finished to file_stage_finish(system and descriptor)
+    set sync to ep_dlsym(system and "fsync")
+    if written is not equal to 0 or else finished is not equal to 0 or else sync equals 0 or else ep_dlcall1(sync and directory) is not equal to 0:
+        return "spool-write-failed"
+    return "stored"
+
+define external_request_file_remove with system as Int and directory as Int and identity as Str returning Int:
+    set name to concat("request-" and concat(ep_sha256(identity) and ".json"))
+    set unlink to ep_dlsym(system and "unlinkat")
+    if unlink equals 0:
+        return 1
+    return socket_signed_result(ep_dlcall3(unlink and directory and str_to_ptr(name) and 0))
+
+# The path curl opens must name the same pinned directory used to write the
+# bytes. Reject ambiguous components/NUL and compare device/inode, not spelling.
+define external_request_root_matches with system as Int and directory as Int and root as Str returning Int:
+    if string_length(root) < 2 or else get_character(root and 0) is not equal to 47 or else workspace_path_parts(substring(root and 1 and string_length(root) - 1)) equals 0:
+        return 0
+    set index to 0
+    repeat while index < string_length(root):
+        if get_character(root and index) equals 0:
+            return 0
+        set index to index + 1
+    set reopened to workspace_root_open(system and root)
+    if reopened < 0:
+        return 0
+    if external_vault_inode(system and reopened and 1) equals 0:
+        set closed to net_close(reopened)
+        return 0
+    set left to create_list()
+    set right to create_list()
+    set index to 0
+    repeat while index < 18:
+        set added to append_list(left and 0)
+        set added to append_list(right and 0)
+        set index to index + 1
+    set stat to ep_dlsym(system and "fstat")
+    set same to 0
+    if stat is not equal to 0 and also ep_dlcall2(stat and directory and get_list_data_ptr(left)) equals 0 and also ep_dlcall2(stat and reopened and get_list_data_ptr(right)) equals 0:
+        set same to get_list(left and 0) modulo 4294967296 equals get_list(right and 0) modulo 4294967296 and also get_list(left and 1) equals get_list(right and 1)
+    set closed to net_close(reopened)
+    return same and also closed equals 0

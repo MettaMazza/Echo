@@ -1,0 +1,17 @@
+# Persistent inference cache — 16 November 2026
+
+Echo's local primary and multimodal inference engines now persist reusable token/KV state and every recurrent checkpoint across server restarts. Discord, web, tool continuations, compaction and local background inference use these shared engines. Conversation archives, access controls, context capacity and reasoning settings are unchanged.
+
+Implementation: `engine/patches/llama-b11429-persistent-prompt-cache.patch`, applied after the existing engine patches. It adds immutable shared RAM snapshots, an asynchronous disk writer with a single coalesced pending snapshot, asynchronous disk reads, and a queue notification that resumes requests after their cache has loaded. Warm requests can continue while another request's cache is read. GPU state restoration still occurs on the inference thread, as required by the existing model server.
+
+Cache selection compares the actual token prefix. No text is truncated or summarized for caching. All recurrent checkpoints, target state, draft state and speculative checkpoint state are serialized. Invalid or incompatible files are disposable cache misses; the original conversation remains authoritative.
+
+Each endpoint has a maximum 128 GiB / 16 entries, with a 64 GiB free-space reserve checked during writing. Completed prefix snapshots replace older prefixes, oldest entries are evicted, temporary/orphaned files are reclaimed on startup, and write failures do not fail a conversation. Cache files are private, owner-only, checksummed and atomically published. Pending writes are coalesced; a crash can lose the newest unfinished cache write, never the conversation.
+
+The native engine binds cache compatibility to its build, exact process arguments, model/projector file metadata (including all shards), and loaded inference-library metadata. Matching tokens are still required. Model or prompt changes can legitimately require prefill again. This is an acceleration cache, not a promise that every historic session is always resident.
+
+Deployment uses the existing, unchanged native executable and its existing macOS permission identity. Its libraries are updated atomically; `DYLD_LIBRARY_PATH` pins the service to the installed library directory. No Python launcher is used in production. Cache directories are on the external volume under `/Volumes/One Touch/Echo/inference/prompt-cache-primary` and `prompt-cache-omni`. Model files were not moved and the drive was not unmounted.
+
+Validation: offline C++ tests exercised state/checkpoint/draft roundtrips, process locking, prefix selection, warm-cache preference, corruption rejection, identity invalidation, reserve protection and retention of all 128 fixture checkpoints. A tiny CPU-only model running in an isolated server was stopped and restarted: initial prefill was 11 tokens; the restored server reused 10 and evaluated 1. This test also exercised deferred asynchronous restore. The existing authorized native executable passed the same test against the new libraries. These are correctness results, not a production latency benchmark.
+
+Deployment records and logs: `persistent-cache-20261116` in the Codex working directory. No live Discord test prompts were sent. The first transition from the old RAM-only server cannot recover its former in-memory cache; sessions populate the durable cache when next processed. Normal production latency must be measured from real subsequent use, not inferred from the tiny control.

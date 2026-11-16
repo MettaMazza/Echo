@@ -1,0 +1,13 @@
+# Feature restoration — 16 November 2026
+
+Restores the application capabilities removed by rollback 98f4f3a and the later fixes removed by a9d449e. The preservation checkpoint is recovery/before-feature-restoration-20261116 (2a7e2d5). No external volume is unmounted and no existing data is relocated.
+
+Restored source: private Gmail and Contacts integration, native OpenAI Responses/Anthropic providers and owner consent/profile UI, generated-tool qualification/registration/version management, private research HUD, resilient Discord acknowledgment allocation and metadata handling, permission observations reused with invalidation, foreground completion before automatic-memory join, source-bound compaction review/convergence, and metadata-write avoidance for existing directories.
+
+Retained recovery fixes: callback-safe SQLite GC runtime, durable journal-backed permission and source-message reads, stable standing-memory prefix, bounded backup retention, unattended scoped administration, and session/kind/sequence event index. Compaction uses explicit high reasoning with thinking enabled for substantive generation/review/repair. Existing foreground reasoning configuration is preserved; no latency fix disables reasoning or removes memory/tool functionality.
+
+The restored application source is included in installed release `echo-self-monitor-20261116-findings`, verified against the [runtime source manifest](releases/1.9/runtime-source-manifest.json). Account enrollment and live provider/mailbox qualification depend on personal configuration; source deployment does not imply an enrolled account. See [current build](CURRENT-BUILD.md) for deployment and acceptance scope.
+
+Storage investigation confirmed severe small-file allocation amplification: sampled 262-byte response bodies and 1,885-byte headers each allocated 262,144 bytes, with similarly allocated AppleDouble sidecars. Two activity receipt days alone occupied 73.26 and 77.84 GiB. The user authorized immediate deletion of obsolete receipt evidence instead of archival. The obsolete 20261023-081818 rotation was removed; broader cleanup is restricted to activity/queue-control receipt stores and dated batches older than seven days. Session databases, memory, attachments, model weights and project files are excluded. Same-volume archival was stopped at the user’s direction; task-created partial archives were removed. Cleanup receipts are retained in recovery-20261116.
+
+The protected registration fixture initially used an obsolete tool_search argument shape. Its request now includes the required empty initial catalog_digest. The corrected fixture is retained as acceptance source. That historical fixture failure is not a claim that the current application release remains undeployed.

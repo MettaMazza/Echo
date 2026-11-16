@@ -1,4 +1,5 @@
 import "memory_tools"
+import "../context/qol_config"
 import "../memory/scratchpad_scope"
 
 # Private notes survive session changes; shared notes belong to an exact audience.
@@ -13,7 +14,7 @@ define scratchpad_execute with database as Int and run as Str and arguments as S
     set index to 1
     repeat while not (provider_kind(tokens and index) equals "}"):
         set key to provider_value(tokens and index)
-        if not (key equals "operation" or else key equals "name" or else key equals "text" or else key equals "previous_revision" or else key equals "after"):
+        if not (key equals "operation" or else key equals "name" or else key equals "text" or else key equals "previous_revision" or else key equals "after" or else key equals "expires_at"):
             return "{\"status\":\"invalid-arguments\"}"
         set index to provider_after(tokens and index + 2)
         if provider_kind(tokens and index) equals ",":
@@ -37,6 +38,24 @@ define scratchpad_execute with database as Int and run as Str and arguments as S
         return history_tool_row(row and keys)
     if string_length(name) equals 0 or else not (operation equals "read" or else operation equals "write" or else operation equals "delete"):
         return "{\"status\":\"invalid-arguments\"}"
+    set note_tokens to -1
+    set expiry to ""
+    if name equals "me" and operation equals "write" and qol_enabled("me_file"):
+        set note_text to provider_value(tokens and provider_member(tokens and 0 and "text"))
+        if not qol_note_headings(note_text):
+            return "{\"status\":\"invalid-working-state-headings\",\"required\":[\"CURRENT PROJECTS\",\"POSITIONS HELD\",\"OPEN QUESTIONS\",\"FOR THIS CONVERSATION\",\"LAST UPDATED / SPEC VERSION\"]}"
+        set note_tokens to qol_token_count(concat(qol_note_header() and note_text))
+        if note_tokens < 0:
+            return "{\"status\":\"tokenizer-unavailable\",\"effects\":\"none; previous revision retained\"}"
+        if note_tokens > 4000:
+            return "{\"status\":\"working-state-too-large\",\"maximum_tokens\":4000,\"effects\":\"none; previous revision retained\"}"
+        set expiry to provider_value(tokens and provider_member(tokens and 0 and "expires_at"))
+        if string_length(expiry) equals 0:
+            set date to history_collect_one(archive_prepare(database and "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now','+7 days');"))
+            set expiry to archive_list_text(date and 1)
+        set valid_expiry to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN julianday(?1)>julianday('now') THEN 1 ELSE 0 END;" and [expiry]))
+        if not (archive_list_text(valid_expiry and 1) equals "1"):
+            return "{\"status\":\"invalid-expiry\",\"effects\":\"none\"}"
     set mutating to operation equals "write" or else operation equals "delete"
     if mutating and sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
         return "{\"status\":\"database-error\"}"
@@ -87,7 +106,9 @@ define scratchpad_execute with database as Int and run as Str and arguments as S
     set payload to concat(payload and concat(",\"name\":" and provider_quote(name)))
     set payload to concat(payload and concat(",\"text\":" and provider_quote(text)))
     set payload to concat(payload and concat(",\"previous_revision\":" and provider_quote(previous)))
-    set payload to concat(payload and concat(",\"deleted\":" and concat(int_to_string(deleted) and "}")))
+    set payload to concat(payload and concat(",\"token_count\":" and int_to_string(note_tokens)))
+    set payload to concat(payload and concat(",\"open_threads_expire_at\":" and provider_quote(expiry)))
+    set payload to concat(payload and concat(",\"author\":\"Echo\",\"spec\":\"echo-qol-spec-v1.0.0\",\"deleted\":" and concat(int_to_string(deleted) and "}")))
     set owner to agent_run_read(database and run)
     if archive_append_pending(database and archive_list_text(owner and 0) and revision and "scratchpad_revision" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
         set rolled_back to archive_rollback(database)

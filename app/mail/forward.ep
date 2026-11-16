@@ -1,0 +1,71 @@
+import "encoding"
+import "../providers/archived_stream"
+
+define gmail_forward_hidden_header with pointer as Int and start as Int and count as Int returning Int:
+    for each name in ["bcc:","resent-bcc:"]:
+        set field to ptr_to_str(name)
+        if count >= string_length(field):
+            set matched to 1
+            set index to 0
+            repeat while index < string_length(field):
+                set code to peek_byte(pointer and start + index)
+                if code >= 65 and also code <= 90:
+                    set code to code + 32
+                if code is not equal to get_character(field and index):
+                    set matched to 0
+                set index to index + 1
+            if matched:
+                return 1
+    return 0
+
+# Forward the actual RFC message as a MIME attachment, preserving binary body
+# bytes. Bcc headers and their continuations are removed from the outbound copy;
+# the original source remains unchanged in Gmail and in its retained evidence.
+define gmail_forward_attachment with raw as Str returning List:
+    set decoded to gmail_base64_decode(raw and 1)
+    if not (archive_list_text(decoded and 0) equals "decoded"):
+        return ["invalid-forward-source"]
+    set storage to get_list(decoded and 1)
+    set size to get_list(decoded and 2)
+    set input to get_list_data_ptr(storage)
+    set output to create_list()
+    set index to 0
+    repeat while index < (size + 7) / 8:
+        set added to append_list(output and 0)
+        set index to index + 1
+    set target to get_list_data_ptr(output)
+    set index to 0
+    set written to 0
+    set skip to 0
+    set found_body to 0
+    repeat while index < size:
+        set start to index
+        repeat while index + 1 < size and also not (peek_byte(input and index) equals 13 and also peek_byte(input and index + 1) equals 10):
+            set byte to peek_byte(input and index)
+            if byte equals 13 or else byte equals 10 or else byte equals 0:
+                return ["invalid-forward-headers"]
+            set index to index + 1
+        if index + 1 >= size:
+            return ["invalid-forward-headers"]
+        set count to index - start
+        if count equals 0:
+            set found_body to 1
+            set index to start
+            repeat while index < size:
+                set copied to poke_byte(target and written and peek_byte(input and index))
+                set written to written + 1
+                set index to index + 1
+            break
+        set first to peek_byte(input and start)
+        if not (first equals 32 or else first equals 9):
+            set skip to gmail_forward_hidden_header(input and start and count)
+        if skip equals 0:
+            set position to start
+            repeat while position < index + 2:
+                set copied to poke_byte(target and written and peek_byte(input and position))
+                set written to written + 1
+                set position to position + 1
+        set index to index + 2
+    if found_body equals 0:
+        return ["invalid-forward-headers"]
+    return ["ready","forwarded-message.eml","application/octet-stream",gmail_base64_bytes(target and written)]

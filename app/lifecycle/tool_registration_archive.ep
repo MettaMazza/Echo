@@ -1,0 +1,56 @@
+import "../tools/tool_versions"
+import "rsi_source"
+
+# One Touch is archival storage, not an authorization boundary. Preserve exact
+# source, binary, manifest and qualification bytes; runtime loading still uses
+# protected Mac working copies. Existing copies must match before reuse.
+define tool_archive_text with library as Int and directory as Int and name as Str and content as Str returning Int:
+    set file to workspace_file_open(library and directory and name and 1)
+    if file >= 0:
+        set written to file_stage_write(library and file and str_to_ptr(content) and string_length(content))
+        set finished to file_stage_finish(library and file)
+        return written + finished
+    set file to workspace_file_open(library and directory and name and 0)
+    if file < 0:
+        return 1
+    set read to file_text_descriptor_window(library and file and ep_sha256(content) and -1 and 65536 and 0 and -1)
+    set closed to net_close(file)
+    if closed is not equal to 0 or else not (archive_list_text(read and 0) equals "read"):
+        return 1
+    return 0
+
+define tool_registration_archive with entry_text as Str and archive_root as Str returning Str:
+    set entry to provider_json_tokens(entry_text)
+    if entry equals 0 or else provider_unique_objects(entry) equals 0 or else tool_version_entry_valid(entry and 0) equals 0:
+        return "archive-entry-invalid"
+    set identity to ep_sha256(entry_text)
+    set manifest_text to provider_value(entry and provider_member(entry and 0 and "manifest_text"))
+    set manifest to provider_json_tokens(manifest_text)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_root_open(library and archive_root)
+    if root < 0:
+        set released to ep_dlclose(library)
+        return "archive-root-unavailable"
+    set version to workspace_directory_open(library and root and identity and 1)
+    set closed to net_close(root)
+    if version < 0:
+        set released to ep_dlclose(library)
+        return "archive-version-unavailable"
+    set failed to tool_archive_text(library and version and "manifest.json" and manifest_text)
+    set failed to failed + tool_archive_text(library and version and "entry.json" and entry_text)
+    set destination to concat(archive_root and concat("/" and identity))
+    set specifications to [["source_path","tool.ep",provider_value(manifest and provider_member(manifest and 0 and "source_sha256"))],["artifact_path","tool",provider_value(entry and provider_member(entry and 0 and "artifact_sha256"))],["qualification_path","qualification.json",provider_value(entry and provider_member(entry and 0 and "qualification_sha256"))]]
+    for each specification in specifications:
+        set source to provider_value(entry and provider_member(entry and 0 and archive_list_text(specification and 0)))
+        set target to concat(destination and concat("/" and archive_list_text(specification and 1)))
+        set copied to protected_stage_copy(source and target and archive_list_text(specification and 2))
+        if not (copied equals "staged" or else copied equals "already-staged"):
+            set failed to 1
+    if failed equals 0:
+        set failed to tool_archive_text(library and version and "complete" and identity)
+    set flushed to ep_dlcall1(ep_dlsym(library and "fsync") and version)
+    set closed to net_close(version)
+    set released to ep_dlclose(library)
+    if failed is not equal to 0 or else flushed is not equal to 0 or else closed is not equal to 0:
+        return "archive-copy-failed"
+    return "archived-data-not-execution-authority"

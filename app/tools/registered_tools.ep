@@ -1,0 +1,339 @@
+import "tool_version_store"
+import "../security/tool_authority"
+import "../security/external_tools"
+
+# Empty session means a private principal namespace. A nonempty session is an
+# explicitly published shared-conversation namespace, never private host data.
+define registered_scope_allows with database as Int and run as Str and tokens as List and entry as Int returning Int:
+    if run_authority_allows(database and run and "user") equals 0:
+        return 0
+    set caller to history_collect_one(checkpoint_prepare(database and "SELECT a.principal,r.session FROM echo_run_authority a JOIN echo_runs r ON r.run=a.run WHERE a.run=?;" and [run]))
+    if not (archive_list_text(caller and 0) equals "found") or else not (external_scope_session_status(database and archive_list_text(caller and 2)) equals "local"):
+        return 0
+    set scope to provider_value(tokens and provider_member(tokens and entry and "session"))
+    if string_length(scope) > 0:
+        return scope equals archive_list_text(caller and 2) and also group_run_session_allows(database and run and scope) equals 1
+    if group_run_session_allows(database and run and archive_list_text(caller and 2)) equals 1:
+        return 0
+    return provider_value(tokens and provider_member(tokens and entry and "principal")) equals archive_list_text(caller and 1)
+
+# A binary always needs an explicit execution capability. Other manifest
+# requirements remain additional constraints; none grants the binary a broader
+# sandbox than the selected existing execution profile.
+define registered_entry_role with tokens as List and entry as Int returning Str:
+    set manifest to provider_json_tokens(provider_value(tokens and provider_member(tokens and entry and "manifest_text")))
+    set capabilities to provider_items(manifest and provider_member(manifest and 0 and "capabilities"))
+    set role to "user"
+    set execution to 0
+    for each capability in capabilities:
+        set value to provider_value(manifest and capability)
+        set required to capability_role(value)
+        if string_length(required) equals 0:
+            return ""
+        if required equals "admin":
+            set role to "admin"
+        if value equals "workspace.execute-isolated" or else value equals "host.execute":
+            set execution to 1
+    if execution equals 0:
+        return ""
+    return role
+
+define registered_entry_mode with tokens as List and entry as Int returning Str:
+    set manifest to provider_json_tokens(provider_value(tokens and provider_member(tokens and entry and "manifest_text")))
+    for each capability in provider_items(manifest and provider_member(manifest and 0 and "capabilities")):
+        if provider_value(manifest and capability) equals "host.execute":
+            return "host"
+    return "isolated"
+
+# Return a scoped entry index in this already verified document, never a file
+# path or principal selected by model arguments. Dormant accepted versions may
+# be loaded explicitly; quarantined and retired versions cannot be loaded.
+define registered_entry_find with database as Int and run as Str and tokens as List and digest as Str returning Int:
+    set entries to provider_items(tokens and provider_member(tokens and 0 and "entries"))
+    set found to -1
+    for each entry in entries:
+        if provider_value(tokens and provider_member(tokens and entry and "manifest_sha256")) equals digest and registered_scope_allows(database and run and tokens and entry) equals 1:
+            set state to provider_value(tokens and provider_member(tokens and entry and "state"))
+            set role to registered_entry_role(tokens and entry)
+            if (state equals "active" or else state equals "dormant") and string_length(role) > 0 and run_authority_allows(database and run and role) equals 1:
+                if found >= 0:
+                    return -1
+                set found to entry
+    return found
+
+
+# Management can inspect retired/quarantined metadata, but never makes those
+# versions executable. Scope checks are identical to ordinary registered use.
+define registered_managed_entry_find with database as Int and run as Str and tokens as List and digest as Str returning Int:
+    if run_authority_allows(database and run and "admin") equals 0 or else group_privileged_audience_allows(database and run) equals 0:
+        return -1
+    set found to -1
+    for each entry in provider_items(tokens and provider_member(tokens and 0 and "entries")):
+        if provider_value(tokens and provider_member(tokens and entry and "manifest_sha256")) equals digest and registered_scope_allows(database and run and tokens and entry) equals 1:
+            if found >= 0:
+                return -1
+            set found to entry
+    return found
+
+define registered_manage_arguments_valid with arguments as Str returning Int:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 0
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set key to provider_value(tokens and index)
+        if not (key equals "digest" or else key equals "registry_sha256" or else key equals "action" or else key equals "reason") or else not (provider_kind(tokens and index + 2) equals "string"):
+            return 0
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set action to provider_value(tokens and provider_member(tokens and 0 and "action"))
+    if not (action equals "active" or else action equals "dormant" or else action equals "quarantined" or else action equals "retired"):
+        return 0
+    return protected_digest_valid(provider_value(tokens and provider_member(tokens and 0 and "digest"))) equals 1 and also protected_digest_valid(provider_value(tokens and provider_member(tokens and 0 and "registry_sha256"))) equals 1 and also string_length(provider_value(tokens and provider_member(tokens and 0 and "reason"))) > 0
+
+# The dispatcher archives this result. Only the installed protected worker may
+# act on the observed call; this process never changes the installed registry.
+define registered_manage_execute with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if tool_authority_allows(database and run and call_id and "admin") equals 0 or else group_privileged_audience_allows(database and run) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    if registered_manage_arguments_valid(arguments) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set loaded to tool_versions_installed_read(ptr_to_str(get_env("ECHO_TOOL_REGISTRY_PATH")))
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(loaded and 0)) and "}"))
+    set args to provider_json_tokens(arguments)
+    if not (provider_value(args and provider_member(args and 0 and "registry_sha256")) equals archive_list_text(loaded and 2)):
+        return "{\"status\":\"registry-changed\"}"
+    set registry to provider_json_tokens(archive_list_text(loaded and 1))
+    set entry to registered_managed_entry_find(database and run and registry and provider_value(args and provider_member(args and 0 and "digest")))
+    if entry < 0:
+        return "{\"status\":\"tool-unavailable-or-not-authorized\"}"
+    return concat("{\"status\":\"requested-not-applied\",\"request_sha256\":" and concat(provider_quote(ep_sha256(arguments)) and "}"))
+
+# Last selection is an immutable run event. Loading cannot change the global
+# registry, and an unload supersedes the prior choice without deleting history.
+define registered_load_latest with database as Int and run as Str and name as Str returning List:
+    return history_collect_one(checkpoint_prepare(database and "SELECT e.payload,e.sequence FROM echo_events e JOIN echo_runs r ON r.session=e.session AND r.run=?1 WHERE e.kind='tool_version_selection' AND json_extract(e.payload,'$.run_id')=?1 AND json_extract(e.payload,'$.name')=?2 ORDER BY e.sequence DESC LIMIT 1;" and [run,name]))
+
+define registered_tool_control with database as Int and run as Str and call_id as Str and arguments as Str returning Str:
+    if tool_authority_allows(database and run and call_id and "user") equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set args to provider_json_tokens(arguments)
+    if args equals 0 or else provider_unique_objects(args) equals 0 or else not (provider_kind(args and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(args and index) equals "}"):
+        set key to provider_value(args and index)
+        if not (key equals "digest" or else key equals "action"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(args and index + 2)
+        if provider_kind(args and index) equals ",":
+            set index to index + 1
+    set digest to provider_value(args and provider_member(args and 0 and "digest"))
+    set action to provider_value(args and provider_member(args and 0 and "action"))
+    if protected_digest_valid(digest) equals 0 or else not (action equals "load" or else action equals "unload"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set loaded to tool_versions_installed_read(ptr_to_str(get_env("ECHO_TOOL_REGISTRY_PATH")))
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(loaded and 0)) and "}"))
+    set document to archive_list_text(loaded and 1)
+    set registry to provider_json_tokens(document)
+    set entry to registered_entry_find(database and run and registry and digest)
+    if entry < 0:
+        return "{\"status\":\"tool-unavailable-or-not-authorized\"}"
+    set role to registered_entry_role(registry and entry)
+    if tool_authority_allows(database and run and call_id and role) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    if action equals "load":
+        set checked to registered_closure_check(database and run and registry and entry and create_list())
+        if not (checked equals "accepted-files-verified"):
+            return concat("{\"status\":" and concat(provider_quote(checked) and "}"))
+    set manifest to provider_json_tokens(provider_value(registry and provider_member(registry and entry and "manifest_text")))
+    set name to provider_value(manifest and provider_member(manifest and 0 and "name"))
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "{\"status\":\"archive-busy\"}"
+    set current to tool_versions_installed_read(ptr_to_str(get_env("ECHO_TOOL_REGISTRY_PATH")))
+    if not (archive_list_text(current and 0) equals "ready") or else not (archive_list_text(current and 2) equals archive_list_text(loaded and 2)) or else registered_scope_allows(database and run and registry and entry) equals 0 or else tool_authority_allows(database and run and call_id and role) equals 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"registry-or-authority-changed\"}"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.session,t.request_event FROM echo_runs r JOIN echo_tool_calls t ON t.run=r.run WHERE r.run=?1 AND t.call_id=?2 AND r.state='tools' AND t.state='running';" and [run,call_id]))
+    if not (archive_list_text(row and 0) equals "found"):
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"call-not-running\"}"
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"name\":" and provider_quote(name)))
+    set payload to concat(payload and concat(",\"digest\":" and provider_quote(digest)))
+    set payload to concat(payload and concat(",\"action\":" and provider_quote(action)))
+    set payload to concat(payload and concat(",\"registry_sha256\":" and provider_quote(archive_list_text(loaded and 2))))
+    set encoded_entry to tool_version_encode(registry and entry and provider_value(registry and provider_member(registry and entry and "state")))
+    set payload to concat(payload and concat(",\"entry_sha256\":" and provider_quote(ep_sha256(encoded_entry))))
+    set payload to concat(payload and concat(",\"request_event\":" and concat(provider_quote(archive_list_text(row and 2)) and "}")))
+    set event to concat(archive_list_text(row and 2) and ":tool-version")
+    if archive_append_pending(database and archive_list_text(row and 1) and event and "tool_version_selection" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return "{\"status\":\"selection-write-failed\"}"
+    set status to "loaded"
+    if action equals "unload":
+        set status to "unloaded"
+    return concat("{\"status\":" and concat(provider_quote(status) and concat(",\"name\":" and concat(provider_quote(name) and concat(",\"digest\":" and concat(provider_quote(digest) and "}"))))))
+
+# Dependency permission is intersected with the caller too. Keep the traversal
+# path, not a global visited flag, so shared dependencies are valid but cycles
+# fail. Entries and manifests are finite retained objects from the registry.
+define registered_closure_check with database as Int and run as Str and registry as List and entry as Int and trail as List returning Str:
+    set digest to provider_value(registry and provider_member(registry and entry and "manifest_sha256"))
+    set next to create_list()
+    for each prior in trail:
+        if digest equals ptr_to_str(prior):
+            return "dependency-cycle"
+        set added to append_list(next and prior)
+    set added to append_list(next and digest)
+    set checked to tool_version_files_check(registry and entry)
+    if not (checked equals "accepted-files-verified"):
+        return checked
+    set manifest to provider_json_tokens(provider_value(registry and provider_member(registry and entry and "manifest_text")))
+    for each dependency in provider_items(manifest and provider_member(manifest and 0 and "dependencies")):
+        set dependency_digest to provider_value(manifest and dependency)
+        set child to registered_entry_find(database and run and registry and dependency_digest)
+        if child < 0:
+            return "dependency-unavailable-or-not-authorized"
+        set child_status to registered_closure_check(database and run and registry and child and next)
+        if not (child_status equals "accepted-files-verified"):
+            return child_status
+    return "accepted-files-verified"
+
+# A call may use only a selection made before its immutable request. Check the
+# latest selection too, so unloading or replacing it revokes queued/running use.
+# No executable hashes are read here: authority monitors run this frequently.
+# Accepted files are rehashed separately immediately before process launch.
+define registered_call_binding with database as Int and run as Str and call_id as Str and name as Str returning List:
+    set selected to registered_load_latest(database and run and name)
+    if not (archive_list_text(selected and 0) equals "found"):
+        return history_status("registered-tool-not-loaded")
+    set selection to provider_json_tokens(archive_list_text(selected and 1))
+    if not (provider_value(selection and provider_member(selection and 0 and "action")) equals "load"):
+        return history_status("registered-tool-not-loaded")
+    set request to history_collect_one(checkpoint_prepare(database and "SELECT e.sequence FROM echo_tool_calls t JOIN echo_events e ON e.event=t.request_event WHERE t.run=?1 AND t.call_id=?2;" and [run,call_id]))
+    if not (archive_list_text(request and 0) equals "found") or else string_to_int(archive_list_text(selected and 2)) >= string_to_int(archive_list_text(request and 1)):
+        return history_status("tool-not-loaded-before-request")
+    set loaded to tool_versions_installed_read(ptr_to_str(get_env("ECHO_TOOL_REGISTRY_PATH")))
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return history_status("registered-store-unavailable")
+    set registry to provider_json_tokens(archive_list_text(loaded and 1))
+    set digest to provider_value(selection and provider_member(selection and 0 and "digest"))
+    set entry to registered_entry_find(database and run and registry and digest)
+    if entry < 0:
+        return history_status("registered-tool-unavailable")
+    set state to provider_value(registry and provider_member(registry and entry and "state"))
+    set encoded to tool_version_encode(registry and entry and state)
+    if not (ep_sha256(encoded) equals provider_value(selection and provider_member(selection and 0 and "entry_sha256"))):
+        return history_status("registered-tool-version-changed")
+    set manifest to provider_json_tokens(provider_value(registry and provider_member(registry and entry and "manifest_text")))
+    if not (provider_value(manifest and provider_member(manifest and 0 and "name")) equals name):
+        return history_status("registered-tool-name-mismatch")
+    set role to registered_entry_role(registry and entry)
+    if tool_authority_allows(database and run and call_id and role) equals 0:
+        return history_status("registered-tool-authority-changed")
+    set result to history_status("registered")
+    set added to append_list(result and archive_list_text(loaded and 1))
+    set added to append_list(result and entry)
+    set added to append_list(result and provider_value(registry and provider_member(registry and entry and "artifact_path")))
+    set added to append_list(result and registered_entry_mode(registry and entry))
+    return result
+
+define registered_tool_allows with database as Int and run as Str and call_id as Str and name as Str returning Int:
+    if string_length(ptr_to_str(get_env("ECHO_TOOL_REGISTRY_PATH"))) equals 0:
+        return 0
+    return archive_list_text(registered_call_binding(database and run and call_id and name) and 0) equals "registered"
+
+define registered_call_files_check with database as Int and run as Str and call_id as Str and name as Str returning Str:
+    set binding to registered_call_binding(database and run and call_id and name)
+    if not (archive_list_text(binding and 0) equals "registered"):
+        return archive_list_text(binding and 0)
+    set registry to provider_json_tokens(archive_list_text(binding and 1))
+    return registered_closure_check(database and run and registry and get_list(binding and 2) and create_list())
+
+# Only explicitly selected definitions join the next provider request. This is
+# not a dump of every installed schema. Invocation independently checks files,
+# the frozen call and current selection again.
+define registered_loaded_schemas with database as Int and run as Str returning Str:
+    set loaded to tool_versions_installed_read(ptr_to_str(get_env("ECHO_TOOL_REGISTRY_PATH")))
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return ""
+    set registry to provider_json_tokens(archive_list_text(loaded and 1))
+    set schemas to ""
+    set cursor to "0"
+    repeat while 1 equals 1:
+        set row to history_collect_one(checkpoint_prepare(database and "SELECT e.sequence,e.payload FROM echo_events e JOIN echo_runs r ON r.session=e.session AND r.run=?1 WHERE e.kind='tool_version_selection' AND json_extract(e.payload,'$.run_id')=?1 AND e.sequence>CAST(?2 AS INTEGER) AND NOT EXISTS(SELECT 1 FROM echo_events n WHERE n.session=e.session AND n.kind=e.kind AND json_extract(n.payload,'$.run_id')=?1 AND json_extract(n.payload,'$.name')=json_extract(e.payload,'$.name') AND n.sequence>e.sequence) ORDER BY e.sequence LIMIT 1;" and [run,cursor]))
+        if not (archive_list_text(row and 0) equals "found"):
+            break
+        set cursor to archive_list_text(row and 1)
+        set selected to provider_json_tokens(archive_list_text(row and 2))
+        if provider_value(selected and provider_member(selected and 0 and "action")) equals "load":
+            set entry to registered_entry_find(database and run and registry and provider_value(selected and provider_member(selected and 0 and "digest")))
+            if entry >= 0:
+                set state to provider_value(registry and provider_member(registry and entry and "state"))
+                if ep_sha256(tool_version_encode(registry and entry and state)) equals provider_value(selected and provider_member(selected and 0 and "entry_sha256")):
+                    set manifest_text to provider_value(registry and provider_member(registry and entry and "manifest_text"))
+                    set manifest to provider_json_tokens(manifest_text)
+                    if string_length(schemas) > 0:
+                        set schemas to concat(schemas and ",")
+                    set schema to concat("{\"type\":\"function\",\"function\":{\"name\":" and provider_quote(provider_value(manifest and provider_member(manifest and 0 and "name"))))
+                    set schema to concat(schema and concat(",\"description\":" and provider_quote(provider_value(manifest and provider_member(manifest and 0 and "purpose")))))
+                    set schema to concat(schema and concat(",\"parameters\":" and agent_json_source(manifest_text and manifest and provider_member(manifest and 0 and "input_schema"))))
+                    set schemas to concat(schemas and concat(schema and "}}"))
+    return schemas
+
+define registered_library_execute with database as Int and run as Str and arguments as Str returning Str:
+    set args to provider_json_tokens(arguments)
+    if args equals 0 or else provider_unique_objects(args) equals 0 or else not (provider_kind(args and 0) equals "{"):
+        return "{\"status\":\"invalid-arguments\"}"
+    set index to 1
+    repeat while not (provider_kind(args and index) equals "}"):
+        set key to provider_value(args and index)
+        if not (key equals "query" or else key equals "after" or else key equals "registry_sha256"):
+            return "{\"status\":\"invalid-arguments\"}"
+        set index to provider_after(args and index + 2)
+        if provider_kind(args and index) equals ",":
+            set index to index + 1
+    set query_field to provider_member(args and 0 and "query")
+    set cursor_text to provider_index(args and provider_member(args and 0 and "after"))
+    set after to string_to_int(cursor_text)
+    if not (provider_kind(args and query_field) equals "string") or else after < 0 or else not (int_to_string(after) equals cursor_text):
+        return "{\"status\":\"invalid-arguments\"}"
+    set loaded to tool_versions_installed_read(ptr_to_str(get_env("ECHO_TOOL_REGISTRY_PATH")))
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return concat("{\"status\":" and concat(provider_quote(archive_list_text(loaded and 0)) and "}"))
+    set pin to provider_value(args and provider_member(args and 0 and "registry_sha256"))
+    if (after > 0 or else string_length(pin) > 0) and not (pin equals archive_list_text(loaded and 2)):
+        return "{\"status\":\"registry-changed\",\"recovery\":\"Restart at after=0 with an empty registry_sha256.\"}"
+    set registry to provider_json_tokens(archive_list_text(loaded and 1))
+    set entries to provider_items(registry and provider_member(registry and 0 and "entries"))
+    set query to ptr_to_str(string_to_lower(provider_value(args and query_field)))
+    set index to after
+    repeat while index < length_list(entries):
+        set entry to get_list(entries and index)
+        set digest to provider_value(registry and provider_member(registry and entry and "manifest_sha256"))
+        if registered_entry_find(database and run and registry and digest) equals entry or else registered_managed_entry_find(database and run and registry and digest) equals entry:
+            set text to provider_value(registry and provider_member(registry and entry and "manifest_text"))
+            set manifest to provider_json_tokens(text)
+            set name to provider_value(manifest and provider_member(manifest and 0 and "name"))
+            set purpose to provider_value(manifest and provider_member(manifest and 0 and "purpose"))
+            set searchable to ptr_to_str(string_to_lower(concat(name and concat(" " and purpose))))
+            if string_length(query) equals 0 or else string_contains(searchable and query) equals 1:
+                set result to concat("{\"status\":\"found\",\"name\":" and provider_quote(name))
+                set result to concat(result and concat(",\"purpose\":" and provider_quote(purpose)))
+                set result to concat(result and concat(",\"state\":" and provider_quote(provider_value(registry and provider_member(registry and entry and "state")))))
+                set result to concat(result and concat(",\"manifest_text\":" and provider_quote(text)))
+                set result to concat(result and concat(",\"digest\":" and provider_quote(digest)))
+                set result to concat(result and concat(",\"version\":" and provider_index(manifest and provider_member(manifest and 0 and "version"))))
+                set result to concat(result and concat(",\"input_schema\":" and agent_json_source(text and manifest and provider_member(manifest and 0 and "input_schema"))))
+                set result to concat(result and concat(",\"output_schema\":" and agent_json_source(text and manifest and provider_member(manifest and 0 and "output_schema"))))
+                set result to concat(result and concat(",\"registry_sha256\":" and provider_quote(archive_list_text(loaded and 2))))
+                return concat(result and concat(",\"next_after\":" and concat(int_to_string(index + 1) and "}")))
+        set index to index + 1
+    return concat("{\"status\":\"end\",\"registry_sha256\":" and concat(provider_quote(archive_list_text(loaded and 2)) and "}"))
+
+define registered_control_schemas returning Str:
+    return "{\"type\":\"function\",\"function\":{\"name\":\"tool_library\",\"description\":\"Search qualified installed tool versions available in this scope. Empty query lists all; start after=0 and registry_sha256 empty, then retain both cursor and digest. Use tool_load to expose a selected version in this task. Listing does not execute or grant authority.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"after\":{\"type\":\"integer\",\"minimum\":0},\"registry_sha256\":{\"type\":\"string\"}},\"required\":[\"query\",\"after\",\"registry_sha256\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"tool_load\",\"description\":\"Load or unload a qualified installed tool version in this task using its digest from tool_library. Rechecks source, binary, dependencies, scope and permissions. This does not register an unqualified candidate or grant new capabilities.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"digest\":{\"type\":\"string\"},\"action\":{\"type\":\"string\",\"enum\":[\"load\",\"unload\"]}},\"required\":[\"digest\",\"action\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"tool_version_manage\",\"description\":\"Admin: request a protected installed tool version state change. Use digest and registry_sha256 from tool_library. active selects or rolls back to an accepted version; dormant removes default selection; quarantined and retired prevent execution. Supply the reason. The protected worker independently rechecks scope, rights, qualification and atomic publication; requested-not-applied is not success. Records and artifacts are preserved.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"digest\":{\"type\":\"string\"},\"registry_sha256\":{\"type\":\"string\"},\"action\":{\"type\":\"string\",\"enum\":[\"active\",\"dormant\",\"quarantined\",\"retired\"]},\"reason\":{\"type\":\"string\"}},\"required\":[\"digest\",\"registry_sha256\",\"action\",\"reason\"],\"additionalProperties\":false}}}"

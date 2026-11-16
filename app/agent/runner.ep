@@ -18,6 +18,7 @@ define agent_loop_inner_provider with database as Int and run as Str and profile
 define agent_loop_inner_provider_managed with database as Int and run as Str and profile as Str and output_reserve as Int and cancellation_reader as Int and read_size as Int and library as Int and service_stop as Str returning Str:
     set provider_config to provider_json_tokens(profile)
     set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
+    set recall_access to create_list()
     set idle to channel
     set waits to create_list()
     set added to append_list(waits and idle)
@@ -88,7 +89,8 @@ define agent_loop_inner_provider_managed with database as Int and run as Str and
             set profile to selected
             set provider_config to provider_json_tokens(profile)
             set model to provider_value(provider_config and provider_member(provider_config and 0 and "model"))
-            set messages to session_messages(database and archive_list_text(row and 0) and run)
+            set recall_access to discord_access_continuation_snapshot(recall_access)
+            set messages to session_messages_access_snapshot(database and archive_list_text(row and 0) and run and recall_access)
             if string_length(messages) equals 0:
                 return "context-recovery-required"
             set body to session_request_body_owned(database and run and model and messages)
@@ -137,7 +139,7 @@ define agent_loop_provider_managed with database as Int and run as Str and profi
     # and host-authorised capability metadata before each generation.
     set effective to profile
     set routed to archive_read_event(database and concat(run and ":vision-profile"))
-    if routed is not equal to 0:
+    if routed is not equal to 0 and also external_scope_run_is_local(database and run) equals 1:
         set effective to archive_list_text(routed and 3)
     set memory_done to channel
     set memory_path to archive_main_path(database)
@@ -149,6 +151,12 @@ define agent_loop_provider_managed with database as Int and run as Str and profi
     else:
         set remembered to memory_prepare(database and run and effective and output_reserve and cancellation_reader and read_size)
     set result to agent_loop_inner_provider_managed(database and run and effective and output_reserve and cancellation_reader and read_size and library and service_stop)
+    # The inner loop has actually exited, including any autonomous continuation.
+    # Publish its terminal head before joining extraction: the Discord supervisor
+    # can deliver and release this conversation while retaining the memory worker.
+    set foreground_recorded to 0
+    if result equals "completed":
+        set foreground_recorded to agent_foreground_complete(database and run) equals 0
     set failure_head to agent_run_read(database and run)
     # A final response is already persisted and visible before this join. Keep
     # the worker alive until extraction has a durable success/failure receipt.
@@ -169,7 +177,7 @@ define agent_loop_provider_managed with database as Int and run as Str and profi
     # Durable foreground completion is distinct from memory-worker completion.
     # Supervisors may release conversation ownership only after this point,
     # never merely because an intermediate autonomous response was committed.
-    if result equals "completed":
+    if result equals "completed" and not foreground_recorded:
         set settled to agent_foreground_complete(database and run)
     if ep_dlclose(library) is not equal to 0:
         return "cleanup-error"

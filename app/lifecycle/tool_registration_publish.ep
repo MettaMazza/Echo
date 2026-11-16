@@ -1,0 +1,218 @@
+import "tool_registration_build"
+import "controller_autonomous"
+import "controller_review_runner"
+import "../rights/observer_audit"
+import "controller_bundle"
+
+# Called only by the protected worker. Sealing produces immutable, readable
+# working copies; it does not place the tool in the active registry.
+define tool_registration_seal with admitted as List and built as List returning List:
+    if not (archive_list_text(admitted and 0) equals "authorized") or else not (archive_list_text(built and 0) equals "qualified-build"):
+        return history_status("qualified-build-required")
+    set source_path to archive_list_text(built and 1)
+    if string_length(source_path) < 9 or else not (substring(source_path and string_length(source_path) - 8 and 8) equals "/tool.ep"):
+        return history_status("invalid-stage-path")
+    set root_path to substring(source_path and 0 and string_length(source_path) - 8)
+    if not (archive_list_text(built and 2) equals concat(root_path and "/tool")):
+        return history_status("artifact-stage-mismatch")
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if ep_dlcall0(ep_dlsym(library and "geteuid")) is not equal to 0:
+        set released to ep_dlclose(library)
+        return history_status("protected-worker-required")
+    set root to protected_path_open(library and root_path and 1)
+    if root < 0:
+        set released to ep_dlclose(library)
+        return history_status("unprotected-tool-stage")
+    set receipt to archive_list_text(built and 4)
+    set stored to controller_bundle_receipt(library and root and root_path and "qualification.json" and receipt)
+    set changed to ep_dlcall2(ep_dlsym(library and "fchmod") and root and 493)
+    for each name in ["tool.ep","tool","qualification.json"]:
+        set path to concat(root_path and concat("/" and ptr_to_str(name)))
+        set file to protected_path_open(library and path and 0)
+        if file < 0:
+            set stored to 1
+        else:
+            set mode to 420
+            if ptr_to_str(name) equals "tool":
+                set mode to 493
+            set changed to changed + ep_dlcall2(ep_dlsym(library and "fchmod") and file and mode)
+            set closed to net_close(file)
+    set flushed to ep_dlcall1(ep_dlsym(library and "fsync") and root)
+    set closed to net_close(root)
+    set released to ep_dlclose(library)
+    if stored is not equal to 0 or else changed is not equal to 0 or else flushed is not equal to 0:
+        return history_status("tool-seal-failed")
+    set manifest to archive_list_text(admitted and 1)
+    set entry to concat("{\"principal\":" and provider_quote(archive_list_text(admitted and 2)))
+    set entry to concat(entry and concat(",\"session\":" and provider_quote(archive_list_text(admitted and 3))))
+    set entry to concat(entry and concat(",\"manifest_text\":" and provider_quote(manifest)))
+    set entry to concat(entry and concat(",\"manifest_sha256\":" and provider_quote(ep_sha256(manifest))))
+    set entry to concat(entry and concat(",\"source_path\":" and provider_quote(source_path)))
+    set entry to concat(entry and concat(",\"artifact_path\":" and provider_quote(archive_list_text(built and 2))))
+    set entry to concat(entry and concat(",\"artifact_sha256\":" and provider_quote(archive_list_text(built and 3))))
+    set entry to concat(entry and concat(",\"qualification_path\":" and provider_quote(concat(root_path and "/qualification.json"))))
+    set entry to concat(entry and concat(",\"qualification_sha256\":" and provider_quote(ep_sha256(receipt))))
+    set entry to concat(entry and ",\"state\":\"dormant\"}")
+    set tokens to provider_json_tokens(entry)
+    if not (tool_version_files_check(tokens and 0) equals "accepted-files-verified") or else string_length(registered_entry_role(tokens and 0)) equals 0:
+        return history_status("sealed-tool-verification-failed")
+    return ["sealed",entry]
+
+# Preserve both complete registry preimage and proposed bytes before review.
+# The existing protected-operation engine enforces this same preimage at swap.
+define tool_registration_prepare with database as Int and identity as Str and parent as Str and target as Str and entry as Str returning List:
+    return tool_registry_prepare_change(database and identity and parent and target and entry and "append")
+
+define tool_registry_prepare_change with database as Int and identity as Str and parent as Str and target as Str and entry as Str and action as Str returning List:
+    set parts to workspace_path_parts(target)
+    if parts equals 0 or else length_list(parts) is not equal to 1 or else protected_digest_valid(identity) equals 0:
+        return history_status("invalid-registry-target")
+    set session to concat("tool-registration:" and identity)
+    set receipt_id to concat(session and ":prepared")
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=? AND kind='tool_registry_prepared';" and [receipt_id]))
+    if archive_list_text(prior and 0) equals "found":
+        set saved to provider_json_tokens(archive_list_text(prior and 1))
+        if not (provider_value(saved and provider_member(saved and 0 and "entry_sha256")) equals ep_sha256(entry)):
+            return history_status("registration-entry-conflict")
+        if not (provider_value(saved and provider_member(saved and 0 and "action")) equals action):
+            return history_status("registry-action-conflict")
+        return ["prepared",archive_list_text(prior and 1)]
+    if not (archive_list_text(prior and 0) equals "end"):
+        return history_status("registration-receipt-unavailable")
+    set installed to tool_versions_installed_read(concat(parent and concat("/" and target)))
+    if not (archive_list_text(installed and 0) equals "ready"):
+        return installed
+    set before to archive_list_text(installed and 1)
+    set after to ""
+    if action equals "append":
+        set after to tool_versions_append(before and ep_sha256(before) and entry)
+    else:
+        set selected to provider_json_tokens(entry)
+        set after to tool_versions_select(before and ep_sha256(before) and provider_value(selected and provider_member(selected and 0 and "principal")) and provider_value(selected and provider_member(selected and 0 and "session")) and provider_value(selected and provider_member(selected and 0 and "manifest_sha256")) and action)
+    if string_length(after) equals 0:
+        return history_status("registry-version-conflict")
+    set stage to concat(identity and "-candidate.json")
+    set recovery to concat(identity and "-recovery.json")
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to protected_path_open(library and parent and 1)
+    if root < 0:
+        set released to ep_dlclose(library)
+        return history_status("registry-directory-unavailable")
+    set stored to controller_bundle_receipt(library and root and parent and stage and after)
+    set stored to stored + controller_bundle_receipt(library and root and parent and recovery and before)
+    for each name in [stage,recovery]:
+        set file to protected_path_open(library and concat(parent and concat("/" and ptr_to_str(name))) and 0)
+        if file < 0:
+            set stored to 1
+        else:
+            set stored to stored + ep_dlcall2(ep_dlsym(library and "fchmod") and file and 420)
+            set closed to net_close(file)
+    set closed to net_close(root)
+    set released to ep_dlclose(library)
+    if stored is not equal to 0:
+        return history_status("registry-stage-conflict")
+    set payload to concat("{\"action\":" and provider_quote(action))
+    set payload to concat(payload and concat(",\"stage\":" and provider_quote(stage)))
+    set payload to concat(payload and concat(",\"recovery\":" and provider_quote(concat(parent and concat("/" and recovery)))))
+    set payload to concat(payload and concat(",\"before_sha256\":" and provider_quote(ep_sha256(before))))
+    set payload to concat(payload and concat(",\"after_sha256\":" and provider_quote(ep_sha256(after))))
+    set payload to concat(payload and concat(",\"entry_sha256\":" and concat(provider_quote(ep_sha256(entry)) and "}")))
+    if archive_append(database and session and receipt_id and "tool_registry_prepared" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return history_status("registration-receipt-failed")
+    return ["prepared",payload]
+
+# Exact code, qualification and registry change are disclosed to Echo and the
+# Observer in the private controller ledger. No approval is manufactured here.
+define tool_registration_review with database as Int and config as List and loaded as List and identity as Str and prepared as List and entry as Str returning List:
+    set fields to provider_json_tokens(archive_list_text(prepared and 1))
+    set parent to provider_value(config and provider_member(config and 0 and "registry_directory"))
+    set target to concat(parent and concat("/" and provider_value(config and provider_member(config and 0 and "registry_name"))))
+    set prior to tool_store_text(provider_value(fields and provider_member(fields and 0 and "recovery")) and provider_value(fields and provider_member(fields and 0 and "before_sha256")))
+    set next to tool_store_text(concat(parent and concat("/" and provider_value(fields and provider_member(fields and 0 and "stage")))) and provider_value(fields and provider_member(fields and 0 and "after_sha256")))
+    if not (archive_list_text(prior and 0) equals "read") or else not (archive_list_text(next and 0) equals "read"):
+        return history_status("registry-review-bytes-changed")
+    set tool to provider_json_tokens(entry)
+    set manifest to provider_json_tokens(provider_value(tool and provider_member(tool and 0 and "manifest_text")))
+    set source to tool_store_text(provider_value(tool and provider_member(tool and 0 and "source_path")) and provider_value(manifest and provider_member(manifest and 0 and "source_sha256")))
+    set proof to tool_store_text(provider_value(tool and provider_member(tool and 0 and "qualification_path")) and provider_value(tool and provider_member(tool and 0 and "qualification_sha256")))
+    set action to provider_value(fields and provider_member(fields and 0 and "action"))
+    if not (action equals "quarantined" or else action equals "retired"):
+        if not (archive_list_text(source and 0) equals "read") or else not (archive_list_text(proof and 0) equals "read"):
+            return history_status("tool-review-bytes-changed")
+    set disclosure to concat("{\"entry\":" and entry)
+    set disclosure to concat(disclosure and concat(",\"source\":" and provider_quote(archive_list_text(source and 1))))
+    set disclosure to concat(disclosure and concat(",\"source_status\":" and provider_quote(archive_list_text(source and 0))))
+    set disclosure to concat(disclosure and concat(",\"qualification_status\":" and provider_quote(archive_list_text(proof and 0))))
+    set disclosure to concat(disclosure and concat(",\"qualification_text\":" and provider_quote(archive_list_text(proof and 1))))
+    set disclosure to concat(disclosure and concat(",\"action\":" and provider_quote(action)))
+    if not (action equals "append"):
+        set request to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=? AND kind='tool_version_request';" and [concat("tool-registration:" and concat(identity and ":request"))]))
+        if not (archive_list_text(request and 0) equals "found"):
+            return history_status("version-request-disclosure-unavailable")
+        set disclosure to concat(disclosure and concat(",\"request\":" and archive_list_text(request and 1)))
+    set disclosure to concat(disclosure and concat(",\"registry_before\":" and provider_quote(archive_list_text(prior and 1))))
+    set disclosure to concat(disclosure and concat(",\"registry_after\":" and concat(provider_quote(archive_list_text(next and 1)) and "}")))
+    set run to concat("tool-review:" and identity)
+    set proposal to concat("tool-proposal:" and identity)
+    set submitted to web_submit_owned(database and provider_value(config and provider_member(config and 0 and "review_device")) and run and "" and concat("Review the exact generated-tool registration proposal " and concat(proposal and ". Inspect its disclosed source, capability manifest, tests and registry change. Record your own decision. Registration requires the existing rights, Observer, qualification and rollback gates.")))
+    if not (archive_list_text(submitted and 0) equals "accepted"):
+        return history_status("tool-review-submission-failed")
+    set protected_manifest_text to protected_inventory_manifest(archive_list_text(loaded and 2) and archive_list_text(loaded and 3) and archive_list_text(loaded and 4) and target and provider_value(fields and provider_member(fields and 0 and "before_sha256")) and provider_value(fields and provider_member(fields and 0 and "after_sha256")) and disclosure)
+    set stored to protected_proposal_store(database and archive_list_text(loaded and 2) and run and proposal and protected_manifest_text)
+    if not (stored equals "recorded" or else stored equals "already-recorded"):
+        return history_status(stored)
+    set inputs to controller_review_inputs_load(provider_value(config and provider_member(config and 0 and "controller_configuration")))
+    if not (archive_list_text(inputs and 0) equals "ready"):
+        return inputs
+    set reviewed to controller_review_run(database and run and archive_list_text(inputs and 1) and archive_list_text(inputs and 2) and 1 and -1 and 65536)
+    if not (reviewed equals "completed"):
+        return history_status(concat("review:" and reviewed))
+    set audit_receipt to concat("tool-registration:" and concat(identity and ":observer"))
+    set retained to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=? AND kind='tool_registration_observer';" and [audit_receipt]))
+    set audit to ""
+    if archive_list_text(retained and 0) equals "found":
+        set audit to archive_list_text(retained and 1)
+    else if archive_list_text(retained and 0) equals "end":
+        set audit to concat("tool-audit:" and concat(identity and concat(":" and ptr_to_str(ep_uuid_v4()))))
+        set audited to protected_observer_generate(database and run and proposal and audit and archive_list_text(loaded and 5) and ep_sha256(archive_list_text(loaded and 5)) and archive_list_text(inputs and 1) and 1 and -1 and 65536)
+        if not (audited equals "audit-recorded"):
+            return history_status(concat("observer:" and audited))
+        if archive_append(database and concat("tool-registration:" and identity) and audit_receipt and "tool_registration_observer" and audit and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return history_status("observer-receipt-failed")
+    else:
+        return history_status("observer-receipt-unavailable")
+    return ["reviewed",proposal,audit]
+
+# Hold the originating archive's writer reservation only during the final
+# authority check and atomic publication. No service restart or idle drain is
+# used for this registry-only transaction; ordinary RSI retains both safeguards.
+define tool_registration_activate with database as Int and config as List and loaded as List and identity as Str and source_path as Str and run as Str and digest as Str and principals as Str and prepared as List and reviewed as List and work as Str returning Str:
+    if not (archive_list_text(reviewed and 0) equals "reviewed") or else string_length(controller_activation_policy(archive_list_text(loaded and 1))) > 0:
+        return "registry-only-controller-required"
+    set source to sql_open(source_path)
+    if source equals 0:
+        return "source-unavailable"
+    if sql_execute(source and "BEGIN IMMEDIATE;") is not equal to 0:
+        set closed to sql_close(source)
+        return "source-busy"
+    set admitted to tool_registration_bind(source and run and digest and principals)
+    set result to "source-authority-revoked"
+    if archive_list_text(admitted and 0) equals "authorized":
+        set fields to provider_json_tokens(archive_list_text(prepared and 1))
+        set parent to provider_value(config and provider_member(config and 0 and "registry_directory"))
+        set stage_path to concat(parent and concat("/" and provider_value(fields and provider_member(fields and 0 and "stage"))))
+        set stage to tool_store_text(stage_path and provider_value(fields and provider_member(fields and 0 and "after_sha256")))
+        if archive_list_text(stage and 0) equals "read":
+            set registry to provider_json_tokens(archive_list_text(stage and 1))
+            set entry to registered_entry_find(source and run and registry and digest)
+            if entry >= 0 and registered_closure_check(source and run and registry and entry and create_list()) equals "accepted-files-verified":
+                set result to controller_autonomous_run(database and loaded and archive_list_text(reviewed and 1) and concat("tool-operation:" and identity) and parent and provider_value(config and provider_member(config and 0 and "registry_name")) and provider_value(fields and provider_member(fields and 0 and "stage")) and provider_value(fields and provider_member(fields and 0 and "recovery")) and archive_list_text(reviewed and 2) and concat(work and "/workspace") and provider_value(config and provider_member(config and 0 and "runtime")) and concat(work and "/publication"))
+            else:
+                set result to "tool-dependency-or-scope-changed"
+        else:
+            set result to "registry-stage-changed"
+    set rolled to sql_execute(source and "ROLLBACK;")
+    set closed to sql_close(source)
+    if rolled is not equal to 0 or else closed is not equal to 0:
+        return concat("source-lock-release-failed-after:" and result)
+    return result

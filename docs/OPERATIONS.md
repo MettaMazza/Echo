@@ -1,10 +1,10 @@
 > **1.9 documentation:** [Current update](releases/1.9/README.md) · [feature status](releases/1.9/FEATURES.md). Dated acceptance and older configuration statements below are historical; they are not fresh 1.9 verification.
 
-## Current 1.9 operations
+## Current operations — 16 November 2026
 
 This is a configured Mac source deployment, not a qualified universal installer. Build application workers from one source snapshot, retain rollback binaries/configuration and drain active work before replacing services. The web server and Discord workers have separate stores; do not merge them to establish private memory links. Supply the explicit host-owned link map instead. Configure Brave through `ECHO_BRAVE_SEARCH_KEY_FILE`; never commit its contents. Nano speech uses the installed Chatterbox dependency, CPU eight threads and a private reference, with the native resident service and helper guardian. Pocket transport remains in source but is not the selected host voice.
 
-Verify inference, web, Discord and media health and check active runs/tool/speech jobs after restart. A process being alive is not proof of idle or successful delivery. The selected Nano login/reboot startup still needs final qualification; do not infer it from a successful manual restart. The full offline/drive-loss/restore/concurrency matrix remains in the V1 work list.
+Verify inference, web, Discord and media health and check active runs/tool/speech jobs after restart. A process being alive is not proof of idle or successful delivery. The dated [current build record](CURRENT-BUILD.md) reports the installed service/idle check. Do not infer a fresh reboot or failure-matrix pass from process presence.
 
 > **Echo 1.75 update:** [Release record](releases/1.75/README.md) and [remaining work](releases/1.75/HANDOVER.md) supersede older model/voice/watch status below. Older qualification records remain historical.
 
@@ -12,9 +12,11 @@ Verify inference, web, Discord and media health and check active runs/tool/speec
 
 ## Storage and service configuration
 
-The canonical project and large stored assets live on One Touch. Active compiler/runtime files, the SQLite archive, helper spool and session workspaces run from the Mac's internal filesystem. The examples in `config/examples/` contain placeholders and must be populated with the installation's actual paths. Live profiles are deliberately excluded from Git.
+Persistent primary/multimodal caches are bounded to 128 GiB and 16 entries per endpoint with a 64 GiB free-space reserve. The findings-only monitor has bounded state/logs and uses the existing protected launcher; consult [cache operations](persistent-session-cache-20261116.md) and [monitor operations](self-monitor.md). Use existing receipt pruning and backup-retention support; never create unbounded per-request backups or copy whole sessions for monitoring.
 
-`app/start_service.ep` reads a profile with executable, directory, argument array and explicit environment. It uses direct execution without shell interpretation. Run `start_service PROFILE check` to validate the executable/directory and the required command guardian when `ECHO_EXECUTION_RUNTIME` is configured, then omit `check` to start in the foreground. The check does not establish provider health, port availability, model-file completeness or full acceptance. Detached launch is used on the current host; a reboot supervisor is not established.
+Storage locations are explicit per installed profile. Large assets, inference caches and bounded monitor state use the existing external volume; installed source and protected service configuration use the host release directory. Do not relocate databases, workspaces or assets based on historical path descriptions. The examples in `config/examples/` contain placeholders and must be populated with the installation's actual paths. Live profiles are deliberately excluded from Git.
+
+`app/start_service.ep` reads a profile with executable, directory, argument array and explicit environment. It uses direct execution without shell interpretation. Run `start_service PROFILE check` to validate the executable/directory and the required command guardian when `ECHO_EXECUTION_RUNTIME` is configured, then omit `check` to start in the foreground. The check does not establish provider health, port availability, model-file completeness or full acceptance. The current host uses installed scoped service administration and launch supervision. Historical direct-launch examples below do not describe the complete deployed stack.
 
 The Echo server command takes: port, compiled browser JavaScript, port-record path, database path, model, provider port, workload reserve, I/O batch and optional public HTTPS origin. The workload reserve participates in admission; it is not a fixed output length. I/O batch size is transfer granularity, not total history capacity. Inspect `app/server.ep` for validation. Provider registry selection in the database remains authoritative for subsequent runs.
 

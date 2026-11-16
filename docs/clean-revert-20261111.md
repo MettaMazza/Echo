@@ -1,0 +1,15 @@
+# Owner-requested pre-28-October rollback
+
+The owner selected checkpoint `934c902c25b4fae976d7683b08d2021b9024a7cb`, before the 28 October Phase Two restart. Current work was preserved at `recovery/before-clean-revert-20261111` (`a6ab756`). Earlier post-checkpoint features remain in Git history; this operation does not delete that history.
+
+The application had already undergone the broad rollback in `98f4f3a`. This rollback removes the subsequent permission-observation caching/journaling, compaction repair, recall-prefix, directory and foreground-completion changes. The application source is restored to `ade6f4e`: the selected baseline with bounded backup retention. Installed owner administration remains in place so deployment does not require renewed interactive authentication. No memory/session database was restored from backup or erased.
+
+Deployment uses the retained `backup-retention-20261101` release. Its source manifest differs from `pre-goal-rollback-20261101-r2` in only `app/archive/coalesced_snapshot.ep` and `app/discord_agent.ep`. Source and executable hashes were checked before packaging. The restored agent SHA-256 is `a5f0124001a0c5e753559b455d73018ed2bb95e132eb1b28ffa0abd117c5486f`.
+
+Package: `/Users/Shared/Echo-clean-revert-20261111`. Active release: `/Library/Application Support/EchoRSI/releases/clean-revert-20261111`. Installed acceptance and integrity checks passed. The deployment coordinator verified running application services and idle inference/tool/speech state immediately after deployment. Model and speech services were not replaced or restarted. Highest reasoning remains unchanged.
+
+Only the owner's stalled test `1570000093766090763` was cancelled for deployment. Previously cancelled requests and preserved stopped backlog were not replayed. No drive was unmounted and no data was moved off it.
+
+Discord verification: `/new` interaction `1570002451946545163` completed as `new-session-created`, visibly confirmed in the testing channel. Fresh prompt `1570002646842998836` was submitted once. Its queue message was delivered as `1570002709623472152`. No final reply arrived within 220 seconds. The single verification request was then cancelled through the normal cancellation ledger, rather than left running. Primary-server logs showed ongoing prompt processing at approximately 436 tokens/second, with zero decoded answer tokens at the observed slot check. The rollback is deployed, but this verification does not establish restored response latency. The inference backend, model files and database contents were not rolled back.
+
+The matching post-baseline regression fixtures and SQLite compiler-patch tooling were retired from the working tree with the code they tested; all remain on the preservation branch. Final service inspection found all 13 expected services running and web health ready. No Discord jobs remained claimed. Three primary-model connections belonged to OpenCode PID 34324, not the cancelled test; those were left untouched. No full-stack idle claim is made.

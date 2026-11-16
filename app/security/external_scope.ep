@@ -1,0 +1,122 @@
+import "principals"
+
+# An external audience is bound to a fresh session, never retrofitted onto local
+# history. Credentials are resolved separately by an authenticated host boundary;
+# these records contain only a profile digest and the exact consent disclosure.
+define external_scope_schema with database as Int returning Int:
+    set result to sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_external_scopes(session TEXT PRIMARY KEY REFERENCES echo_sessions(session),principal TEXT NOT NULL REFERENCES echo_principals(identity),profile_digest TEXT NOT NULL,disclosure TEXT NOT NULL,disclosure_digest TEXT NOT NULL,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TABLE IF NOT EXISTS echo_external_revocations(session TEXT PRIMARY KEY REFERENCES echo_external_scopes(session),principal TEXT NOT NULL,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TRIGGER IF NOT EXISTS echo_external_scope_no_update BEFORE UPDATE ON echo_external_scopes BEGIN SELECT RAISE(ABORT,'External origin is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_external_scope_no_delete BEFORE DELETE ON echo_external_scopes BEGIN SELECT RAISE(ABORT,'External origin cannot be erased by disconnecting'); END; CREATE TRIGGER IF NOT EXISTS echo_external_revocation_no_update BEFORE UPDATE ON echo_external_revocations BEGIN SELECT RAISE(ABORT,'External revocation is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_external_revocation_no_delete BEFORE DELETE ON echo_external_revocations BEGIN SELECT RAISE(ABORT,'External revocation is permanent for this session'); END;")
+    if result is not equal to 0:
+        return result
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_external_derivations(session TEXT PRIMARY KEY REFERENCES echo_external_scopes(session),source TEXT NOT NULL REFERENCES echo_external_scopes(session),CHECK(session<>source)); CREATE TRIGGER IF NOT EXISTS echo_external_derivation_no_update BEFORE UPDATE ON echo_external_derivations BEGIN SELECT RAISE(ABORT,'External derivation is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_external_derivation_no_delete BEFORE DELETE ON echo_external_derivations BEGIN SELECT RAISE(ABORT,'External derivation cannot be erased'); END; CREATE TRIGGER IF NOT EXISTS echo_external_revoke_derivatives AFTER INSERT ON echo_external_revocations BEGIN INSERT OR IGNORE INTO echo_external_revocations(session,principal) SELECT s.session,s.principal FROM echo_external_scopes s WHERE s.session IN (WITH RECURSIVE descendants(session) AS (SELECT session FROM echo_external_derivations WHERE source=NEW.session UNION SELECT d.session FROM echo_external_derivations d JOIN descendants p ON d.source=p.session) SELECT session FROM descendants); END;")
+
+
+define external_scope_digest_valid with digest as Str returning Int:
+    if string_length(digest) is not equal to 64:
+        return 0
+    set index to 0
+    repeat while index < 64:
+        if string_contains("0123456789abcdef" and substring(digest and index and 1)) equals 0:
+            return 0
+        set index to index + 1
+    return 1
+
+# Call only from an authenticated explicit consent action, not model tool input.
+# The disclosure is the UI's exact rendered consent text; no secret belongs here.
+define external_scope_grant with database as Int and device as Str and session as Str and profile_digest as Str and disclosure as Str returning Str:
+    if external_scope_digest_valid(profile_digest) equals 0 or else string_length(string_trim(disclosure)) equals 0:
+        return "invalid-external-consent"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set principal to principal_for_device(database and device)
+    set owner to history_collect_one(checkpoint_prepare(database and "SELECT o.session FROM echo_session_owners o JOIN echo_principal_devices b ON b.device=o.device JOIN echo_devices d ON d.device=o.device WHERE o.session=?1 AND b.principal=?2 AND d.revoked=0;" and [session,principal]))
+    if string_length(principal) equals 0 or else not (archive_list_text(owner and 0) equals "found"):
+        set ignored to archive_rollback(database)
+        return "not-authorized"
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT principal,profile_digest,disclosure,EXISTS(SELECT 1 FROM echo_external_revocations v WHERE v.session=s.session) FROM echo_external_scopes s WHERE session=?1;" and [session]))
+    if archive_list_text(prior and 0) equals "found":
+        set ignored to archive_rollback(database)
+        if archive_list_text(prior and 4) equals "1":
+            return "external-consent-revoked"
+        if archive_list_text(prior and 1) equals principal and archive_list_text(prior and 2) equals profile_digest and archive_list_text(prior and 3) equals disclosure:
+            return "already-granted"
+        return "external-consent-conflict"
+    if not (archive_list_text(prior and 0) equals "end"):
+        set ignored to archive_rollback(database)
+        return "database-error"
+    set history to history_collect_one(checkpoint_prepare(database and "SELECT EXISTS(SELECT 1 FROM echo_events WHERE session=?1 AND NOT(kind='session_created' AND payload='{}')) OR EXISTS(SELECT 1 FROM echo_runs WHERE session=?1);" and [session]))
+    if not (archive_list_text(history and 0) equals "found") or else not (archive_list_text(history and 1) equals "0"):
+        set ignored to archive_rollback(database)
+        return "fresh-external-session-required"
+    set saved to archive_finish(checkpoint_prepare(database and "INSERT INTO echo_external_scopes(session,principal,profile_digest,disclosure,disclosure_digest) VALUES(?1,?2,?3,?4,?5);" and [session,principal,profile_digest,disclosure,ep_sha256(disclosure)]) and 101)
+    if saved is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return "granted"
+
+define external_scope_revoke with database as Int and device as Str and session as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set principal to principal_for_device(database and device)
+    set bound to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_external_scopes WHERE session=?1 AND principal=?2;" and [session,principal]))
+    if string_length(principal) equals 0 or else not (archive_list_text(bound and 0) equals "found"):
+        set ignored to archive_rollback(database)
+        return "not-authorized"
+    set saved to archive_finish(checkpoint_prepare(database and "INSERT OR IGNORE INTO echo_external_revocations(session,principal) VALUES(?1,?2);" and [session,principal]) and 101)
+    if saved is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return "revoked"
+
+# This status reports provenance even after disconnect. An absent installation
+# preserves local behavior; query failures never masquerade as local origin.
+define external_scope_session_status with database as Int and session as Str returning Str:
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_external_scopes';"))
+    if archive_list_text(installed and 0) equals "end":
+        return "local"
+    if not (archive_list_text(installed and 0) equals "found"):
+        return "unavailable"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN EXISTS(SELECT 1 FROM echo_external_revocations v WHERE v.session=s.session) THEN 'external-revoked' ELSE 'external' END FROM echo_external_scopes s WHERE s.session=?1;" and [session]))
+    if archive_list_text(row and 0) equals "end":
+        return "local"
+    if not (archive_list_text(row and 0) equals "found"):
+        return "unavailable"
+    return archive_list_text(row and 1)
+
+# Dispatch must additionally revalidate the ordinary frozen run authority. This
+# check binds the same current principal, session and exact credential-free
+# profile disclosure approved by the owner before any bytes leave the host.
+define external_scope_run_allows with database as Int and run as Str and profile_digest as Str returning Int:
+    if external_scope_digest_valid(profile_digest) equals 0:
+        return 0
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.run FROM echo_runs r JOIN echo_run_authority a ON a.run=r.run JOIN echo_external_scopes s ON s.session=r.session AND s.principal=a.principal JOIN echo_principals p ON p.identity=a.principal AND p.revoked=0 JOIN echo_devices d ON d.device=a.device AND d.revoked=0 JOIN echo_principal_devices b ON b.device=a.device AND b.principal=a.principal WHERE r.run=?1 AND s.profile_digest=?2 AND NOT EXISTS(SELECT 1 FROM echo_external_revocations v WHERE v.session=s.session);" and [run,profile_digest]))
+    return archive_list_text(row and 0) equals "found"
+
+# Private local recall must not become an implicit export merely because the
+# same authenticated person selected a remote model. Revoked external sessions
+# retain the boundary. Legacy databases without external support remain local.
+define external_scope_run_is_local with database as Int and run as Str returning Int:
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE type='table' AND name='echo_external_scopes';"))
+    if archive_list_text(installed and 0) equals "end":
+        return 1
+    if not (archive_list_text(installed and 0) equals "found"):
+        return 0
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT r.run FROM echo_runs r WHERE r.run=?1 AND NOT EXISTS(SELECT 1 FROM echo_external_scopes s WHERE s.session=r.session);" and [run]))
+    return archive_list_text(row and 0) equals "found"
+
+# Called inside the branch-creation transaction after ownership is installed and
+# before any branch content/run exists. A derived external audience keeps its
+# source profile and consent; disconnect never turns it into trusted local data.
+define external_scope_inherit_pending with database as Int and source as Str and target as Str returning Int:
+    set status to external_scope_session_status(database and source)
+    if status equals "local":
+        return 0
+    if not (status equals "external" or else status equals "external-revoked") or else source equals target:
+        return 1
+    set eligible to history_collect_one(checkpoint_prepare(database and "SELECT s.session FROM echo_external_scopes s JOIN echo_session_owners o ON o.session=?2 JOIN echo_principal_devices b ON b.device=o.device AND b.principal=s.principal JOIN echo_devices d ON d.device=o.device AND d.revoked=0 WHERE s.session=?1 AND NOT EXISTS(SELECT 1 FROM echo_external_scopes WHERE session=?2) AND NOT EXISTS(SELECT 1 FROM echo_events WHERE session=?2) AND NOT EXISTS(SELECT 1 FROM echo_runs WHERE session=?2);" and [source,target]))
+    if not (archive_list_text(eligible and 0) equals "found"):
+        return 1
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_external_scopes(session,principal,profile_digest,disclosure,disclosure_digest) SELECT ?2,principal,profile_digest,disclosure,disclosure_digest FROM echo_external_scopes WHERE session=?1;" and [source,target]) and 101) is not equal to 0:
+        return 1
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_external_derivations(session,source) VALUES(?2,?1);" and [source,target]) and 101) is not equal to 0:
+        return 1
+    return archive_finish(checkpoint_prepare(database and "INSERT INTO echo_external_revocations(session,principal) SELECT ?2,principal FROM echo_external_scopes WHERE session=?1 AND EXISTS(SELECT 1 FROM echo_external_revocations WHERE session=?1);" and [source,target]) and 101)

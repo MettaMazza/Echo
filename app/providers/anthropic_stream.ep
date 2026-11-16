@@ -1,0 +1,155 @@
+import "chat_stream"
+
+# Messages protocol state: common chat result, phase, indexed blocks, original
+# events. Keep every event (including signatures, usage and unknown extensions)
+# for archival/replay; normalized text never replaces the original protocol.
+# Phases: 0 awaiting message, 1 blocks, 2 message delta, 3 stop, -1 failed.
+define anthropic_stream_create returning List:
+    return [chat_stream_create(),0,create_list(),create_list()]
+
+define anthropic_stream_choice with state as List returning List:
+    return get_list(get_list(get_list(state and 0) and 0) and 0)
+
+define anthropic_stream_accept_inner with state as List and data as Str returning Int:
+    set tokens to provider_json_tokens(data)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return 1
+    set event to provider_value(tokens and provider_member(tokens and 0 and "type"))
+    set phase to get_list(state and 1)
+    if phase < 0 or else phase equals 3 or else string_length(event) equals 0:
+        return 1
+    if event equals "error":
+        return 1
+    if event equals "ping":
+        return 0
+    if event equals "message_start":
+        if phase is not equal to 0:
+            return 1
+        set message to provider_member(tokens and 0 and "message")
+        set content to provider_items(tokens and provider_member(tokens and message and "content"))
+        if not (provider_value(tokens and provider_member(tokens and message and "role")) equals "assistant") or else content equals 0 or else length_list(content) is not equal to 0:
+            return 1
+        set choice to ["0",create_builder(),create_builder(),create_list(),""]
+        set added to append_list(get_list(get_list(state and 0) and 0) and choice)
+        set changed to set_list(state and 1 and 1)
+        return 0
+    if event equals "message_delta" or else event equals "message_stop":
+        if phase is not equal to 1 and phase is not equal to 2:
+            return 1
+        for each block in get_list(state and 2):
+            if get_list(block and 2) is not equal to 1:
+                return 1
+        set choice to anthropic_stream_choice(state)
+        if event equals "message_stop":
+            if phase is not equal to 2 or else string_length(archive_list_text(choice and 4)) equals 0:
+                return 1
+            set changed to set_list(get_list(state and 0) and 1 and 1)
+            set changed to set_list(state and 1 and 3)
+            return 0
+        set delta to provider_member(tokens and 0 and "delta")
+        set reason_field to provider_member(tokens and delta and "stop_reason")
+        if reason_field >= 0 and not (provider_kind(tokens and reason_field) equals "null"):
+            if not (provider_kind(tokens and reason_field) equals "string") or else string_length(archive_list_text(choice and 4)) > 0:
+                return 1
+            set reason to provider_value(tokens and reason_field)
+            if reason equals "end_turn" or else reason equals "stop_sequence":
+                set reason to "stop"
+            else if reason equals "tool_use":
+                set reason to "tool_calls"
+            # Limits, refusals, pause and unknown reasons remain explicit and
+            # fail the common execution gate, rather than executing fragments.
+            set changed to set_list(choice and 4 and reason)
+        set changed to set_list(state and 1 and 2)
+        return 0
+    if not (event equals "content_block_start" or else event equals "content_block_delta" or else event equals "content_block_stop"):
+        return 0
+    if phase is not equal to 1:
+        return 1
+    set identity to provider_index(tokens and provider_member(tokens and 0 and "index"))
+    if string_length(identity) equals 0:
+        return 1
+    set blocks to get_list(state and 2)
+    set block to chat_find(blocks and identity)
+    set choice to anthropic_stream_choice(state)
+    if event equals "content_block_start":
+        if block is not equal to 0 or else not (identity equals int_to_string(length_list(blocks))):
+            return 1
+        for each prior in blocks:
+            if get_list(prior and 2) is not equal to 1:
+                return 1
+        set source to provider_member(tokens and 0 and "content_block")
+        set kind to provider_value(tokens and provider_member(tokens and source and "type"))
+        if not (kind equals "text" or else kind equals "thinking" or else kind equals "redacted_thinking" or else kind equals "tool_use"):
+            return 1
+        set call to 0
+        if kind equals "tool_use":
+            set call_id to provider_value(tokens and provider_member(tokens and source and "id"))
+            set name to provider_value(tokens and provider_member(tokens and source and "name"))
+            set input to provider_member(tokens and source and "input")
+            if string_length(call_id) equals 0 or else string_length(name) equals 0 or else not (provider_kind(tokens and input) equals "{"):
+                return 1
+            set call to [identity,call_id,name,create_builder()]
+            set added to append_list(get_list(choice and 3) and call)
+        else if kind equals "text":
+            if chat_append_field(tokens and source and "text" and get_list(choice and 1)) is not equal to 0:
+                return 1
+        else if kind equals "thinking":
+            if chat_append_field(tokens and source and "thinking" and get_list(choice and 2)) is not equal to 0:
+                return 1
+        # Save initial input as exact JSON for tools which emit no JSON deltas.
+        set initial to ""
+        if kind equals "tool_use":
+            set input to provider_member(tokens and source and "input")
+            set start to get_list(get_list(tokens and input) and 1)
+            set finish to get_list(get_list(tokens and provider_after(tokens and input) - 1) and 2)
+            set initial to ptr_to_str(substring(data and start and finish - start))
+        set block to [identity,kind,0,call,0,initial]
+        set added to append_list(blocks and block)
+        return 0
+    if block equals 0 or else get_list(block and 2) is not equal to 0:
+        return 1
+    set kind to archive_list_text(block and 1)
+    if event equals "content_block_stop":
+        if kind equals "tool_use" and get_list(block and 4) equals 0:
+            set added to builder_append(get_list(get_list(block and 3) and 3) and archive_list_text(block and 5))
+        set changed to set_list(block and 2 and 1)
+        return 0
+    set delta to provider_member(tokens and 0 and "delta")
+    set delta_type to provider_value(tokens and provider_member(tokens and delta and "type"))
+    if kind equals "text" and delta_type equals "text_delta":
+        if not (provider_kind(tokens and provider_member(tokens and delta and "text")) equals "string"):
+            return 1
+        return chat_append_field(tokens and delta and "text" and get_list(choice and 1))
+    if kind equals "thinking" and delta_type equals "thinking_delta":
+        if not (provider_kind(tokens and provider_member(tokens and delta and "thinking")) equals "string"):
+            return 1
+        return chat_append_field(tokens and delta and "thinking" and get_list(choice and 2))
+    if kind equals "thinking" and delta_type equals "signature_delta":
+        if provider_kind(tokens and provider_member(tokens and delta and "signature")) equals "string":
+            return 0
+        return 1
+    if kind equals "tool_use" and delta_type equals "input_json_delta":
+        set field to provider_member(tokens and delta and "partial_json")
+        if not (provider_kind(tokens and field) equals "string"):
+            return 1
+        set initial_tokens to provider_json_tokens(archive_list_text(block and 5))
+        if initial_tokens equals 0 or else provider_after(initial_tokens and 0) is not equal to 2:
+            return 1
+        set changed to set_list(block and 4 and 1)
+        return chat_append_field(tokens and delta and "partial_json" and get_list(get_list(block and 3) and 3))
+    return 1
+
+define anthropic_stream_accept with state as List and data as Str returning Int:
+    if get_list(state and 1) < 0:
+        return 1
+    set added to append_list(get_list(state and 3) and data)
+    set status to anthropic_stream_accept_inner(state and data)
+    if status is not equal to 0:
+        set changed to set_list(state and 1 and -1)
+        set changed to set_list(get_list(state and 0) and 2 and 1)
+    return status
+
+define anthropic_stream_finish with state as List and transport as Str returning Int:
+    if get_list(state and 1) is not equal to 3:
+        return 1
+    return chat_stream_finish(get_list(state and 0) and transport)

@@ -1,0 +1,41 @@
+import "composition"
+import "outbox"
+
+# The recipe, source evidence and exact RFC/API bytes are retained together.
+# A composition is ready for review/drafting; preparing it never starts a send.
+define gmail_composition_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_mail_compositions(account TEXT NOT NULL,identity TEXT NOT NULL,specification TEXT NOT NULL,specification_digest TEXT NOT NULL,source TEXT NOT NULL,source_digest TEXT NOT NULL,thread_id TEXT NOT NULL,preview TEXT NOT NULL,date TEXT NOT NULL,attachments TEXT NOT NULL,PRIMARY KEY(account,identity),FOREIGN KEY(account,identity) REFERENCES echo_mail_intents(mailbox,identity)); CREATE TRIGGER IF NOT EXISTS echo_mail_composition_no_update BEFORE UPDATE ON echo_mail_compositions BEGIN SELECT RAISE(ABORT,'Composed messages are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_mail_composition_no_delete BEFORE DELETE ON echo_mail_compositions BEGIN SELECT RAISE(ABORT,'Composed evidence is retained'); END;")
+
+define gmail_composition_load with database as Int and account as Str and identity as Str and specification as Str returning List:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT c.specification,c.specification_digest,i.payload,i.digest,i.message_id,c.thread_id,c.preview FROM echo_mail_compositions c JOIN echo_mail_intents i ON i.mailbox=c.account AND i.identity=c.identity WHERE c.account=?1 AND c.identity=?2;" and [account,identity]))
+    if archive_list_text(row and 0) equals "end":
+        return ["new"]
+    if not (archive_list_text(row and 0) equals "found"):
+        return ["composition-read-failed"]
+    if not (archive_list_text(row and 1) equals specification) or else not (archive_list_text(row and 2) equals ep_sha256(specification)):
+        return ["composition-identity-conflict"]
+    if not (archive_list_text(row and 4) equals ep_sha256(archive_list_text(row and 3))):
+        return ["composition-integrity-failed"]
+    return ["prepared",archive_list_text(row and 3),archive_list_text(row and 5),archive_list_text(row and 6),archive_list_text(row and 7)]
+
+define gmail_composition_save with database as Int and account as Str and identity as Str and specification as Str and source as Str and date as Str and provenance as Str and composed as List returning List:
+    if not (archive_list_text(composed and 0) equals "composed") or else string_length(account) equals 0 or else string_length(identity) equals 0:
+        return ["invalid-composition"]
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return ["database-busy"]
+    set prior to gmail_composition_load(database and account and identity and specification)
+    if not (archive_list_text(prior and 0) equals "new"):
+        set rolled to archive_rollback(database)
+        return prior
+    set payload to archive_list_text(composed and 1)
+    set message_id to archive_list_text(composed and 2)
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_intents(mailbox,identity,message_id,payload,digest) VALUES(?1,?2,?3,?4,?5);" and [account,identity,message_id,payload,ep_sha256(payload)]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_delivery(mailbox,identity,state) VALUES(?1,?2,'ready');" and [account,identity]) and 101) is not equal to 0 or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_compositions(account,identity,specification,specification_digest,source,source_digest,thread_id,preview,date,attachments) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);" and [account,identity,specification,ep_sha256(specification),source,ep_sha256(source),archive_list_text(composed and 3),archive_list_text(composed and 4),date,provenance]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled to archive_rollback(database)
+        return ["composition-save-failed"]
+    return gmail_composition_load(database and account and identity and specification)
+
+define gmail_composition_date with database as Int returning Str:
+    set row to history_collect_one(archive_prepare(database and "SELECT strftime('%d','now')||' '||substr('JanFebMarAprMayJunJulAugSepOctNovDec',(CAST(strftime('%m','now') AS INTEGER)-1)*3+1,3)||strftime(' %Y %H:%M:%S +0000','now');"))
+    if not (archive_list_text(row and 0) equals "found"):
+        return ""
+    return archive_list_text(row and 1)

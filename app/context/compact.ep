@@ -45,6 +45,10 @@ define context_compact_owned_provider with database as Int and run as Str and pr
         return archive_list_text(binding and 0)
     set job to archive_list_text(binding and 1)
     set endpoint to archive_list_text(binding and 2)
+    if external_scope_run_is_local(database and run) equals 0:
+        set profile to external_invocation_create(database and run and job and profile)
+        if string_length(profile) equals 0:
+            return "not-authorized"
     set cancellation to agent_cancellation_pending(library and cancellation_reader)
     if cancellation is less than 0:
         return "cancellation-error"
@@ -52,6 +56,7 @@ define context_compact_owned_provider with database as Int and run as Str and pr
         return "cancelled"
     set generated to compaction_saved_candidate(database and session and endpoint and job)
     set seen to get_list(generated and 3)
+    set cycle_reviews to create_list()
     set request to archive_list_text(generated and 2)
     if archive_list_text(generated and 0) equals "no-candidate":
         set request to concat(job and concat(":candidate:" and agent_identity()))
@@ -64,6 +69,7 @@ define context_compact_owned_provider with database as Int and run as Str and pr
         set request to concat(job and concat(":merge:" and agent_identity()))
         set generated to recap_merge_provider(database and session and job and request and profile and reserve and cancellation_reader and read_size)
         set status to archive_list_text(generated and 0)
+    set previous_review to ""
     repeat while 1 equals 1:
         if not (attachment_context_revision(database and session) equals archive_list_text(binding and 3)):
             return "attachment-context-changed"
@@ -79,15 +85,25 @@ define context_compact_owned_provider with database as Int and run as Str and pr
         set digest to recap_progress_digest(database and candidate)
         if string_length(digest) equals 0:
             return "archive-error"
+        set repeated to 0
         set index to 0
         repeat while index is less than length_list(seen):
             if archive_list_text(seen and index) equals digest:
-                return "recap-no-progress"
+                set repeated to 1
             set index to index + 1
+        if repeated:
+            for each checked in cycle_reviews:
+                if ptr_to_str(checked) equals digest:
+                    return "recap-no-progress"
+            set added to append_list(cycle_reviews and digest)
         set added to append_list(seen and digest)
         set feedback to "The candidate failed the detailed recap structural/provenance contract. Check valid unique-key JSON, source_end, nonempty summary and summary_sources, all required state arrays, and valid original-event references for every retained item."
         if status equals "structure-valid":
             set reviewed to compaction_saved_review(database and session and endpoint and job and candidate)
+            if repeated:
+                set fresh_request to concat(job and concat(":cycle-review:" and agent_identity()))
+                set reviewed to recap_review_generate_provider(database and session and endpoint and candidate and fresh_request and profile and reserve and cancellation_reader and read_size)
+                set retained_request to append_list(reviewed and fresh_request)
             set review_request to archive_list_text(reviewed and 2)
             set review_event to concat(review_request and ":review")
             if archive_list_text(reviewed and 0) equals "no-review":
@@ -118,6 +134,9 @@ define context_compact_owned_provider with database as Int and run as Str and pr
             if not (status equals "review-repair"):
                 return status
             set feedback to archive_list_text(reviewed and 1)
+            if recap_review_same_issues(previous_review and feedback) equals 1:
+                return "recap-unresolved-defects"
+            set previous_review to feedback
         # No arbitrary retry ceiling. Repeated candidates are a detected cycle;
         # changed candidates must independently pass review before activation.
         set request to concat(job and concat(":repair:" and agent_identity()))

@@ -1,0 +1,35 @@
+import "external_profiles"
+
+# Internal invocation context carried through the existing recap pipeline.
+# Preserve exact registered bytes separately; this is never a stored provider
+# profile, global registry entry, browser setting or inferred latest run.
+define external_invocation_create with database as Int and run as Str and job as Str and profile as Str returning Str:
+    if external_profile_run_allows(database and run and profile) equals 0:
+        return ""
+    set wrapped to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,'$.echo_invocation_run',?2,'$.echo_invocation_job',?3,'$.echo_original_profile',?1);" and [profile,run,job]))
+    if not (archive_list_text(wrapped and 0) equals "found"):
+        return ""
+    return archive_list_text(wrapped and 1)
+
+# A recap job belongs to one accepted run head. Stale/revoked work cannot keep
+# exporting source material even when its already-built prompt still exists.
+define external_invocation_read with database as Int and session as Str and invocation as Str returning List:
+    set tokens to provider_json_tokens(invocation)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return history_status("invalid-external-invocation")
+    for each name in ["echo_invocation_run","echo_invocation_job","echo_original_profile"]:
+        if not (provider_kind(tokens and provider_member(tokens and 0 and name)) equals "string"):
+            return history_status("explicit-external-run-required")
+    set run to provider_value(tokens and provider_member(tokens and 0 and "echo_invocation_run"))
+    set job to provider_value(tokens and provider_member(tokens and 0 and "echo_invocation_job"))
+    set profile to provider_value(tokens and provider_member(tokens and 0 and "echo_original_profile"))
+    if external_profile_run_allows(database and run and profile) equals 0:
+        return history_status("not-authorized")
+    set source to provider_json_tokens(profile)
+    for each name in ["adapter","model"]:
+        if not (provider_value(tokens and provider_member(tokens and 0 and name)) equals provider_value(source and provider_member(source and 0 and name))):
+            return history_status("external-invocation-profile-mismatch")
+    set bound to history_collect_one(checkpoint_prepare(database and "SELECT r.run FROM echo_runs r JOIN echo_events b ON b.event=?3||':binding' AND b.session=r.session AND b.kind='compaction_binding' JOIN echo_events j ON j.event=?3 AND j.session=r.session AND j.kind='recap_job' WHERE r.run=?1 AND r.session=?2 AND r.state='ready' AND json_extract(b.payload,'$.run_id')=r.run AND json_extract(b.payload,'$.parent_event')=r.last_event AND json_extract(b.payload,'$.job')=?3;" and [run,session,job]))
+    if not (archive_list_text(bound and 0) equals "found"):
+        return history_status("stale-external-compaction")
+    return ["ready",run,profile,job]

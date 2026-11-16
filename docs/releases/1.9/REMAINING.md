@@ -1,18 +1,7 @@
-> Current runtime and October 27 verification: [current build](../../CURRENT-BUILD.md). Earlier dated evidence below remains historical; it does not supersede that record.
+# Next work — latency reduction and optimisation
 
-# Remaining work before production V1
+The current runtime includes the restored feature set, persistent inference cache, all four QoL changes and findings-only self-monitor. Earlier October lists of missing Gmail, external providers, generated tools or research HUD source are superseded; they must not restart completed work.
 
-V1 requires completion and production readiness of the agreed Phase Two scope. This is a requirements list, not a percentage or an estimate of engineering time. Partial implementations retain their credit; cross-cutting acceptance is not a second implementation of each feature.
+The next sessions will measure complete requests, compare the base model with Echo at equivalent settings, isolate the largest avoidable delays and validate focused fixes. Preserve reasoning appropriate to the task, full useful context, privacy boundaries, memory/tools and bounded storage. See the [concrete starting point](../../phase2/RESUME-HANDOFF.md).
 
-- Finish full-workload latency qualification. Closing reports and compaction reviews now use direct structured output; ordinary agent reasoning retains its configured setting. RSI compaction repairs and actual candidate deployment still require end-to-end verification.
-- Complete fresh-machine installation and native Windows/Linux packaging; existing macOS installation verification is not a universal installer.
-- Finish Gmail mailbox/OAuth/action/recovery integration; account authorization remains operator-supplied.
-- Complete generated-tool activation, same-task use, restart/reload, quarantine, rollback and retirement.
-- Qualify successive recursive code-improvement cycles, including rejected candidates and recovery.
-- Complete authenticated primary-model research controls, training/export/serving compatibility, evaluation, promotion/rollback and research HUDs.
-- Complete external-provider isolation, artifact-origin/eligibility rules and two API protocol families; live account tests require supplied credentials.
-- Finish Discord voice playback/recording/transcription live acceptance and the autonomous moderation policy workflow.
-- Complete the final startup/reboot, offline, storage/restore, concurrency, performance and failure matrix, including selected Nano service startup.
-- Reconcile final feature/acceptance evidence, publication and handover against the accepted release. Apply the plan’s human-only dependency rule where appropriate.
-
-Approved prompt changes and working account/memory features are not reset to unfinished merely because broader release gates remain. See the original [Phase Two requirements](../../../phase2.md), [current feature matrix](FEATURES.md), and [verification](VERIFICATION.md).
+Personal account enrollment, credentials and permissions remain configuration prerequisites. No new completion percentage or implementation backlog is inferred from old documents. Production V1 naming remains a separate release decision. [Current runtime and evidence](../../CURRENT-BUILD.md) · [Original plan](../../../phase2.md).

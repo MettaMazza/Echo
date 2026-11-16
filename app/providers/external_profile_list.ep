@@ -1,0 +1,31 @@
+import "external_profiles"
+
+# Saved profiles belong to the authenticated principal. Return credential-free
+# identity/labels only; every later preview/read rechecks the immutable profile.
+define external_profile_list with database as Int and device as Str and account as Str returning Str:
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set statement to checkpoint_prepare(database and "SELECT p.identity,p.label,p.profile,p.digest FROM echo_external_profiles p JOIN echo_external_accounts a ON a.identity=p.account AND a.principal=p.principal WHERE p.principal=?1 AND p.account=?2 AND NOT EXISTS(SELECT 1 FROM echo_external_account_revocations r WHERE r.identity=a.identity) ORDER BY p.created,p.identity;" and [principal,account])
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set output to create_list()
+    set step to ep_sqlite3_step(statement)
+    repeat while step equals 100:
+        set identity to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        set label to concat(ptr_to_str(ep_sqlite3_column_text(statement and 1)) and "")
+        set profile to concat(ptr_to_str(ep_sqlite3_column_text(statement and 2)) and "")
+        set digest to concat(ptr_to_str(ep_sqlite3_column_text(statement and 3)) and "")
+        if not (ep_sha256(profile) equals digest):
+            set closed to ep_sqlite3_finalize(statement)
+            return "{\"status\":\"profile-integrity-error\"}"
+        set tokens to provider_json_tokens(profile)
+        set row to concat("{\"identity\":" and provider_quote(identity))
+        set row to concat(row and concat(",\"label\":" and provider_quote(label)))
+        set row to concat(row and concat(",\"model\":" and provider_quote(provider_value(tokens and provider_member(tokens and 0 and "model")))))
+        set added to append_list(output and concat(row and "}"))
+        set step to ep_sqlite3_step(statement)
+    set closed to ep_sqlite3_finalize(statement)
+    if step is not equal to 101 or else closed is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    return concat("{\"status\":\"found\",\"profiles\":" and concat(anthropic_array(output) and "}"))

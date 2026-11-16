@@ -1,0 +1,41 @@
+import "encoding"
+import "../providers/external_request_file"
+
+# Only the authorized mailbox adapter supplies identity/data/expected size.
+# Destination is a private configured root, never a filename/path chosen by
+# an email or model. Source names stay metadata and cannot escape this root.
+# The returned binary digest/size feed Echo's existing attachment ingestion.
+define gmail_attachment_store with system as Int and directory as Int and root as Str and identity as Str and data as Str and expected_bytes as Int returning List:
+    if string_length(identity) equals 0 or else expected_bytes < 0 or else external_request_root_matches(system and directory and root) equals 0:
+        return ["invalid-attachment-destination"]
+    set decoded to gmail_base64_decode(data and 1)
+    if not (archive_list_text(decoded and 0) equals "decoded") or else get_list(decoded and 2) is not equal to expected_bytes:
+        return ["attachment-size-or-encoding-mismatch"]
+    set storage to get_list(decoded and 1)
+    set pointer to get_list_data_ptr(storage)
+    set name to concat("mail-" and concat(ep_sha256(identity) and ".blob"))
+    set descriptor to workspace_file_open(system and directory and name and 1)
+    if descriptor >= 0:
+        if external_vault_inode(system and descriptor and 0) equals 0:
+            set closed to net_close(descriptor)
+            return ["attachment-not-private"]
+        set written to file_stage_write(system and descriptor and pointer and expected_bytes)
+        set finished to file_stage_finish(system and descriptor)
+        set flush to ep_dlsym(system and "fsync")
+        if written is not equal to 0 or else finished is not equal to 0 or else flush equals 0 or else ep_dlcall1(flush and directory) is not equal to 0:
+            return ["attachment-write-failed"]
+    set descriptor to workspace_file_open(system and directory and name and 0)
+    if descriptor < 0 or else external_vault_inode(system and descriptor and 0) equals 0:
+        if descriptor >= 0:
+            set closed to net_close(descriptor)
+        return ["attachment-unavailable"]
+    set owned_system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set digest to file_digest_owned_descriptor(owned_system and descriptor and 65536 and 0)
+    if not (archive_list_text(digest and 0) equals "verified") or else get_list(digest and 2) is not equal to expected_bytes:
+        return ["attachment-integrity-failed"]
+    set path to concat(root and concat("/" and name))
+    set verified to file_base64_verified(path and archive_list_text(digest and 1) and expected_bytes and 65536)
+    set original to gmail_base64_bytes(pointer and expected_bytes)
+    if not (archive_list_text(verified and 0) equals "verified") or else not (archive_list_text(verified and 1) equals original):
+        return ["attachment-content-conflict"]
+    return ["stored",path,archive_list_text(digest and 1),int_to_string(expected_bytes)]

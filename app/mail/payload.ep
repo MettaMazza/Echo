@@ -1,0 +1,134 @@
+import "payload_schemas"
+import "api_contract"
+import "../providers/json_access"
+
+# Check integral spelling/range without lossy floating point or signed uint64
+# conversion. The discovery document supplies the exact wire format.
+define gmail_payload_integer with value as Str and format as Str returning Int:
+    set digits to value
+    set negative to string_length(value) > 0 and also get_character(value and 0) equals 45
+    if negative:
+        if format equals "uint64":
+            return 0
+        set digits to substring(value and 1 and string_length(value) - 1)
+    set maximum to "9223372036854775807"
+    if negative:
+        set maximum to "9223372036854775808"
+    if format equals "uint64":
+        set maximum to "18446744073709551615"
+    else if format equals "int32":
+        set maximum to "2147483647"
+        if negative:
+            set maximum to "2147483648"
+    set size to string_length(digits)
+    if size equals 0 or else size > string_length(maximum) or else (size > 1 and also get_character(digits and 0) equals 48):
+        return 0
+    set smaller to size < string_length(maximum)
+    set index to 0
+    repeat while index < size:
+        set code to get_character(digits and index)
+        if code < 48 or else code > 57:
+            return 0
+        if smaller equals 0:
+            set limit to get_character(maximum and index)
+            if code > limit:
+                return 0
+            if code < limit:
+                set smaller to 1
+        set index to index + 1
+    return 1
+
+define gmail_payload_work with value as Int and schema as List and field as Int returning List:
+    set row to create_list()
+    set added to append_list(row and value)
+    set added to append_list(row and schema)
+    set added to append_list(row and field)
+    return row
+
+# Iterative schema traversal: deeply nested MIME structures do not consume a
+# native call stack. This validates wire shape, not action authority/content.
+define gmail_payload_valid with operation as Str and body as Str returning Int:
+    set contract to provider_json_tokens(gmail_method_contract(operation))
+    if contract equals 0:
+        return 0
+    set schema_name to provider_value(contract and provider_member(contract and 0 and "request"))
+    if string_length(schema_name) equals 0:
+        return string_length(body) equals 0
+    set values to provider_json_tokens(body)
+    set schema to provider_json_tokens(gmail_payload_schema(schema_name))
+    if values equals 0 or else schema equals 0 or else provider_unique_objects(values) equals 0:
+        return 0
+    set work to create_list()
+    set added to append_list(work and gmail_payload_work(0 and schema and 0))
+    set cursor to 0
+    repeat while cursor < length_list(work):
+        set row to get_list(work and cursor)
+        set value to get_list(row and 0)
+        set schema to get_list(row and 1)
+        set field to get_list(row and 2)
+        set cursor to cursor + 1
+        set reference to provider_value(schema and provider_member(schema and field and "$ref"))
+        if string_length(reference) > 0:
+            set referenced to provider_json_tokens(gmail_payload_schema(reference))
+            if referenced equals 0:
+                return 0
+            set added to append_list(work and gmail_payload_work(value and referenced and 0))
+            continue
+        set expected to provider_value(schema and provider_member(schema and field and "type"))
+        set actual to provider_kind(values and value)
+        if expected equals "object":
+            if not (actual equals "{"):
+                return 0
+            set properties to provider_member(schema and field and "properties")
+            set member to value + 1
+            repeat while not (provider_kind(values and member) equals "}"):
+                set shape to provider_member(schema and properties and provider_value(values and member))
+                if shape < 0:
+                    return 0
+                set added to append_list(work and gmail_payload_work(member + 2 and schema and shape))
+                set member to provider_after(values and member + 2)
+                if provider_kind(values and member) equals ",":
+                    set member to member + 1
+            if provider_kind(schema and properties) equals "{":
+                set member to properties + 1
+                repeat while not (provider_kind(schema and member) equals "}"):
+                    set annotations to provider_member(schema and member + 2 and "annotations")
+                    set required to provider_member(schema and annotations and "required")
+                    if provider_kind(schema and required) equals "[":
+                        for each required_operation in provider_items(schema and required):
+                            if provider_value(schema and required_operation) equals concat("gmail.users." and operation) and also provider_member(values and value and provider_value(schema and member)) < 0:
+                                return 0
+                    set member to provider_after(schema and member + 2)
+                    if provider_kind(schema and member) equals ",":
+                        set member to member + 1
+        else if expected equals "array":
+            if not (actual equals "["):
+                return 0
+            set item_schema to provider_member(schema and field and "items")
+            if item_schema < 0:
+                return 0
+            for each item in provider_items(values and value):
+                set added to append_list(work and gmail_payload_work(item and schema and item_schema))
+        else if expected equals "boolean":
+            if not (actual equals "true" or else actual equals "false"):
+                return 0
+        else if expected equals "string":
+            if not (actual equals "string"):
+                return 0
+            set format to provider_value(schema and provider_member(schema and field and "format"))
+            if (format equals "int64" or else format equals "uint64") and also gmail_payload_integer(provider_value(values and value) and format) equals 0:
+                return 0
+        else if expected equals "integer":
+            if not (actual equals "number") or else gmail_payload_integer(provider_value(values and value) and provider_value(schema and provider_member(schema and field and "format"))) equals 0:
+                return 0
+        else:
+            return 0
+        set options to provider_member(schema and field and "enum")
+        if options >= 0:
+            set matched to 0
+            for each option in provider_items(schema and options):
+                if provider_kind(schema and option) equals actual and also provider_value(schema and option) equals provider_value(values and value):
+                    set matched to 1
+            if matched equals 0:
+                return 0
+    return 1

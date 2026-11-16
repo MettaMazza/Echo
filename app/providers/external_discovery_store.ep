@@ -1,0 +1,80 @@
+import "external_accounts"
+import "external_discovery"
+import "external_discovery_view"
+
+# Metadata stays with the account owner, outside conversation and auto-memory.
+# Immutable claims prevent retrying an uncertain attempt under the same ID.
+define external_discovery_schema with database as Int returning Int:
+    if external_account_schema(database) is not equal to 0:
+        return 1
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_external_discovery(identity TEXT PRIMARY KEY,principal TEXT NOT NULL REFERENCES echo_principals(identity),account TEXT NOT NULL REFERENCES echo_external_accounts(identity),family TEXT NOT NULL,model TEXT NOT NULL,cursor TEXT NOT NULL,endpoint TEXT NOT NULL,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TABLE IF NOT EXISTS echo_external_discovery_results(identity TEXT PRIMARY KEY REFERENCES echo_external_discovery(identity),status TEXT NOT NULL,http_code INTEGER NOT NULL,body TEXT NOT NULL,digest TEXT NOT NULL,view TEXT NOT NULL,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TRIGGER IF NOT EXISTS echo_external_discovery_no_update BEFORE UPDATE ON echo_external_discovery BEGIN SELECT RAISE(ABORT,'Discovery claim is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_external_discovery_no_delete BEFORE DELETE ON echo_external_discovery BEGIN SELECT RAISE(ABORT,'Discovery claim is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_external_discovery_result_no_update BEFORE UPDATE ON echo_external_discovery_results BEGIN SELECT RAISE(ABORT,'Discovery result is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_external_discovery_result_no_delete BEFORE DELETE ON echo_external_discovery_results BEGIN SELECT RAISE(ABORT,'Discovery result is immutable'); END;")
+
+define external_discovery_error with status as Str returning Str:
+    return concat("{\"status\":" and concat(provider_quote(status) and "}"))
+
+# Caller retains and supervises any cleanup owner returned at index 1.
+# The normal entry fixes the executable; the separate program argument is for
+# native protocol fixtures, never a field in the web settings request.
+define external_account_discover with database as Int and device as Str and account as Str and identity as Str and model as Str and cursor as Str and system as Int and directory as Int and errors as Int and cancellation as Int and batch as Int returning List:
+    return external_account_discover_program("/usr/bin/curl" and database and device and account and identity and model and cursor and system and directory and errors and cancellation and batch)
+
+define external_account_discover_program with executable as Str and database as Int and device as Str and account as Str and identity as Str and model as Str and cursor as Str and system as Int and directory as Int and errors as Int and cancellation as Int and batch as Int returning List:
+    set response to create_list()
+    set added to append_list(response and external_discovery_error("not-authorized"))
+    set added to append_list(response and 0)
+    if string_length(identity) equals 0 or else batch < 1 or else external_discovery_schema(database) is not equal to 0:
+        set changed to set_list(response and 0 and external_discovery_error("invalid-discovery-request"))
+        return response
+    set credential to external_account_settings_credential(database and device and account and system and directory)
+    if not (archive_list_text(credential and 0) equals "ready"):
+        set changed to set_list(response and 0 and external_discovery_error(archive_list_text(credential and 0)))
+        return response
+    set principal to principal_for_device(database and device)
+    set family to archive_list_text(credential and 1)
+    set endpoint to external_discovery_endpoint(family and model and cursor)
+    if string_length(endpoint) equals 0:
+        set changed to set_list(response and 0 and external_discovery_error("invalid-discovery-request"))
+        return response
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        set changed to set_list(response and 0 and external_discovery_error("database-busy"))
+        return response
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT principal,account,family,model,cursor FROM echo_external_discovery WHERE identity=?1;" and [identity]))
+    if archive_list_text(prior and 0) equals "found":
+        set same to archive_list_text(prior and 1) equals principal and also archive_list_text(prior and 2) equals account and also archive_list_text(prior and 3) equals family and also archive_list_text(prior and 4) equals model and also archive_list_text(prior and 5) equals cursor
+        set result to history_status("end")
+        if same:
+            set result to history_collect_one(checkpoint_prepare(database and "SELECT view FROM echo_external_discovery_results WHERE identity=?1;" and [identity]))
+        set rolled to archive_rollback(database)
+        set status to "discovery-conflict"
+        if same:
+            set status to "discovery-pending"
+        set changed to set_list(response and 0 and external_discovery_error(status))
+        if archive_list_text(result and 0) equals "found":
+            set changed to set_list(response and 0 and archive_list_text(result and 1))
+        return response
+    if not (archive_list_text(prior and 0) equals "end") or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_external_discovery(identity,principal,account,family,model,cursor,endpoint) VALUES(?1,?2,?3,?4,?5,?6,?7);" and [identity,principal,account,family,model,cursor,endpoint]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled to archive_rollback(database)
+        set changed to set_list(response and 0 and external_discovery_error("database-error"))
+        return response
+    # Revalidate revocation after claiming and immediately before network launch.
+    set credential to external_account_settings_credential(database and device and account and system and directory)
+    set transfer to external_transport_result("not-authorized" and 0 and 0)
+    if archive_list_text(credential and 0) equals "ready":
+        set transfer to external_transport_start_arguments(executable and family and archive_list_text(credential and 2) and external_discovery_arguments(family and model and cursor) and directory and errors and cancellation)
+    set result to external_discovery_collect(database and concat("external-account:" and account) and identity and transfer and batch)
+    set status to archive_list_text(result and 0)
+    set view to external_discovery_error(status)
+    if status equals "ready":
+        set view to external_discovery_view(family and model and archive_list_text(result and 2))
+    else if status equals "http-error":
+        set view to concat("{\"status\":\"provider-http-error\",\"http_code\":" and concat(int_to_string(get_list(result and 1)) and "}"))
+    if get_list(result and 3) is not equal to 0:
+        set changed to set_list(response and 1 and get_list(result and 3))
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_external_discovery_results(identity,status,http_code,body,digest,view) VALUES(?1,?2,?3,?4,?5,?6);" and [identity,status,int_to_string(get_list(result and 1)),archive_list_text(result and 2),ep_sha256(archive_list_text(result and 2)),view]) and 101) is not equal to 0:
+        set view to external_discovery_error("database-error")
+    # Do not return account data to a credential revoked during the request.
+    set current to external_account_read(database and device and account)
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 4) equals "connected") or else not (principal_for_device(database and device) equals principal):
+        set view to external_discovery_error("not-authorized")
+    set changed to set_list(response and 0 and view)
+    return response

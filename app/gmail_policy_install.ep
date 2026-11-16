@@ -1,0 +1,68 @@
+import "mail/policy"
+import "providers/external_request_file"
+
+# Root-run setup only. The actual existing rights decision must pass before a
+# pinned policy selector is written. Runtime rechecks it before every effect.
+# Args: archive, run, proposal, charter, protected output directory, audit JSON.
+define main returning Int:
+    if get_argument_count() is not equal to 7:
+        display "Expected Echo archive, run, proposal, charter, protected output directory and audit JSON."
+        return 1
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set effective to ep_dlsym(system and "geteuid")
+    if effective equals 0 or else ep_dlcall0(effective) is not equal to 0:
+        display "Policy installation requires macOS administrator authentication."
+        return 2
+    set directory to protected_path_open(system and get_argument(5) and 1)
+    if directory < 0:
+        return 3
+    set authority to archive_open(get_argument(1))
+    set audit to provider_json_tokens(get_argument(6))
+    if authority equals 0 or else audit equals 0 or else provider_unique_objects(audit) equals 0 or else not (provider_kind(audit and 0) equals "{"):
+        return 4
+    if sql_execute(authority and "BEGIN IMMEDIATE;") is not equal to 0:
+        return 5
+    set decision to protected_decision_check(authority and get_argument(4) and get_argument(2) and get_argument(3) and provider_value(audit and provider_member(audit and 0 and "audit_request")) and provider_value(audit and provider_member(audit and 0 and "audit_policy")) and provider_value(audit and provider_member(audit and 0 and "audit_policy_sha256")))
+    if not (decision equals "decisions-satisfied"):
+        set rolled to archive_rollback(authority)
+        display decision
+        return 6
+    set original to protected_proposal_read(authority and get_argument(2) and get_argument(3))
+    set manifest to provider_json_tokens(archive_list_text(original and 1))
+    set policy to provider_value(manifest and provider_member(manifest and 0 and "proposal_payload"))
+    set fields to provider_json_tokens(policy)
+    if not (provider_value(manifest and provider_member(manifest and 0 and "category")) equals "fundamental tool access") or else not (provider_value(manifest and provider_member(manifest and 0 and "target")) equals concat("mailbox:" and provider_value(fields and provider_member(fields and 0 and "account")))) or else not (provider_value(manifest and provider_member(manifest and 0 and "proposed_sha256")) equals ep_sha256(policy)):
+        set rolled to archive_rollback(authority)
+        return 7
+    set config to concat("{\"proposal\":" and provider_quote(get_argument(3)))
+    set config to concat(config and concat(",\"charter\":" and provider_quote(get_argument(4))))
+    for each key in ["audit_request","audit_policy","audit_policy_sha256"]:
+        set name to ptr_to_str(key)
+        set config to concat(config and concat("," and concat(provider_quote(name) and concat(":" and provider_quote(provider_value(audit and provider_member(audit and 0 and name)))))))
+    set config to concat(config and "}")
+    set name to concat("mail-policy-" and concat(ep_sha256(config) and ".json"))
+    set file to workspace_file_open(system and directory and name and 1)
+    if file < 0:
+        set rolled to archive_rollback(authority)
+        display "Policy file already exists or cannot be created; existing files were not changed."
+        return 8
+    set written to file_stage_write(system and file and str_to_ptr(config) and string_length(config))
+    set chmod to ep_dlsym(system and "fchmod")
+    set mode to -1
+    if chmod is not equal to 0:
+        set mode to ep_dlcall2(chmod and file and 420)
+    set finished to file_stage_finish(system and file)
+    set flush to ep_dlsym(system and "fsync")
+    set synced to -1
+    if flush is not equal to 0:
+        set synced to ep_dlcall1(flush and directory)
+    set rolled to archive_rollback(authority)
+    set closed to sql_close(authority)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(system)
+    if written is not equal to 0 or else mode is not equal to 0 or else finished is not equal to 0 or else synced is not equal to 0:
+        return 9
+    display concat("ECHO_MAIL_POLICY_PATH=" and concat(get_argument(5) and concat("/" and name)))
+    display concat("ECHO_MAIL_POLICY_SHA256=" and ep_sha256(config))
+    display "Reviewed policy selector prepared. Service activation is separate; no mail sent."
+    return 0

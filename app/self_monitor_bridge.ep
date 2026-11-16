@@ -1,0 +1,75 @@
+import "tools/scratchpad"
+import "security/group_history"
+
+# Trusted host bridge. Scope is derived from the original authenticated run;
+# no scope, principal, publication channel or authority comes from model output.
+define monitor_scope with database as Int and run as Str returning Str:
+    set row to agent_run_read(database and run)
+    if row equals 0 or else group_history_allows(database and archive_list_text(row and 0)) equals 0:
+        return ""
+    return scratchpad_scope(database and run)
+
+define monitor_publish with database as Int and run as Str and key as Str and raw as Str returning Str:
+    if string_length(monitor_scope(database and run)) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    if string_length(key) is not equal to 64 or else string_length(raw) > 24000:
+        return "{\"status\":\"invalid-report\"}"
+    set index to 0
+    repeat while index < string_length(key):
+        if string_index_of("0123456789abcdef" and substring(key and index and 1)) < 0:
+            return "{\"status\":\"invalid-report\"}"
+        set index to index + 1
+    set parsed to provider_json_tokens(raw)
+    if parsed equals 0 or else provider_unique_objects(parsed) equals 0:
+        return "{\"status\":\"invalid-report\"}"
+    set findings to provider_items(parsed and provider_member(parsed and 0 and "findings"))
+    if findings equals 0 or else length_list(findings) > 8:
+        return "{\"status\":\"invalid-findings\"}"
+    set owner to agent_run_read(database and run)
+    for each finding in findings:
+        for each field in ["title","severity","observation","hypothesis","recommendation","acceptance_test","confidence"]:
+            set item to provider_member(parsed and finding and field)
+            if not (provider_kind(parsed and item) equals "string") or else string_length(provider_value(parsed and item)) > 3000:
+                return "{\"status\":\"invalid-finding-field\"}"
+        for each field in ["severity","confidence"]:
+            set value to provider_value(parsed and provider_member(parsed and finding and field))
+            if not (value equals "low" or else value equals "medium" or else value equals "high"):
+                return "{\"status\":\"invalid-finding-field\"}"
+        set evidence to provider_items(parsed and provider_member(parsed and finding and "evidence"))
+        if evidence equals 0 or else length_list(evidence) equals 0 or else length_list(evidence) > 16:
+            return "{\"status\":\"missing-evidence\"}"
+        for each item in evidence:
+            if not (provider_kind(parsed and item) equals "string"):
+                return "{\"status\":\"invalid-evidence\"}"
+            set source to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE event=?1 AND session=?2 AND kind<>'scratchpad_revision';" and [provider_value(parsed and item),archive_list_text(owner and 0)]))
+            if not (archive_list_text(source and 0) equals "found"):
+                return "{\"status\":\"evidence-outside-scope\"}"
+    if length_list(findings) equals 0:
+        return "{\"status\":\"no-findings\"}"
+    set name to concat("self-monitor:" and key)
+    set prior to scratchpad_execute(database and run and concat("{\"operation\":\"read\",\"name\":" and concat(provider_quote(name) and "}")))
+    if provider_value(provider_json_tokens(prior) and provider_member(provider_json_tokens(prior) and 0 and "status")) equals "found":
+        return "{\"status\":\"already-recorded\"}"
+    set text to concat("Separate self-monitor review. Findings are proposals, not verified causes or permission to change anything. Original session: " and archive_list_text(owner and 0))
+    set text to concat(text and concat(". Read cited evidence; use existing RSI gates for any authorized change.\n" and raw))
+    return scratchpad_execute(database and run and concat("{\"operation\":\"write\",\"name\":" and concat(provider_quote(name) and concat(",\"text\":" and concat(provider_quote(text) and "}")))))
+
+define main returning Int:
+    if get_argument_count() < 4 or else not file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0:
+        return 2
+    set operation to get_argument(2)
+    set run to get_argument(3)
+    set scope to monitor_scope(database and run)
+    if string_length(scope) equals 0:
+        display "{\"status\":\"not-authorized\"}"
+    else if operation equals "scope" and get_argument_count() equals 4:
+        set owner to agent_run_read(database and run)
+        display concat("{\"status\":\"authorized\",\"scope\":" and concat(provider_quote(scope) and concat(",\"session\":" and concat(provider_quote(archive_list_text(owner and 0)) and "}"))))
+    else if operation equals "publish" and get_argument_count() equals 6 and file_exists(get_argument(5)):
+        display monitor_publish(database and run and get_argument(4) and ptr_to_str(read_file(get_argument(5))))
+    else:
+        display "{\"status\":\"invalid-operation\"}"
+    return sql_close(database)

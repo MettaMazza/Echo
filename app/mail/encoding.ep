@@ -1,0 +1,114 @@
+import "../archive/file_base64"
+import "../providers/json_access"
+
+# Encode original bytes; the caller retains the storage for the entire call.
+# Existing attachment encoding verifies file hashes before providing MIME data.
+define gmail_base64_bytes with pointer as Int and size as Int returning Str:
+    if size < 0 or else (size > 0 and also pointer equals 0):
+        return ""
+    set builder to create_builder()
+    set block to [0]
+    set offset to 0
+    repeat while offset < size:
+        set count to size - offset
+        if count > 3:
+            set count to 3
+        set value to peek_byte(pointer and offset) * 65536
+        if count > 1:
+            set value to value + peek_byte(pointer and offset + 1) * 256
+        if count > 2:
+            set value to value + peek_byte(pointer and offset + 2)
+        set emitted to file_base64_group(get_list_data_ptr(block) and 0 and value and count)
+        set added to builder_append(builder and ptr_to_str(get_list_data_ptr(block)))
+        set offset to offset + count
+    return ptr_to_str(builder_to_string(builder))
+
+define gmail_base64url with text as Str returning Str:
+    set encoded to gmail_base64_bytes(str_to_ptr(text) and string_length(text))
+    set encoded to ptr_to_str(string_replace(encoded and "+" and "-"))
+    set encoded to ptr_to_str(string_replace(encoded and "/" and "_"))
+    return ptr_to_str(string_replace(encoded and "=" and ""))
+
+define gmail_base64_value with code as Int and url as Int returning Int:
+    if code >= 65 and also code <= 90:
+        return code - 65
+    if code >= 97 and also code <= 122:
+        return code - 97 + 26
+    if code >= 48 and also code <= 57:
+        return code - 48 + 52
+    if (url and also code equals 45) or else (url equals 0 and also code equals 43):
+        return 62
+    if (url and also code equals 95) or else (url equals 0 and also code equals 47):
+        return 63
+    return -1
+
+# Result: status, GC-owned packed byte storage, exact byte length. Never turn
+# arbitrary decoded attachments into a NUL-terminated string. Callers use the
+# storage pointer and length when writing or hashing binary content.
+define gmail_base64_decode with encoded as Str and url as Int returning List:
+    set length to string_length(encoded)
+    set data_length to length
+    repeat while data_length > 0 and also get_character(encoded and data_length - 1) equals 61:
+        set data_length to data_length - 1
+    set padding to length - data_length
+    if padding > 2 or else data_length modulo 4 equals 1 or else (padding > 0 and also (length modulo 4 is not equal to 0 or else padding is not equal to (4 - data_length modulo 4) modulo 4)):
+        return gmail_binary_result("invalid-base64" and 0 and 0)
+    set size to (data_length / 4) * 3
+    if data_length modulo 4 equals 2:
+        set size to size + 1
+    if data_length modulo 4 equals 3:
+        set size to size + 2
+    set storage to create_list()
+    set offset to 0
+    repeat while offset < (size + 7) / 8:
+        set added to append_list(storage and 0)
+        set offset to offset + 1
+    set pointer to get_list_data_ptr(storage)
+    set accumulator to 0
+    set pending to 0
+    set written to 0
+    set offset to 0
+    repeat while offset < data_length:
+        set value to gmail_base64_value(get_character(encoded and offset) and url)
+        if value < 0:
+            return gmail_binary_result("invalid-base64" and 0 and 0)
+        set accumulator to accumulator * 64 + value
+        set pending to pending + 1
+        if pending equals 4:
+            set stored to poke_byte(pointer and written and accumulator / 65536)
+            set stored to poke_byte(pointer and written + 1 and (accumulator / 256) modulo 256)
+            set stored to poke_byte(pointer and written + 2 and accumulator modulo 256)
+            set written to written + 3
+            set accumulator to 0
+            set pending to 0
+        set offset to offset + 1
+    if pending equals 2:
+        if accumulator modulo 16 is not equal to 0:
+            return gmail_binary_result("invalid-base64" and 0 and 0)
+        set stored to poke_byte(pointer and written and accumulator / 16)
+    if pending equals 3:
+        if accumulator modulo 4 is not equal to 0:
+            return gmail_binary_result("invalid-base64" and 0 and 0)
+        set stored to poke_byte(pointer and written and accumulator / 1024)
+        set stored to poke_byte(pointer and written + 1 and (accumulator / 4) modulo 256)
+    return gmail_binary_result("decoded" and storage and size)
+
+define gmail_binary_result with status as Str and storage as List and size as Int returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and storage)
+    set added to append_list(result and size)
+    return result
+
+# RFC 2045 base64 bodies use lines of at most 76 characters.
+define gmail_mime_base64 with encoded as Str returning Str:
+    set builder to create_builder()
+    set offset to 0
+    repeat while offset < string_length(encoded):
+        set count to string_length(encoded) - offset
+        if count > 76:
+            set count to 76
+        set added to builder_append(builder and substring(encoded and offset and count))
+        set added to builder_append(builder and "\r\n")
+        set offset to offset + count
+    return ptr_to_str(builder_to_string(builder))

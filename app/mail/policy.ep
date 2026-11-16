@@ -1,0 +1,91 @@
+import "../rights/decision_gate"
+import "../lifecycle/protected_path"
+import "actions"
+import "standing"
+import "../providers/anthropic_json"
+
+# A policy grants tool access, so its charter category is fundamental tool
+# access. This does not classify ordinary correspondence as an identity change.
+# The installed file selects an actual reviewed proposal, never caller approval.
+define gmail_policy_action with policy as Str and owner as Str and account as Str and intent as Str and operation as Str and parameters as Str and body as Str returning Int:
+    set tokens to provider_json_tokens(policy)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return 0
+    if not (provider_value(tokens and provider_member(tokens and 0 and "owner")) equals owner) or else not (provider_value(tokens and provider_member(tokens and 0 and "account")) equals account):
+        return 0
+    set grants to provider_member(tokens and 0 and "actions")
+    if not (provider_kind(tokens and grants) equals "["):
+        return 0
+    set expected to gmail_action_digest(operation and parameters and body)
+    for each grant in provider_items(tokens and grants):
+        if provider_value(tokens and provider_member(tokens and grant and "intent")) equals intent and also provider_value(tokens and provider_member(tokens and grant and "operation")) equals operation and also provider_value(tokens and provider_member(tokens and grant and "parameters")) equals parameters and also provider_value(tokens and provider_member(tokens and grant and "body")) equals body and also provider_value(tokens and provider_member(tokens and grant and "sha256")) equals expected:
+            return 1
+    return 0
+
+# Protected path plus exact bytes prevents model-selected or writable policy
+# substitution. No credential or policy path is accepted in tool arguments.
+define gmail_policy_installed returning Str:
+    set path to ptr_to_str(get_env("ECHO_MAIL_POLICY_PATH"))
+    set pin to ptr_to_str(get_env("ECHO_MAIL_POLICY_SHA256"))
+    if protected_digest_valid(pin) equals 0:
+        return ""
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set descriptor to protected_path_open(system and path and 0)
+    if descriptor < 0:
+        set closed to ep_dlclose(system)
+        return ""
+    set text to file_read(path)
+    set closed to net_close(descriptor)
+    set closed to ep_dlclose(system)
+    if not (ep_sha256(text) equals pin):
+        return ""
+    return text
+
+# Must be called while the authority writer is held, immediately before the
+# durable effect claim. Latest review/authorization is checked on every use.
+define gmail_policy_reviewed with authority as Int and run as Str and owner as Str and account as Str returning List:
+    set installed to gmail_policy_installed()
+    set config to provider_json_tokens(installed)
+    if config equals 0 or else provider_unique_objects(config) equals 0:
+        return ["reviewed-mailbox-policy-not-installed"]
+    set proposal to provider_value(config and provider_member(config and 0 and "proposal"))
+    set original to protected_proposal_read(authority and run and proposal)
+    if not (archive_list_text(original and 0) equals "found"):
+        return ["mailbox-policy-proposal-unavailable"]
+    set manifest to provider_json_tokens(archive_list_text(original and 1))
+    set policy to provider_value(manifest and provider_member(manifest and 0 and "proposal_payload"))
+    if not (provider_value(manifest and provider_member(manifest and 0 and "category")) equals "fundamental tool access") or else not (provider_value(manifest and provider_member(manifest and 0 and "target")) equals concat("mailbox:" and account)) or else not (provider_value(manifest and provider_member(manifest and 0 and "proposed_sha256")) equals ep_sha256(policy)):
+        return ["mailbox-policy-binding-invalid"]
+    set fields to provider_json_tokens(policy)
+    if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_value(fields and provider_member(fields and 0 and "owner")) equals owner) or else not (provider_value(fields and provider_member(fields and 0 and "account")) equals account):
+        return ["mailbox-policy-owner-mismatch"]
+    set decision to protected_decision_check(authority and provider_value(config and provider_member(config and 0 and "charter")) and run and proposal and provider_value(config and provider_member(config and 0 and "audit_request")) and provider_value(config and provider_member(config and 0 and "audit_policy")) and provider_value(config and provider_member(config and 0 and "audit_policy_sha256")))
+    if not (decision equals "decisions-satisfied"):
+        return [decision]
+    return ["reviewed",policy,ep_sha256(policy)]
+
+define gmail_policy_check with authority as Int and run as Str and owner as Str and account as Str and intent as Str and operation as Str and parameters as Str and body as Str returning Str:
+    set reviewed to gmail_policy_reviewed(authority and run and owner and account)
+    if not (archive_list_text(reviewed and 0) equals "reviewed"):
+        return archive_list_text(reviewed and 0)
+    if gmail_policy_action(archive_list_text(reviewed and 1) and owner and account and intent and operation and parameters and body) equals 0:
+        return "mailbox-action-not-authorized"
+    return "decisions-satisfied"
+
+define gmail_send_policy_check with authority as Int and database as Int and run as Str and owner as Str and account as Str and intent as Str and body as Str and basis as Str returning Str:
+    set reviewed to gmail_policy_reviewed(authority and run and owner and account)
+    if not (archive_list_text(reviewed and 0) equals "reviewed"):
+        return archive_list_text(reviewed and 0)
+    set policy to archive_list_text(reviewed and 1)
+    if gmail_policy_action(policy and owner and account and intent and "messages.send" and "{}" and body):
+        return "decisions-satisfied"
+    if gmail_standing_basis(basis and archive_list_text(reviewed and 2)) equals 0:
+        return "routine-policy-basis-required"
+    set fields to provider_json_tokens(policy)
+    set standing to anthropic_json_source(policy and fields and provider_member(fields and 0 and "standing"))
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT c.preview,i.payload,i.digest FROM echo_mail_compositions c JOIN echo_mail_intents i ON i.mailbox=c.account AND i.identity=c.identity WHERE c.account=?1 AND c.identity=?2;" and [account,intent]))
+    if not (archive_list_text(saved and 0) equals "found") or else not (archive_list_text(saved and 2) equals body) or else not (archive_list_text(saved and 3) equals ep_sha256(body)):
+        return "composition-integrity-failed"
+    if gmail_standing_allows(standing and archive_list_text(saved and 1) and string_length(body) and ep_time_now_ms() / 1000) equals 0:
+        return "outside-standing-policy-scope"
+    return "decisions-satisfied"

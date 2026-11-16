@@ -1,0 +1,101 @@
+import "external_discovery_store"
+import "external_profile_options"
+
+# Profiles are immutable, owner-bound records, separate from the host-global
+# local provider registry. No credential or host path is a profile field.
+define external_profile_schema with database as Int returning Int:
+    if external_discovery_schema(database) is not equal to 0:
+        return 1
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_external_profiles(identity TEXT PRIMARY KEY,principal TEXT NOT NULL REFERENCES echo_principals(identity),account TEXT NOT NULL REFERENCES echo_external_accounts(identity),discovery TEXT NOT NULL REFERENCES echo_external_discovery_results(identity),label TEXT NOT NULL,profile TEXT NOT NULL,digest TEXT NOT NULL,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TRIGGER IF NOT EXISTS echo_external_profile_no_update BEFORE UPDATE ON echo_external_profiles BEGIN SELECT RAISE(ABORT,'External profile versions are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_external_profile_no_delete BEFORE DELETE ON echo_external_profiles BEGIN SELECT RAISE(ABORT,'External profile provenance is immutable'); END;")
+
+# Use only the exact model contained in a verified account-owned response.
+# Alias resolution comes from the provider response, never string heuristics.
+define external_profile_model with family as Str and body as Str and model as Str returning Str:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ""
+    set data to provider_member(tokens and 0 and "data")
+    set items to create_list()
+    if provider_kind(tokens and data) equals "[":
+        set items to provider_items(tokens and data)
+    else:
+        set added to append_list(items and 0)
+    set found to ""
+    for each item in items:
+        if provider_kind(tokens and item) equals "{" and also provider_value(tokens and provider_member(tokens and item and "id")) equals model:
+            if string_length(found) > 0:
+                return ""
+            set found to anthropic_json_source(body and tokens and item)
+    return found
+
+define external_profile_register with database as Int and device as Str and identity as Str and label as Str and account as Str and discovery as Str and model as Str and options as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(string_trim(label)) equals 0 or else string_length(model) equals 0:
+        return "invalid-profile"
+    if external_profile_schema(database) is not equal to 0 or else sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-error"
+    set principal to principal_for_device(database and device)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT c.family,r.body,r.digest FROM echo_external_accounts c JOIN echo_external_discovery d ON d.account=c.identity AND d.principal=c.principal AND d.family=c.family JOIN echo_external_discovery_results r ON r.identity=d.identity WHERE c.identity=?1 AND c.principal=?2 AND d.identity=?3 AND r.status='ready' AND NOT EXISTS(SELECT 1 FROM echo_external_account_revocations v WHERE v.identity=c.identity);" and [account,principal,discovery]))
+    if string_length(principal) equals 0 or else not (archive_list_text(row and 0) equals "found"):
+        set rolled to archive_rollback(database)
+        return "not-authorized"
+    if not (ep_sha256(archive_list_text(row and 2)) equals archive_list_text(row and 3)):
+        set rolled to archive_rollback(database)
+        return "discovery-integrity-error"
+    set family to archive_list_text(row and 1)
+    set native to external_profile_model(family and archive_list_text(row and 2) and model)
+    if string_length(native) equals 0:
+        set rolled to archive_rollback(database)
+        return "model-not-discovered"
+    set info to external_model_info(family and native)
+    set documented to family equals "openai-chat" and also archive_list_text(info and 0) equals "documented"
+    if not (documented or else (family equals "anthropic-messages" and also archive_list_text(info and 0) equals "discovered")):
+        set rolled to archive_rollback(database)
+        return "accounting-unresolved"
+    set selected to history_status("accounting-unresolved")
+    if documented:
+        set selected to responses_profile_options(info and options)
+        set family to "openai-responses"
+    else:
+        set selected to external_profile_options(info and options)
+    if not (archive_list_text(selected and 0) equals "ready"):
+        set rolled to archive_rollback(database)
+        return archive_list_text(selected and 0)
+    set profile to concat("{\"adapter\":" and provider_quote(family))
+    if documented:
+        set profile to concat(profile and concat(",\"accounting_contract\":" and responses_model_contract(model)))
+    for each pair in [["profile",identity],["model",model],["account",account],["discovery",discovery],["metadata_digest",archive_list_text(row and 3)]]:
+        set profile to concat(profile and concat("," and concat(provider_quote(archive_list_text(pair and 0)) and concat(":" and provider_quote(archive_list_text(pair and 1))))))
+    set profile to concat(profile and concat(",\"input_limit\":" and int_to_string(get_list(info and 2))))
+    set profile to concat(profile and concat(",\"output_limit\":" and int_to_string(get_list(info and 3))))
+    set profile to concat(profile and concat(",\"options\":" and concat(archive_list_text(selected and 1) and "}")))
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT principal,label,profile FROM echo_external_profiles WHERE identity=?1;" and [identity]))
+    if archive_list_text(prior and 0) equals "found":
+        set same to archive_list_text(prior and 1) equals principal and also archive_list_text(prior and 2) equals label and also archive_list_text(prior and 3) equals profile
+        set rolled to archive_rollback(database)
+        if same:
+            return "registered"
+        return "profile-conflict"
+    if not (archive_list_text(prior and 0) equals "end") or else archive_finish(checkpoint_prepare(database and "INSERT INTO echo_external_profiles(identity,principal,account,discovery,label,profile,digest) VALUES(?1,?2,?3,?4,?5,?6,?7);" and [identity,principal,account,discovery,label,profile,ep_sha256(profile)]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled to archive_rollback(database)
+        return "database-error"
+    return "registered"
+
+# Admin status does not grant access to another person's external profile.
+define external_profile_read with database as Int and device as Str and identity as Str returning List:
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT p.label,p.profile,p.digest FROM echo_external_profiles p JOIN echo_external_accounts a ON a.identity=p.account AND a.principal=p.principal WHERE p.identity=?1 AND p.principal=?2 AND NOT EXISTS(SELECT 1 FROM echo_external_account_revocations r WHERE r.identity=a.identity);" and [identity,principal]))
+    if archive_list_text(row and 0) equals "found" and also not (ep_sha256(archive_list_text(row and 2)) equals archive_list_text(row and 3)):
+        return history_status("profile-integrity-error")
+    return row
+
+# Dispatch must match the frozen initiating principal and exact consented bytes.
+define external_profile_run_allows with database as Int and run as Str and profile as Str returning Int:
+    if run_authority_allows(database and run and "user") equals 0 or else external_scope_run_allows(database and run and ep_sha256(profile)) equals 0:
+        return 0
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT p.digest,q.body,q.digest FROM echo_external_profiles p JOIN echo_run_authority r ON r.principal=p.principal JOIN echo_external_accounts a ON a.identity=p.account AND a.principal=p.principal JOIN echo_external_discovery d ON d.identity=p.discovery AND d.account=p.account AND d.principal=p.principal AND d.family=a.family JOIN echo_external_discovery_results q ON q.identity=d.identity AND q.status='ready' WHERE r.run=?1 AND p.profile=?2 AND NOT EXISTS(SELECT 1 FROM echo_external_account_revocations v WHERE v.identity=a.identity);" and [run,profile]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 1) equals ep_sha256(profile)) or else not (ep_sha256(archive_list_text(row and 2)) equals archive_list_text(row and 3)):
+        return 0
+    set tokens to provider_json_tokens(profile)
+    return provider_value(tokens and provider_member(tokens and 0 and "metadata_digest")) equals archive_list_text(row and 3)

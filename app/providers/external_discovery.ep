@@ -1,0 +1,67 @@
+import "external_transport"
+import "local_json"
+
+# Encode IDs/cursors as one path/query component; they cannot introduce a URL,
+# redirect, extra query parameter, curl switch or newline into the request.
+define external_discovery_component with value as Str returning Str:
+    set result to create_builder()
+    set hex to "0123456789ABCDEF"
+    set index to 0
+    repeat while index < string_length(value):
+        set code to peek_byte(str_to_ptr(value) and index)
+        if (code >= 65 and also code <= 90) or else (code >= 97 and also code <= 122) or else (code >= 48 and also code <= 57) or else code equals 45 or else code equals 46 or else code equals 95 or else code equals 126:
+            set added to builder_append(result and substring(value and index and 1))
+        else:
+            set added to builder_append(result and "%")
+            set added to builder_append(result and substring(hex and code / 16 and 1))
+            set added to builder_append(result and substring(hex and code modulo 16 and 1))
+        set index to index + 1
+    return ptr_to_str(builder_to_string(result))
+
+define external_discovery_endpoint with family as Str and model as Str and cursor as Str returning Str:
+    set host to ""
+    if family equals "openai-chat":
+        set host to "https://api.openai.com/v1/models"
+    else if family equals "anthropic-messages":
+        set host to "https://api.anthropic.com/v1/models"
+    else:
+        return ""
+    if string_length(model) > 0:
+        if string_length(cursor) > 0 or else model equals "." or else model equals "..":
+            return ""
+        return concat(host and concat("/" and external_discovery_component(model)))
+    if string_length(cursor) > 0:
+        if not (family equals "anthropic-messages"):
+            return ""
+        return concat(host and concat("?after_id=" and external_discovery_component(cursor)))
+    return host
+
+define external_discovery_arguments with family as Str and model as Str and cursor as Str returning List:
+    set endpoint to external_discovery_endpoint(family and model and cursor)
+    if string_length(endpoint) equals 0:
+        return 0
+    return ["--disable","--silent","--show-error","--no-buffer","--raw","--include","--http1.1","--proto","=https","--proto-redir","=https","--max-redirs","0","--retry","0","--proxy","","--request","GET","--header","@/dev/stdin","--header","Accept: application/json","--header","Accept-Encoding: identity","--url",endpoint]
+
+# Metadata-only request. No prompt, context or request-body path is accepted.
+# Credentials must already be owner-authorized; the public entry fixes curl.
+define external_discovery_start with family as Str and credential as Str and model as Str and cursor as Str and directory as Int and errors as Int and cancellation as Int returning List:
+    return external_transport_start_arguments("/usr/bin/curl" and family and credential and external_discovery_arguments(family and model and cursor) and directory and errors and cancellation)
+
+# Result: status, HTTP code, exact JSON/error body, retained cleanup owner.
+# Successful HTTP alone is insufficient; require successful process completion.
+define external_discovery_collect with database as Int and session as Str and identity as Str and transfer as List and read_size as Int returning List:
+    return external_json_collect(database and session and identity and transfer and "GET" and read_size)
+
+define external_json_collect with database as Int and session as Str and identity as Str and transfer as List and method as Str and read_size as Int returning List:
+    set result to local_json_result(archive_list_text(transfer and 0) and 0 and "")
+    if archive_list_text(transfer and 0) equals "streaming":
+        set result to provider_json_collect(get_list(transfer and 2) and method and read_size)
+        set status to archive_list_text(result and 0)
+        set terminal to external_transport_finish(database and session and identity and transfer and (status equals "ready" or else status equals "http-error"))
+        if terminal equals "cleanup-pending" or else terminal equals "cleanup-error" or else ((status equals "ready" or else status equals "http-error") and also not (terminal equals "complete")):
+            set changed to set_list(result and 0 and terminal)
+    set retained to 0
+    if get_list(transfer and 1) is not equal to 0:
+        set retained to transfer
+    set added to append_list(result and retained)
+    return result

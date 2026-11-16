@@ -1,0 +1,218 @@
+import "environment"
+import "reconcile"
+import "reply"
+import "write"
+import "schema_catalog"
+import "compose_tool"
+import "download"
+import "send"
+import "../archive/runtime_lock"
+
+# Caller-facing values come exclusively from the immutable tool event. Only
+# a private, locally executed admin run can reach this adapter.
+define gmail_tool_status with status as Str returning Str:
+    return concat("{\"status\":" and concat(provider_quote(status) and "}"))
+
+define gmail_tool_arguments with arguments as Str returning List:
+    set tokens to provider_json_tokens(arguments)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return ["invalid-arguments"]
+    set member to 1
+    repeat while not (provider_kind(tokens and member) equals "}"):
+        set name to provider_value(tokens and member)
+        if not (name equals "action" or else name equals "account" or else name equals "method" or else name equals "parameters" or else name equals "intent" or else name equals "body") or else not (provider_kind(tokens and member + 2) equals "string"):
+            return ["invalid-arguments"]
+        set member to provider_after(tokens and member + 2)
+        if provider_kind(tokens and member) equals ",":
+            set member to member + 1
+    set action to provider_value(tokens and provider_member(tokens and 0 and "action"))
+    set account to provider_value(tokens and provider_member(tokens and 0 and "account"))
+    set method to provider_value(tokens and provider_member(tokens and 0 and "method"))
+    set parameters to provider_value(tokens and provider_member(tokens and 0 and "parameters"))
+    set intent to provider_value(tokens and provider_member(tokens and 0 and "intent"))
+    set body to provider_value(tokens and provider_member(tokens and 0 and "body"))
+    if not (action equals "status" or else action equals "describe" or else action equals "read" or else action equals "reconcile" or else action equals "reply" or else action equals "reply_all" or else action equals "write" or else action equals "compose" or else action equals "save_draft" or else action equals "download" or else action equals "send" or else action equals "policy"):
+        return ["invalid-action"]
+    if action equals "policy" and string_length(account) equals 0:
+        return ["invalid-arguments"]
+    if action equals "download":
+        set fields to provider_json_tokens(parameters)
+        set id to provider_member(fields and 0 and "id")
+        set part to provider_member(fields and 0 and "part_id")
+        if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_kind(fields and 0) equals "{") or else not (provider_kind(fields and id) equals "string") or else not (provider_kind(fields and part) equals "string") or else string_length(provider_value(fields and id)) equals 0 or else string_length(account) equals 0:
+            return ["invalid-download-source"]
+        set field to 1
+        repeat while not (provider_kind(fields and field) equals "}"):
+            if not (provider_value(fields and field) equals "id" or else provider_value(fields and field) equals "part_id"):
+                return ["invalid-download-source"]
+            set field to provider_after(fields and field + 2)
+            if provider_kind(fields and field) equals ",":
+                set field to field + 1
+    if action equals "reply" or else action equals "reply_all":
+        set fields to provider_json_tokens(parameters)
+        if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_kind(fields and 0) equals "{") or else not (provider_kind(fields and 1) equals "string") or else not (provider_value(fields and 1) equals "id") or else not (provider_kind(fields and 3) equals "string") or else not (provider_kind(fields and 4) equals "}") or else string_length(provider_value(fields and 3)) equals 0 or else string_length(account) equals 0:
+            return ["invalid-reply-source"]
+        set method to "messages.get"
+        set parameters to concat("{\"id\":" and concat(provider_quote(provider_value(fields and 3)) and ",\"format\":\"metadata\",\"metadataHeaders\":[\"Reply-To\",\"From\",\"To\",\"Cc\",\"Message-ID\",\"References\",\"Subject\"]}"))
+    if action equals "read" and also (string_length(account) equals 0 or else string_length(method) equals 0 or else string_length(parameters) equals 0):
+        return ["invalid-arguments"]
+    if action equals "reconcile" and also (string_length(account) equals 0 or else string_length(intent) equals 0):
+        return ["invalid-arguments"]
+    if action equals "write" and also (string_length(account) equals 0 or else string_length(method) equals 0 or else string_length(parameters) equals 0 or else string_length(intent) equals 0):
+        return ["invalid-arguments"]
+    if action equals "compose" and also (string_length(account) equals 0 or else string_length(intent) equals 0 or else not (archive_list_text(gmail_composition_options(parameters) and 0) equals "valid")):
+        return ["invalid-composition"]
+    if (action equals "save_draft" or else action equals "send") and also (string_length(account) equals 0 or else string_length(intent) equals 0):
+        return ["invalid-arguments"]
+    return ["valid",action,account,method,parameters,intent,body]
+
+define gmail_tool_monitor with path as Str and run as Str and call_id as Str and owner as Str and cancellation as Int and stop as Int and writer as Int and completed as Int returning Int:
+    set database to archive_open(path)
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set status to 1
+    if database is not equal to 0 and also library is not equal to 0:
+        set status to 0
+        repeat while 1 equals 1:
+            if provider_helper_cancelled(library and stop) is not equal to 0:
+                break
+            if provider_helper_cancelled(library and cancellation) is not equal to 0 or else not (gmail_tool_owner(database and run and call_id) equals owner):
+                set status to 1
+                break
+            set slept to sleep_ms(100)
+    if database is not equal to 0:
+        set closed to sql_close(database)
+    if library is not equal to 0:
+        set closed to ep_dlclose(library)
+    set closed to net_close(writer)
+    send status to completed
+    return 0
+
+define gmail_tool_accounts with database as Int and owner as Str returning Str:
+    set statement to checkpoint_prepare(database and "SELECT identity,email,state FROM echo_mail_accounts WHERE principal=?1 ORDER BY identity;" and [owner])
+    if statement equals 0:
+        return gmail_tool_status("mailbox-database-unavailable")
+    set body to "{\"status\":\"ready\",\"accounts\":["
+    set count to 0
+    set step to ep_sqlite3_step(statement)
+    repeat while step equals 100:
+        if count > 0:
+            set body to concat(body and ",")
+        set body to concat(body and concat("{\"account\":" and provider_quote(ptr_to_str(ep_sqlite3_column_text(statement and 0)))))
+        set body to concat(body and concat(",\"email\":" and provider_quote(ptr_to_str(ep_sqlite3_column_text(statement and 1)))))
+        set body to concat(body and concat(",\"state\":" and concat(provider_quote(ptr_to_str(ep_sqlite3_column_text(statement and 2))) and "}")))
+        set count to count + 1
+        set step to ep_sqlite3_step(statement)
+    set closed to ep_sqlite3_finalize(statement)
+    if step is not equal to 101 or else closed is not equal to 0:
+        return gmail_tool_status("mailbox-database-unavailable")
+    return concat(body and "]}")
+
+define gmail_tool_execute with authority as Int and run as Str and call_id as Str and cancellation as Int returning Str:
+    set admitted to gmail_tool_request(authority and run and call_id)
+    if not (archive_list_text(admitted and 0) equals "authorized"):
+        return gmail_tool_status(archive_list_text(admitted and 0))
+    set owner to archive_list_text(admitted and 1)
+    set arguments to gmail_tool_arguments(archive_list_text(admitted and 3))
+    if not (archive_list_text(arguments and 0) equals "valid"):
+        return gmail_tool_status(archive_list_text(arguments and 0))
+    set action to archive_list_text(arguments and 1)
+    if action equals "describe":
+        return gmail_described_method(archive_list_text(arguments and 3))
+    set environment to gmail_environment_open()
+    if not (archive_list_text(environment and 0) equals "ready"):
+        return gmail_tool_status(archive_list_text(environment and 0))
+    set database to get_list(environment and 6)
+    set observation to ""
+    if action equals "status":
+        set observation to gmail_tool_accounts(database and owner)
+    else:
+        set observation to gmail_tool_network(authority and run and call_id and admitted and arguments and environment and cancellation)
+    set closed to gmail_environment_close(environment)
+    if not (gmail_tool_owner(authority and run and call_id) equals owner):
+        return gmail_tool_status("mailbox-authority-changed")
+    if closed is not equal to 0:
+        return gmail_tool_status("mailbox-storage-close-failed")
+    return observation
+
+define gmail_tool_network with authority as Int and run as Str and call_id as Str and admitted as List and arguments as List and environment as List and cancellation as Int returning Str:
+    set location to history_collect_one(archive_prepare(authority and "SELECT file FROM pragma_database_list WHERE name='main';"))
+    if not (archive_list_text(location and 0) equals "found"):
+        return gmail_tool_status("mailbox-monitor-unavailable")
+    set system to get_list(environment and 1)
+    set stop to socket_cancellation_create(system)
+    set cancelled to socket_cancellation_create(system)
+    set observation to gmail_tool_status("mailbox-cancellation-unavailable")
+    if stop is not equal to 0 and also cancelled is not equal to 0:
+        set completed to channel
+        set owner to archive_list_text(admitted and 1)
+        set monitor_run to concat(run and "")
+        set monitor_call to concat(call_id and "")
+        set monitor_owner to concat(owner and "")
+        spawn gmail_tool_monitor(archive_list_text(location and 1) and monitor_run and monitor_call and monitor_owner and cancellation and get_list(stop and 0) and get_list(cancelled and 1) and completed)
+        set identity to concat("mailbox:" and ep_sha256(concat(archive_hash_field(archive_runtime_anchor(authority and system)) and concat(archive_hash_field(run) and archive_hash_field(call_id)))))
+        set database to get_list(environment and 6)
+        set session to archive_list_text(admitted and 2)
+        set account to archive_list_text(arguments and 2)
+        set result to gmail_read_denied("invalid-action")
+        if archive_list_text(arguments and 1) equals "read" or else archive_list_text(arguments and 1) equals "reply" or else archive_list_text(arguments and 1) equals "reply_all":
+            set result to gmail_read_account(authority and database and session and identity and account and owner and archive_list_text(arguments and 3) and archive_list_text(arguments and 4) and ep_time_now_ms() / 1000 and system and get_list(environment and 3) and get_list(environment and 2) and archive_list_text(environment and 5) and get_list(environment and 4) and get_list(cancelled and 0))
+        else if archive_list_text(arguments and 1) equals "download":
+            set result to gmail_download_account(authority and run and call_id and session and identity and account and archive_list_text(arguments and 4) and environment and get_list(cancelled and 0))
+        else if archive_list_text(arguments and 1) equals "compose":
+            set result to gmail_compose_account(authority and database and run and call_id and session and identity and account and archive_list_text(arguments and 5) and archive_list_text(arguments and 4) and ep_time_now_ms() / 1000 and system and get_list(environment and 3) and get_list(environment and 2) and archive_list_text(environment and 5) and get_list(environment and 4) and get_list(cancelled and 0))
+        else if archive_list_text(arguments and 1) equals "save_draft":
+            if gmail_owner_active(authority and database and account and owner) equals 0:
+                set result to gmail_read_denied("mailbox-not-authorized")
+            else if gmail_composition_sources_allowed(authority and database and run and call_id and account and archive_list_text(arguments and 5)) equals 0:
+                set result to gmail_read_denied("composition-source-authority-changed")
+            else:
+                set prepared to gmail_prepared_payload(database and account and archive_list_text(arguments and 5))
+                if not (archive_list_text(prepared and 0) equals "ready"):
+                    set result to gmail_read_denied(archive_list_text(prepared and 0))
+                else:
+                    set draft_body to concat("{\"message\":" and concat(archive_list_text(prepared and 1) and "}"))
+                    set result to gmail_write_account(authority and database and run and call_id and session and identity and account and concat("draft:" and archive_list_text(arguments and 5)) and "drafts.create" and "{}" and draft_body and ep_time_now_ms() / 1000 and system and get_list(environment and 3) and get_list(environment and 2) and archive_list_text(environment and 5) and get_list(environment and 4) and get_list(cancelled and 0))
+        else if archive_list_text(arguments and 1) equals "write":
+            set result to gmail_write_account(authority and database and run and call_id and session and identity and account and archive_list_text(arguments and 5) and archive_list_text(arguments and 3) and archive_list_text(arguments and 4) and archive_list_text(arguments and 6) and ep_time_now_ms() / 1000 and system and get_list(environment and 3) and get_list(environment and 2) and archive_list_text(environment and 5) and get_list(environment and 4) and get_list(cancelled and 0))
+        else if archive_list_text(arguments and 1) equals "policy":
+            if sql_execute(authority and "BEGIN IMMEDIATE;") is not equal to 0:
+                set result to gmail_read_denied("authority-writer-unavailable")
+            else:
+                set reviewed to gmail_policy_reviewed(authority and run and owner and account)
+                set rolled to archive_rollback(authority)
+                set result to gmail_read_denied(archive_list_text(reviewed and 0))
+                if archive_list_text(reviewed and 0) equals "reviewed":
+                    set disclosure to concat("{\"policy_sha256\":" and concat(provider_quote(archive_list_text(reviewed and 2)) and concat(",\"policy\":" and concat(archive_list_text(reviewed and 1) and "}"))))
+                    set result to local_json_result("ready" and 0 and disclosure)
+                    set added to append_list(result and 0)
+        else if archive_list_text(arguments and 1) equals "send":
+            set result to gmail_send_account(authority and database and run and call_id and session and identity and account and archive_list_text(arguments and 5) and archive_list_text(arguments and 4) and ep_time_now_ms() / 1000 and system and get_list(environment and 3) and get_list(environment and 2) and archive_list_text(environment and 5) and get_list(environment and 4) and get_list(cancelled and 0))
+        else if archive_list_text(arguments and 1) equals "reconcile":
+            set result to gmail_send_reconcile(authority and database and run and call_id and session and identity and account and archive_list_text(arguments and 5) and ep_time_now_ms() / 1000 and system and get_list(environment and 3) and get_list(environment and 2) and archive_list_text(environment and 5) and get_list(environment and 4) and get_list(cancelled and 0))
+        set cleanup to get_list(result and 3)
+        if cleanup is not equal to 0:
+            repeat while 1 equals 1:
+                set cleaned to gmail_read_cleanup_finish(database and session and cleanup and system and get_list(environment and 2))
+                if not (cleaned equals "cleanup-pending"):
+                    break
+                set slept to sleep_ms(100)
+        set stopped to socket_cancel(stop)
+        set monitored to receive from completed
+        set changed to set_list(cancelled and 1 and -1)
+        set observation to gmail_tool_status(archive_list_text(result and 0))
+        if monitored is not equal to 0 or else gmail_owner_active(authority and database and account and owner) equals 0:
+            set observation to gmail_tool_status("mailbox-authority-changed")
+        else if cleanup equals 0:
+            set response to archive_list_text(result and 2)
+            if archive_list_text(result and 0) equals "ready" and also (archive_list_text(arguments and 1) equals "reply" or else archive_list_text(arguments and 1) equals "reply_all"):
+                set response to gmail_reply_plan(response and archive_list_text(arguments and 1) equals "reply_all")
+            if string_length(response) equals 0:
+                set response to "null"
+            else if provider_json_tokens(response) equals 0:
+                set response to provider_quote(response)
+            set observation to concat("{\"status\":" and concat(provider_quote(archive_list_text(result and 0)) and concat(",\"http_status\":" and concat(int_to_string(get_list(result and 1)) and concat(",\"data\":" and concat(response and "}"))))))
+    if stop is not equal to 0:
+        set closed to socket_cancellation_close(stop)
+    if cancelled is not equal to 0:
+        set closed to socket_cancellation_close(cancelled)
+    return observation

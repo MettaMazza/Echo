@@ -1,0 +1,121 @@
+import "credentials"
+import "response"
+
+# Synchronous host operation with cancellable child ownership. Secrets are
+# carried only in a private request file/header socket and the private result.
+# Never serialize an OAuth result through a user-visible tool or event ledger.
+define gmail_http_call with database as Int and session as Str and identity as Str and token as Str and method as Str and url as Str and body as Str and oauth as Int and system as Int and directory as Int and root as Str and errors as Int and cancellation as Int returning List:
+    if external_request_root_matches(system and directory and root) equals 0:
+        return gmail_empty_http("spool-not-private")
+    set path to ""
+    if string_length(body) > 0:
+        set stored to external_request_file(system and directory and identity and body)
+        if not (stored equals "stored"):
+            return gmail_empty_http(stored)
+        set path to concat(root and concat("/request-" and concat(ep_sha256(identity) and ".json")))
+    set transfer to create_list()
+    if oauth:
+        if not (url equals "https://oauth2.googleapis.com/token" or else url equals "https://oauth2.googleapis.com/revoke"):
+            return gmail_empty_http("invalid-oauth-url")
+        set transfer to gmail_oauth_start(url equals "https://oauth2.googleapis.com/revoke" and path and directory and errors and cancellation)
+    else:
+        set transfer to gmail_transport_start(token and method and url and path and directory and errors and cancellation)
+    set result to gmail_response_collect(database and session and identity and transfer and method and (method equals "DELETE" or else url equals "https://oauth2.googleapis.com/revoke"))
+    # Retained cleanup owners must keep their request file until reaping.
+    if get_list(result and 3) equals 0 and also string_length(path) > 0:
+        set removed to external_request_file_remove(system and directory and identity)
+        if removed is not equal to 0:
+            set changed to set_list(result and 0 and "private-spool-cleanup-failed")
+    return result
+
+# Process-wide account lock survives concurrent callers and is released by the
+# OS on process death. Re-read metadata after acquiring it. Do not concurrently
+# refresh one rotating credential and race two different token generations.
+define gmail_refresh_account with database as Int and session as Str and identity as Str and account as Str and principal as Str and force as Int and now as Int and system as Int and vault as Int and spool as Int and spool_root as Str and errors as Int and cancellation as Int returning List:
+    if external_vault_inode(system and vault and 1) equals 0:
+        return gmail_private_result("credential-unavailable" and "" and 0)
+    set lock_name to concat("refresh-" and concat(ep_sha256(account) and ".lock"))
+    set lock to workspace_file_open(system and vault and lock_name and 1)
+    if lock < 0:
+        set lock to workspace_file_open(system and vault and lock_name and 0)
+    if lock < 0:
+        return gmail_private_result("credential-lock-unavailable" and "" and 0)
+    set flock to ep_dlsym(system and "flock")
+    if external_vault_inode(system and lock and 0) equals 0 or else flock equals 0 or else socket_signed_result(ep_dlcall2(flock and lock and 6)) is not equal to 0:
+        set closed to net_close(lock)
+        return gmail_private_result("credential-refresh-busy" and "" and 0)
+    set result to gmail_refresh_locked(database and session and identity and account and principal and force and now and system and vault and spool and spool_root and errors and cancellation)
+    # A still-owned HTTP process may have submitted a refresh; keep the lock
+    # with the returned cleanup owner until the supervisor has reaped it.
+    if get_list(result and 2) is not equal to 0:
+        set added to append_list(result and lock)
+    else:
+        set closed to net_close(lock)
+    return result
+
+define gmail_refresh_locked with database as Int and session as Str and identity as Str and account as Str and principal as Str and force as Int and now as Int and system as Int and vault as Int and spool as Int and spool_root as Str and errors as Int and cancellation as Int returning List:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT credential_reference,state FROM echo_mail_accounts WHERE identity=?1 AND principal=?2;" and [account,principal]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return gmail_private_result("mailbox-unavailable" and "" and 0)
+    if not (archive_list_text(row and 2) equals "connected"):
+        return gmail_private_result(archive_list_text(row and 2) and "" and 0)
+    set reference to archive_list_text(row and 1)
+    set loaded to gmail_credential_read(system and vault and reference)
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return gmail_private_result(archive_list_text(loaded and 0) and "" and 0)
+    set prior to archive_list_text(loaded and 1)
+    set tokens to provider_json_tokens(prior)
+    set expires to provider_index(tokens and provider_member(tokens and 0 and "expires_at"))
+    if force equals 0 and also string_length(expires) > 0 and also string_length(expires) <= 18 and also string_to_int(expires) > now + 60:
+        return gmail_private_result("ready" and prior and 0)
+    set form to gmail_oauth_refresh_form(prior)
+    set result to gmail_http_call(database and session and identity and "" and "POST" and "https://oauth2.googleapis.com/token" and form and 1 and system and spool and spool_root and errors and cancellation)
+    if get_list(result and 3) is not equal to 0:
+        return gmail_private_result(archive_list_text(result and 0) and "" and get_list(result and 3))
+    if not (archive_list_text(result and 0) equals "ready" or else archive_list_text(result and 0) equals "http-error"):
+        return gmail_private_result(archive_list_text(result and 0) and "" and 0)
+    set merged to gmail_oauth_merge(prior and archive_list_text(result and 2) and now)
+    set status to archive_list_text(merged and 0)
+    if status equals "reconnect-required":
+        set changed to gmail_account_change(database and account and principal and reference and reference and "reconnect-required")
+        return gmail_private_result(changed and "" and 0)
+    if not (archive_list_text(result and 0) equals "ready") or else not (status equals "ready"):
+        return gmail_private_result("refresh-failed" and "" and 0)
+    set saved to gmail_credential_store(system and vault and archive_list_text(merged and 1))
+    if not (archive_list_text(saved and 0) equals "stored"):
+        return gmail_private_result(archive_list_text(saved and 0) and "" and 0)
+    set changed to gmail_account_change(database and account and principal and reference and archive_list_text(saved and 1) and "connected")
+    if not (changed equals "connected"):
+        return gmail_private_result(changed and "" and 0)
+    return gmail_private_result("ready" and archive_list_text(merged and 1) and 0)
+
+define gmail_empty_http with status as Str returning List:
+    set result to local_json_result(status and 0 and "")
+    set added to append_list(result and 0)
+    return result
+
+define gmail_private_result with status as Str and credential as Str and ownership as Int returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and credential)
+    set added to append_list(result and ownership)
+    return result
+
+# Local denial is durable before remote revocation. Retrying a failed remote
+# revocation never reactivates this account; reconnection uses a new identity.
+define gmail_revoke_account with database as Int and session as Str and identity as Str and account as Str and principal as Str and system as Int and vault as Int and spool as Int and spool_root as Str and errors as Int and cancellation as Int returning List:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT credential_reference,state FROM echo_mail_accounts WHERE identity=?1 AND principal=?2;" and [account,principal]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return gmail_private_result("mailbox-unavailable" and "" and 0)
+    set reference to archive_list_text(row and 1)
+    if not (archive_list_text(row and 2) equals "revoked"):
+        set changed to gmail_account_change(database and account and principal and reference and reference and "revoked")
+        if not (changed equals "revoked"):
+            return gmail_private_result(changed and "" and 0)
+    set loaded to gmail_credential_read(system and vault and reference)
+    if not (archive_list_text(loaded and 0) equals "ready"):
+        return gmail_private_result("revoked-remote-pending" and "" and 0)
+    set result to gmail_http_call(database and session and identity and "" and "POST" and "https://oauth2.googleapis.com/revoke" and gmail_oauth_revoke_form(archive_list_text(loaded and 1)) and 1 and system and spool and spool_root and errors and cancellation)
+    if archive_list_text(result and 0) equals "ready" and also get_list(result and 3) equals 0:
+        return gmail_private_result("revoked" and "" and 0)
+    return gmail_private_result("revoked-remote-pending" and "" and get_list(result and 3))

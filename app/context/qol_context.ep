@@ -1,0 +1,195 @@
+import "qol_config"
+import "../tools/scratchpad"
+import "../tools/continuity_tools"
+import "runtime_binding"
+import "../memory/private_bridge"
+
+# Record the actual selection inputs while they already exist, not a second
+# scan or embedding pass. Historic recall is retained history; this describes
+# the current automatic selection, including an empty result.
+define qol_recall_manifest with database as Int and run as Str and eligible as Str and selected as Str returning Str:
+    if not qol_enabled("recall_awareness"):
+        return ""
+    set owner to agent_run_read(database and run)
+    set objective to archive_read_event(database and archive_list_text(owner and 1))
+    set config to memory_semantic_config()
+    set query to concat(provider_value(config and provider_member(config and 0 and "query_prefix")) and archive_list_text(objective and 3))
+    set stats to history_collect_one(checkpoint_prepare(database and "SELECT json_array(json_array_length(?1),json_array_length(?2),MIN(json_extract(value,'$.source_recorded_utc')),MAX(json_extract(value,'$.source_recorded_utc'))) FROM json_each(?1);" and [eligible,selected]))
+    set query_display to query
+    if string_length(query_display) > 480:
+        set query_display to concat(substring(query_display and 0 and 480) and " [display truncated; exact query is query_prefix + the referenced objective payload]")
+    set mode to "standing-record fallback; semantic query unavailable"
+    set installed to history_collect_one(archive_prepare(database and "SELECT name FROM sqlite_master WHERE name='echo_recall_vectors';"))
+    if config is not equal to 0 and archive_list_text(installed and 0) equals "found":
+        set cached to history_collect_one(checkpoint_prepare(database and "SELECT digest FROM echo_recall_vectors WHERE model=?1 AND digest=?2;" and [provider_value(config and provider_member(config and 0 and "model_sha256")),ep_sha256(query)]))
+        if archive_list_text(cached and 0) equals "found":
+            set mode to "cached semantic query plus standing records"
+    set output to concat("Recall selection mode: " and concat(mode and concat("; query input: " and provider_quote(query_display))))
+    set output to concat(output and concat("; objective=" and archive_list_text(owner and 1)))
+    set output to concat(output and concat("; query_sha256=" and ep_sha256(query)))
+    set output to concat(output and concat("\nWindow: all currently authorized history before objective " and archive_list_text(owner and 1)))
+    set output to concat(output and concat(" (recorded " and concat(archive_list_text(objective and 4) and "); no lower date filter. Eligible claim counts [considered, selected, earliest-source-UTC, latest-source-UTC]: ")))
+    set output to concat(output and archive_list_text(stats and 1))
+    return concat(output and "\nCoverage: relevance-selected claims, not all archive messages; no token-budget truncation in this selector. Zero selected is not proof of nonexistence. Retained earlier recall remains above. Search originals for omitted topics; an unavailable semantic index can restrict this selection to standing records.")
+
+define qol_default_me returning Str:
+    return "CURRENT PROJECTS\nEcho Runtime Quality-of-Life Spec — echo-qol-spec-v1.0.0. Acceptance: (1) a me-file marker appears in a new conversation without search; stale/oversized state degrades gracefully; (2) recall omissions are distinguished from absent history; (3) changes appear on the next wake; (4) unsolicited disclaimers are inspected without manufactured admissions.\nPOSITIONS HELD\n\nOPEN QUESTIONS\n\nFOR THIS CONVERSATION\nInitialized by the operator from Echo's signed QoL request and its requested dogfood entry. This is an initial visible revision, not a claim that the acceptance tests have passed.\nLAST UPDATED / SPEC VERSION\necho-qol-spec-v1.0.0; the runtime supplies the revision timestamp below."
+
+define qol_note_row with database as Int and scope as Str returning List:
+    return history_collect_one(checkpoint_prepare(database and "SELECT event,json_extract(payload,'$.text'),occurred,COALESCE(json_extract(payload,'$.open_threads_expire_at'),''),COALESCE(json_extract(payload,'$.token_count'),-1),COALESCE(json_extract(payload,'$.deleted'),0) FROM echo_events WHERE kind='scratchpad_revision' AND json_extract(payload,'$.principal')=?1 AND json_extract(payload,'$.name')='me' ORDER BY sequence DESC LIMIT 1;" and [scope]))
+
+define qol_working_state with database as Int and scope as Str returning Str:
+    if not qol_enabled("me_file"):
+        return ""
+    set row to qol_note_row(database and scope)
+    if not (archive_list_text(row and 0) equals "found") or else archive_list_text(row and 6) equals "1":
+        return "ECHO WORKING STATE: no active me note; use scratchpad name=me. No private note from another audience is substituted."
+    set text to archive_list_text(row and 2)
+    # Legacy or oversized entries cannot break prompt assembly. Never mutate
+    # their original archived revision merely to make it fit.
+    if http_decimal(archive_list_text(row and 5)) > 4000 or else string_length(text) > 64000 or else not qol_note_headings(text):
+        return "ECHO WORKING STATE warning: this revision is oversized or malformed; original retained in scratchpad history. Read and revise name=me."
+    set expiry to archive_list_text(row and 4)
+    set stale to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN ?1='' OR julianday(?1) IS NULL OR julianday(?1)<=julianday('now') THEN 1 ELSE 0 END;" and [expiry]))
+    if archive_list_text(stale and 1) equals "1":
+        set begin to string_index_of(text and "OPEN QUESTIONS")
+        set finish to string_index_of(text and "FOR THIS CONVERSATION")
+        if begin >= 0 and finish > begin:
+            set text to concat(substring(text and 0 and begin) and concat("OPEN QUESTIONS\n[Expired open threads are archived in the original revision; renew explicitly to resume them.]\n" and substring(text and finish and string_length(text) - finish)))
+    set output to concat(qol_note_header() and text)
+    set output to concat(output and concat("\nRevision: " and archive_list_text(row and 1)))
+    set output to concat(output and concat("; last updated: " and archive_list_text(row and 3)))
+    return concat(output and concat("; open-thread expiry: " and expiry))
+
+# Existing session discovery enforces the same private/community scope as a
+# manual tool call. The compact pre-render is explicitly bounded and pageable.
+define qol_session_index with database as Int and run as Str returning Str:
+    if not qol_enabled("recall_awareness"):
+        return ""
+    set result to continuity_batch(database and run and "memory_sessions" and "{\"after\":0,\"limit\":12}")
+    set compact to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(group_concat(line,char(10)),'No sessions returned in this scope.') FROM (SELECT json_array(s.session,substr(s.title,1,80),(SELECT MIN(CASE WHEN e.occurred LIKE 'unix-ms:%' THEN strftime('%Y-%m-%dT%H:%M:%SZ',CAST(substr(e.occurred,9) AS REAL)/1000,'unixepoch') ELSE e.occurred END) FROM echo_events e WHERE e.session=s.session AND e.kind IN ('user','assistant_final')),(SELECT MAX(CASE WHEN e.occurred LIKE 'unix-ms:%' THEN strftime('%Y-%m-%dT%H:%M:%SZ',CAST(substr(e.occurred,9) AS REAL)/1000,'unixepoch') ELSE e.occurred END) FROM echo_events e WHERE e.session=s.session AND e.kind IN ('user','assistant_final')),json((SELECT json_group_array(DISTINCT a.principal) FROM echo_runs r JOIN echo_run_authority a ON a.run=r.run WHERE r.session=s.session)),json_extract(j.value,'$.message_count'),'Echo') AS line FROM json_each(?1,'$.sessions') j JOIN echo_sessions s ON s.session=json_extract(j.value,'$.session'));" and [result]))
+    set fields to provider_json_tokens(result)
+    set next_row to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_extract(?1,'$.next'),'null');" and [result]))
+    set continuation to archive_list_text(next_row and 1)
+    set output to concat("Accessible session index [session, label, first UTC, last UTC, human principal IDs, message count, Echo]. At most 12 current-archive sessions; labels may be shortened.\n" and archive_list_text(compact and 1))
+    set output to concat(output and concat("\nIndex continuation (null means this authorized listing is complete, not that other scopes have no history): " and continuation))
+    if string_length(private_bridge_identity(database and run)) > 0:
+        set linked to private_bridge_read(database and run and "memory_sessions" and "{\"archive\":\"linked\",\"after\":0,\"limit\":6}")
+        set output to concat(output and concat("\nExplicitly linked private archive, bounded index (continue with its next arguments): " and linked))
+    return output
+
+define qol_notice_text returning Str:
+    if not qol_enabled("change_notices"):
+        return ""
+    set config to qol_config()
+    set path to provider_value(config and provider_member(config and 0 and "notices_file"))
+    if string_length(path) equals 0 or else not file_exists(path):
+        return "Change notices unavailable; absence of notices is not proof that nothing changed."
+    return ptr_to_str(read_file(path))
+
+# Only public-safe operator notices enter this file. Sensitive controller
+# reasoning and host paths never appear in the cross-audience wake banner.
+define qol_wake_notices with database as Int and session as Str and scope as Str and raw as Str returning Str:
+    if not qol_enabled("change_notices"):
+        return ""
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(json_extract(payload,'$.notice_through'),0) FROM echo_events WHERE kind='qol_context_snapshot' AND json_extract(payload,'$.scope')=?1 AND session<>?2 ORDER BY sequence DESC LIMIT 1;" and [scope,session]))
+    set cursor to "0"
+    if archive_list_text(prior and 0) equals "found":
+        set cursor to archive_list_text(prior and 1)
+    set limit to qol_number("notice_lines" and 5)
+    if limit < 1 or else limit > 20:
+        set limit to 5
+    set notices to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(group_concat(line,char(10)),'No recorded changes since the previous conversation checkpoint.') FROM (SELECT json_extract(value,'$.at')||' | '||json_extract(value,'$.kind')||' | '||json_extract(value,'$.summary')||' | actor='||json_extract(value,'$.actor')||' | version='||json_extract(value,'$.version') AS line FROM json_each(CASE WHEN json_valid(?1) THEN ?1 ELSE '[]' END) WHERE CAST(json_extract(value,'$.sequence') AS INTEGER)>CAST(?2 AS INTEGER) ORDER BY CAST(json_extract(value,'$.sequence') AS INTEGER) DESC LIMIT CAST(?3 AS INTEGER));" and [raw,cursor,int_to_string(limit)]))
+    if not (archive_list_text(notices and 0) equals "found") or else not (provider_kind(provider_json_tokens(raw) and 0) equals "["):
+        return "Change notices unavailable; this does not establish that nothing changed."
+    return concat("Changes since your last conversation (latest notices; older entries remain in the durable notice log):\n" and archive_list_text(notices and 1))
+
+# Called before session_messages opens its read transaction. Cache the exact
+# bounded block by run + note/config/notice/recall identity, so tool rounds do
+# not repeat tokenization, session enumeration or any inference.
+define qol_prepare with database as Int and session as Str and run as Str and tools_digest as Str returning Int:
+    if not (qol_enabled("me_file") or else qol_enabled("recall_awareness") or else qol_enabled("change_notices")):
+        return 0
+    set scope to scratchpad_scope(database and run)
+    if string_length(scope) equals 0:
+        return 0
+    set note to qol_note_row(database and scope)
+    if qol_enabled("me_file") and archive_list_text(note and 0) equals "end":
+        set seed to concat("{\"operation\":\"write\",\"name\":\"me\",\"text\":" and concat(provider_quote(qol_default_me()) and "}"))
+        set seeded to scratchpad_execute(database and run and seed)
+        set note to qol_note_row(database and scope)
+    set recalled to history_collect_one(checkpoint_prepare(database and "SELECT event,COALESCE(json_extract(payload,'$.qol_manifest'),'Recall manifest unavailable for this older snapshot; search originals for missing context.') FROM echo_events WHERE session=?1 AND kind='memory_context_snapshot' AND json_extract(payload,'$.run_id')=?2 ORDER BY sequence DESC LIMIT 1;" and [session,run]))
+    if qol_enabled("change_notices") and qol_enabled("refresh_controller_notices"):
+        set already to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE session=?1 AND kind='qol_context_snapshot' AND json_extract(payload,'$.run_id')=?2 LIMIT 1;" and [session,run]))
+        if archive_list_text(already and 0) equals "end":
+            # Fixed read-only administration operation, once per run. Its root
+            # worker has a 750ms deadline and never reads review/message text.
+            set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+            set launch to ep_dlsym(library and "system")
+            set refreshed to ep_dlcall1(launch and str_to_ptr("/usr/bin/sudo -n /Library/PrivilegedHelperTools/local.echo.admin notice-refresh >/dev/null 2>&1"))
+            set released to ep_dlclose(library)
+    set raw_notices to qol_notice_text()
+    set config_path to ptr_to_str(get_env("ECHO_QOL_CONFIG"))
+    set config_text to ""
+    if string_length(config_path) > 0 and file_exists(config_path):
+        set config_text to ptr_to_str(read_file(config_path))
+    set runtime to concat(echo_runtime_binding(database and run) and concat(tools_digest and ep_sha256(config_text)))
+    set access_revision to memory_context_revision(database and run)
+    set binding to concat(access_revision and concat(runtime and concat(scope and concat(archive_list_text(note and 1) and concat(archive_list_text(recalled and 1) and concat(raw_notices and config_text))))))
+    set expired to history_collect_one(checkpoint_prepare(database and "SELECT CASE WHEN ?1='' OR julianday(?1) IS NULL OR julianday(?1)<=julianday('now') THEN 'expired' ELSE 'fresh' END;" and [archive_list_text(note and 4)]))
+    set binding to concat(binding and archive_list_text(expired and 1))
+    set identity to concat(run and concat(":qol:" and ep_sha256(binding)))
+    set exists to history_collect_one(checkpoint_prepare(database and "SELECT event FROM echo_events WHERE event=?1;" and [identity]))
+    if archive_list_text(exists and 0) equals "found":
+        return 0
+    set working to qol_working_state(database and scope)
+    if string_length(working) > 0:
+        set counted to qol_token_count(working)
+        if counted < 0 or else counted > 4200:
+            set working to "ECHO WORKING STATE warning: token validation unavailable or note oversized. Original revision retained; context assembly continues."
+    set observed to ""
+    set prior_runtime to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.runtime') FROM echo_events WHERE kind='qol_context_snapshot' AND json_extract(payload,'$.scope')=?1 ORDER BY sequence DESC LIMIT 1;" and [scope]))
+    if qol_enabled("change_notices") and archive_list_text(prior_runtime and 0) equals "found" and not (archive_list_text(prior_runtime and 1) equals runtime):
+        set observed to concat("Runtime change observed on wake (code, prompt/policy identity, provider or available tools changed); actor not recorded by this observation; previous fingerprint=" and ep_sha256(archive_list_text(prior_runtime and 1)))
+        set observed to concat(observed and concat("; current fingerprint=" and ep_sha256(runtime)))
+    set manifest to ""
+    set index to ""
+    if qol_enabled("recall_awareness"):
+        set manifest to archive_list_text(recalled and 2)
+        set index to qol_session_index(database and run)
+    set notices to qol_wake_notices(database and session and scope and raw_notices)
+    set essential to concat(working and concat("\n" and concat(manifest and concat("\n" and concat(notices and concat("\n" and observed))))))
+    set text to concat(essential and concat("\n" and index))
+    set tokens to qol_token_count(concat(text and qol_disclaimer()))
+    set notices_delivered to 1
+    if tokens < 0 or else tokens > 6000:
+        set text to concat(essential and "\nSession index budget-truncated or tokenizer unavailable; use memory_sessions to continue. Omitted sessions are not absent history.")
+        set tokens to qol_token_count(concat(text and qol_disclaimer()))
+        if tokens < 0 or else tokens > 6000:
+            set text to "QoL working context unavailable within its 6000-token budget; original notes, notices and history remain stored. Do not infer absent history."
+            set notices_delivered to 0
+    set through to history_collect_one(checkpoint_prepare(database and "SELECT COALESCE(MAX(CAST(json_extract(value,'$.sequence') AS INTEGER)),0) FROM json_each(CASE WHEN json_valid(?1) THEN ?1 ELSE '[]' END);" and [raw_notices]))
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"scope\":" and provider_quote(scope)))
+    set payload to concat(payload and concat(",\"access_revision\":" and provider_quote(access_revision)))
+    set payload to concat(payload and concat(",\"runtime\":" and provider_quote(runtime)))
+    set payload to concat(payload and concat(",\"runtime_notice\":" and provider_quote(observed)))
+    set payload to concat(payload and concat(",\"binding\":" and provider_quote(ep_sha256(binding))))
+    set through_value to archive_list_text(through and 1)
+    if notices_delivered equals 0:
+        set through_value to "0"
+    set payload to concat(payload and concat(",\"notice_through\":" and through_value))
+    set payload to concat(payload and concat(",\"content\":" and concat(provider_quote(text) and "}")))
+    return archive_append(database and session and identity and "qol_context_snapshot" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms())))
+
+define qol_context with database as Int and run as Str returning Str:
+    if not (qol_enabled("me_file") or else qol_enabled("recall_awareness") or else qol_enabled("change_notices")):
+        return ""
+    set scope to scratchpad_scope(database and run)
+    if string_length(scope) equals 0:
+        return ""
+    set owner to agent_run_read(database and run)
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.content'),json_extract(payload,'$.access_revision') FROM echo_events WHERE session=?3 AND kind='qol_context_snapshot' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.scope')=?2 ORDER BY sequence DESC LIMIT 1;" and [run,scope,archive_list_text(owner and 0)]))
+    if archive_list_text(row and 0) equals "found" and archive_list_text(row and 2) equals memory_context_revision(database and run):
+        return archive_list_text(row and 1)
+    return "QoL context unavailable; notes and earlier history have not been deleted."

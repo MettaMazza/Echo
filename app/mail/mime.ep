@@ -1,0 +1,194 @@
+import "encoding"
+import "../network/search_query"
+import "../providers/archived_stream"
+import "../providers/local_json"
+
+# Canonical address inputs, not display-name/header syntax. Names can be
+# resolved through separately authorized Contacts; no CRLF/header injection.
+define gmail_address_valid with address as Str returning Int:
+    set length to string_length(address)
+    if length < 3 or else length > 254:
+        return 0
+    set at to -1
+    set offset to 0
+    repeat while offset < length:
+        set code to get_character(address and offset)
+        if code equals 64:
+            if at >= 0:
+                return 0
+            set at to offset
+        else if code <= 32 or else code >= 127 or else string_contains("<>(),;:\"\\[]" and substring(address and offset and 1)):
+            return 0
+        set offset to offset + 1
+    if at < 1 or else at > 64 or else at >= length - 1:
+        return 0
+    if get_character(address and 0) equals 46 or else get_character(address and at - 1) equals 46 or else string_contains(address and ".."):
+        return 0
+    set offset to at + 1
+    repeat while offset < length:
+        set code to get_character(address and offset)
+        if not ((code >= 65 and also code <= 90) or else (code >= 97 and also code <= 122) or else (code >= 48 and also code <= 57) or else code equals 45 or else code equals 46):
+            return 0
+        set offset to offset + 1
+    return 1
+
+define gmail_header_text_valid with text as Str returning Int:
+    set index to 0
+    repeat while index < string_length(text):
+        set code to peek_byte(str_to_ptr(text) and index)
+        if code < 32 or else code equals 127:
+            return 0
+        set index to index + 1
+    return provider_valid_utf8(text)
+
+# RFC 2047 encoded words stay below 75 bytes and never split a UTF-8 scalar.
+define gmail_subject_header with subject as Str returning Str:
+    set builder to create_builder()
+    set start to 0
+    repeat while start < string_length(subject):
+        set finish to start
+        repeat while finish < string_length(subject):
+            set code to peek_byte(str_to_ptr(subject) and finish)
+            set width to 1
+            if code >= 240:
+                set width to 4
+            else if code >= 224:
+                set width to 3
+            else if code >= 192:
+                set width to 2
+            if finish + width - start > 42:
+                break
+            set finish to finish + width
+        if start > 0:
+            set added to builder_append(builder and "\r\n ")
+        set encoded to gmail_base64_bytes(str_to_ptr(subject) + start and finish - start)
+        set added to builder_append(builder and concat("=?UTF-8?B?" and concat(encoded and "?=")))
+        set start to finish
+    return ptr_to_str(builder_to_string(builder))
+
+define gmail_recipient_header with name as Str and addresses as List returning Str:
+    if length_list(addresses) equals 0:
+        return ""
+    set builder to create_builder()
+    set added to builder_append(builder and concat(name and ": "))
+    set index to 0
+    for each address in addresses:
+        if index > 0:
+            set added to builder_append(builder and ",\r\n ")
+        set added to builder_append(builder and ptr_to_str(address))
+        set index to index + 1
+    set added to builder_append(builder and "\r\n")
+    return ptr_to_str(builder_to_string(builder))
+
+# RFC 2231 filename continuations preserve arbitrary UTF-8 without quoting
+# ambiguities. Do not split percent-encoded bytes between continuation fields.
+define gmail_filename_header with name as Str returning Str:
+    set encoded to network_query_encode(name)
+    set builder to create_builder()
+    set offset to 0
+    set index to 0
+    repeat while offset < string_length(encoded):
+        set count to string_length(encoded) - offset
+        if count > 60:
+            set count to 60
+        if get_character(encoded and offset + count - 1) equals 37:
+            set count to count - 1
+        else if count > 1 and also get_character(encoded and offset + count - 2) equals 37:
+            set count to count - 2
+        set added to builder_append(builder and concat(";\r\n filename*" and concat(int_to_string(index) and "*=")))
+        if index equals 0:
+            set added to builder_append(builder and "UTF-8''")
+        set added to builder_append(builder and substring(encoded and offset and count))
+        set offset to offset + count
+        set index to index + 1
+    return ptr_to_str(builder_to_string(builder))
+
+define gmail_media_type_valid with media as Str returning Int:
+    set slash to 0
+    set index to 0
+    if string_length(media) equals 0:
+        return 0
+    repeat while index < string_length(media):
+        set code to get_character(media and index)
+        if code equals 47:
+            if index equals 0 or else index equals string_length(media) - 1:
+                return 0
+            set slash to slash + 1
+        else if not ((code >= 65 and also code <= 90) or else (code >= 97 and also code <= 122) or else (code >= 48 and also code <= 57) or else string_contains("!#$&^_.+-" and substring(media and index and 1))):
+            return 0
+        set index to index + 1
+    return slash equals 1
+
+# Source reply references are canonical bracketed Message-IDs supplied by the
+# fetched-message adapter, never arbitrary headers. Preserve their order.
+define gmail_references_valid with references as List returning Int:
+    for each entry in references:
+        set value to ptr_to_str(entry)
+        set length to string_length(value)
+        if length < 3 or else length > 900 or else get_character(value and 0) is not equal to 60 or else get_character(value and length - 1) is not equal to 62:
+            return 0
+        set index to 1
+        repeat while index < length - 1:
+            set code to get_character(value and index)
+            if code <= 32 or else code >= 127 or else code equals 60 or else code equals 62:
+                return 0
+            set index to index + 1
+    return 1
+
+# Attachments are host-resolved [name, media_type, verified standard-base64],
+# not model-selected filesystem paths. Original archive bytes remain intact.
+# Date is generated by the host; sender is the verified Echo mailbox.
+define gmail_mime_compose with identity as Str and date as Str and recipients_to as List and recipients_cc as List and recipients_bcc as List and subject as Str and body as Str and html as Int and references as List and attachments as List returning List:
+    if string_length(identity) equals 0 or else string_length(date) equals 0 or else gmail_header_text_valid(date) equals 0 or else gmail_header_text_valid(subject) equals 0 or else provider_valid_utf8(body) equals 0 or else gmail_references_valid(references) equals 0:
+        return ["invalid-message",""]
+    if length_list(recipients_to) + length_list(recipients_cc) + length_list(recipients_bcc) equals 0:
+        return ["recipient-required",""]
+    for each group in [recipients_to,recipients_cc,recipients_bcc]:
+        for each address in group:
+            if gmail_address_valid(ptr_to_str(address)) equals 0:
+                return ["invalid-canonical-address",""]
+    set boundary to concat("echo_" and ep_sha256(identity))
+    set message_id to concat("echo." and concat(ep_sha256(identity) and "@gmail.com"))
+    set builder to create_builder()
+    set added to builder_append(builder and "From: Echo <echo.ernos.smith@gmail.com>\r\n")
+    set added to builder_append(builder and concat("Date: " and concat(date and "\r\n")))
+    set added to builder_append(builder and concat("Message-ID: <" and concat(message_id and ">\r\n")))
+    set added to builder_append(builder and gmail_recipient_header("To" and recipients_to))
+    set added to builder_append(builder and gmail_recipient_header("Cc" and recipients_cc))
+    set added to builder_append(builder and gmail_recipient_header("Bcc" and recipients_bcc))
+    set added to builder_append(builder and concat("Subject: " and concat(gmail_subject_header(subject) and "\r\n")))
+    if length_list(references) > 0:
+        set added to builder_append(builder and concat("In-Reply-To: " and concat(archive_list_text(references and length_list(references) - 1) and "\r\n")))
+        set added to builder_append(builder and "References:")
+        for each reference in references:
+            set added to builder_append(builder and concat("\r\n " and ptr_to_str(reference)))
+        set added to builder_append(builder and "\r\n")
+    set added to builder_append(builder and concat("MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"" and concat(boundary and "\"\r\n\r\n")))
+    set added to builder_append(builder and concat("--" and concat(boundary and "\r\nContent-Type: text/")))
+    if html:
+        set added to builder_append(builder and "html")
+    else:
+        set added to builder_append(builder and "plain")
+    set added to builder_append(builder and "; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n")
+    set normalized to ptr_to_str(string_replace(body and "\r\n" and "\n"))
+    set normalized to ptr_to_str(string_replace(normalized and "\r" and "\n"))
+    set normalized to ptr_to_str(string_replace(normalized and "\n" and "\r\n"))
+    set added to builder_append(builder and gmail_mime_base64(gmail_base64_bytes(str_to_ptr(normalized) and string_length(normalized))))
+    for each attachment in attachments:
+        if length_list(attachment) is not equal to 3:
+            return ["invalid-attachment",""]
+        set name to archive_list_text(attachment and 0)
+        set media to archive_list_text(attachment and 1)
+        set encoded to archive_list_text(attachment and 2)
+        if string_length(name) equals 0 or else provider_valid_utf8(name) equals 0 or else gmail_media_type_valid(media) equals 0:
+            return ["invalid-attachment",""]
+        set decoded to gmail_base64_decode(encoded and 0)
+        if not (archive_list_text(decoded and 0) equals "decoded"):
+            return ["invalid-attachment-base64",""]
+        set added to builder_append(builder and concat("--" and concat(boundary and "\r\nContent-Type: ")))
+        set added to builder_append(builder and concat(media and "\r\nContent-Disposition: attachment"))
+        set added to builder_append(builder and gmail_filename_header(name))
+        set added to builder_append(builder and "\r\nContent-Transfer-Encoding: base64\r\n\r\n")
+        set added to builder_append(builder and gmail_mime_base64(encoded))
+    set added to builder_append(builder and concat("--" and concat(boundary and "--\r\n")))
+    return ["composed",ptr_to_str(builder_to_string(builder)),message_id]

@@ -1,0 +1,168 @@
+import "../fixtures/generation_fixture"
+import "../../app/agent/tool_dispatch"
+import "../../app/tools/tool_registry"
+
+# Scripted calls use the actual provider parser, dispatcher and guardian. The
+# protected worker runs between seed and invoke; this fixture supplies no review
+# or approval. Root installation must provide its real registry and guardian.
+define registered_fixture_step with database as Int and run as Str and step as Int and name as Str and arguments as Str returning Str:
+    set call_id to concat("fixture-" and int_to_string(step))
+    set request to concat(run and concat(":" and call_id))
+    set listener to local_socket_listen(0)
+    set delta to concat("{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":" and concat(provider_quote(call_id) and concat(",\"function\":{\"name\":" and concat(provider_quote(name) and concat(",\"arguments\":" and concat(provider_quote(arguments) and "}}]},\"finish_reason\":\"tool_calls\"}]}"))))))
+    set completed to channel
+    spawn generation_fixture(listener and delta and completed)
+    set generated to agent_generate_local(database and run and request and "{\"model\":\"fixture\",\"stream\":true,\"messages\":[]}" and get_list(listener and 2) and "/v1/chat/completions" and -1 and 65536 and "0")
+    set served to receive from completed
+    set closed to local_socket_close(listener)
+    if generated is not equal to 0 or else served is not equal to 0:
+        return "fixture-generation-failed"
+    repeat while archive_list_text(agent_run_read(database and run) and 2) equals "tools":
+        if agent_tool_step(database and run) is not equal to 0:
+            return "fixture-dispatch-failed"
+    set result to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(e.payload,'$.result') FROM echo_tool_calls t JOIN echo_events e ON e.event=t.result_event WHERE t.run=?1 AND t.call_id=?2 AND t.state='observed';" and [run,call_id]))
+    return archive_list_text(result and 1)
+
+define registered_fixture_seed with database as Int and config as List returning Int:
+    if web_run_schema(database) is not equal to 0 or else not (ptr_to_str(tool_registry_schema(database)) equals "applied"):
+        return 10
+    if web_pairing_invite(database and "fixture-invite") is not equal to 0 or else web_device_pair(database and "fixture-invite" and "fixture" and "Registration qualification fixture" and "isolated-fixture-credential") is not equal to 0:
+        return 11
+    if not (principal_host_role(database and "fixture-admin" and "device:fixture" and "admin" and "Isolated registration workflow qualification") equals "recorded"):
+        return 12
+    set run to "tool-fixture-run"
+    set submitted to web_submit_owned(database and "fixture" and run and "" and "Qualify persistent generated tool registration in an isolated fixture.")
+    if not (archive_list_text(submitted and 0) equals "accepted"):
+        return 13
+    set source to provider_value(config and provider_member(config and 0 and "source_text"))
+    set created to registered_fixture_step(database and run and 0 and "workspace_create_text" and concat("{\"path\":\"tool.ep\",\"text\":" and concat(provider_quote(source) and "}")))
+    set searched to registered_fixture_step(database and run and 1 and "tool_search" and "{\"query\":\"fixture\",\"after\":0,\"catalog_digest\":\"\"}")
+    set dormant to registered_fixture_step(database and run and 2 and "tool_candidates" and "{\"query\":\"fixture\",\"after\":0}")
+    set installed to registered_fixture_step(database and run and 3 and "tool_library" and "{\"query\":\"fixture_tool\",\"after\":0,\"registry_sha256\":\"\"}")
+    set rows to history_collect_one(checkpoint_prepare(database and "SELECT json_group_array(result_event) FROM (SELECT result_event FROM echo_tool_calls WHERE run=? AND call_id IN ('fixture-1','fixture-2','fixture-3') AND state='observed' ORDER BY call_id);" and [run]))
+    set receipts to archive_list_text(rows and 1)
+    set receipt_tokens to provider_json_tokens(receipts)
+    if receipt_tokens equals 0 or else length_list(provider_items(receipt_tokens and 0)) is not equal to 3:
+        return 14
+    set manifest to provider_value(config and provider_member(config and 0 and "manifest"))
+    set fields to provider_json_tokens(manifest)
+    set previous to agent_json_source(manifest and fields and provider_member(fields and 0 and "discovery_receipts"))
+    set manifest to ptr_to_str(string_replace(manifest and previous and receipts))
+    set saved to registered_fixture_step(database and run and 4 and "tool_candidate_save" and concat("{\"manifest_text\":" and concat(provider_quote(manifest) and "}")))
+    set result to provider_json_tokens(saved)
+    if not (provider_value(result and provider_member(result and 0 and "status")) equals "candidate-saved-not-activated"):
+        display saved
+        return 15
+    display "Seeded through real dispatcher; no review, qualification or registration manufactured. Run the protected worker before invoke."
+    return 0
+
+define registered_fixture_invoke with database as Int and run as Str returning Int:
+    set candidate to history_collect_one(archive_prepare(database and "SELECT digest,name FROM echo_tool_candidates WHERE run='tool-fixture-run' AND version=1;"))
+    if not (archive_list_text(candidate and 0) equals "found"):
+        return 20
+    set digest to archive_list_text(candidate and 1)
+    set name to archive_list_text(candidate and 2)
+    set listed to registered_fixture_step(database and run and 10 and "tool_library" and concat("{\"query\":" and concat(provider_quote(name) and ",\"after\":0,\"registry_sha256\":\"\"}")))
+    set result to provider_json_tokens(listed)
+    if not (provider_value(result and provider_member(result and 0 and "digest")) equals digest):
+        display listed
+        return 21
+    set loaded to registered_fixture_step(database and run and 11 and "tool_load" and concat("{\"action\":\"load\",\"digest\":" and concat(provider_quote(digest) and "}")))
+    set result to provider_json_tokens(loaded)
+    if not (provider_value(result and provider_member(result and 0 and "status")) equals "loaded") or else string_contains(registered_loaded_schemas(database and run) and name) equals 0:
+        display loaded
+        return 22
+    set invoked to registered_fixture_step(database and run and 12 and name and "{\"value\":\"registered\"}")
+    set result to provider_json_tokens(invoked)
+    if not (provider_value(result and provider_member(result and 0 and "status")) equals "complete") or else not (provider_value(result and provider_member(result and 0 and "wait_status")) equals "0"):
+        display invoked
+        return 23
+    set output to history_collect_one(checkpoint_prepare(database and "SELECT group_concat(data,'')=lower(hex(?2)) FROM (SELECT json_extract(payload,'$.data') AS data FROM echo_events WHERE kind='process_output' AND json_extract(payload,'$.run_id')=?1 AND json_extract(payload,'$.call_id')='fixture-12' AND json_extract(payload,'$.stream')='stdout' ORDER BY sequence);" and [run,"{\"value\":\"registered\"}\n"]))
+    if not (archive_list_text(output and 1) equals "1"):
+        return 24
+    return 0
+
+# Lifecycle calls use fresh runs; each state is checked after the protected
+# worker has independently reviewed and published that exact request.
+define registered_fixture_lifecycle with database as Int and mode as Str returning Int:
+    set requesting to string_index_of(mode and "request-") equals 0
+    set action to substring(mode and 7 and string_length(mode) - 7)
+    if requesting:
+        set action to substring(mode and 8 and string_length(mode) - 8)
+    if not (action equals "quarantined" or else action equals "active" or else action equals "retired"):
+        return 30
+    set run to concat("tool-fixture:" and mode)
+    set submitted to web_submit_owned(database and "fixture" and run and "" and "Exercise the isolated tool lifecycle with the installed protected review policy.")
+    if not (archive_list_text(submitted and 0) equals "accepted"):
+        return 31
+    set listed to registered_fixture_step(database and run and 0 and "tool_library" and "{\"query\":\"fixture_tool\",\"after\":0,\"registry_sha256\":\"\"}")
+    set result to provider_json_tokens(listed)
+    if not (provider_value(result and provider_member(result and 0 and "status")) equals "found"):
+        display listed
+        return 32
+    set digest to provider_value(result and provider_member(result and 0 and "digest"))
+    if requesting:
+        set arguments to concat("{\"digest\":" and provider_quote(digest))
+        set arguments to concat(arguments and concat(",\"registry_sha256\":" and provider_quote(provider_value(result and provider_member(result and 0 and "registry_sha256")))))
+        set arguments to concat(arguments and concat(",\"action\":" and provider_quote(action)))
+        set arguments to concat(arguments and ",\"reason\":\"Isolated lifecycle acceptance using the unchanged installed rights policy.\"}")
+        set requested to registered_fixture_step(database and run and 1 and "tool_version_manage" and arguments)
+        set response to provider_json_tokens(requested)
+        if not (provider_value(response and provider_member(response and 0 and "status")) equals "requested-not-applied"):
+            display requested
+            return 33
+        return 0
+    if not (provider_value(result and provider_member(result and 0 and "state")) equals action):
+        display listed
+        return 34
+    if action equals "active":
+        return registered_fixture_invoke(database and run)
+    set blocked to registered_fixture_step(database and run and 1 and "tool_load" and concat("{\"action\":\"load\",\"digest\":" and concat(provider_quote(digest) and "}")))
+    set response to provider_json_tokens(blocked)
+    if not (provider_value(response and provider_member(response and 0 and "status")) equals "tool-unavailable-or-not-authorized"):
+        display blocked
+        return 35
+    if string_contains(registered_loaded_schemas(database and "tool-fixture-run") and "fixture_tool") equals 1 or else registered_tool_allows(database and "tool-fixture-run" and "fixture-12" and "fixture_tool") is not equal to 0:
+        return 36
+    return 0
+
+define main returning Int:
+    if get_argument_count() is not equal to 3:
+        return 1
+    set mode to get_argument(1)
+    set lifecycle to string_index_of(mode and "request-") equals 0 or else string_index_of(mode and "verify-") equals 0
+    if not (mode equals "seed" or else mode equals "invoke" or else lifecycle):
+        return 2
+    set config to provider_json_tokens(file_read(get_argument(2)))
+    set path to provider_value(config and provider_member(config and 0 and "database"))
+    if config equals 0 or else (mode equals "seed" and file_exists(path)) or else (not (mode equals "seed") and not file_exists(path)):
+        return 3
+    set configured to set_env("ECHO_WORKSPACE_ROOT" and provider_value(config and provider_member(config and 0 and "workspace_root")))
+    set configured to set_env("ECHO_EXECUTION_RUNTIME" and provider_value(config and provider_member(config and 0 and "execution_runtime")))
+    set configured to set_env("ECHO_TOOL_REGISTRY_PATH" and provider_value(config and provider_member(config and 0 and "registry")))
+    set database to archive_open(path)
+    if database equals 0:
+        return 4
+    if mode equals "seed":
+        set result to registered_fixture_seed(database and config)
+        set closed to sql_close(database)
+        return result + closed
+    if lifecycle:
+        set result to registered_fixture_lifecycle(database and mode)
+        set closed to sql_close(database)
+        return result + closed
+    set result to registered_fixture_invoke(database and "tool-fixture-run")
+    if result is not equal to 0:
+        set closed to sql_close(database)
+        return result
+    set closed to sql_close(database)
+    set database to archive_open(path)
+    set submitted to web_submit_owned(database and "fixture" and "tool-fixture-reload" and "" and "Reload and use the accepted tool after reopening the archive.")
+    if not (archive_list_text(submitted and 0) equals "accepted"):
+        return 5
+    set result to registered_fixture_invoke(database and "tool-fixture-reload")
+    set closed to sql_close(database)
+    if result is not equal to 0 or else closed is not equal to 0:
+        return result + closed
+    display "PASS: qualified tool discovered, loaded and invoked in its authoring run, then rediscovered/reloaded/invoked after archive reopen in a new private session."
+    return 0

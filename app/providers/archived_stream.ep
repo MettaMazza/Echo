@@ -1,5 +1,7 @@
+import "openai_responses_stream"
 import "../retained_text"
 import "chat_stream"
+import "anthropic_stream"
 import "guidance_pending"
 import "../transport/event_stream"
 import "../archive/event_store"
@@ -73,7 +75,21 @@ define provider_collected with status as Str and state as List returning List:
 # Every complete event is committed before assembly. Terminal evidence is also
 # committed before success, including transport errors and parser rejection.
 define provider_collect_events with reader as List and body as List and database as Int and session as Str and request as Str and read_size as Int returning List:
+    return provider_collect_events_family(reader and body and database and session and request and read_size and "openai-chat")
+
+# Archive exact named protocol events before normalizing either family into the
+# common agent result. Original reasoning/signatures/usage remain retrievable.
+define provider_collect_events_family with reader as List and body as List and database as Int and session as Str and request as Str and read_size as Int and family as Str returning List:
     set state to chat_stream_create()
+    set protocol to 0
+    if family equals "anthropic-messages":
+        set protocol to anthropic_stream_create()
+        set state to get_list(protocol and 0)
+    else if family equals "openai-responses":
+        set protocol to openai_responses_stream_create()
+        set state to get_list(protocol and 0)
+    else if not (family equals "openai-chat"):
+        return provider_collected("unsupported-protocol" and state)
     set original to archive_read_event(database and request)
     if original equals 0:
         return provider_collected("invalid-request" and state)
@@ -106,7 +122,19 @@ define provider_collect_events with reader as List and body as List and database
             if provider_archive_piece(database and session and request and sequence and "provider_event" and payload) is not equal to 0:
                 return provider_collected("archive-error" and state)
             set sequence to sequence + 1
-            if not (kind equals "message"):
+            if family equals "anthropic-messages":
+                set parsed to provider_json_tokens(data)
+                if parsed equals 0 or else not (kind equals provider_value(parsed and provider_member(parsed and 0 and "type"))):
+                    set status to "invalid-provider-event-type"
+                else if anthropic_stream_accept(protocol and data) is not equal to 0:
+                    set status to "invalid-provider-event"
+            else if family equals "openai-responses":
+                set parsed to provider_json_tokens(data)
+                if parsed equals 0 or else not (kind equals provider_value(parsed and provider_member(parsed and 0 and "type"))):
+                    set status to "invalid-provider-event-type"
+                else if openai_responses_stream_accept(protocol and data) is not equal to 0:
+                    set status to "invalid-provider-event"
+            else if not (kind equals "message"):
                 set status to "unsupported-event"
             else if chat_stream_accept(state and data) is not equal to 0:
                 set status to "invalid-provider-event"
@@ -116,7 +144,14 @@ define provider_collect_events with reader as List and body as List and database
             set payload to concat(payload and "}")
             if provider_archive_piece(database and session and request and sequence and "provider_stream_end" and payload) is not equal to 0:
                 return provider_collected("archive-error" and state)
-            if chat_stream_finish(state and status) is not equal to 0:
+            set finished to 1
+            if family equals "anthropic-messages":
+                set finished to anthropic_stream_finish(protocol and status)
+            else if family equals "openai-responses":
+                set finished to openai_responses_stream_finish(protocol and status)
+            else:
+                set finished to chat_stream_finish(state and status)
+            if finished is not equal to 0:
                 return provider_collected("incomplete-response" and state)
             return provider_collected("complete" and state)
     return provider_collected("error" and state)

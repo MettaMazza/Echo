@@ -1,3 +1,6 @@
+import "external_generation"
+import "../providers/external_environment"
+import "../providers/external_native"
 import "../retained_text"
 import "generation"
 import "../providers/prepare"
@@ -17,6 +20,10 @@ define agent_generate_provider_at with database as Int and run as Str and expect
     if not (parent equals expected_parent):
         set changed to set_list(result and 0 and "stale-context")
         return result
+    set selected to provider_json_tokens(profile)
+    set external_family to provider_value(selected and provider_member(selected and 0 and "adapter"))
+    if external_family equals "anthropic-messages" or else external_family equals "openai-responses":
+        return agent_generate_external_checked(database and run and expected_parent and request and body and profile and cancellation_reader and read_size and choice_index)
     set body to agent_closing_report_body(database and run and profile and body)
     set decision to provider_prepare(database and archive_list_text(row and 0) and concat(request and ":preflight") and profile and body and output_reserve and cancellation_reader and read_size)
     if not (archive_list_text(decision and 0) equals "ready"):
@@ -59,3 +66,32 @@ define agent_closing_report_body with database as Int and run as Str and profile
     if archive_list_text(rewritten and 0) equals "found":
         return archive_list_text(rewritten and 1)
     return body
+
+# Explicit external route: no local endpoint or host-global default is used.
+define agent_generate_external_checked with database as Int and run as Str and expected_parent as Str and request as Str and body as Str and profile as Str and cancellation as Int and batch as Int and choice as Str returning List:
+    if external_profile_run_allows(database and run and profile) equals 0:
+        return provider_prepared_error("not-authorized")
+    set row to agent_run_read(database and run)
+    if row equals 0 or else not (archive_list_text(row and 2) equals "ready") or else not (archive_list_text(row and 3) equals expected_parent):
+        return provider_prepared_error("stale-context")
+    set native to external_native_request(database and archive_list_text(row and 0) and profile and body)
+    if not (archive_list_text(native and 0) equals "ready"):
+        return provider_prepared_error(archive_list_text(native and 0))
+    set environment to external_environment_open()
+    if not (archive_list_text(environment and 0) equals "ready"):
+        return provider_prepared_error(archive_list_text(environment and 0))
+    set native_body to archive_list_text(native and 1)
+    set root to archive_list_text(environment and 5)
+    set system to get_list(environment and 1)
+    set spool to get_list(environment and 2)
+    set vault to get_list(environment and 3)
+    set errors to get_list(environment and 4)
+    set decision to external_preflight(database and run and concat(request and ":preflight") and profile and native_body and root and system and spool and vault and errors and cancellation and batch)
+    if archive_list_text(decision and 0) equals "ready":
+        set status to "advanced"
+        if agent_generate_external_at(database and run and expected_parent and request and profile and native_body and root and system and spool and vault and errors and cancellation and batch and choice) is not equal to 0:
+            set status to "generation-failed-or-stale"
+        set changed to set_list(decision and 0 and status)
+    if external_environment_close(environment) is not equal to 0:
+        return provider_prepared_error("external-storage-close-failed")
+    return decision

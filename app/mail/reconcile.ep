@@ -1,0 +1,151 @@
+import "authority"
+import "read"
+import "mime"
+
+# Correlate the unique client-generated Message-ID, actual SENT label and
+# sender in the authenticated mailbox. Google may add transport headers, so a
+# sent copy is not incorrectly required to match the pre-send RFC bytes.
+define gmail_sent_identity with body as Str and message_id as Str returning List:
+    set tokens to provider_json_tokens(body)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return ["invalid-sent-message"]
+    set id_field to provider_member(tokens and 0 and "id")
+    set thread_field to provider_member(tokens and 0 and "threadId")
+    if not (provider_kind(tokens and id_field) equals "string") or else not (provider_kind(tokens and thread_field) equals "string") or else string_length(provider_value(tokens and id_field)) equals 0 or else string_length(provider_value(tokens and thread_field)) equals 0:
+        return ["invalid-sent-message"]
+    set sent to 0
+    set labels to provider_member(tokens and 0 and "labelIds")
+    if not (provider_kind(tokens and labels) equals "["):
+        return ["invalid-sent-message"]
+    for each label in provider_items(tokens and labels):
+        if provider_value(tokens and label) equals "SENT":
+            set sent to 1
+    if sent equals 0:
+        return ["not-a-sent-message"]
+    set payload to provider_member(tokens and 0 and "payload")
+    set headers to provider_member(tokens and payload and "headers")
+    if not (provider_kind(tokens and headers) equals "["):
+        return ["sent-headers-unavailable"]
+    set found_id to ""
+    set found_from to ""
+    set id_count to 0
+    set from_count to 0
+    for each header in provider_items(tokens and headers):
+        set name to ptr_to_str(string_to_lower(provider_value(tokens and provider_member(tokens and header and "name"))))
+        set value_field to provider_member(tokens and header and "value")
+        if not (provider_kind(tokens and value_field) equals "string"):
+            return ["invalid-sent-header"]
+        if name equals "message-id":
+            set id_count to id_count + 1
+            set found_id to string_trim(provider_value(tokens and value_field))
+        if name equals "from":
+            set from_count to from_count + 1
+            set found_from to string_trim(provider_value(tokens and value_field))
+    if id_count is not equal to 1 or else from_count is not equal to 1 or else not (found_id equals concat("<" and concat(message_id and ">")) or else found_id equals message_id):
+        return ["sent-identity-mismatch"]
+    set sender to gmail_single_header_address(found_from)
+    if not (ptr_to_str(string_to_lower(sender)) equals "echo.ernos.smith@gmail.com"):
+        return ["sent-sender-mismatch"]
+    return ["matched",provider_value(tokens and id_field),provider_value(tokens and thread_field)]
+
+# Extract a single canonical addr-spec from an observed From/Reply-To value.
+# Display text is data; no comma/group/multiple-address syntax is guessed.
+define gmail_single_header_address with value as Str returning Str:
+    if gmail_header_text_valid(value) equals 0:
+        return ""
+    set opening to string_index_of(value and "<")
+    set closing to string_index_of(value and ">")
+    set address to string_trim(value)
+    if opening >= 0:
+        if closing <= opening or else string_length(string_trim(substring(value and closing + 1 and string_length(value) - closing - 1))) > 0:
+            return ""
+        set address to substring(value and opening + 1 and closing - opening - 1)
+    else if closing >= 0:
+        return ""
+    if gmail_address_valid(address) equals 0:
+        return ""
+    return address
+
+# This result can be exposed only after the caller's final private-owner check.
+define gmail_reconciliation_result with status as Str and remote_id as Str and thread_id as Str returning List:
+    set body to concat("{\"message_id\":" and concat(provider_quote(remote_id) and concat(",\"thread_id\":" and concat(provider_quote(thread_id) and "}"))))
+    set result to local_json_result(status and 0 and body)
+    set added to append_list(result and 0)
+    return result
+
+# Search all pages before deciding whether exactly one matching sent record
+# exists. Zero matches stays uncertain: search indexing can lag a successful
+# send. This path never changes an uncertain intent back to ready or sends it.
+define gmail_send_reconcile with authority as Int and database as Int and run as Str and call_id as Str and session as Str and request as Str and account as Str and intent as Str and now as Int and system as Int and vault as Int and spool as Int and root as Str and errors as Int and cancellation as Int returning List:
+    set owner to gmail_tool_owner(authority and run and call_id)
+    if string_length(owner) equals 0 or else gmail_owner_active(authority and database and account and owner) equals 0:
+        return gmail_read_denied("mailbox-not-authorized")
+    set original to history_collect_one(checkpoint_prepare(database and "SELECT d.state,i.message_id,d.remote_id,d.thread_id FROM echo_mail_intents i JOIN echo_mail_delivery d USING(mailbox,identity) WHERE i.mailbox=?1 AND i.identity=?2;" and [account,intent]))
+    if not (archive_list_text(original and 0) equals "found"):
+        return gmail_read_denied("intent-unavailable")
+    set state to archive_list_text(original and 1)
+    if state equals "sent":
+        return gmail_reconciliation_result("sent" and archive_list_text(original and 3) and archive_list_text(original and 4))
+    if not (state equals "uncertain"):
+        return gmail_read_denied(state)
+    set message_id to archive_list_text(original and 2)
+    set pages to create_list()
+    set matches to create_list()
+    set cursor to ""
+    set index to 0
+    repeat while 1 equals 1:
+        if not (gmail_tool_owner(authority and run and call_id) equals owner):
+            return gmail_read_denied("mailbox-authority-changed")
+        for each prior in pages:
+            if ptr_to_str(prior) equals cursor:
+                return gmail_read_denied("sent-search-cursor-cycle")
+        set added to append_list(pages and cursor)
+        set parameters to concat("{\"q\":" and concat(provider_quote(concat("rfc822msgid:" and message_id)) and ",\"labelIds\":[\"SENT\"],\"includeSpamTrash\":true,\"maxResults\":500"))
+        if string_length(cursor) > 0:
+            set parameters to concat(parameters and concat(",\"pageToken\":" and provider_quote(cursor)))
+        set parameters to concat(parameters and "}")
+        set result to gmail_read_account(authority and database and session and concat(request and concat(":search:" and int_to_string(index))) and account and owner and "messages.list" and parameters and now and system and vault and spool and root and errors and cancellation)
+        if get_list(result and 3) is not equal to 0:
+            return result
+        if not (archive_list_text(result and 0) equals "ready"):
+            return gmail_read_denied("sent-search-unavailable")
+        set tokens to provider_json_tokens(archive_list_text(result and 2))
+        set messages to provider_member(tokens and 0 and "messages")
+        if messages >= 0:
+            if not (provider_kind(tokens and messages) equals "["):
+                return gmail_read_denied("invalid-sent-search")
+            for each message in provider_items(tokens and messages):
+                set id_field to provider_member(tokens and message and "id")
+                set id to provider_value(tokens and id_field)
+                if not (provider_kind(tokens and id_field) equals "string") or else string_length(id) equals 0:
+                    return gmail_read_denied("invalid-sent-search")
+                set seen to 0
+                for each existing in matches:
+                    if ptr_to_str(existing) equals id:
+                        set seen to 1
+                if seen equals 0:
+                    set added to append_list(matches and id)
+        set page to provider_member(tokens and 0 and "nextPageToken")
+        if page >= 0 and also not (provider_kind(tokens and page) equals "string"):
+            return gmail_read_denied("invalid-sent-search")
+        set cursor to provider_value(tokens and page)
+        if string_length(cursor) equals 0:
+            break
+        set index to index + 1
+    if length_list(matches) equals 0:
+        return gmail_read_denied("uncertain-not-found")
+    if length_list(matches) is not equal to 1:
+        return gmail_read_denied("multiple-matching-sent-messages")
+    if not (gmail_tool_owner(authority and run and call_id) equals owner):
+        return gmail_read_denied("mailbox-authority-changed")
+    set parameters to concat("{\"id\":" and concat(provider_quote(archive_list_text(matches and 0)) and ",\"format\":\"metadata\",\"metadataHeaders\":[\"Message-ID\",\"From\"]}"))
+    set result to gmail_read_account(authority and database and session and concat(request and ":verify") and account and owner and "messages.get" and parameters and now and system and vault and spool and root and errors and cancellation)
+    if get_list(result and 3) is not equal to 0:
+        return result
+    if not (archive_list_text(result and 0) equals "ready") or else not (gmail_tool_owner(authority and run and call_id) equals owner):
+        return gmail_read_denied("sent-verification-unavailable")
+    set verified to gmail_sent_identity(archive_list_text(result and 2) and message_id)
+    if not (archive_list_text(verified and 0) equals "matched") or else not (archive_list_text(verified and 1) equals archive_list_text(matches and 0)):
+        return gmail_read_denied("sent-verification-mismatch")
+    set saved to gmail_outbox_receipt(database and account and intent and message_id and archive_list_text(verified and 1) and archive_list_text(verified and 2))
+    return gmail_reconciliation_result(saved and archive_list_text(verified and 1) and archive_list_text(verified and 2))

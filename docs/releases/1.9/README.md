@@ -1,17 +1,11 @@
-> Current runtime and October 27 verification: [current build](../../CURRENT-BUILD.md). Earlier dated evidence below remains historical; it does not supersede that record.
+# Echo 1.9 — deployed runtime reconciliation, 16 November 2026
 
-# Echo 1.9 — community, continuity and voice development update
+This publication brings GitHub into line with installed release **`echo-self-monitor-20261116-findings`**, including restored features, persistent inference caching, all four Echo-requested QoL changes and a findings-only self-monitor. It preserves existing commit ancestry. The change manifest uses the previous GitHub release tip `6cc67bac6d09c6fa7392a4d6a463ef2d35639b70` as its baseline.
 
-1.9 publishes the accumulated source changes after the last pushed community revision, `72fcd9c4b297c0679743ec043547309d7e58d6d7` (22 October 2026). The corresponding local commit `5823c562391be5c36a170dc4c43d75659737bd82` has the identical tree, `70f1085f97d5fbd209a93d8dda0e5f510e354044`. Publication follows the remote ancestry without rewriting history. The older default-branch 1.75 landing page is not the last pushed community baseline.
+- [Current build](../../CURRENT-BUILD.md) and [exact deployed source mapping](runtime-source-manifest.json)
+- [Feature matrix](FEATURES.md) and [change narrative](CHANGES.md)
+- [Every changed file](FILE-CHANGES.md) and [before/after hashes](change-manifest.json)
+- [Verification scope](VERIFICATION.md), [Discord guide](DISCORD.md) and [next work](REMAINING.md)
+- [Application reference](../../reference/APPLICATION.md), [tests](../../reference/TESTS.md), [source manifest](../../forensics/source-manifest.json)
 
-**V1 remains the future production milestone: Phase Two complete and production-ready.** This update does not declare that milestone complete. No completion percentage is published: earlier conversational percentages used inconsistent weighting and are not forensic measurements.
-
-- [Feature matrix and source map](FEATURES.md)
-- [Changes grouped by behavior](CHANGES.md)
-- [Every changed file](FILE-CHANGES.md) and [exact before/after hashes and changed definitions](change-manifest.json)
-- [Verification, evidence and limitations](VERIFICATION.md)
-- [Discord guide and public links](DISCORD.md)
-- [Remaining V1 work](REMAINING.md)
-- [Complete application reference](../../reference/APPLICATION.md), [tests](../../reference/TESTS.md), [source manifest](../../forensics/source-manifest.json)
-
-The manifest includes application, test, support and documentation changes. Generated reference/manifests are excluded from recursive self-hashing and remain covered by Git history. Function changes are lexical; a listed test reference is not an executed pass. Local runtime/configuration changes are documented in the change narrative; private runtime artifacts are not committed.
+The next sessions focus on latency reduction and optimisation. This source/documentation update does not restart production or announce V1. Private runtime configuration, credentials, conversations, model weights and reference recordings are excluded. Generated catalogs describe source; a listed test is not an executed pass.

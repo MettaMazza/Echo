@@ -1,0 +1,120 @@
+import "chat_stream"
+import "../transport/http_response"
+
+# Common result, phase, last native sequence, retained native events, response ID.
+# Final output items remain in the original events for encrypted reasoning,
+# assistant phase, usage and extension-preserving replay.
+define openai_responses_stream_create returning List:
+    set result to create_list()
+    set added to append_list(result and chat_stream_create())
+    set added to append_list(result and 0)
+    set added to append_list(result and -1)
+    set added to append_list(result and create_list())
+    set added to append_list(result and "")
+    return result
+
+define openai_responses_complete with state as List and tokens as List and response as Int returning Int:
+    if not (provider_value(tokens and provider_member(tokens and response and "status")) equals "completed"):
+        return 1
+    for each field in ["error","incomplete_details"]:
+        set value to provider_member(tokens and response and field)
+        if value >= 0 and not (provider_kind(tokens and value) equals "null"):
+            return 1
+    set items to provider_items(tokens and provider_member(tokens and response and "output"))
+    if items equals 0:
+        return 1
+    set choice to ["0",create_builder(),create_builder(),create_list(),"stop"]
+    set added to append_list(get_list(get_list(state and 0) and 0) and choice)
+    set identities to create_list()
+    set call_index to 0
+    for each item in items:
+        set kind to provider_value(tokens and provider_member(tokens and item and "type"))
+        set identity to provider_member(tokens and item and "id")
+        if identity >= 0:
+            if not (provider_kind(tokens and identity) equals "string") or else string_length(provider_value(tokens and identity)) equals 0:
+                return 1
+            for each prior in identities:
+                if prior equals provider_value(tokens and identity):
+                    return 1
+            set added to append_list(identities and provider_value(tokens and identity))
+        set status to provider_member(tokens and item and "status")
+        if status >= 0 and not (provider_value(tokens and status) equals "completed"):
+            return 1
+        if kind equals "message":
+            if not (provider_value(tokens and provider_member(tokens and item and "role")) equals "assistant"):
+                return 1
+            set parts to provider_items(tokens and provider_member(tokens and item and "content"))
+            if parts equals 0:
+                return 1
+            for each part in parts:
+                if not (provider_value(tokens and provider_member(tokens and part and "type")) equals "output_text") or else not (provider_kind(tokens and provider_member(tokens and part and "text")) equals "string"):
+                    return 1
+                set added to builder_append(get_list(choice and 1) and provider_value(tokens and provider_member(tokens and part and "text")))
+        else if kind equals "reasoning":
+            set parts to provider_items(tokens and provider_member(tokens and item and "summary"))
+            if parts equals 0:
+                return 1
+            for each part in parts:
+                if not (provider_value(tokens and provider_member(tokens and part and "type")) equals "summary_text") or else not (provider_kind(tokens and provider_member(tokens and part and "text")) equals "string"):
+                    return 1
+                set added to builder_append(get_list(choice and 2) and provider_value(tokens and provider_member(tokens and part and "text")))
+        else if kind equals "function_call":
+            for each field in ["call_id","name","arguments"]:
+                if not (provider_kind(tokens and provider_member(tokens and item and field)) equals "string"):
+                    return 1
+            set call to [int_to_string(call_index),provider_value(tokens and provider_member(tokens and item and "call_id")),provider_value(tokens and provider_member(tokens and item and "name")),create_builder()]
+            set added to builder_append(get_list(call and 3) and provider_value(tokens and provider_member(tokens and item and "arguments")))
+            set added to append_list(get_list(choice and 3) and call)
+            set call_index to call_index + 1
+            set changed to set_list(choice and 4 and "tool_calls")
+        else:
+            # No built-in hosted action is silently converted to a host tool.
+            return 1
+    set changed to set_list(get_list(state and 0) and 1 and 1)
+    set changed to set_list(state and 1 and 2)
+    return 0
+
+define openai_responses_stream_accept_inner with state as List and data as Str returning Int:
+    set tokens to provider_json_tokens(data)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else get_list(state and 1) < 0 or else get_list(state and 1) equals 2:
+        return 1
+    set field to provider_member(tokens and 0 and "sequence_number")
+    set sequence to http_decimal(provider_index(tokens and field))
+    if not (provider_kind(tokens and field) equals "number") or else sequence < 0 or else sequence <= get_list(state and 2):
+        return 1
+    set changed to set_list(state and 2 and sequence)
+    set kind to provider_value(tokens and provider_member(tokens and 0 and "type"))
+    if string_length(kind) equals 0 or else kind equals "error" or else kind equals "response.failed" or else kind equals "response.incomplete":
+        return 1
+    set response to provider_member(tokens and 0 and "response")
+    if kind equals "response.created":
+        if get_list(state and 1) is not equal to 0 or else not (provider_kind(tokens and provider_member(tokens and response and "id")) equals "string"):
+            return 1
+        set identity to provider_value(tokens and provider_member(tokens and response and "id"))
+        if string_length(identity) equals 0:
+            return 1
+        set changed to set_list(state and 4 and identity)
+        set changed to set_list(state and 1 and 1)
+        return 0
+    if get_list(state and 1) is not equal to 1:
+        return 1
+    if response >= 0 and not (provider_value(tokens and provider_member(tokens and response and "id")) equals archive_list_text(state and 4)):
+        return 1
+    if kind equals "response.completed":
+        return openai_responses_complete(state and tokens and response)
+    # Intermediate events are archived verbatim. Only the completed native
+    # output can produce executable calls; partial arguments never become work.
+    return 0
+
+define openai_responses_stream_accept with state as List and data as Str returning Int:
+    set added to append_list(get_list(state and 3) and data)
+    set status to openai_responses_stream_accept_inner(state and data)
+    if status is not equal to 0:
+        set changed to set_list(state and 1 and -1)
+        set changed to set_list(get_list(state and 0) and 2 and 1)
+    return status
+
+define openai_responses_stream_finish with state as List and transport as Str returning Int:
+    if get_list(state and 1) is not equal to 2:
+        return 1
+    return chat_stream_finish(get_list(state and 0) and transport)

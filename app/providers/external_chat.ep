@@ -1,0 +1,67 @@
+import "external_preflight"
+import "external_response"
+
+# Generation receives the exact native body already counted and archived by the
+# run lifecycle. A durable dispatch claim prevents an uncertain attempt replay.
+# The caller owns root descriptors and supplies its guidance cancellation pipe.
+define external_chat_generate with database as Int and run as Str and session as Str and request as Str and profile as Str and body as Str and root as Str and system as Int and spool as Int and vault as Int and errors as Int and cancellation as Int and batch as Int returning List:
+    return external_chat_generate_program("/usr/bin/curl" and database and run and session and request and profile and body and root and system and spool and vault and errors and cancellation and batch)
+
+define external_chat_generate_program with executable as Str and database as Int and run as Str and session as Str and request as Str and profile as Str and body as Str and root as Str and system as Int and spool as Int and vault as Int and errors as Int and cancellation as Int and batch as Int returning List:
+    if batch < 1 or else external_profile_run_allows(database and run and profile) equals 0:
+        return provider_collected("not-authorized" and chat_stream_create())
+    if external_request_root_matches(system and spool and root) equals 0:
+        return provider_collected("spool-root-mismatch" and chat_stream_create())
+    set original to archive_read_event(database and request)
+    if original equals 0 or else not (archive_list_text(original and 0) equals session) or else not (archive_list_text(original and 2) equals "model_request"):
+        return provider_collected("unarchived-external-request" and chat_stream_create())
+    set envelope to provider_json_tokens(archive_list_text(original and 3))
+    if not (provider_value(envelope and provider_member(envelope and 0 and "run_id")) equals run) or else not (provider_value(envelope and provider_member(envelope and 0 and "request_body")) equals body):
+        return provider_collected("external-request-mismatch" and chat_stream_create())
+    set active to history_collect_one(checkpoint_prepare(database and "SELECT run FROM echo_runs WHERE run=?1 AND session=?2 AND state='generating' AND last_event=?3;" and [run,session,request]))
+    if not (archive_list_text(active and 0) equals "found"):
+        return provider_collected("stale-generation" and chat_stream_create())
+    return external_chat_dispatch(executable and database and run and session and request and concat(request and ":preflight") and profile and body and root and system and spool and vault and errors and cancellation and batch)
+
+# Shared only after the caller has verified either the active generation head
+# or the explicit compaction invocation and its archived native request.
+define external_chat_dispatch with executable as Str and database as Int and run as Str and session as Str and request as Str and preflight as Str and profile as Str and body as Str and root as Str and system as Int and spool as Int and vault as Int and errors as Int and cancellation as Int and batch as Int returning List:
+    if external_profile_run_allows(database and run and profile) equals 0 or else external_request_root_matches(system and spool and root) equals 0:
+        return provider_collected("not-authorized" and chat_stream_create())
+    set counted to archive_read_event(database and concat(preflight and ":count-request"))
+    set receipt to archive_read_event(database and preflight)
+    if counted equals 0 or else receipt equals 0 or else not (archive_list_text(counted and 0) equals session) or else not (archive_list_text(receipt and 0) equals session) or else not (archive_list_text(counted and 2) equals "external_token_count_request") or else not (archive_list_text(receipt and 2) equals "external_provider_preflight"):
+        return provider_collected("external-preflight-required" and chat_stream_create())
+    set count_tokens to provider_json_tokens(archive_list_text(counted and 3))
+    set receipt_tokens to provider_json_tokens(archive_list_text(receipt and 3))
+    if not (provider_value(count_tokens and provider_member(count_tokens and 0 and "run_id")) equals run) or else not (provider_value(count_tokens and provider_member(count_tokens and 0 and "profile_sha256")) equals ep_sha256(profile)) or else not (provider_value(count_tokens and provider_member(count_tokens and 0 and "generation_body")) equals body) or else not (provider_value(receipt_tokens and provider_member(receipt_tokens and 0 and "status")) equals "ready"):
+        return provider_collected("external-preflight-mismatch" and chat_stream_create())
+    set payload to concat("{\"run_id\":" and provider_quote(run))
+    set payload to concat(payload and concat(",\"request_event\":" and provider_quote(request)))
+    set payload to concat(payload and concat(",\"profile_sha256\":" and concat(provider_quote(ep_sha256(profile)) and "}")))
+    if archive_append(database and session and concat(request and ":dispatch") and "external_dispatch_claim" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return provider_collected("duplicate-or-failed-dispatch-claim" and chat_stream_create())
+    set stored to external_request_file(system and spool and request and body)
+    if not (stored equals "stored"):
+        return provider_collected(stored and chat_stream_create())
+    set path to concat(root and concat("/request-" and concat(ep_sha256(request) and ".json")))
+    set config to provider_json_tokens(profile)
+    set family to provider_value(config and provider_member(config and 0 and "adapter"))
+    set credential to external_account_resolve(database and run and profile and system and vault)
+    set transfer to external_transport_result("not-authorized" and 0 and 0)
+    if archive_list_text(credential and 0) equals "ready" and also external_profile_run_allows(database and run and profile) equals 1:
+        set transfer to external_transport_start_program(executable and family and archive_list_text(credential and 1) and path and spool and errors and cancellation)
+    set response to external_response_collect(database and session and request and family and transfer and batch)
+    if get_list(transfer and 1) is not equal to 0:
+        set idle to channel
+        set waits to [idle]
+        repeat while get_list(transfer and 1) is not equal to 0:
+            set finished to external_transport_finish(database and session and request and transfer and 0)
+            if get_list(transfer and 1) is not equal to 0:
+                set waited to select(waits and 100)
+    set removed to external_request_file_remove(system and spool and request)
+    if removed is not equal to 0:
+        return provider_collected("spool-cleanup-failed" and get_list(response and 1))
+    if external_profile_run_allows(database and run and profile) equals 0:
+        return provider_collected("not-authorized" and get_list(response and 1))
+    return response

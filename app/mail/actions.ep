@@ -1,0 +1,52 @@
+import "outbox"
+
+# Immutable generic write identities, separate from Message-ID-based sends.
+# Claim commits uncertainty before HTTP. Only a complete response can settle it.
+define gmail_action_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_mail_actions(account TEXT NOT NULL,identity TEXT NOT NULL,operation TEXT NOT NULL,parameters TEXT NOT NULL,payload TEXT NOT NULL,digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('uncertain','observed')),response_status TEXT NOT NULL DEFAULT '',response_code INTEGER NOT NULL DEFAULT 0,response TEXT NOT NULL DEFAULT '',PRIMARY KEY(account,identity)); CREATE TRIGGER IF NOT EXISTS echo_mail_action_immutable BEFORE UPDATE ON echo_mail_actions WHEN OLD.state!='uncertain' OR NEW.state!='observed' OR NEW.account!=OLD.account OR NEW.identity!=OLD.identity OR NEW.operation!=OLD.operation OR NEW.parameters!=OLD.parameters OR NEW.payload!=OLD.payload OR NEW.digest!=OLD.digest BEGIN SELECT RAISE(ABORT,'Mailbox actions cannot be replayed or replaced'); END; CREATE TRIGGER IF NOT EXISTS echo_mail_action_no_delete BEFORE DELETE ON echo_mail_actions BEGIN SELECT RAISE(ABORT,'Mailbox outcomes are retained'); END;")
+
+define gmail_action_digest with operation as Str and parameters as Str and body as Str returning Str:
+    return ep_sha256(concat(archive_hash_field(operation) and concat(archive_hash_field(parameters) and archive_hash_field(body))))
+
+define gmail_action_read with database as Int and account as Str and identity as Str and operation as Str and parameters as Str and body as Str returning List:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT operation,parameters,payload,digest,state,response_status,CAST(response_code AS TEXT),response FROM echo_mail_actions WHERE account=?1 AND identity=?2;" and [account,identity]))
+    if archive_list_text(row and 0) equals "end":
+        return ["new"]
+    if not (archive_list_text(row and 0) equals "found"):
+        return ["action-read-failed"]
+    if not (archive_list_text(row and 1) equals operation) or else not (archive_list_text(row and 2) equals parameters) or else not (archive_list_text(row and 3) equals body) or else not (archive_list_text(row and 4) equals gmail_action_digest(operation and parameters and body)):
+        return ["action-identity-conflict"]
+    return [archive_list_text(row and 5),archive_list_text(row and 6),archive_list_text(row and 7),archive_list_text(row and 8)]
+
+define gmail_action_claim with database as Int and account as Str and identity as Str and operation as Str and parameters as Str and body as Str returning List:
+    if string_length(account) equals 0 or else string_length(identity) equals 0 or else string_length(operation) equals 0:
+        return ["invalid-action-identity"]
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return ["database-busy"]
+    set prior to gmail_action_read(database and account and identity and operation and parameters and body)
+    if not (archive_list_text(prior and 0) equals "new"):
+        set rolled to archive_rollback(database)
+        return prior
+    if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_mail_actions(account,identity,operation,parameters,payload,digest,state) VALUES(?1,?2,?3,?4,?5,?6,'uncertain');" and [account,identity,operation,parameters,body,gmail_action_digest(operation and parameters and body)]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled to archive_rollback(database)
+        return ["action-claim-failed"]
+    return ["claimed"]
+
+define gmail_action_observe with database as Int and account as Str and identity as Str and digest as Str and status as Str and code as Int and body as Str returning Str:
+    if not (status equals "ready" or else status equals "http-error") or else code < 200 or else code > 599:
+        return "incomplete-action-response"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT state,digest,response_status,CAST(response_code AS TEXT),response FROM echo_mail_actions WHERE account=?1 AND identity=?2;" and [account,identity]))
+    if not (archive_list_text(prior and 0) equals "found") or else not (archive_list_text(prior and 2) equals digest):
+        set rolled to archive_rollback(database)
+        return "action-identity-conflict"
+    if archive_list_text(prior and 1) equals "observed":
+        set rolled to archive_rollback(database)
+        if archive_list_text(prior and 3) equals status and also archive_list_text(prior and 4) equals int_to_string(code) and also archive_list_text(prior and 5) equals body:
+            return "observed"
+        return "action-receipt-conflict"
+    if archive_finish(checkpoint_prepare(database and "UPDATE echo_mail_actions SET state='observed',response_status=?4,response_code=CAST(?5 AS INTEGER),response=?6 WHERE account=?1 AND identity=?2 AND digest=?3 AND state='uncertain';" and [account,identity,digest,status,int_to_string(code),body]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled to archive_rollback(database)
+        return "action-receipt-save-failed"
+    return "observed"

@@ -1,0 +1,96 @@
+import "../workspace/files"
+import "external_transport"
+
+# Host-owned vault outside session workspaces. No ACL grants, symlinks, shared
+# modes or foreign owners; descriptors stay pinned through the operation.
+define external_vault_inode with system as Int and descriptor as Int and directory as Int returning Int:
+    set stat_function to ep_dlsym(system and "fstat")
+    set uid_function to ep_dlsym(system and "geteuid")
+    set acl_read to ep_dlsym(system and "acl_get_fd_np")
+    set acl_entry to ep_dlsym(system and "acl_get_entry")
+    set acl_valid_function to ep_dlsym(system and "acl_valid")
+    set acl_release to ep_dlsym(system and "acl_free")
+    if stat_function equals 0 or else uid_function equals 0 or else acl_read equals 0 or else acl_entry equals 0 or else acl_valid_function equals 0 or else acl_release equals 0:
+        return 0
+    set info to create_list()
+    set index to 0
+    repeat while index < 18:
+        set added to append_list(info and 0)
+        set index to index + 1
+    set pointer to get_list_data_ptr(info)
+    if ep_dlcall2(stat_function and descriptor and pointer) is not equal to 0:
+        return 0
+    set mode to peek_byte(pointer and 4) + peek_byte(pointer and 5) * 256
+    set uid to 0
+    set multiplier to 1
+    set index to 16
+    repeat while index < 20:
+        set uid to uid + peek_byte(pointer and index) * multiplier
+        set multiplier to multiplier * 256
+        set index to index + 1
+    if uid is not equal to ep_dlcall0(uid_function):
+        return 0
+    if directory equals 1:
+        if mode is not equal to 16832:
+            return 0
+    else:
+        if mode is not equal to 33152 or else workspace_regular_file(system and descriptor) equals 0:
+            return 0
+    set acl to ep_dlcall2(acl_read and descriptor and 256)
+    if acl equals 0:
+        return socket_errno(system) equals 2
+    set valid to ep_dlcall1(acl_valid_function and acl)
+    set entry to [0]
+    set found to socket_signed_result(ep_dlcall3(acl_entry and acl and 0 and get_list_data_ptr(entry)))
+    set released to ep_dlcall1(acl_release and acl)
+    return valid equals 0 and also found equals -1 and also released equals 0
+
+define external_vault_reference_valid with reference as Str returning Int:
+    if string_length(reference) is not equal to 64:
+        return 0
+    set index to 0
+    repeat while index < 64:
+        if string_contains("0123456789abcdef" and substring(reference and index and 1)) equals 0:
+            return 0
+        set index to index + 1
+    return 1
+
+# Secret result is private to the transport caller, never a tool/HTTP response.
+define external_vault_read with system as Int and directory as Int and reference as Str and family as Str returning List:
+    if external_vault_inode(system and directory and 1) equals 0 or else external_vault_reference_valid(reference) equals 0:
+        return ["vault-unavailable",""]
+    set descriptor to workspace_file_open(system and directory and reference and 0)
+    if descriptor < 0:
+        return ["credential-unavailable",""]
+    if external_vault_inode(system and descriptor and 0) equals 0:
+        set closed to net_close(descriptor)
+        return ["credential-not-private",""]
+    set read to file_text_descriptor_window(system and descriptor and "" and -1 and 4096 and 0 and -1)
+    set closed to net_close(descriptor)
+    if closed is not equal to 0 or else not (archive_list_text(read and 0) equals "read"):
+        return ["credential-read-failed",""]
+    set secret to archive_list_text(read and 1)
+    if string_length(external_transport_headers(family and secret)) equals 0:
+        return ["invalid-credential",""]
+    return ["ready",secret]
+
+# Exclusive creation, no truncation or key replacement. Interrupted database
+# registration may retry the exact same private file; different bytes conflict.
+define external_vault_store with system as Int and directory as Int and reference as Str and family as Str and secret as Str returning Str:
+    if external_vault_inode(system and directory and 1) equals 0 or else external_vault_reference_valid(reference) equals 0 or else string_length(external_transport_headers(family and secret)) equals 0:
+        return "invalid-private-credential"
+    set descriptor to workspace_file_open(system and directory and reference and 1)
+    if descriptor < 0:
+        set existing to external_vault_read(system and directory and reference and family)
+        if archive_list_text(existing and 0) equals "ready" and archive_list_text(existing and 1) equals secret:
+            return "stored"
+        return "credential-conflict-or-unavailable"
+    if external_vault_inode(system and descriptor and 0) equals 0:
+        set closed to net_close(descriptor)
+        return "credential-not-private"
+    set written to file_stage_write(system and descriptor and str_to_ptr(secret) and string_length(secret))
+    set finished to file_stage_finish(system and descriptor)
+    set flush to ep_dlsym(system and "fsync")
+    if written is not equal to 0 or else finished is not equal to 0 or else flush equals 0 or else ep_dlcall1(flush and directory) is not equal to 0:
+        return "credential-write-failed"
+    return "stored"

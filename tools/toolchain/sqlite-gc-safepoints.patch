@@ -1,0 +1,50 @@
+--- a/runtime/ep_runtime.c
++++ b/runtime/ep_runtime.c
+@@ -3406,10 +3406,33 @@
+     return (long long)sqlite3_close((sqlite3*)db);
+ }
+ 
++/* Freeze caller roots while callback-free SQLite waits on locks or I/O.
++   Match channel_select: native SQLite allocations are not GC objects. */
++#define EP_SQLITE_BLOCKING_BEGIN() \
++jmp_buf _pin_regs; \
++    volatile char _pin_marker; \
++    if (ep_thread_slot >= 0) { \
++        memset(&_pin_regs, 0, sizeof(_pin_regs)); \
++        setjmp(_pin_regs); \
++        pthread_mutex_lock(&ep_gc_mutex); \
++        { char* _a = (char*)(void*)&_pin_marker; char* _b = (char*)(void*)&_pin_regs; \
++          ep_thread_local_top = (void*)((uintptr_t)((_a < _b) ? _a : _b) & ~(uintptr_t)7); } \
++        __sync_synchronize(); \
++        ep_gc_parked_count++; \
++        pthread_mutex_unlock(&ep_gc_mutex); \
++    }
++
+ long long ep_sqlite3_exec(long long db, long long sql, long long callback, long long cb_arg, long long errmsg_ptr) {
+-    return (long long)sqlite3_exec((sqlite3*)db, (const char*)sql,
+-        (int(*)(void*,int,char**,char**))(callback),
++    if (callback) {
++        return (long long)sqlite3_exec((sqlite3*)db, (const char*)sql,
++            (int(*)(void*,int,char**,char**))(callback),
++            (void*)cb_arg, (char**)errmsg_ptr);
++    }
++    EP_SQLITE_BLOCKING_BEGIN();
++    int result = sqlite3_exec((sqlite3*)db, (const char*)sql, NULL,
+         (void*)cb_arg, (char**)errmsg_ptr);
++    ep_gc_leave_blocking_region();
++    return (long long)result;
+ }
+ 
+ /* Prepared-statement API for parameterized queries (defeats SQL injection). */
+@@ -3442,7 +3465,10 @@
+ }
+ 
+ long long ep_sqlite3_step(long long stmt) {
+-    return (long long)sqlite3_step((sqlite3_stmt*)stmt);
++    EP_SQLITE_BLOCKING_BEGIN();
++    int result = sqlite3_step((sqlite3_stmt*)stmt);
++    ep_gc_leave_blocking_region();
++    return (long long)result;
+ }
+ 
+ long long ep_sqlite3_column_count(long long stmt) {

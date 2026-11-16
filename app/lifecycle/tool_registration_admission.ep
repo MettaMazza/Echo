@@ -1,0 +1,48 @@
+import "rsi_archive"
+import "../tools/tool_registry"
+
+# The protected publisher reads the installed archive, never caller role claims.
+# Tool registration does not replace running services, so an observed save may
+# be admitted while its originating task continues. RSI's drain rule is intact.
+define tool_registration_admit with database as Int and run as Str and digest as Str and allowed_principals as Str returning List:
+    if protected_digest_valid(digest) equals 0:
+        return history_status("invalid-candidate-digest")
+    set allowed to provider_json_tokens(allowed_principals)
+    if allowed equals 0 or else not (provider_kind(allowed and 0) equals "["):
+        return history_status("invalid-controller-principals")
+    if sql_execute(database and "BEGIN;") is not equal to 0:
+        return history_status("source-busy")
+    set result to tool_registration_bind(database and run and digest and allowed_principals)
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to sql_execute(database and "ROLLBACK;")
+        return history_status("source-read-failed")
+    return result
+
+define tool_registration_bind with database as Int and run as Str and digest as Str and allowed_principals as Str returning List:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT c.manifest,a.principal,r.session,r.state FROM echo_tool_candidates c JOIN echo_runs r ON r.run=c.run JOIN echo_run_authority a ON a.run=r.run WHERE c.run=?1 AND c.digest=?2;" and [run,digest]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("candidate-not-found")
+    if archive_list_text(row and 4) equals "cancelled" or else archive_list_text(row and 4) equals "failed":
+        return history_status("origin-not-active-or-completed")
+    set manifest to archive_list_text(row and 1)
+    if not (ep_sha256(manifest) equals digest) or else tool_candidate_manifest_valid(manifest) equals 0:
+        return history_status("candidate-record-invalid")
+    set permitted to history_collect_one(checkpoint_prepare(database and "SELECT value FROM json_each(?1) WHERE type='text' AND value=?2 LIMIT 1;" and [allowed_principals,archive_list_text(row and 2)]))
+    if not (archive_list_text(permitted and 0) equals "found"):
+        return history_status("principal-not-enrolled-for-tool-creation")
+    if archive_verify(database and archive_list_text(row and 3)) is not equal to 0 or else run_authority_allows(database and run and "admin") equals 0 or else group_privileged_audience_allows(database and run) equals 0:
+        return history_status("candidate-authority-revoked")
+    # Require the real dispatcher result for the exact saved manifest. A table
+    # row or a model-written success claim alone is not a registration request.
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT t.call_id FROM echo_tool_calls t JOIN echo_events q ON q.event=t.request_event AND q.session=t.session JOIN echo_events e ON e.event=t.result_event AND e.session=t.session WHERE t.run=?1 AND t.state='observed' AND q.kind='tool_call' AND json_extract(q.payload,'$.run_id')=?1 AND json_extract(q.payload,'$.call_id')=t.call_id AND json_extract(q.payload,'$.name')='tool_candidate_save' AND json_extract(json_extract(q.payload,'$.arguments'),'$.manifest_text')=?2 AND json_extract(e.payload,'$.result.digest')=?3 AND json_extract(e.payload,'$.result.status') IN ('candidate-saved-not-activated','candidate-already-saved-not-activated') ORDER BY t.request_event LIMIT 1;" and [run,manifest,digest]))
+    if not (archive_list_text(saved and 0) equals "found"):
+        return history_status("awaiting-observed-candidate-save")
+    set call_id to archive_list_text(saved and 1)
+    if tool_policy_allows(database and run and call_id and "tool_candidate_save") equals 0:
+        return history_status("candidate-call-authority-revoked")
+    set scope to ""
+    if group_run_session_allows(database and run and archive_list_text(row and 3)) equals 1:
+        set scope to archive_list_text(row and 3)
+    # Exact authoring manifest, owner, sharing boundary and call identity are
+    # retained by the controller before independently building any executable.
+    return ["authorized",manifest,archive_list_text(row and 2),scope,call_id]

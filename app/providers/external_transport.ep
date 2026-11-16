@@ -1,0 +1,146 @@
+import "helper_process"
+import "../transport/http_response"
+import "../transport/socket_write"
+
+# Fixed upstream families. A model cannot supply a URL, proxy, certificate
+# override, curl option or credential destination through its tool arguments.
+define external_transport_endpoint with family as Str returning Str:
+    if family equals "openai-chat":
+        return "https://api.openai.com/v1/chat/completions"
+    if family equals "openai-responses":
+        return "https://api.openai.com/v1/responses"
+    if family equals "anthropic-messages":
+        return "https://api.anthropic.com/v1/messages"
+    return ""
+
+# Private stdin is an HTTP header file, not command-line/config syntax. Reject
+# controls, whitespace and non-ASCII credentials before launching any process.
+define external_transport_headers with family as Str and credential as Str returning Str:
+    if string_length(external_transport_endpoint(family)) equals 0 or else string_length(credential) equals 0:
+        return ""
+    set index to 0
+    repeat while index < string_length(credential):
+        set code to get_character(credential and index)
+        if code < 33 or else code > 126:
+            return ""
+        set index to index + 1
+    if family equals "openai-chat" or else family equals "openai-responses":
+        return concat("Authorization: Bearer " and concat(credential and "\n"))
+    return concat("x-api-key: " and concat(credential and "\nanthropic-version: 2023-06-01\n"))
+
+define external_transport_pair with system as Int returning List:
+    set packed to [0]
+    set function to ep_dlsym(system and "socketpair")
+    if function equals 0 or else socket_signed_result(ep_dlcall4(function and 1 and 1 and 0 and get_list_data_ptr(packed))) is not equal to 0:
+        return 0
+    return [get_list(packed and 0) modulo 4294967296,get_list(packed and 0) / 4294967296]
+
+define external_transport_arguments with family as Str and body_path as Str returning List:
+    set endpoint to external_transport_endpoint(family)
+    if string_length(endpoint) equals 0 or else string_length(body_path) equals 0 or else get_character(body_path and 0) is not equal to 47:
+        return 0
+    # --disable MUST be first: do not load a user's .curlrc. Explicit empty
+    # proxy and environment prevent accidental credential-bearing proxy use.
+    # No retries, redirects, token/time caps, TLS bypass or local fallback.
+    return ["--disable","--silent","--show-error","--no-buffer","--raw","--include","--http1.1","--proto","=https","--proto-redir","=https","--max-redirs","0","--retry","0","--proxy","","--request","POST","--header","@/dev/stdin","--header","Content-Type: application/json","--header","Accept: text/event-stream","--header","Accept-Encoding: identity","--header","Expect:","--data-binary",concat("@" and body_path),"--url",endpoint]
+
+define external_transport_result with status as Str and process as List and reader as List returning List:
+    set result to create_list()
+    set added to append_list(result and status)
+    set added to append_list(result and process)
+    set added to append_list(result and reader)
+    return result
+
+# Host primitive, NOT a model-callable entry point. The caller must bind consent,
+# exact archived request bytes, a private immutable request file and a durable
+# dispatch claim before calling. It owns the private stderr descriptor.
+# Result: status, child handle, HTTP reader. On success the caller must consume
+# the stream then join/reap the child; cancellation must abort before releasing.
+define external_transport_start with family as Str and credential as Str and body_path as Str and directory as Int and errors as Int and cancellation as Int returning List:
+    return external_transport_start_program("/usr/bin/curl" and family and credential and body_path and directory and errors and cancellation)
+
+# The executable parameter is for isolated protocol fixtures; runtime callers
+# use external_transport_start, whose executable is fixed.
+define external_transport_start_program with executable as Str and family as Str and credential as Str and body_path as Str and directory as Int and errors as Int and cancellation as Int returning List:
+    set arguments to external_transport_arguments(family and body_path)
+    return external_transport_start_arguments(executable and family and credential and arguments and directory and errors and cancellation)
+
+# Internal transport primitive shared by fixed generation and discovery plans.
+# Only host integration code constructs arguments; never accept a tool/UI argv.
+define external_transport_start_arguments with executable as Str and family as Str and credential as Str and arguments as List and directory as Int and errors as Int and cancellation as Int returning List:
+    set headers to external_transport_headers(family and credential)
+    return private_http_start_arguments(executable and headers and arguments and directory and errors and cancellation)
+
+# Shared host primitive. Headers travel over a private socket, never argv.
+# Fixed-origin adapters construct both headers and curl arguments; this is not
+# an exposed tool, URL proxy or permission decision.
+define private_http_start_arguments with executable as Str and headers as Str and arguments as List and directory as Int and errors as Int and cancellation as Int returning List:
+    if string_length(headers) equals 0 or else arguments equals 0:
+        return external_transport_result("invalid-external-transport" and 0 and 0)
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return external_transport_result("platform-error" and 0 and 0)
+    if provider_helper_cancelled(system and cancellation) is not equal to 0:
+        set closed to ep_dlclose(system)
+        return external_transport_result("cancelled-before-launch" and 0 and 0)
+    set input to external_transport_pair(system)
+    set output to external_transport_pair(system)
+    if input equals 0 or else output equals 0:
+        if input is not equal to 0:
+            set closed to socket_cancellation_close(input)
+        if output is not equal to 0:
+            set closed to socket_cancellation_close(output)
+        set closed to ep_dlclose(system)
+        return external_transport_result("socket-error" and 0 and 0)
+    set process to workspace_process_start_io(executable and arguments and ["PATH=/usr/bin:/bin","LC_ALL=C"] and directory and get_list(output and 1) and errors and -1 and get_list(input and 1))
+    set closed to net_close(get_list(input and 1))
+    set closed to net_close(get_list(output and 1))
+    if process equals 0:
+        set closed to net_close(get_list(input and 0))
+        set closed to net_close(get_list(output and 0))
+        set closed to ep_dlclose(system)
+        return external_transport_result("launch-failed" and 0 and 0)
+    set sent to socket_write_all(system and get_list(input and 0) and cancellation and str_to_ptr(headers) and string_length(headers))
+    set closed to net_close(get_list(input and 0))
+    if not (archive_list_text(sent and 0) equals "sent"):
+        set stopped to workspace_process_abort(process)
+        set closed to net_close(get_list(output and 0))
+        set closed to ep_dlclose(system)
+        if stopped is not equal to 0:
+            return external_transport_result("cleanup-pending" and process and 0)
+        set closed to workspace_process_close(process)
+        return external_transport_result(archive_list_text(sent and 0) and 0 and 0)
+    set reader to http_stream_create(system and get_list(output and 0) and cancellation)
+    return external_transport_result("streaming" and process and reader)
+
+# Exactly one owner calls this after consumption. Failed reads terminate the
+# private process group; a successful HTTP body still requires a zero curl exit.
+define external_transport_finish with database as Int and session as Str and request as Str and transfer as List and clean as Int returning Str:
+    set process to get_list(transfer and 1)
+    set reader to get_list(transfer and 2)
+    if process equals 0:
+        return "invalid-transfer"
+    if reader equals 0 or else clean equals 0:
+        set observed to workspace_process_poll(process)
+        if observed is not equal to 1 and workspace_process_abort(process) is not equal to 0:
+            return "cleanup-pending"
+    set system to 0
+    set cancellation to -1
+    if reader is not equal to 0:
+        set system to get_list(reader and 0)
+        set cancellation to get_list(reader and 2)
+        set released to http_stream_release(reader)
+        set closed to net_close(get_list(reader and 1))
+        set changed to set_list(transfer and 2 and 0)
+    set status to "aborted"
+    if get_list(process and 2) equals 1:
+        # abort already reaped the child. Never wait again or signal its PID.
+        if workspace_process_close(process) is not equal to 0:
+            set status to "cleanup-error"
+    else:
+        set terminal to provider_helper_wait_owned(database and session and concat(request and ":external-process") and process and cancellation)
+        set status to archive_list_text(terminal and 0)
+    if system is not equal to 0:
+        set closed to ep_dlclose(system)
+    set changed to set_list(transfer and 1 and 0)
+    return status

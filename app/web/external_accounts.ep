@@ -1,0 +1,79 @@
+import "os"
+import "../providers/external_accounts"
+import "../providers/anthropic_json"
+import "../workspace/host_profile"
+
+# Settings only: device is the authenticated bearer identity. Never dispatch
+# this handler as a model tool or archive its request body.
+define web_external_account with database as Int and device as Str and tokens as List returning Str:
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    set action to provider_value(tokens and provider_member(tokens and 0 and "action"))
+    set allowed to ["action","identity"]
+    if action equals "list":
+        set allowed to ["action"]
+    if action equals "connect":
+        set allowed to ["action","identity","family","label","key"]
+    if anthropic_fields(tokens and 0 and allowed) equals 0:
+        return "{\"status\":\"invalid-arguments\"}"
+    for each field in allowed:
+        if not (provider_kind(tokens and provider_member(tokens and 0 and field)) equals "string"):
+            return "{\"status\":\"invalid-arguments\"}"
+    if string_length(principal_for_device(database and device)) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    if external_account_schema(database) is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    if action equals "list":
+        return external_account_list(database and device)
+    set identity to provider_value(tokens and provider_member(tokens and 0 and "identity"))
+    if action equals "read":
+        set row to external_account_read(database and device and identity)
+        if not (archive_list_text(row and 0) equals "found"):
+            return "{\"status\":\"account-unavailable\"}"
+        set output to concat("{\"status\":" and provider_quote(archive_list_text(row and 4)))
+        set output to concat(output and concat(",\"identity\":" and provider_quote(archive_list_text(row and 1))))
+        set output to concat(output and concat(",\"family\":" and provider_quote(archive_list_text(row and 2))))
+        return concat(output and concat(",\"label\":" and concat(provider_quote(archive_list_text(row and 3)) and "}")))
+    set status to "invalid-action"
+    if action equals "revoke":
+        set status to external_account_revoke(database and device and identity)
+    else if action equals "connect":
+        set vault to web_external_vault()
+        if not (archive_list_text(vault and 0) equals "ready"):
+            return "{\"status\":\"credential-storage-unavailable\"}"
+        set system to get_list(vault and 1)
+        set directory to get_list(vault and 2)
+        set status to external_account_connect(database and device and identity and provider_value(tokens and provider_member(tokens and 0 and "family")) and provider_value(tokens and provider_member(tokens and 0 and "label")) and system and directory and provider_value(tokens and provider_member(tokens and 0 and "key")))
+        set closed to net_close(directory)
+        set unloaded to ep_dlclose(system)
+    return concat("{\"status\":" and concat(provider_quote(status) and "}"))
+
+# Trusted deployment configuration only; never accept a vault path from HTTP.
+# Result ownership: the caller closes descriptor 2, then library 1.
+define web_external_vault returning List:
+    set failed to create_list()
+    set added to append_list(failed and "credential-storage-unavailable")
+    set added to append_list(failed and 0)
+    set added to append_list(failed and -1)
+    set path to ptr_to_str(get_env("ECHO_EXTERNAL_VAULT_ROOT"))
+    set roots to host_policy_roots(ptr_to_str(get_env("ECHO_HOST_SECRET_ROOTS")))
+    set protected to 0
+    if not (roots equals 0):
+        for each root in roots:
+            if path equals root or else string_index_of(path and concat(root and "/")) equals 0:
+                set protected to 1
+    # Validate canonical spelling independently of the protection prefix.
+    if protected equals 0 or else host_policy_roots(concat("[" and concat(provider_quote(path) and "]"))) equals 0:
+        return failed
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return failed
+    set directory to workspace_root_open(system and path)
+    if directory < 0:
+        set unloaded to ep_dlclose(system)
+        return failed
+    set result to create_list()
+    set added to append_list(result and "ready")
+    set added to append_list(result and system)
+    set added to append_list(result and directory)
+    return result

@@ -1,0 +1,46 @@
+import "archived_stream"
+import "../transport/http_response"
+
+# Shared incoming HTTP contract; caller owns the connection/process and must
+# validate its terminal state before releasing a result to the agent.
+define provider_http_collect with reader as List and database as Int and session as Str and request as Str and read_size as Int and family as Str returning List:
+    set state to chat_stream_create()
+    set head to http_response_head(reader and "POST")
+    repeat while archive_list_text(head and 0) equals "ready":
+        if get_list(head and 1) >= 200:
+            break
+        set head to http_response_head(reader and "POST")
+    if not (archive_list_text(head and 0) equals "ready"):
+        return provider_collected(archive_list_text(head and 0) and state)
+    set payload to concat("{\"request_event\":" and provider_quote(request))
+    set payload to concat(payload and concat(",\"status\":" and int_to_string(get_list(head and 1))))
+    set payload to concat(payload and ",\"headers\":[")
+    set headers to get_list(head and 4)
+    set index to 0
+    set content_type to ""
+    repeat while index is less than length_list(headers):
+        set pair to get_list(headers and index)
+        set name to archive_list_text(pair and 0)
+        set value to archive_list_text(pair and 1)
+        if index is greater than 0:
+            set payload to concat(payload and ",")
+        set payload to concat(payload and concat("[" and provider_quote(name)))
+        set payload to concat(payload and concat("," and provider_quote(value)))
+        set payload to concat(payload and "]")
+        if name equals "content-type":
+            if string_length(content_type) is greater than 0:
+                return provider_collected("ambiguous-content-type" and state)
+            set content_type to ptr_to_str(string_to_lower(value))
+        set index to index + 1
+    set payload to concat(payload and "]}")
+    if archive_append(database and session and concat(request and ":http") and "provider_response_head" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return provider_collected("archive-error" and state)
+    if get_list(head and 1) is not equal to 200:
+        return provider_collected("http-error" and state)
+    set semicolon to string_index_of(content_type and ";")
+    if semicolon >= 0:
+        set content_type to ptr_to_str(string_trim(substring(content_type and 0 and semicolon)))
+    if not (content_type equals "text/event-stream"):
+        return provider_collected("unsupported-content-type" and state)
+    set framed_body to http_body_create(archive_list_text(head and 2) and get_list(head and 3))
+    return provider_collect_events_family(reader and framed_body and database and session and request and read_size and family)

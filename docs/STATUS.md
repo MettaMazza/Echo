@@ -1,9 +1,9 @@
-# Current status — Echo 1.9
+# Current status — 16 November 2026
 
-Echo 1.9 is a development source update. **V1 is reserved for completed, production-ready Phase Two.**
+Echo is deployed as **`echo-self-monitor-20261116-findings`**. The restored features, persistent session caching, four requested QoL changes and findings-only self-monitor are installed. The recorded final deployment check found all 14 services running and idle.
 
-The core browser/Discord agent, public community recall, explicitly linked private memory, source-preserving history, native tools, projects/tasks, search, attachments and selected Nano speech are implemented. Significant voice and protected research/self-development components exist; their full live workflow qualification is not declared complete.
+The next agreed work is **latency reduction and system optimisation**, not reimplementation of completed Phase Two features. Account enrollment and external-service credentials remain operator configuration. No fresh Phase Two percentage is inferred from file counts or old notes.
 
-Use the [feature matrix](releases/1.9/FEATURES.md) for capability-by-capability boundaries, [remaining work](releases/1.9/REMAINING.md) for V1 requirements and [verification](releases/1.9/VERIFICATION.md) for measured evidence. Research latency remains open. Historical 1.5/1.75 status and old percentages are not current acceptance claims.
+[Current build and evidence](CURRENT-BUILD.md) · [Next-session starting point](phase2/RESUME-HANDOFF.md) · [Feature matrix](releases/1.9/FEATURES.md)
 
-The 27 October latency and Discord recovery release is deployed on the existing macOS host. The RSI controller and its build, acceptance, activation and rollback pipeline are installed as persistent services. The original RSI request has not yet demonstrated a completed candidate deployment: its compaction review requires repair. This is a run-level verification gap, not an undeployed prototype. See [current build evidence](CURRENT-BUILD.md); the [24 October handoff](phase2/PIVOT-HANDOFF.md) is historical.
+“1.9” identifies this development publication. “V1” remains the separately announced production milestone. Historical release documents retain their original observations and do not supersede this status.

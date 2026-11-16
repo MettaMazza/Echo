@@ -1,0 +1,89 @@
+import "../../app/web/routes"
+import "os"
+import "fs"
+
+define account_route with config as List and credential as Str and origin as Str and body as Str returning List:
+    return settings_route(config and credential and origin and body and "/api/external-account")
+
+define settings_route with config as List and credential as Str and origin as Str and body as Str and target as Str returning List:
+    set listener to local_socket_listen(0)
+    set client to net_connect("127.0.0.1" and get_list(listener and 2))
+    set accepted to local_socket_accept(listener)
+    set wire to concat(concat("POST " and target) and concat(" HTTP/1.1\r\nHost: 127.0.0.1:8123\r\nOrigin: " and origin))
+    set wire to concat(wire and concat("\r\nX-Echo-Token: " and credential))
+    set wire to concat(wire and "\r\nContent-Type: application/json\r\nContent-Length: ")
+    set wire to concat(wire and concat(int_to_string(string_length(body)) and concat("\r\n\r\n" and body)))
+    set sent to socket_write_all(get_list(listener and 0) and client and -1 and str_to_ptr(wire) and string_length(wire))
+    set reader to http_stream_create(get_list(listener and 0) and accepted and -1)
+    set request to http_stream_head(reader)
+    set reply to web_route(reader and request and 8123 and config)
+    set closed to http_stream_release(reader)
+    set closed to net_close(accepted)
+    set closed to net_close(client)
+    set closed to local_socket_close(listener)
+    return reply
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else web_run_schema(database) is not equal to 0:
+        return 2
+    if web_pairing_invite(database and "owner-invite") is not equal to 0 or else web_device_pair(database and "owner-invite" and "owner" and "Owner" and "owner-token") is not equal to 0:
+        return 3
+    if web_pairing_invite(database and "foreign-invite") is not equal to 0 or else web_device_pair(database and "foreign-invite" and "foreign" and "Foreign" and "foreign-token") is not equal to 0:
+        return 4
+    if not (principal_schema(database) equals "applied"):
+        return 14
+    set config to create_list()
+    set added to append_list(config and get_argument(1))
+    set added to append_list(config and "fixture-unused")
+    set added to append_list(config and 0)
+    set added to append_list(config and 2048)
+    set added to append_list(config and 65536)
+    set added to append_list(config and "")
+    set added to append_list(config and "")
+    set added to append_list(config and 0)
+    set body to "{\"action\":\"connect\",\"identity\":\"route-account\",\"family\":\"openai-chat\",\"label\":\"Owner account\",\"key\":\"route-fixture-private-key\"}"
+    set origin to "http://127.0.0.1:8123"
+    set profile_body to "{\"action\":\"read\",\"identity\":\"absent-profile\"}"
+    if not (archive_list_text(settings_route(config and "invalid-token" and origin and profile_body and "/api/external-profile") and 0) equals "403 Forbidden") or else not (archive_list_text(settings_route(config and "owner-token" and "https://foreign.invalid" and profile_body and "/api/external-profile") and 0) equals "403 Forbidden"):
+        return 20
+    set profile_reply to settings_route(config and "owner-token" and origin and profile_body and "/api/external-profile")
+    if not (archive_list_text(profile_reply and 0) equals "403 Forbidden") or else string_contains(archive_list_text(profile_reply and 1) and "profile-unavailable") equals 0:
+        return 21
+    if not (archive_list_text(settings_route(config and "owner-token" and origin and "{\"action\":\"read\",\"identity\":\"absent-profile\",\"device\":\"foreign\"}" and "/api/external-profile") and 0) equals "400 Bad Request"):
+        return 22
+    if not (archive_list_text(account_route(config and "invalid-token" and origin and body) and 0) equals "403 Forbidden"):
+        return 5
+    if not (archive_list_text(account_route(config and "owner-token" and "https://foreign.invalid" and body) and 0) equals "403 Forbidden"):
+        return 6
+    set reply to account_route(config and "owner-token" and origin and body)
+    if not (archive_list_text(reply and 0) equals "200 OK") or else string_contains(archive_list_text(reply and 1) and "connected") equals 0:
+        display archive_list_text(reply and 1)
+        return 7
+    set reply to account_route(config and "owner-token" and origin and "{\"action\":\"list\"}")
+    if not (archive_list_text(reply and 0) equals "200 OK") or else string_contains(archive_list_text(reply and 1) and "route-account") equals 0 or else string_contains(archive_list_text(reply and 1) and "route-fixture-private-key") is not equal to 0:
+        return 8
+    set reply to account_route(config and "foreign-token" and origin and "{\"action\":\"list\"}")
+    if not (archive_list_text(reply and 0) equals "200 OK") or else string_contains(archive_list_text(reply and 1) and "route-account") is not equal to 0:
+        return 9
+    set reply to account_route(config and "foreign-token" and origin and "{\"action\":\"revoke\",\"identity\":\"route-account\"}")
+    if not (archive_list_text(reply and 0) equals "403 Forbidden"):
+        return 10
+    set reply to account_route(config and "owner-token" and origin and "{\"action\":\"read\",\"identity\":\"route-account\",\"device\":\"foreign\"}")
+    if not (archive_list_text(reply and 0) equals "400 Bad Request"):
+        return 11
+    set readonly to create_list()
+    for each value in config:
+        set added to append_list(readonly and value)
+    set changed to set_list(readonly and 7 and 1)
+    set reply to account_route(readonly and "owner-token" and origin and "{\"action\":\"revoke\",\"identity\":\"route-account\"}")
+    if not (archive_list_text(reply and 0) equals "409 Conflict"):
+        return 12
+    set reply to account_route(config and "owner-token" and origin and "{\"action\":\"revoke\",\"identity\":\"route-account\"}")
+    if not (archive_list_text(reply and 0) equals "200 OK"):
+        return 13
+    set closed to sql_close(database)
+    display "PASS: authenticated account HTTP settings, owner list, foreign principal isolation, invalid bearer/origin/forged fields, read-only protection and disconnect."
+    return 0

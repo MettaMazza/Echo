@@ -1,0 +1,283 @@
+import "anthropic_replay"
+
+# Protocol conversion only: no network, archive mutation, credentials or local
+# settings changes. Caller must authorize the exact context before dispatch.
+# Empty list is valid for an assistant with tools; zero means unsupported.
+# No audio/video/document is silently reduced to a text placeholder.
+define anthropic_content with tokens as List and index as Int and images as Int returning List:
+    set result to create_list()
+    set kind to provider_kind(tokens and index)
+    if kind equals "null" or else kind equals "missing":
+        return result
+    if kind equals "string":
+        if string_length(provider_value(tokens and index)) equals 0:
+            return result
+        set added to append_list(result and concat("{\"type\":\"text\",\"text\":" and concat(provider_quote(provider_value(tokens and index)) and "}")))
+        return result
+    set parts to provider_items(tokens and index)
+    if parts equals 0:
+        return 0
+    for each part in parts:
+        set kind to provider_value(tokens and provider_member(tokens and part and "type"))
+        if kind equals "text":
+            set text to provider_member(tokens and part and "text")
+            if anthropic_fields(tokens and part and ["type","text"]) equals 0 or else not (provider_kind(tokens and text) equals "string"):
+                return 0
+            set added to append_list(result and concat("{\"type\":\"text\",\"text\":" and concat(provider_quote(provider_value(tokens and text)) and "}")))
+        else if kind equals "image_url" and images equals 1:
+            set image to provider_member(tokens and part and "image_url")
+            if anthropic_fields(tokens and part and ["type","image_url"]) equals 0 or else anthropic_fields(tokens and image and ["url","detail"]) equals 0:
+                return 0
+            set detail to provider_member(tokens and image and "detail")
+            if detail >= 0 and not (provider_value(tokens and detail) equals "auto"):
+                return 0
+            set url to provider_value(tokens and provider_member(tokens and image and "url"))
+            set source to ""
+            if string_index_of(url and "https://") equals 0:
+                set source to concat("{\"type\":\"url\",\"url\":" and concat(provider_quote(url) and "}"))
+            else:
+                for each media in ["image/png","image/jpeg","image/gif","image/webp"]:
+                    set prefix to concat("data:" and concat(media and ";base64,"))
+                    if string_index_of(url and prefix) equals 0 and string_length(url) > string_length(prefix):
+                        set data to ptr_to_str(substring(url and string_length(prefix) and string_length(url) - string_length(prefix)))
+                        set source to concat("{\"type\":\"base64\",\"media_type\":" and provider_quote(media))
+                        set source to concat(source and concat(",\"data\":" and concat(provider_quote(data) and "}")))
+            if string_length(source) equals 0:
+                return 0
+            set added to append_list(result and concat("{\"type\":\"image\",\"source\":" and concat(source and "}")))
+        else:
+            return 0
+    return result
+
+define anthropic_translation with status as Str and body as Str returning List:
+    return [status,body]
+
+# Returns status, system blocks JSON, message JSON. Tool results are grouped
+# immediately after their matching assistant turn; unknown/duplicate/orphaned
+# IDs and missing results fail instead of rewriting conversation history.
+define anthropic_messages_translate with source as Str returning List:
+    return anthropic_messages_translate_replayed(source and create_list())
+
+# Replays are host-loaded records indexed by canonical message position.
+define anthropic_messages_translate_replayed with source as Str and replays as List returning List:
+    set tokens to provider_json_tokens(source)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0:
+        return anthropic_translation("invalid-messages" and "")
+    set messages to provider_items(tokens and 0)
+    if messages equals 0:
+        return anthropic_translation("invalid-messages" and "")
+    for each binding in replays:
+        if length_list(binding) is not equal to 2 or else get_list(binding and 0) < 0 or else get_list(binding and 0) >= length_list(messages):
+            return anthropic_translation("invalid-native-replay-binding" and "")
+    set system to create_list()
+    set output to create_list()
+    set pending to create_list()
+    set seen to create_list()
+    set results to create_list()
+    set cursor to 0
+    repeat while cursor < length_list(messages):
+        set message to get_list(messages and cursor)
+        set cursor to cursor + 1
+        if anthropic_fields(tokens and message and ["role","content","tool_calls","tool_call_id","reasoning_content"]) equals 0:
+            return anthropic_translation("unsupported-message-field" and "")
+        set role to provider_value(tokens and provider_member(tokens and message and "role"))
+        set replay to 0
+        for each binding in replays:
+            if get_list(binding and 0) equals cursor - 1:
+                if replay is not equal to 0:
+                    return anthropic_translation("duplicate-native-replay-binding" and "")
+                set replay to get_list(binding and 1)
+                if anthropic_replay_matches(replay and tokens and message) equals 0:
+                    return anthropic_translation("native-history-mismatch" and "")
+        set reasoning to provider_member(tokens and message and "reasoning_content")
+        if replay equals 0 and reasoning >= 0 and not (provider_kind(tokens and reasoning) equals "string" and string_length(provider_value(tokens and reasoning)) equals 0):
+            # Plain normalized reasoning is not a signed native thinking block.
+            # Its original must be replayed from the authorized provider archive.
+            return anthropic_translation("native-thinking-history-required" and "")
+        set parts to anthropic_content(tokens and provider_member(tokens and message and "content") and (role equals "user" or else role equals "tool"))
+        if parts equals 0:
+            return anthropic_translation("unsupported-message-content" and "")
+        set calls_field to provider_member(tokens and message and "tool_calls")
+        set result_field to provider_member(tokens and message and "tool_call_id")
+        if (calls_field >= 0 and not (role equals "assistant")) or else (result_field >= 0 and not (role equals "tool")):
+            return anthropic_translation("invalid-tool-role" and "")
+        if role equals "tool":
+            if not (provider_kind(tokens and result_field) equals "string"):
+                return anthropic_translation("invalid-tool-result-id" and "")
+            set identity to provider_value(tokens and result_field)
+            set found to -1
+            set position to 0
+            repeat while position < length_list(pending):
+                if archive_list_text(pending and position) equals identity and string_length(identity) > 0:
+                    set found to position
+                set position to position + 1
+            if found < 0:
+                return anthropic_translation("unmatched-tool-result" and "")
+            set changed to set_list(pending and found and "")
+            set result to concat("{\"type\":\"tool_result\",\"tool_use_id\":" and provider_quote(identity))
+            set result to concat(result and concat(",\"content\":" and concat(anthropic_array(parts) and "}")))
+            set added to append_list(results and result)
+            set remaining to 0
+            for each identity in pending:
+                if string_length(identity) > 0:
+                    set remaining to remaining + 1
+            if remaining equals 0:
+                set added to append_list(output and concat("{\"role\":\"user\",\"content\":" and concat(anthropic_array(results) and "}")))
+                set pending to create_list()
+                set results to create_list()
+            continue
+        if length_list(pending) > 0:
+            return anthropic_translation("missing-tool-result" and "")
+        if role equals "system":
+            if length_list(output) > 0:
+                return anthropic_translation("mid-conversation-system-message" and "")
+            for each part in parts:
+                set added to append_list(system and part)
+            continue
+        if not (role equals "user" or else role equals "assistant"):
+            return anthropic_translation("unsupported-message-role" and "")
+        if calls_field >= 0:
+            set calls to provider_items(tokens and calls_field)
+            if calls equals 0 or else length_list(calls) equals 0:
+                return anthropic_translation("invalid-tool-calls" and "")
+            for each call in calls:
+                set function to provider_member(tokens and call and "function")
+                if anthropic_fields(tokens and call and ["id","type","function"]) equals 0 or else anthropic_fields(tokens and function and ["name","arguments"]) equals 0 or else not (provider_value(tokens and provider_member(tokens and call and "type")) equals "function"):
+                    return anthropic_translation("unsupported-tool-call" and "")
+                set identity to provider_value(tokens and provider_member(tokens and call and "id"))
+                set name to provider_value(tokens and provider_member(tokens and function and "name"))
+                set arguments_field to provider_member(tokens and function and "arguments")
+                set arguments to provider_value(tokens and arguments_field)
+                set input to provider_json_tokens(arguments)
+                if not (provider_kind(tokens and provider_member(tokens and call and "id")) equals "string") or else not (provider_kind(tokens and provider_member(tokens and function and "name")) equals "string") or else string_length(identity) equals 0 or else string_length(name) equals 0 or else not (provider_kind(tokens and arguments_field) equals "string") or else input equals 0 or else provider_unique_objects(input) equals 0 or else not (provider_kind(input and 0) equals "{"):
+                    return anthropic_translation("invalid-tool-call" and "")
+                for each prior in seen:
+                    if identity equals prior:
+                        return anthropic_translation("duplicate-tool-call" and "")
+                set added to append_list(seen and identity)
+                set added to append_list(pending and identity)
+                set part to concat("{\"type\":\"tool_use\",\"id\":" and provider_quote(identity))
+                set part to concat(part and concat(",\"name\":" and provider_quote(name)))
+                set part to concat(part and concat(",\"input\":" and concat(arguments and "}")))
+                set added to append_list(parts and part)
+        if length_list(parts) equals 0:
+            return anthropic_translation("empty-message" and "")
+        if replay is not equal to 0:
+            set native_content to archive_list_text(replay and 1)
+            set native_tokens to provider_json_tokens(native_content)
+            set native_parts to provider_items(native_tokens and 0)
+            if native_parts equals 0:
+                return anthropic_translation("invalid-native-content" and "")
+            set parts to create_list()
+            for each native_part in native_parts:
+                set added to append_list(parts and anthropic_json_source(native_content and native_tokens and native_part))
+        set message_json to concat("{\"role\":" and provider_quote(role))
+        set added to append_list(output and concat(message_json and concat(",\"content\":" and concat(anthropic_array(parts) and "}"))))
+    if length_list(pending) > 0 or else length_list(output) equals 0:
+        return anthropic_translation("incomplete-messages" and "")
+    return ["ready",anthropic_array(system),anthropic_array(output)]
+
+# Native options are supplied by capability/accounting validation, never a
+# guessed token cap or a replacement for the user's selected reasoning mode.
+define anthropic_request_create with model as Str and messages as Str and tools as Str and options as Str returning List:
+    return anthropic_request_create_replayed(model and messages and tools and options and create_list())
+
+define anthropic_request_create_replayed with model as Str and messages as Str and tools as Str and options as Str and replays as List returning List:
+    set config to provider_json_tokens(options)
+    if config equals 0 or else provider_unique_objects(config) equals 0 or else anthropic_fields(config and 0 and ["max_tokens","thinking","output_config","temperature","top_p","stop_sequences","tool_choice"]) equals 0:
+        return anthropic_translation("invalid-native-options" and "")
+    set maximum to provider_index(config and provider_member(config and 0 and "max_tokens"))
+    if string_length(model) equals 0 or else string_length(maximum) equals 0 or else http_decimal(maximum) <= 0:
+        return anthropic_translation("invalid-output-budget" and "")
+    set translated to anthropic_messages_translate_replayed(messages and replays)
+    if not (archive_list_text(translated and 0) equals "ready"):
+        return translated
+    set definitions to provider_json_tokens(tools)
+    if definitions equals 0 or else provider_unique_objects(definitions) equals 0:
+        return anthropic_translation("invalid-tools" and "")
+    set items to provider_items(definitions and 0)
+    if items equals 0:
+        return anthropic_translation("invalid-tools" and "")
+    set native_tools to create_list()
+    set names to create_list()
+    for each item in items:
+        set function to provider_member(definitions and item and "function")
+        if anthropic_fields(definitions and item and ["type","function"]) equals 0 or else anthropic_fields(definitions and function and ["name","description","parameters","strict"]) equals 0 or else not (provider_value(definitions and provider_member(definitions and item and "type")) equals "function"):
+            return anthropic_translation("unsupported-tool-definition" and "")
+        set name to provider_value(definitions and provider_member(definitions and function and "name"))
+        set schema to provider_member(definitions and function and "parameters")
+        if not (provider_kind(definitions and provider_member(definitions and function and "name")) equals "string") or else string_length(name) equals 0 or else not (provider_kind(definitions and schema) equals "{"):
+            return anthropic_translation("invalid-tool-definition" and "")
+        for each prior in names:
+            if name equals prior:
+                return anthropic_translation("duplicate-tool-name" and "")
+        set added to append_list(names and name)
+        set tool to concat("{\"name\":" and provider_quote(name))
+        set tool to concat(tool and concat(",\"input_schema\":" and anthropic_json_source(tools and definitions and schema)))
+        for each field in ["description","strict"]:
+            set value to provider_member(definitions and function and field)
+            if value >= 0:
+                if field equals "description" and not (provider_kind(definitions and value) equals "string"):
+                    return anthropic_translation("invalid-tool-definition" and "")
+                if field equals "strict" and not (provider_kind(definitions and value) equals "true" or else provider_kind(definitions and value) equals "false"):
+                    return anthropic_translation("invalid-tool-definition" and "")
+                set tool to concat(tool and concat("," and concat(provider_quote(field) and ":")))
+                set tool to concat(tool and anthropic_json_source(tools and definitions and value))
+        set added to append_list(native_tools and concat(tool and "}"))
+    set body to concat("{\"model\":" and provider_quote(model))
+    set body to concat(body and concat(",\"stream\":true,\"system\":" and archive_list_text(translated and 1)))
+    set body to concat(body and concat(",\"messages\":" and archive_list_text(translated and 2)))
+    if length_list(native_tools) > 0:
+        set body to concat(body and concat(",\"tools\":" and anthropic_array(native_tools)))
+    set index to 1
+    repeat while not (provider_kind(config and index) equals "}"):
+        set body to concat(body and concat("," and concat(provider_quote(provider_value(config and index)) and ":")))
+        set body to concat(body and anthropic_json_source(options and config and index + 2))
+        set index to provider_after(config and index + 2)
+        if provider_kind(config and index) equals ",":
+            set index to index + 1
+    return anthropic_translation("ready" and concat(body and "}"))
+
+# Host-only bindings: [canonical message index, original request event]. The
+# authorized caller chooses them from accepted lineage, never model arguments.
+define anthropic_request_create_archived with database as Int and session as Str and model as Str and messages as Str and tools as Str and options as Str and bindings as List returning List:
+    set source_tokens to provider_json_tokens(messages)
+    set turns to provider_items(source_tokens and 0)
+    set selected_options to provider_json_tokens(options)
+    if turns equals 0 or else selected_options equals 0:
+        return anthropic_translation("invalid-request" and "")
+    set active_assistant to -1
+    if length_list(turns) > 0 and provider_value(source_tokens and provider_member(source_tokens and get_list(turns and length_list(turns) - 1) and "role")) equals "tool":
+        set position to length_list(turns) - 1
+        repeat while position >= 0:
+            if provider_value(source_tokens and provider_member(source_tokens and get_list(turns and position) and "role")) equals "assistant":
+                set active_assistant to position
+                break
+            set position to position - 1
+    set replays to create_list()
+    for each binding in bindings:
+        if length_list(binding) is not equal to 2:
+            return anthropic_translation("invalid-native-replay-binding" and "")
+        set request to archive_list_text(binding and 1)
+        set replay to anthropic_replay_read(database and session and request)
+        if not (archive_list_text(replay and 0) equals "ready"):
+            return replay
+        set original to archive_read_event(database and request)
+        set envelope to provider_json_tokens(archive_list_text(original and 3))
+        set original_body to provider_value(envelope and provider_member(envelope and 0 and "request_body"))
+        set body to provider_json_tokens(original_body)
+        if body equals 0 or else not (provider_value(body and provider_member(body and 0 and "model")) equals model):
+            return anthropic_translation("native-history-model-mismatch" and "")
+        if get_list(binding and 0) equals active_assistant:
+            # A tool loop is still the same assistant turn. Do not silently
+            # switch thinking mode/effort while replaying its signed state.
+            for each field in ["thinking","output_config"]:
+                set prior to anthropic_json_source(original_body and body and provider_member(body and 0 and field))
+                set selected to anthropic_json_source(options and selected_options and provider_member(selected_options and 0 and field))
+                if not (prior equals selected):
+                    return anthropic_translation("native-turn-settings-mismatch" and "")
+        set retained to create_list()
+        set added to append_list(retained and get_list(binding and 0))
+        set added to append_list(retained and replay)
+        set added to append_list(replays and retained)
+    return anthropic_request_create_replayed(model and messages and tools and options and replays)

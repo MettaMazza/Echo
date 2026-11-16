@@ -1,0 +1,109 @@
+import "tool_registration_admission"
+import "tool_behavior"
+import "rsi_build"
+import "../tools/tool_version_store"
+
+# Resolve source only in the author's existing workspace under the installed
+# root. Read the retained inode with the manifest hash; model paths never select
+# another host root or replace compiler/evaluator configuration.
+define tool_registration_source with database as Int and run as Str and manifest as Str and installed_root as Str returning List:
+    if tool_candidate_manifest_valid(manifest) equals 0 or else string_length(installed_root) equals 0:
+        return history_status("invalid-source-request")
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT w.directory FROM echo_workspaces w JOIN echo_runs r ON r.session=w.session WHERE r.run=?1 AND w.root=?2;" and [run,installed_root]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return history_status("author-workspace-unavailable")
+    set parts to workspace_path_parts(archive_list_text(row and 1))
+    if parts equals 0 or else length_list(parts) is not equal to 1:
+        return history_status("author-workspace-invalid")
+    set tokens to provider_json_tokens(manifest)
+    set relative to provider_value(tokens and provider_member(tokens and 0 and "source"))
+    if workspace_path_parts(relative) equals 0 or else string_length(relative) < 4 or else not (substring(relative and string_length(relative) - 3 and 3) equals ".ep"):
+        return history_status("ernos-source-required")
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to workspace_root_open(library and installed_root)
+    if root < 0:
+        set released to ep_dlclose(library)
+        return history_status("workspace-root-unavailable")
+    set descriptor to workspace_file_open(library and root and concat(archive_list_text(row and 1) and concat("/" and relative)) and 0)
+    set closed to net_close(root)
+    if descriptor < 0 or else closed is not equal to 0:
+        if descriptor >= 0:
+            set closed to net_close(descriptor)
+        set released to ep_dlclose(library)
+        return history_status("candidate-source-unavailable")
+    set expected to provider_value(tokens and provider_member(tokens and 0 and "source_sha256"))
+    set read to file_text_descriptor_window(library and descriptor and expected and -1 and 65536 and 0 and -1)
+    set closed to net_close(descriptor)
+    set released to ep_dlclose(library)
+    if closed is not equal to 0 or else released is not equal to 0 or else not (archive_list_text(read and 0) equals "read"):
+        return history_status("candidate-source-changed-or-unreadable")
+    return ["source",archive_list_text(read and 1)]
+
+# The caller owns a fresh stage and log root and supplies an installed pinned
+# build plan. This function produces evidence, never executable authorization.
+# Publication must still re-admit the author, check dependencies/rights and use
+# the protected registry transaction. No model-supplied binary is accepted.
+define tool_registration_build with admitted as List and source as Str and build_plan as Str and plan_pin as Str and stage_root as Str and work_root as Str and timeout_ms as Int returning List:
+    if not (archive_list_text(admitted and 0) equals "authorized") or else not (ep_sha256(build_plan) equals plan_pin):
+        return history_status("admission-or-build-plan-invalid")
+    set manifest to archive_list_text(admitted and 1)
+    set fields to provider_json_tokens(manifest)
+    if tool_behavior_cases_valid(manifest) equals 0:
+        return history_status("behavioural-json-cases-required")
+    if not (ep_sha256(source) equals provider_value(fields and provider_member(fields and 0 and "source_sha256"))):
+        return history_status("candidate-source-changed")
+    set plan to provider_json_tokens(build_plan)
+    if plan equals 0 or else provider_unique_objects(plan) equals 0:
+        return history_status("build-plan-invalid")
+    set entries to provider_items(plan and provider_member(plan and 0 and "entries"))
+    if entries equals 0 or else length_list(entries) is not equal to 1 or else not (provider_value(plan and get_list(entries and 0)) equals "tool.ep"):
+        return history_status("tool-build-entry-required")
+    if work_root equals stage_root or else string_index_of(work_root and concat(stage_root and "/")) equals 0 or else string_index_of(stage_root and concat(work_root and "/")) equals 0:
+        return history_status("separate-stage-and-work-required")
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set stage to workspace_root_open(library and stage_root)
+    set work to workspace_root_open(library and work_root)
+    if stage < 0 or else work < 0:
+        if stage >= 0:
+            set closed to net_close(stage)
+        if work >= 0:
+            set closed to net_close(work)
+        set released to ep_dlclose(library)
+        return history_status("build-directories-unavailable")
+    set failed to rsi_source_write(library and stage and "tool.ep" and source)
+    for each name in ["build","behavior","workspace"]:
+        set created to workspace_directory_open(library and work and ptr_to_str(name) and 1)
+        if created < 0:
+            set failed to 1
+        else:
+            set closed to net_close(created)
+    set closed to net_close(stage)
+    set closed to net_close(work)
+    set released to ep_dlclose(library)
+    if failed is not equal to 0:
+        return history_status("candidate-stage-conflict")
+    set build_report to rsi_build_candidate(build_plan and plan_pin and stage_root and concat(work_root and "/build"))
+    if string_length(build_report) equals 0:
+        return history_status("candidate-build-failed")
+    set binary to concat(stage_root and "/tool")
+    set compiled to file_digest_durable(binary and 65536)
+    if not (archive_list_text(compiled and 0) equals "verified"):
+        return history_status("compiled-artifact-unavailable")
+    set pin to archive_list_text(compiled and 1)
+    set runtime to provider_value(plan and provider_member(plan and 0 and "runtime"))
+    set behavior to tool_behavior_execute(manifest and binary and pin and concat(work_root and "/workspace") and runtime and concat(work_root and "/behavior") and timeout_ms)
+    if string_length(behavior) equals 0:
+        return history_status("candidate-behavior-failed")
+    set source_path to concat(stage_root and "/tool.ep")
+    set after to file_digest_durable(source_path and 65536)
+    if not (archive_list_text(after and 0) equals "verified") or else not (archive_list_text(after and 1) equals ep_sha256(source)):
+        return history_status("candidate-source-changed-during-build")
+    set receipt to concat("{\"status\":\"qualified\",\"principal\":" and provider_quote(archive_list_text(admitted and 2)))
+    set receipt to concat(receipt and concat(",\"session\":" and provider_quote(archive_list_text(admitted and 3))))
+    set receipt to concat(receipt and concat(",\"manifest_sha256\":" and provider_quote(ep_sha256(manifest))))
+    set receipt to concat(receipt and concat(",\"source_sha256\":" and provider_quote(ep_sha256(source))))
+    set receipt to concat(receipt and concat(",\"artifact_sha256\":" and provider_quote(pin)))
+    set receipt to concat(receipt and concat(",\"build_plan_sha256\":" and provider_quote(plan_pin)))
+    set receipt to concat(receipt and concat(",\"build_report\":" and build_report))
+    set receipt to concat(receipt and concat(",\"behavior_report\":" and concat(behavior and "}")))
+    return ["qualified-build",source_path,binary,pin,receipt]

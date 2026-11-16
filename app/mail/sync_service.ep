@@ -1,0 +1,105 @@
+import "environment"
+import "sync_worker"
+
+# Independent host monitor owns cancellation. No model run or public session
+# grants background access: the installed account's current private owner does.
+define gmail_sync_monitor with archive_path as Str and mailbox_path as Str and account as Str and owner as Str and stop_path as Str and stop as Int and writer as Int and completed as Int returning Int:
+    set authority to archive_open(archive_path)
+    set database to archive_open(mailbox_path)
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set cancelled to 1
+    if authority is not equal to 0 and also database is not equal to 0 and also system is not equal to 0:
+        set cancelled to 0
+        repeat while 1 equals 1:
+            if provider_helper_cancelled(system and stop) is not equal to 0:
+                break
+            if file_exists(stop_path) or else gmail_owner_active(authority and database and account and owner) equals 0:
+                set cancelled to 1
+                break
+            set slept to sleep_ms(100)
+    if authority is not equal to 0:
+        set closed to sql_close(authority)
+    if database is not equal to 0:
+        set closed to sql_close(database)
+    if system is not equal to 0:
+        set closed to ep_dlclose(system)
+    set closed to net_close(writer)
+    send cancelled to completed
+    return 0
+
+# Drain one persisted synchronization cycle, then exit idle. A scheduler may
+# invoke this again later. A per-account OS lock prevents overlapping cycles;
+# network errors retain the exact existing cursor/work for a later invocation.
+define gmail_sync_cycle with archive_path as Str and account as Str and stop_path as Str returning Str:
+    if file_exists(stop_path):
+        return "stopped"
+    set environment to gmail_environment_open()
+    if not (archive_list_text(environment and 0) equals "ready"):
+        return archive_list_text(environment and 0)
+    set status to gmail_sync_cycle_open(archive_path and account and stop_path and environment)
+    set closed to gmail_environment_close(environment)
+    if closed is not equal to 0:
+        return "mailbox-storage-close-failed"
+    return status
+
+define gmail_sync_cycle_open with archive_path as Str and account as Str and stop_path as Str and environment as List returning Str:
+    set database to get_list(environment and 6)
+    set system to get_list(environment and 1)
+    set authority to archive_open(archive_path)
+    if authority equals 0:
+        return "authority-unavailable"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT principal FROM echo_mail_accounts WHERE identity=?1 AND state='connected';" and [account]))
+    set owner to archive_list_text(row and 1)
+    if not (archive_list_text(row and 0) equals "found") or else gmail_owner_active(authority and database and account and owner) equals 0:
+        set closed to sql_close(authority)
+        return "mailbox-not-authorized"
+    set lock_name to concat("sync-" and concat(ep_sha256(account) and ".lock"))
+    set lock to workspace_file_open(system and get_list(environment and 7) and lock_name and 1)
+    if lock < 0:
+        set lock to workspace_file_open(system and get_list(environment and 7) and lock_name and 0)
+    set flock to ep_dlsym(system and "flock")
+    if lock < 0 or else external_vault_inode(system and lock and 0) equals 0 or else flock equals 0 or else socket_signed_result(ep_dlcall2(flock and lock and 6)) is not equal to 0:
+        if lock >= 0:
+            set closed to net_close(lock)
+        set closed to sql_close(authority)
+        return "sync-busy"
+    set stop to socket_cancellation_create(system)
+    set cancellation to socket_cancellation_create(system)
+    set status to "sync-cancellation-unavailable"
+    if stop is not equal to 0 and also cancellation is not equal to 0:
+        set completed to channel
+        set monitor_account to concat(account and "")
+        set monitor_owner to concat(owner and "")
+        set monitor_path to concat(stop_path and "")
+        spawn gmail_sync_monitor(concat(archive_path and "") and concat(external_environment_path("ECHO_MAIL_ROOT") and "/mailbox.sqlite") and monitor_account and monitor_owner and monitor_path and get_list(stop and 0) and get_list(cancellation and 1) and completed)
+        set status to "sync-schema-unavailable"
+        if gmail_sync_schema(database) equals 0:
+            set status to gmail_sync_poll(database and account)
+            if status equals "scheduled":
+                set session to concat("mail-sync:" and ep_sha256(account))
+                repeat while 1 equals 1:
+                    if file_exists(stop_path) or else provider_helper_cancelled(system and get_list(cancellation and 0)) is not equal to 0:
+                        set status to "stopped"
+                        break
+                    set identity to concat(session and concat(":" and ptr_to_str(ep_uuid_v4())))
+                    set result to gmail_sync_step(authority and database and session and identity and account and owner and ep_time_now_ms() / 1000 and system and get_list(environment and 3) and get_list(environment and 2) and archive_list_text(environment and 5) and get_list(environment and 4) and get_list(cancellation and 0))
+                    set status to archive_list_text(result and 0)
+                    set cleanup to get_list(result and 3)
+                    if cleanup is not equal to 0:
+                        repeat while gmail_read_cleanup_finish(database and session and cleanup and system and get_list(environment and 2)) equals "cleanup-pending":
+                            set slept to sleep_ms(100)
+                        break
+                    if not (status equals "started" or else status equals "staged" or else status equals "stored" or else status equals "full" or else status equals "history" or else status equals "full-required"):
+                        break
+        set stopped to socket_cancel(stop)
+        set monitored to receive from completed
+        set changed to set_list(cancellation and 1 and -1)
+        if monitored is not equal to 0:
+            set status to "stopped"
+    if stop is not equal to 0:
+        set closed to socket_cancellation_close(stop)
+    if cancellation is not equal to 0:
+        set closed to socket_cancellation_close(cancellation)
+    set closed to net_close(lock)
+    set closed to sql_close(authority)
+    return status

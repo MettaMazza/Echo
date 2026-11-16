@@ -1,0 +1,58 @@
+import "os"
+import "external_request_file"
+import "../workspace/host_profile"
+
+# Trusted deployment paths only; both contain private material and must be
+# excluded from host tools. No model, HTTP or profile field supplies these paths.
+define external_environment_path with name as Str returning Str:
+    set path to ptr_to_str(get_env(name))
+    if host_policy_roots(concat("[" and concat(provider_quote(path) and "]"))) equals 0:
+        return ""
+    set roots to host_policy_roots(ptr_to_str(get_env("ECHO_HOST_SECRET_ROOTS")))
+    if roots equals 0:
+        return ""
+    for each root in roots:
+        if path equals root or else string_index_of(path and concat(root and "/")) equals 0:
+            return path
+    return ""
+
+# Success: ready, system library, spool fd, vault fd, stderr fd, spool path.
+define external_environment_open returning List:
+    set root to external_environment_path("ECHO_EXTERNAL_SPOOL_ROOT")
+    set vault_root to external_environment_path("ECHO_EXTERNAL_VAULT_ROOT")
+    if string_length(root) equals 0 or else string_length(vault_root) equals 0 or else root equals vault_root:
+        return history_status("external-storage-unavailable")
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return history_status("external-storage-unavailable")
+    set spool to workspace_root_open(system and root)
+    set vault to workspace_root_open(system and vault_root)
+    set errors to native_open_mode(system and "/dev/null" and 1 and 0)
+    if spool < 0 or else vault < 0 or else errors < 0 or else external_request_root_matches(system and spool and root) equals 0 or else external_vault_inode(system and vault and 1) equals 0:
+        if spool >= 0:
+            set closed to net_close(spool)
+        if vault >= 0:
+            set closed to net_close(vault)
+        if errors >= 0:
+            set closed to net_close(errors)
+        set closed to ep_dlclose(system)
+        return history_status("external-storage-unavailable")
+    set result to create_list()
+    set added to append_list(result and "ready")
+    set added to append_list(result and system)
+    set added to append_list(result and spool)
+    set added to append_list(result and vault)
+    set added to append_list(result and errors)
+    set added to append_list(result and root)
+    return result
+
+define external_environment_close with environment as List returning Int:
+    if not (archive_list_text(environment and 0) equals "ready"):
+        return 0
+    set failed to 0
+    for each index in [2,3,4]:
+        if net_close(get_list(environment and index)) is not equal to 0:
+            set failed to 1
+    if ep_dlclose(get_list(environment and 1)) is not equal to 0:
+        set failed to 1
+    return failed

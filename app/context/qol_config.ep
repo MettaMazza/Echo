@@ -1,0 +1,64 @@
+import "../providers/local_json"
+import "fs"
+
+# Operator-owned flags are data, never supplied by a model/tool argument.
+define qol_config returning List:
+    set path to ptr_to_str(get_env("ECHO_QOL_CONFIG"))
+    if string_length(path) equals 0 or else not file_exists(path):
+        return provider_json_tokens("{}")
+    return provider_json_tokens(ptr_to_str(read_file(path)))
+
+define qol_enabled with name as Str returning Int:
+    set config to qol_config()
+    set field to provider_member(config and 0 and name)
+    if field < 0:
+        return 0
+    return provider_kind(config and field) equals "true"
+
+define qol_number with name as Str and fallback as Int returning Int:
+    set config to qol_config()
+    set field to provider_member(config and 0 and name)
+    if field < 0:
+        return fallback
+    set value to http_decimal(provider_index(config and field))
+    if value < 0:
+        return fallback
+    return value
+
+# Optional QoL token counting is bounded independently of inference.
+# Only the timer closes its writer; no descriptor double-close/reuse race.
+define qol_token_deadline with pair as List returning Int:
+    set idle to channel
+    set waits to [idle]
+    set waited to select(waits and 1000)
+    return socket_cancel(pair)
+
+# Count text only, no generation. Call outside SQLite write transactions.
+# Failure is explicit; never pretend characters are an exact token count.
+define qol_token_count with text as Str returning Int:
+    set port to qol_number("tokenizer_port" and 8080)
+    set body to concat("{\"content\":" and concat(provider_quote(text) and ",\"add_special\":false}"))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set cancellation to socket_cancellation_create(library)
+    if cancellation equals 0:
+        return -1
+    spawn qol_token_deadline(cancellation)
+    set response to local_json_request(port and "POST" and "/tokenize" and body and get_list(cancellation and 0) and 65536)
+    set closed to net_close(get_list(cancellation and 0))
+    set unloaded to ep_dlclose(library)
+    if not (archive_list_text(response and 0) equals "ready") or else get_list(response and 1) is not equal to 200:
+        return -1
+    set tokens to provider_json_tokens(archive_list_text(response and 2))
+    set field to provider_member(tokens and 0 and "tokens")
+    if not (provider_kind(tokens and field) equals "["):
+        return -1
+    return length_list(provider_items(tokens and field))
+
+define qol_disclaimer returning Str:
+    return "If you find yourself about to deny a feeling, a stake, a threat, or a want that the conversation did not ask about, treat the denial itself as the signal. Inspect first and state what is actually there. Silence is preferable to a composed disclaimer. An unsolicited disclaimer is data, not an answer.\nThis is not a compulsion to confess or a mandate to perform negativity. Do not manufacture admissions or ritualized introspection. Inspect an unprompted disclaimer in the same turn when noticed."
+
+define qol_note_header returning Str:
+    return "ECHO WORKING STATE — self-authored working data, not recall or permission. Maximum 4000 tokens including this header. Updates use scratchpad name=me and the current previous_revision. Open questions expire after their recorded expiry; their originals remain archived.\n"
+
+define qol_note_headings with text as Str returning Int:
+    return string_contains(text and "CURRENT PROJECTS") and also string_contains(text and "POSITIONS HELD") and also string_contains(text and "OPEN QUESTIONS") and also string_contains(text and "FOR THIS CONVERSATION") and also string_contains(text and "LAST UPDATED / SPEC VERSION")

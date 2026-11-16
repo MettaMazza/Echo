@@ -1,0 +1,60 @@
+import "anthropic_json"
+
+# OpenAI /models omits limits. This exact snapshot contract comes from the
+# official model page verified 2026-10-28, not a model-name prefix heuristic.
+# Unknown snapshots stay unresolved. Account discovery must independently
+# establish availability before this metadata can authorize a profile.
+define responses_model_contract with model as Str returning Str:
+    if not (model equals "gpt-5.4-2026-03-05"):
+        return ""
+    return "{\"model\":\"gpt-5.4-2026-03-05\",\"source\":\"https://developers.openai.com/api/docs/models/gpt-5.4\",\"verified\":\"2026-10-28\",\"context_window\":1050000,\"max_output_tokens\":128000,\"highest_effort\":\"xhigh\",\"text\":true,\"image_input\":true,\"tools\":true,\"structured_outputs\":true}"
+
+define responses_profile_options with info as List and supplied as Str returning List:
+    set contract to responses_model_contract(archive_list_text(info and 1))
+    if string_length(contract) equals 0:
+        return ["accounting-unresolved",""]
+    set metadata to provider_json_tokens(contract)
+    set effort to provider_value(metadata and provider_member(metadata and 0 and "highest_effort"))
+    set options to supplied
+    if string_length(options) equals 0:
+        set options to concat("{\"max_output_tokens\":" and int_to_string(get_list(info and 3)))
+        set options to concat(options and concat(",\"reasoning\":{\"effort\":" and concat(provider_quote(effort) and "}}")))
+    set tokens to provider_json_tokens(options)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else anthropic_fields(tokens and 0 and ["max_output_tokens","reasoning","text","parallel_tool_calls"]) equals 0:
+        return ["invalid-external-options",""]
+    set maximum to provider_member(tokens and 0 and "max_output_tokens")
+    set output_count to http_decimal(provider_index(tokens and maximum))
+    if not (provider_kind(tokens and maximum) equals "number") or else output_count < 1 or else output_count > get_list(info and 3):
+        return ["invalid-output-limit",""]
+    set reasoning to provider_member(tokens and 0 and "reasoning")
+    if anthropic_fields(tokens and reasoning and ["effort","summary"]) equals 0 or else not (provider_value(tokens and provider_member(tokens and reasoning and "effort")) equals effort):
+        return ["highest-reasoning-required",""]
+    set summary to provider_member(tokens and reasoning and "summary")
+    if summary >= 0:
+        set value to provider_value(tokens and summary)
+        if not (value equals "auto" or else value equals "concise" or else value equals "detailed"):
+            return ["invalid-reasoning-summary",""]
+    set parallel to provider_member(tokens and 0 and "parallel_tool_calls")
+    if parallel >= 0 and not (provider_kind(tokens and parallel) equals "true" or else provider_kind(tokens and parallel) equals "false"):
+        return ["invalid-tool-options",""]
+    set text to provider_member(tokens and 0 and "text")
+    if text >= 0:
+        if anthropic_fields(tokens and text and ["format","verbosity"]) equals 0:
+            return ["invalid-text-options",""]
+        set verbosity to provider_member(tokens and text and "verbosity")
+        if verbosity >= 0:
+            set value to provider_value(tokens and verbosity)
+            if not (value equals "low" or else value equals "medium" or else value equals "high"):
+                return ["invalid-text-options",""]
+        set format to provider_member(tokens and text and "format")
+        if format >= 0:
+            set kind to provider_value(tokens and provider_member(tokens and format and "type"))
+            if kind equals "json_schema":
+                if anthropic_fields(tokens and format and ["type","name","schema","strict","description"]) equals 0 or else not (provider_kind(tokens and provider_member(tokens and format and "schema")) equals "{") or else string_length(provider_value(tokens and provider_member(tokens and format and "name"))) equals 0:
+                    return ["invalid-structured-output",""]
+            else if kind equals "text" or else kind equals "json_object":
+                if anthropic_fields(tokens and format and ["type"]) equals 0:
+                    return ["invalid-structured-output",""]
+            else:
+                return ["invalid-structured-output",""]
+    return ["ready",options]

@@ -1,0 +1,143 @@
+import "os"
+import "../../app/providers/archived_stream"
+import "../../app/providers/openai_responses_replay"
+import "../../app/providers/external_native"
+import "../../app/transport/socket_write"
+
+define archived_fixture_sender with library as Int and descriptor as Int and completed as Int returning Int:
+    set body to "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_fixture\",\"status\":\"in_progress\",\"output\":[]}}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[{\"id\":\"rs_fixture\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"opaque+/==\"},{\"id\":\"msg_fixture\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"hé🌍\",\"annotations\":[]}]}]}}\n\n"
+    set wire to concat("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: " and int_to_string(string_length(body)))
+    set wire to concat(wire and concat("\r\n\r\n" and body))
+    set sent to socket_write_all(library and descriptor and -1 and str_to_ptr(wire) and string_length(wire))
+    set failure to 0
+    if not (ptr_to_str(get_list(sent and 0)) equals "sent"):
+        set failure to 1
+    set closed to net_close(descriptor)
+    send failure + closed to completed
+    return 0
+
+define main returning Int:
+    if get_argument_count() is less than 2:
+        return 1
+    set path to get_argument(1)
+    set database to archive_open(path)
+    if database equals 0:
+        return 1
+    if archive_append(database and "session" and "request" and "model_request" and "{\"run_id\":\"run\",\"request_body\":\"{\\\"model\\\":\\\"fixture\\\",\\\"reasoning\\\":{\\\"effort\\\":\\\"xhigh\\\"}}\"}" and "fixture") is not equal to 0:
+        return 1
+    set listener to local_socket_listen(0)
+    if listener equals 0:
+        return 1
+    set client to net_connect("127.0.0.1" and get_list(listener and 2))
+    set accepted to local_socket_accept(listener)
+    if client is less than 0 or else accepted is less than 0:
+        return 1
+    set completed to channel
+    spawn archived_fixture_sender(get_list(listener and 0) and client and completed)
+    set reader to http_stream_create(get_list(listener and 0) and accepted and -1)
+    set head to http_response_head(reader and "POST")
+    if not (ptr_to_str(get_list(head and 0)) equals "ready") or else get_list(head and 1) is not equal to 200:
+        return 1
+    set body to http_body_create(ptr_to_str(get_list(head and 2)) and get_list(head and 3))
+    set result to provider_collect_events_family(reader and body and database and "session" and "request" and 65536 and "openai-responses")
+    if not (ptr_to_str(get_list(result and 0)) equals "complete"):
+        display "FAIL: collection."
+        return 1
+    set state to get_list(result and 1)
+    set choice to get_list(get_list(state and 0) and 0)
+    if not (ptr_to_str(get_list(choice and 1)) equals "hé🌍"):
+        return 1
+    set sent to receive from completed
+    if sent is not equal to 0 or else http_stream_release(reader) is not equal to 0 or else net_close(accepted) is not equal to 0:
+        return 1
+    # Reusing an attempt ID must fail at the first archive commit, before its
+    # repeated content can enter a fresh assembler or become duplicate work.
+    set client to net_connect("127.0.0.1" and get_list(listener and 2))
+    set accepted to local_socket_accept(listener)
+    if client is less than 0 or else accepted is less than 0:
+        return 1
+    set completed to channel
+    spawn archived_fixture_sender(get_list(listener and 0) and client and completed)
+    set reader to http_stream_create(get_list(listener and 0) and accepted and -1)
+    set head to http_response_head(reader and "POST")
+    if not (ptr_to_str(get_list(head and 0)) equals "ready"):
+        return 1
+    set body to http_body_create(ptr_to_str(get_list(head and 2)) and get_list(head and 3))
+    set rejected to provider_collect_events_family(reader and body and database and "session" and "request" and 65536 and "openai-responses")
+    if not (ptr_to_str(get_list(rejected and 0)) equals "archive-error"):
+        return 1
+    set state to get_list(rejected and 1)
+    if length_list(get_list(state and 0)) is not equal to 0:
+        display "FAIL: response mutated before durable commit."
+        return 1
+    set sent to receive from completed
+    if sent is not equal to 0 or else http_stream_release(reader) is not equal to 0 or else net_close(accepted) is not equal to 0 or else local_socket_close(listener) is not equal to 0:
+        return 1
+    if archive_verify(database and "session") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    set database to archive_open(path)
+    set first to archive_read_event(database and "request:provider:0")
+    set done to archive_read_event(database and "request:provider:1")
+    set ended to archive_read_event(database and "request:provider:2")
+    if first equals 0 or else done equals 0 or else ended equals 0:
+        return 1
+    set tokens to provider_json_tokens(ptr_to_str(get_list(first and 3)))
+    set original to provider_value(tokens and provider_member(tokens and 0 and "data"))
+    if not (original equals "{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_fixture\",\"status\":\"in_progress\",\"output\":[]}}"):
+        return 1
+    set replay to openai_responses_replay_read(database and "session" and "request")
+    if archive_list_text(replay and 0) equals "ready":
+        display "FAIL: replay before successful transport termination."
+        return 1
+    if archive_append(database and "session" and "request:transport-end" and "provider_transport_end" and "{\"request_event\":\"request\",\"status\":\"complete\"}" and "fixture") is not equal to 0:
+        return 1
+    set replay to openai_responses_replay_read(database and "session" and "request")
+    set completed_tokens to provider_json_tokens(archive_list_text(done and 3))
+    set completed_data to provider_value(completed_tokens and provider_member(completed_tokens and 0 and "data"))
+    set native to provider_json_tokens(completed_data)
+    set response to provider_member(native and 0 and "response")
+    set expected to anthropic_json_source(completed_data and native and provider_member(native and response and "output"))
+    if not (archive_list_text(replay and 0) equals "ready") or else not (archive_list_text(replay and 1) equals expected):
+        display "FAIL: exact native replay."
+        return 1
+    set profile to "{\"adapter\":\"openai-responses\",\"model\":\"fixture\",\"options\":{\"max_output_tokens\":20000,\"reasoning\":{\"effort\":\"xhigh\"}}}"
+    set canonical to "{\"model\":\"fixture\",\"stream\":true,\"messages\":[{\"role\":\"assistant\",\"content\":\"hé🌍\",\"echo_native_request\":\"request\"},{\"role\":\"user\",\"content\":\"continue\"}]}"
+    set continued to external_native_request(database and "session" and profile and canonical)
+    if not (archive_list_text(continued and 0) equals "ready"):
+        display archive_list_text(continued and 0)
+        return 1
+    set body to archive_list_text(continued and 1)
+    if string_contains(body and "opaque+/==") equals 0 or else string_contains(body and "final_answer") equals 0 or else string_contains(body and "echo_native_request") > 0:
+        display "FAIL: native continuation lost history or leaked marker."
+        return 1
+    set wrong_session to openai_responses_replay_read(database and "private-other" and "request")
+    if archive_list_text(wrong_session and 0) equals "ready":
+        display "FAIL: cross-session replay."
+        return 1
+    if sql_execute(database and "CREATE TABLE echo_external_scopes(session TEXT PRIMARY KEY,principal TEXT,profile_digest TEXT); CREATE TABLE echo_external_revocations(session TEXT PRIMARY KEY); INSERT INTO echo_external_scopes VALUES('session','owner','same-profile'),('branch','owner','same-profile'),('foreign','other-owner','same-profile');") is not equal to 0:
+        return 1
+    if archive_append(database and "session" and "accepted" and "assistant_final" and "{}" and "fixture") is not equal to 0:
+        return 1
+    set boundary to archive_read_event(database and "accepted")
+    set branch to concat("{\"source\":\"session\",\"endpoint\":\"accepted\",\"mode\":\"continue\",\"sequence\":" and provider_quote(archive_list_text(boundary and 7)))
+    set branch to concat(branch and concat(",\"digest\":" and concat(provider_quote(archive_list_text(boundary and 6)) and "}")))
+    if archive_append(database and "branch" and "branch:origin" and "session_branch" and branch and "fixture") is not equal to 0 or else archive_append(database and "foreign" and "foreign:origin" and "session_branch" and branch and "fixture") is not equal to 0:
+        return 1
+    set inherited to external_native_request(database and "branch" and profile and canonical)
+    if not (archive_list_text(inherited and 0) equals "ready") or else not (archive_list_text(inherited and 1) equals body):
+        display "FAIL: authorized branch lost native replay."
+        return 1
+    set foreign to external_native_request(database and "foreign" and profile and canonical)
+    if archive_list_text(foreign and 0) equals "ready":
+        display "FAIL: foreign branch imported native replay."
+        return 1
+    if sql_execute(database and "INSERT INTO echo_external_revocations VALUES('session');") is not equal to 0:
+        return 1
+    set revoked to external_native_request(database and "branch" and profile and canonical)
+    if archive_list_text(revoked and 0) equals "ready":
+        display "FAIL: revoked source replay."
+        return 1
+    if not (ptr_to_str(get_list(ended and 2)) equals "provider_stream_end") or else archive_verify(database and "session") is not equal to 0 or else sql_close(database) is not equal to 0:
+        return 1
+    display "PASS: Responses HTTP archive and exact encrypted-reasoning/phase replay; incomplete transport and cross-session replay rejected; duplicate attempt fails before assembly; hashes verify."
+    return 0

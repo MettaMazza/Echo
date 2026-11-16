@@ -1,0 +1,183 @@
+import "snapshot"
+import "history"
+
+# Foreground release must not turn per-turn full backups into concurrent disk
+# writers. Use the existing archive anchor for one process-wide backup lane.
+# A waiter may reuse a verified snapshot that covers its committed event head.
+# Full verification, durable snapshot receipts and external destinations remain.
+define archive_snapshot_coalesced with database as Int and directory as Str returning Int:
+    # Tickets cover all committed database state, including non-event tables.
+    if sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_snapshot_requests(singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL); BEGIN IMMEDIATE; INSERT INTO echo_snapshot_requests(singleton,generation) VALUES(1,1) ON CONFLICT(singleton) DO UPDATE SET generation=generation+1;") is not equal to 0:
+        set rolled_back to sql_execute(database and "ROLLBACK;")
+        return 1
+    set requested to history_collect_one(archive_prepare(database and "SELECT CAST(generation AS TEXT) FROM echo_snapshot_requests WHERE singleton=1;"))
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set rolled_back to sql_execute(database and "ROLLBACK;")
+        return 1
+    if not (archive_list_text(requested and 0) equals "found"):
+        return 1
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if library equals 0:
+        return 1
+    set anchor to archive_runtime_anchor(database and library)
+    if string_length(anchor) equals 0:
+        set closed to ep_dlclose(library)
+        return 1
+    set descriptor to native_open_mode(library and concat(anchor and ".snapshot") and 16777986 and 384)
+    if descriptor < 0:
+        set closed to ep_dlclose(library)
+        return 1
+    set lock_function to ep_dlsym(library and "flock")
+    set result to 1
+    if lock_function is not equal to 0 and socket_signed_result(ep_dlcall2(lock_function and descriptor and 2)) equals 0:
+        set result to archive_snapshot_coalesced_locked(database and directory and archive_list_text(requested and 1) and library)
+    set closed to net_close(descriptor)
+    set unloaded to ep_dlclose(library)
+    return result
+
+# Darwin statfs64 uses 271 words, as in the existing HUD volume reader.
+define archive_snapshot_free_bytes with library as Int and directory as Str returning Int:
+    set query to ep_dlsym(library and "statfs64")
+    if query equals 0:
+        return -1
+    set buffer to create_list()
+    set index to 0
+    repeat while index < 271:
+        set added to append_list(buffer and 0)
+        set index to index + 1
+    if socket_signed_result(ep_dlcall2(query and str_to_ptr(directory) and get_list_data_ptr(buffer))) is not equal to 0:
+        return -1
+    set unit to get_list(buffer and 0) modulo 4294967296
+    set available to get_list(buffer and 3)
+    if unit <= 0 or else available < 0:
+        return -1
+    return unit * available
+
+# Capacity deferral keeps the durable request outstanding. It never advances
+# verified coverage, removes history, or consumes the last space for receipts.
+define archive_snapshot_capacity with database as Int and directory as Str and library as Int returning Int:
+    set available to archive_snapshot_free_bytes(library and directory)
+    set pages to history_collect_one(archive_prepare(database and "PRAGMA page_count;"))
+    set size to history_collect_one(archive_prepare(database and "PRAGMA page_size;"))
+    if available < 0 or else not (archive_list_text(pages and 0) equals "found") or else not (archive_list_text(size and 0) equals "found"):
+        return -1
+    set required to string_to_int(archive_list_text(pages and 1)) * string_to_int(archive_list_text(size and 1)) + 2147483648
+    if sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_snapshot_deferrals(singleton INTEGER PRIMARY KEY CHECK(singleton=1),reason TEXT NOT NULL,available_bytes INTEGER NOT NULL,required_bytes INTEGER NOT NULL,observed_ms INTEGER NOT NULL);") is not equal to 0:
+        return -1
+    if available >= required:
+        if sql_execute(database and "DELETE FROM echo_snapshot_deferrals WHERE singleton=1;") is not equal to 0:
+            return -1
+        return 0
+    set available_text to int_to_string(available)
+    set required_text to int_to_string(required)
+    set observed_text to int_to_string(ep_time_now_ms())
+    set statement to archive_prepare(database and "INSERT INTO echo_snapshot_deferrals VALUES(1,'insufficient-capacity',CAST(?1 AS INTEGER),CAST(?2 AS INTEGER),CAST(?3 AS INTEGER)) ON CONFLICT(singleton) DO UPDATE SET reason=excluded.reason,available_bytes=excluded.available_bytes,required_bytes=excluded.required_bytes,observed_ms=excluded.observed_ms;")
+    if statement equals 0 or else archive_bind(statement and 1 and available_text) is not equal to 0 or else archive_bind(statement and 2 and required_text) is not equal to 0 or else archive_bind(statement and 3 and observed_text) is not equal to 0:
+        return -1
+    if archive_finish(statement and 101) is not equal to 0:
+        return -1
+    return 1
+
+# Only registered, completed snapshots are eligible for retention. Keep the
+# latest three plus one per day for the latest seven backup days (at most ten).
+define archive_snapshot_retention with database as Int and directory as Str and library as Int returning Int:
+    set obsolete to "SELECT path FROM echo_snapshot_retention WHERE path NOT IN (SELECT path FROM echo_snapshot_retention ORDER BY completed_ms DESC,path DESC LIMIT 3) AND path NOT IN (SELECT path FROM (SELECT path,completed_ms,ROW_NUMBER() OVER(PARTITION BY completed_ms/86400000 ORDER BY completed_ms DESC,path DESC) AS rank FROM echo_snapshot_retention) WHERE rank=1 ORDER BY completed_ms DESC LIMIT 7) ORDER BY completed_ms LIMIT 1;"
+    repeat while 1 equals 1:
+        set row to history_collect_one(archive_prepare(database and obsolete))
+        if archive_list_text(row and 0) equals "end":
+            return 0
+        if not (archive_list_text(row and 0) equals "found"):
+            return 1
+        set path to archive_list_text(row and 1)
+        set prefix to concat(directory and "/agent-")
+        if string_length(path) is not equal to string_length(prefix) + 43 or else not (substring(path and 0 and string_length(prefix)) equals prefix) or else not (substring(path and string_length(path) - 7 and 7) equals ".sqlite"):
+            return 1
+        # The generated basename cannot escape the snapshot directory.
+        set basename to substring(path and string_length(directory) + 1 and string_length(path) - string_length(directory) - 1)
+        set index to 6
+        repeat while index < 42:
+            set character to get_character(basename and index)
+            if not ((character >= 48 and character <= 57) or else (character >= 97 and character <= 102) or else character equals 45):
+                return 1
+            set index to index + 1
+        set remove to ep_dlsym(library and "unlink")
+        if remove equals 0:
+            return 1
+        if file_exists(path) and socket_signed_result(ep_dlcall1(remove and str_to_ptr(path))) is not equal to 0:
+            return 1
+        set sidecar to concat(directory and concat("/._" and basename))
+        if file_exists(sidecar):
+            set removed to ep_dlcall1(remove and str_to_ptr(sidecar))
+        set statement to archive_prepare(database and "DELETE FROM echo_snapshot_retention WHERE path=?1;")
+        if statement equals 0 or else archive_bind(statement and 1 and path) is not equal to 0 or else archive_finish(statement and 101) is not equal to 0:
+            return 1
+    return 0
+
+define archive_snapshot_coalesced_locked with database as Int and directory as Str and requested as Str and library as Int returning Int:
+    if sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_snapshot_progress(singleton INTEGER PRIMARY KEY CHECK(singleton=1),covered_request INTEGER NOT NULL,covered_sequence INTEGER NOT NULL,path TEXT NOT NULL);") is not equal to 0:
+        return 1
+    set statement to archive_prepare(database and "SELECT path FROM echo_snapshot_progress WHERE singleton=1 AND covered_request>=CAST(?1 AS INTEGER);")
+    if statement equals 0 or else archive_bind(statement and 1 and requested) is not equal to 0:
+        return 1
+    set existing to history_collect_one(statement)
+    if archive_list_text(existing and 0) equals "found" and file_exists(archive_list_text(existing and 1)):
+        return 0
+    if not (archive_list_text(existing and 0) equals "found" or else archive_list_text(existing and 0) equals "end"):
+        return 1
+    set head to history_collect_one(archive_prepare(database and "SELECT CAST(COALESCE(MAX(sequence),0) AS TEXT) FROM echo_events;"))
+    if not (archive_list_text(head and 0) equals "found"):
+        return 1
+    set batch to history_collect_one(archive_prepare(database and "SELECT CAST(generation AS TEXT) FROM echo_snapshot_requests WHERE singleton=1;"))
+    if not (archive_list_text(batch and 0) equals "found"):
+        return 1
+    if sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_snapshot_retention(path TEXT PRIMARY KEY,completed_ms INTEGER NOT NULL);") is not equal to 0:
+        return 1
+    if archive_snapshot_retention(database and directory and library) is not equal to 0:
+        return 1
+    set capacity to archive_snapshot_capacity(database and directory and library)
+    if capacity < 0:
+        return 1
+    if capacity > 0:
+        return 0
+    set latest to history_collect_one(archive_prepare(database and "SELECT CAST(COALESCE(MAX(completed_ms),0) AS TEXT) FROM echo_snapshot_retention;"))
+    if not (archive_list_text(latest and 0) equals "found"):
+        return 1
+    # Canonical SQLite remains durable; pending tickets do not claim coverage.
+    if ep_time_now_ms() - string_to_int(archive_list_text(latest and 1)) < 3600000:
+        return sql_execute(database and "INSERT OR REPLACE INTO echo_snapshot_deferrals VALUES(1,'interval',-1,-1,CAST(strftime('%s','now') AS INTEGER)*1000);")
+    set get_policy to ep_dlsym(library and "getiopolicy_np")
+    set set_policy to ep_dlsym(library and "setiopolicy_np")
+    if get_policy equals 0 or else set_policy equals 0:
+        return 1
+    set previous to socket_signed_result(ep_dlcall2(get_policy and 0 and 0))
+    # Darwin IOPOL_TYPE_DISK / IOPOL_SCOPE_PROCESS / IOPOL_PASSIVE.
+    # Passive IO does not throttle other work; serialization bounds the writer.
+    # THROTTLE can starve SQLite page writes indefinitely under other disk IO.
+    if previous < 0 or else socket_signed_result(ep_dlcall3(set_policy and 0 and 0 and 2)) is not equal to 0:
+        return 1
+    set destination to concat(directory and concat("/agent-" and concat(ptr_to_str(ep_uuid_v4()) and ".sqlite")))
+    set result to archive_snapshot(database and destination)
+    set restored to socket_signed_result(ep_dlcall3(set_policy and 0 and 0 and previous))
+    if result is not equal to 0 or else restored is not equal to 0:
+        # This invocation exclusively owns the new UUID destination. A failed
+        # candidate must not accumulate as an untracked partial backup.
+        set remove to ep_dlsym(library and "unlink")
+        if remove is not equal to 0:
+            for each suffix in ["","-journal"]:
+                set failed_path to concat(destination and ptr_to_str(suffix))
+                if file_exists(failed_path):
+                    set removed to ep_dlcall1(remove and str_to_ptr(failed_path))
+                set basename to substring(failed_path and string_length(directory) + 1 and string_length(failed_path) - string_length(directory) - 1)
+                set sidecar to concat(directory and concat("/._" and basename))
+                if file_exists(sidecar):
+                    set removed to ep_dlcall1(remove and str_to_ptr(sidecar))
+        return 1
+    set statement to archive_prepare(database and "INSERT INTO echo_snapshot_progress(singleton,covered_request,covered_sequence,path) VALUES(1,CAST(?1 AS INTEGER),CAST(?2 AS INTEGER),?3) ON CONFLICT(singleton) DO UPDATE SET covered_request=excluded.covered_request,covered_sequence=excluded.covered_sequence,path=excluded.path;")
+    if statement equals 0 or else archive_bind(statement and 1 and archive_list_text(batch and 1)) is not equal to 0 or else archive_bind(statement and 2 and archive_list_text(head and 1)) is not equal to 0 or else archive_bind(statement and 3 and destination) is not equal to 0:
+        return 1
+    if archive_finish(statement and 101) is not equal to 0:
+        return 1
+    set registered to archive_prepare(database and "INSERT OR REPLACE INTO echo_snapshot_retention(path,completed_ms) VALUES(?1,CAST(?2 AS INTEGER));")
+    if registered equals 0 or else archive_bind(registered and 1 and destination) is not equal to 0 or else archive_bind(registered and 2 and int_to_string(ep_time_now_ms())) is not equal to 0 or else archive_finish(registered and 101) is not equal to 0:
+        return 1
+    return archive_snapshot_retention(database and directory and library)

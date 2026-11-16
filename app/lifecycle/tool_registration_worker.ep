@@ -1,0 +1,138 @@
+import "tool_registration_archive"
+import "tool_registration_publish"
+
+# Root-selected archive, principals and workspace root. Candidate rows carry no
+# configuration paths or grants. An interrupted completed build is reused only
+# through the private controller receipt and protected file verification.
+define tool_registration_job with database as Int and config as List and loaded as List and source_config as Int and run as Str and digest as Str returning Str:
+    set path to provider_value(config and provider_member(config and source_config and "path"))
+    set principals to provider_value(config and provider_member(config and source_config and "principals"))
+    set identity to ep_sha256(concat(archive_hash_field(path) and concat(archive_hash_field(run) and archive_hash_field(digest))))
+    set session to concat("tool-registration:" and identity)
+    set terminal to archive_read_event(database and concat(session and ":terminal"))
+    if terminal is not equal to 0:
+        return "already-terminal"
+    set source_database to rsi_archive_open(path)
+    if source_database equals 0:
+        return "source-unavailable"
+    set admitted to tool_registration_admit(source_database and run and digest and principals)
+    if not (archive_list_text(admitted and 0) equals "authorized"):
+        set closed to sql_close(source_database)
+        return archive_list_text(admitted and 0)
+    set saved to history_collect_one(checkpoint_prepare(database and "SELECT payload FROM echo_events WHERE event=? AND kind='tool_registration_build';" and [concat(session and ":build")]))
+    set entry to ""
+    set work to ""
+    if archive_list_text(saved and 0) equals "found":
+        set fields to provider_json_tokens(archive_list_text(saved and 1))
+        set entry to provider_value(fields and provider_member(fields and 0 and "entry"))
+        set work to provider_value(fields and provider_member(fields and 0 and "work"))
+        set closed to sql_close(source_database)
+    else if archive_list_text(saved and 0) equals "end":
+        set source to tool_registration_source(source_database and run and archive_list_text(admitted and 1) and provider_value(config and provider_member(config and source_config and "workspace_root")))
+        set closed to sql_close(source_database)
+        if not (archive_list_text(source and 0) equals "source"):
+            return archive_list_text(source and 0)
+        set built to tool_registration_job_build(config and admitted and archive_list_text(source and 1))
+        if not (archive_list_text(built and 0) equals "sealed"):
+            return archive_list_text(built and 0)
+        set entry to archive_list_text(built and 1)
+        set work to archive_list_text(built and 2)
+        set archived to tool_registration_archive(entry and provider_value(config and provider_member(config and 0 and "archive_directory")))
+        if not (archived equals "archived-data-not-execution-authority"):
+            return archived
+        set payload to concat("{\"entry\":" and provider_quote(entry))
+        set payload to concat(payload and concat(",\"work\":" and concat(provider_quote(work) and "}")))
+        if archive_append(database and session and concat(session and ":build") and "tool_registration_build" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+            return "build-receipt-failed"
+    else:
+        set closed to sql_close(source_database)
+        return "build-receipt-unavailable"
+    set entry_tokens to provider_json_tokens(entry)
+    if not (tool_version_files_check(entry_tokens and 0) equals "accepted-files-verified") or else not (provider_value(entry_tokens and provider_member(entry_tokens and 0 and "manifest_sha256")) equals digest) or else not (provider_value(entry_tokens and provider_member(entry_tokens and 0 and "principal")) equals archive_list_text(admitted and 2)) or else not (provider_value(entry_tokens and provider_member(entry_tokens and 0 and "session")) equals archive_list_text(admitted and 3)):
+        return "qualified-build-binding-changed"
+    set prepared to tool_registration_prepare(database and identity and provider_value(config and provider_member(config and 0 and "registry_directory")) and provider_value(config and provider_member(config and 0 and "registry_name")) and entry)
+    if not (archive_list_text(prepared and 0) equals "prepared"):
+        return archive_list_text(prepared and 0)
+    set reviewed to tool_registration_review(database and config and loaded and identity and prepared and entry)
+    if not (archive_list_text(reviewed and 0) equals "reviewed"):
+        return archive_list_text(reviewed and 0)
+    return tool_registration_activate(database and config and loaded and identity and path and run and digest and principals and prepared and reviewed and work)
+
+define tool_registration_job_build with config as List and admitted as List and source as Str returning List:
+    set plan_pin to provider_value(config and provider_member(config and 0 and "build_plan_sha256"))
+    set plan to tool_store_text(provider_value(config and provider_member(config and 0 and "build_plan")) and plan_pin)
+    if not (archive_list_text(plan and 0) equals "read"):
+        return history_status("installed-build-plan-changed")
+    set timeout_text to provider_index(config and provider_member(config and 0 and "case_timeout_ms"))
+    set timeout_ms to string_to_int(timeout_text)
+    if timeout_ms < 1 or else not (int_to_string(timeout_ms) equals timeout_text):
+        return history_status("installed-test-deadline-invalid")
+    set attempt to ptr_to_str(ep_uuid_v4())
+    set tool_parent to provider_value(config and provider_member(config and 0 and "tool_directory"))
+    set work_parent to provider_value(config and provider_member(config and 0 and "work_directory"))
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set tools_root to protected_path_open(library and tool_parent and 1)
+    set work_root to protected_path_open(library and work_parent and 1)
+    if tools_root < 0 or else work_root < 0:
+        if tools_root >= 0:
+            set closed to net_close(tools_root)
+        if work_root >= 0:
+            set closed to net_close(work_root)
+        set released to ep_dlclose(library)
+        return history_status("protected-tool-directories-unavailable")
+    set stage to workspace_directory_open(library and tools_root and attempt and 1)
+    set workspace to workspace_directory_open(library and work_root and attempt and 1)
+    set publication to -1
+    if workspace >= 0:
+        set publication to workspace_directory_open(library and workspace and "publication" and 1)
+    set closed to net_close(tools_root)
+    set closed to net_close(work_root)
+    if stage >= 0:
+        set closed to net_close(stage)
+    if workspace >= 0:
+        set closed to net_close(workspace)
+    if publication >= 0:
+        set closed to net_close(publication)
+    set released to ep_dlclose(library)
+    if stage < 0 or else workspace < 0 or else publication < 0:
+        return history_status("tool-attempt-directory-failed")
+    set stage_path to concat(tool_parent and concat("/" and attempt))
+    set work_path to concat(work_parent and concat("/" and attempt))
+    set built to tool_registration_build(admitted and source and archive_list_text(plan and 1) and plan_pin and stage_path and work_path and timeout_ms)
+    if not (archive_list_text(built and 0) equals "qualified-build"):
+        return built
+    set sealed to tool_registration_seal(admitted and built)
+    if not (archive_list_text(sealed and 0) equals "sealed"):
+        return sealed
+    set added to append_list(sealed and work_path)
+    return sealed
+
+define tool_registration_tick with database as Int and config as List and loaded as List returning Int:
+    set sources to provider_items(config and provider_member(config and 0 and "sources"))
+    if sources equals 0 or else length_list(sources) equals 0:
+        return 1
+    for each source in sources:
+        set cursor to "0"
+        repeat while 1 equals 1:
+            set path to provider_value(config and provider_member(config and source and "path"))
+            set archive to rsi_archive_open(path)
+            if archive equals 0:
+                return 2
+            set row to history_collect_one(checkpoint_prepare(archive and "SELECT sequence,run,digest FROM echo_tool_candidates WHERE sequence>CAST(? AS INTEGER) ORDER BY sequence LIMIT 1;" and [cursor]))
+            set closed to sql_close(archive)
+            if archive_list_text(row and 0) equals "end":
+                break
+            if not (archive_list_text(row and 0) equals "found") or else closed is not equal to 0:
+                return 3
+            set cursor to archive_list_text(row and 1)
+            set run to archive_list_text(row and 2)
+            set digest to archive_list_text(row and 3)
+            set result to tool_registration_job(database and config and loaded and source and run and digest)
+            if not (result equals "already-terminal" or else result equals "awaiting-observed-candidate-save" or else result equals "source-busy" or else result equals "review:review-owner-busy"):
+                set identity to ep_sha256(concat(archive_hash_field(path) and concat(archive_hash_field(run) and archive_hash_field(digest))))
+                set session to concat("tool-registration:" and identity)
+                if archive_append(database and session and concat(session and ":terminal") and "tool_registration_terminal" and result and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+                    return 4
+                display identity
+                display result
+    return 0

@@ -1,0 +1,137 @@
+import "qualification_runner"
+import "../tools/tool_registry"
+
+# Each retained test is a JSON case, not an executable command or a passing
+# report. The controller compares exact output itself, outside the candidate's
+# sandbox. At least one successful case must exercise the declared JSON ABI.
+define tool_behavior_cases_valid with manifest as Str returning Int:
+    if tool_candidate_manifest_valid(manifest) equals 0:
+        return 0
+    set tokens to provider_json_tokens(manifest)
+    set cases to provider_items(tokens and provider_member(tokens and 0 and "tests"))
+    if length_list(cases) equals 0:
+        return 0
+    set names to create_list()
+    set successful to 0
+    for each item in cases:
+        set text to provider_value(tokens and item)
+        set fields to provider_json_tokens(text)
+        if fields equals 0 or else provider_unique_objects(fields) equals 0 or else not (provider_kind(fields and 0) equals "{"):
+            return 0
+        set index to 1
+        set count to 0
+        repeat while not (provider_kind(fields and index) equals "}"):
+            set key to provider_value(fields and index)
+            if not (key equals "name" or else key equals "input" or else key equals "stdout" or else key equals "exit"):
+                return 0
+            set count to count + 1
+            set index to provider_after(fields and index + 2)
+            if provider_kind(fields and index) equals ",":
+                set index to index + 1
+        set name_field to provider_member(fields and 0 and "name")
+        set input_field to provider_member(fields and 0 and "input")
+        set output_field to provider_member(fields and 0 and "stdout")
+        set exit_field to provider_member(fields and 0 and "exit")
+        if count is not equal to 4 or else not (provider_kind(fields and name_field) equals "string") or else not (provider_kind(fields and input_field) equals "{") or else not (provider_kind(fields and output_field) equals "string") or else not (provider_kind(fields and exit_field) equals "number"):
+            return 0
+        set name to provider_value(fields and name_field)
+        set exit_text to provider_index(fields and exit_field)
+        set exit_code to string_to_int(exit_text)
+        if string_length(name) equals 0 or else exit_code < 0 or else exit_code > 255 or else not (int_to_string(exit_code) equals exit_text):
+            return 0
+        for each prior in names:
+            if name equals ptr_to_str(prior):
+                return 0
+        set added to append_list(names and name)
+        if exit_code equals 0:
+            set output to provider_json_tokens(provider_value(fields and output_field))
+            if output equals 0 or else provider_unique_objects(output) equals 0:
+                return 0
+            set successful to 1
+    return successful
+
+# Caller supplies an independently staged binary and installed deadline. Logs
+# must be outside the candidate's writable workspace. No expected result is
+# passed to the child; its only argument is the JSON input for this case.
+define tool_behavior_execute with manifest as Str and candidate as Str and pin as Str and workspace as Str and runtime as Str and logs as Str and timeout_ms as Int returning Str:
+    if tool_behavior_cases_valid(manifest) equals 0 or else protected_digest_valid(pin) equals 0 or else timeout_ms < 1:
+        return ""
+    if logs equals workspace or else string_index_of(logs and concat(workspace and "/")) equals 0:
+        return ""
+    set before to file_digest_durable(candidate and 65536)
+    if not (archive_list_text(before and 0) equals "verified") or else not (archive_list_text(before and 1) equals pin):
+        return ""
+    set library to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set directory to workspace_root_open(library and workspace)
+    if directory < 0:
+        set closed to ep_dlclose(library)
+        return ""
+    set result to tool_behavior_cases_run(library and directory and manifest and candidate and pin and workspace and runtime and logs and timeout_ms)
+    set closed to net_close(directory)
+    set released to ep_dlclose(library)
+    if closed is not equal to 0 or else released is not equal to 0:
+        return ""
+    return result
+
+define tool_behavior_cases_run with library as Int and directory as Int and manifest as Str and candidate as Str and pin as Str and workspace as Str and runtime as Str and logs as Str and timeout_ms as Int returning Str:
+    set tokens to provider_json_tokens(manifest)
+    set cases to provider_items(tokens and provider_member(tokens and 0 and "tests"))
+    set profile to concat(workspace_sandbox_profile() and "(allow process-exec file-read* file-map-executable (literal (param \"ECHO_EXECUTABLE\")))\n(allow file-read-metadata (path-ancestors (param \"ECHO_EXECUTABLE\")))\n")
+    set environment to ["PATH=/usr/bin:/bin",concat("TMPDIR=" and workspace)]
+    set report to concat("{\"manifest_sha256\":" and provider_quote(ep_sha256(manifest)))
+    set report to concat(report and concat(",\"artifact_sha256\":" and provider_quote(pin)))
+    set report to concat(report and ",\"cases\":[")
+    set index to 0
+    for each item in cases:
+        set case_text to provider_value(tokens and item)
+        set fields to provider_json_tokens(case_text)
+        set input to agent_json_source(case_text and fields and provider_member(fields and 0 and "input"))
+        set expected to provider_value(fields and provider_member(fields and 0 and "stdout"))
+        set expected_exit to string_to_int(provider_index(fields and provider_member(fields and 0 and "exit")))
+        set prefix to concat(logs and concat("/case-" and int_to_string(index)))
+        set output_path to concat(prefix and ".stdout")
+        set error_path to concat(prefix and ".stderr")
+        set output to native_open_mode(library and output_path and 2817 and 384)
+        set errors to native_open_mode(library and error_path and 2817 and 384)
+        if output < 0 or else errors < 0:
+            if output >= 0:
+                set closed to net_close(output)
+            if errors >= 0:
+                set closed to net_close(errors)
+            return ""
+        set handle to workspace_sandbox_start_profile(runtime and workspace and candidate and [input] and environment and directory and output and errors and profile)
+        set closed_output to net_close(output)
+        set closed_errors to net_close(errors)
+        if handle equals 0:
+            return ""
+        set deadline to ep_time_now_ms() + timeout_ms
+        set state to workspace_process_poll(handle)
+        repeat while state equals 0 and ep_time_now_ms() < deadline:
+            set slept to sleep_ms(10)
+            set state to workspace_process_poll(handle)
+        set failed to closed_output + closed_errors
+        if state is not equal to 1:
+            set failed to 1
+            repeat while workspace_process_abort(handle) is not equal to 0:
+                set slept to sleep_ms(10)
+        set waited to get_list(handle and 3)
+        set cleaned to workspace_process_group_cleanup(handle)
+        set closed to workspace_process_close(handle)
+        if failed is not equal to 0 or else cleaned is not equal to 0 or else closed is not equal to 0 or else waited is not equal to expected_exit * 256:
+            return ""
+        set output_hash to file_digest_durable(output_path and 65536)
+        set error_hash to file_digest_durable(error_path and 65536)
+        if not (archive_list_text(output_hash and 0) equals "verified") or else not (archive_list_text(error_hash and 0) equals "verified") or else not (file_read(output_path) equals expected):
+            return ""
+        set after to file_digest_durable(candidate and 65536)
+        if not (archive_list_text(after and 0) equals "verified") or else not (archive_list_text(after and 1) equals pin):
+            return ""
+        if index > 0:
+            set report to concat(report and ",")
+        set report to concat(report and concat("{\"name\":" and provider_quote(provider_value(fields and provider_member(fields and 0 and "name")))))
+        set report to concat(report and concat(",\"case_sha256\":" and provider_quote(ep_sha256(case_text))))
+        set report to concat(report and concat(",\"stdout_sha256\":" and provider_quote(archive_list_text(output_hash and 1))))
+        set report to concat(report and concat(",\"stderr_sha256\":" and provider_quote(archive_list_text(error_hash and 1))))
+        set report to concat(report and concat(",\"wait_status\":" and concat(int_to_string(waited) and "}")))
+        set index to index + 1
+    return concat(report and "]}")

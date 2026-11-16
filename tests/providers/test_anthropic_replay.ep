@@ -1,0 +1,111 @@
+import "os"
+import "../../app/providers/anthropic_request"
+import "../../app/providers/external_native"
+
+define replay_fixture with database as Int and request as Str and status as Str returning Int:
+    set original to "{\"model\":\"fixture-model\",\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"max\"}}"
+    set envelope to concat("{\"request_body\":" and concat(provider_quote(original) and "}"))
+    if archive_append(database and "session" and request and "model_request" and envelope and "fixture") is not equal to 0:
+        return 1
+    set events to create_list()
+    set added to append_list(events and "{\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[]}}")
+    set added to append_list(events and "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"hé\",\"signature\":\"\",\"extension\":{\"keep\":true}}}")
+    set added to append_list(events and "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" hmm\"}}")
+    set added to append_list(events and "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig+\"}}")
+    set added to append_list(events and "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"/==\"}}")
+    set added to append_list(events and "{\"type\":\"content_block_stop\",\"index\":0}")
+    set added to append_list(events and "{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"opaque+/==\"}}")
+    set added to append_list(events and "{\"type\":\"content_block_stop\",\"index\":1}")
+    set added to append_list(events and "{\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-a\",\"name\":\"look\",\"input\":{}}}")
+    set added to append_list(events and "{\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"n\\\":\"}}")
+    set added to append_list(events and "{\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"1.2300e+8}\"}}")
+    set added to append_list(events and "{\"type\":\"content_block_stop\",\"index\":2}")
+    set added to append_list(events and "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}")
+    set added to append_list(events and "{\"type\":\"message_stop\"}")
+    set sequence to 0
+    for each data in events:
+        set tokens to provider_json_tokens(data)
+        set kind to provider_value(tokens and provider_member(tokens and 0 and "type"))
+        set payload to concat("{\"request_event\":" and provider_quote(request))
+        set payload to concat(payload and concat(",\"event_type\":" and provider_quote(kind)))
+        set payload to concat(payload and concat(",\"data\":" and concat(provider_quote(data) and "}")))
+        if provider_archive_piece(database and "session" and request and sequence and "provider_event" and payload) is not equal to 0:
+            return 2
+        set sequence to sequence + 1
+    set payload to concat("{\"request_event\":" and concat(provider_quote(request) and ",\"transport\":\"eof\"}"))
+    if provider_archive_piece(database and "session" and request and sequence and "provider_stream_end" and payload) is not equal to 0:
+        return 3
+    set payload to concat("{\"request_event\":" and provider_quote(request))
+    set payload to concat(payload and concat(",\"status\":" and concat(provider_quote(status) and "}")))
+    return archive_append(database and "session" and concat(request and ":transport-end") and "provider_transport_end" and payload and "fixture")
+
+define main returning Int:
+    if get_argument_count() is not equal to 2 or else file_exists(get_argument(1)):
+        return 1
+    set database to archive_open(get_argument(1))
+    if database equals 0 or else replay_fixture(database and "request" and "complete") is not equal to 0 or else replay_fixture(database and "failed" and "helper-failed") is not equal to 0:
+        return 2
+    if sql_close(database) is not equal to 0:
+        return 3
+    set database to archive_open(get_argument(1))
+    set replay to anthropic_replay_read(database and "session" and "request")
+    if not (archive_list_text(replay and 0) equals "ready"):
+        display archive_list_text(replay and 0)
+        return 4
+    set messages to "[{\"role\": \"user\", \"content\": \"Inspect\"}, {\"role\": \"assistant\", \"content\": \"\", \"reasoning_content\": \"hé hmm\", \"tool_calls\": [{\"id\": \"call-a\", \"type\": \"function\", \"function\": {\"name\": \"look\", \"arguments\": \"{\\\"n\\\":1.2300e+8}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"call-a\", \"content\": \"done\"}]"
+    set options to "{\"max_tokens\":64000,\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"max\"}}"
+    set binding to create_list()
+    set added to append_list(binding and 1)
+    set added to append_list(binding and "request")
+    set bindings to create_list()
+    set added to append_list(bindings and binding)
+    set result to anthropic_request_create_archived(database and "session" and "fixture-model" and messages and "[]" and options and bindings)
+    if not (archive_list_text(result and 0) equals "ready"):
+        display archive_list_text(result and 0)
+        return 5
+    set marked to history_collect_one(checkpoint_prepare(database and "SELECT json_set(?1,'$[1].echo_native_request','request');" and [messages]))
+    set canonical to concat("{\"model\":\"fixture-model\",\"stream\":true,\"tool_choice\":\"auto\",\"tools\":[],\"messages\":" and concat(archive_list_text(marked and 1) and "}"))
+    set profile to concat("{\"adapter\":\"anthropic-messages\",\"model\":\"fixture-model\",\"options\":" and concat(options and "}"))
+    set integrated to external_native_request(database and "session" and profile and canonical)
+    if not (archive_list_text(integrated and 0) equals "ready") or else not (archive_list_text(integrated and 1) equals archive_list_text(result and 1)) or else string_contains(archive_list_text(integrated and 1) and "echo_native_request") > 0:
+        display archive_list_text(integrated and 0)
+        return 17
+    set body to archive_list_text(result and 1)
+    set tokens to provider_json_tokens(body)
+    set turns to provider_items(tokens and provider_member(tokens and 0 and "messages"))
+    set content to provider_items(tokens and provider_member(tokens and get_list(turns and 1) and "content"))
+    if length_list(content) is not equal to 3:
+        return 6
+    set thinking to get_list(content and 0)
+    set redacted to get_list(content and 1)
+    if not (provider_value(tokens and provider_member(tokens and thinking and "signature")) equals "sig+/==") or else not (provider_value(tokens and provider_member(tokens and thinking and "thinking")) equals "hé hmm") or else not (provider_value(tokens and provider_member(tokens and redacted and "data")) equals "opaque+/=="):
+        return 7
+    if provider_member(tokens and thinking and "extension") < 0 or else string_index_of(body and "1.2300e+8") < 0:
+        return 8
+    set denied to anthropic_replay_read(database and "foreign" and "request")
+    if archive_list_text(denied and 0) equals "ready":
+        return 9
+    set denied to anthropic_replay_read(database and "session" and "failed")
+    if archive_list_text(denied and 0) equals "ready":
+        return 10
+    set denied to anthropic_request_create_archived(database and "session" and "other-model" and messages and "[]" and options and bindings)
+    if not (archive_list_text(denied and 0) equals "native-history-model-mismatch"):
+        return 11
+    set changed to "[{\"role\": \"user\", \"content\": \"Inspect\"}, {\"role\": \"assistant\", \"content\": \"\", \"reasoning_content\": \"hé hmm\", \"tool_calls\": [{\"id\": \"different-call\", \"type\": \"function\", \"function\": {\"name\": \"look\", \"arguments\": \"{\\\"n\\\":1.2300e+8}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"different-call\", \"content\": \"done\"}]"
+    set denied to anthropic_request_create_archived(database and "session" and "fixture-model" and changed and "[]" and options and bindings)
+    if not (archive_list_text(denied and 0) equals "native-history-mismatch"):
+        return 12
+    set denied to anthropic_request_create_archived(database and "session" and "fixture-model" and messages and "[]" and "{\"max_tokens\":64000,\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"}}" and bindings)
+    if not (archive_list_text(denied and 0) equals "native-turn-settings-mismatch"):
+        return 13
+    if archive_verify(database and "session") is not equal to 0:
+        return 14
+    # Deliberate corruption of this isolated fixture, bypassing its immutable
+    # trigger, must not be treated as valid signed provider history.
+    if sql_execute(database and "DROP TRIGGER echo_events_no_update; UPDATE echo_events SET payload=json_set(payload,'$.fixture_corruption',1) WHERE event='request:provider:0';") is not equal to 0:
+        return 15
+    set denied to anthropic_replay_read(database and "session" and "request")
+    if archive_list_text(denied and 0) equals "ready" or else sql_close(database) is not equal to 0:
+        return 16
+    display "PASS: archived signed/redacted thinking, fragmented signatures and exact tool arguments replay through request translation after reopen; foreign session, failed transport, changed model and mismatched tool IDs, changed turn settings and corrupted records denied."
+    return 0

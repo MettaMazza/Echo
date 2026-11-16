@@ -1,0 +1,81 @@
+import "external_invocation"
+import "external_native"
+import "external_environment"
+import "external_chat"
+import "local_chat"
+
+# Return the ordinary preparation shape; count receipts retain provider semantics.
+define external_aux_prepare with database as Int and session as Str and identity as Str and invocation as Str and body as Str and cancellation as Int and batch as Int returning List:
+    return external_aux_prepare_program("/usr/bin/curl" and database and session and identity and invocation and body and cancellation and batch)
+
+define external_aux_prepare_program with executable as Str and database as Int and session as Str and identity as Str and invocation as Str and body as Str and cancellation as Int and batch as Int returning List:
+    set bound to external_invocation_read(database and session and invocation)
+    if not (archive_list_text(bound and 0) equals "ready"):
+        return history_status(archive_list_text(bound and 0))
+    set profile to archive_list_text(bound and 2)
+    set native to external_native_request(database and session and profile and body)
+    if not (archive_list_text(native and 0) equals "ready"):
+        return native
+    set environment to external_environment_open()
+    if not (archive_list_text(environment and 0) equals "ready"):
+        return environment
+    set decision to external_preflight_program(executable and database and archive_list_text(bound and 1) and identity and profile and archive_list_text(native and 1) and archive_list_text(environment and 5) and get_list(environment and 1) and get_list(environment and 2) and get_list(environment and 3) and get_list(environment and 4) and cancellation and batch)
+    set closed to external_environment_close(environment)
+    if closed is not equal to 0:
+        return history_status("external-storage-close-failed")
+    if not (archive_list_text(decision and 0) equals "ready"):
+        return decision
+    if not (archive_list_text(external_invocation_read(database and session and invocation) and 0) equals "ready"):
+        return history_status("stale-external-compaction")
+    set payload to concat("{\"invocation_sha256\":" and provider_quote(ep_sha256(invocation)))
+    set payload to concat(payload and concat(",\"preflight\":" and provider_quote(identity)))
+    set payload to concat(payload and concat(",\"body_sha256\":" and concat(provider_quote(ep_sha256(archive_list_text(native and 1))) and "}")))
+    if archive_append(database and session and concat(identity and ":aux-ready") and "external_aux_prepared" and payload and concat("unix-ms:" and int_to_string(ep_time_now_ms()))) is not equal to 0:
+        return history_status("archive-error")
+    set added to append_list(decision and archive_list_text(native and 1))
+    set endpoint to "/v1/messages"
+    set config to provider_json_tokens(profile)
+    if provider_value(config and provider_member(config and 0 and "adapter")) equals "openai-responses":
+        set endpoint to "/v1/responses"
+    set added to append_list(decision and endpoint)
+    set added to append_list(decision and -1)
+    set added to append_list(decision and 0)
+    return decision
+
+# Recap callers already archive the native request with its purpose. They keep
+# their candidate, source coverage, semantic review and activation validation.
+define provider_profile_generate with database as Int and session as Str and request as Str and profile as Str and port as Int and path as Str and body as Str and cancellation as Int and batch as Int returning List:
+    set config to provider_json_tokens(profile)
+    set family to provider_value(config and provider_member(config and 0 and "adapter"))
+    if not (family equals "anthropic-messages" or else family equals "openai-responses"):
+        return local_chat_generate(database and session and request and port and path and body and cancellation and batch)
+    return external_aux_generate(database and session and request and profile and body and cancellation and batch)
+
+define external_aux_generate with database as Int and session as Str and request as Str and invocation as Str and body as Str and cancellation as Int and batch as Int returning List:
+    return external_aux_generate_program("/usr/bin/curl" and database and session and request and invocation and body and cancellation and batch)
+
+define external_aux_generate_program with executable as Str and database as Int and session as Str and request as Str and invocation as Str and body as Str and cancellation as Int and batch as Int returning List:
+    set bound to external_invocation_read(database and session and invocation)
+    if not (archive_list_text(bound and 0) equals "ready"):
+        return provider_collected(archive_list_text(bound and 0) and chat_stream_create())
+    set original to archive_read_event(database and request)
+    if original equals 0 or else not (archive_list_text(original and 0) equals session) or else not (archive_list_text(original and 2) equals "model_request"):
+        return provider_collected("unarchived-external-request" and chat_stream_create())
+    set envelope to provider_json_tokens(archive_list_text(original and 3))
+    set purpose to provider_value(envelope and provider_member(envelope and 0 and "purpose"))
+    if string_index_of(purpose and "recap-") is not equal to 0 or else not (provider_value(envelope and provider_member(envelope and 0 and "request_body")) equals body):
+        return provider_collected("external-request-mismatch" and chat_stream_create())
+    # Any exact ready receipt for this immutable invocation/body suffices. This
+    # is not a latest-run lookup: authority is the explicit verified binding.
+    set prepared to history_collect_one(checkpoint_prepare(database and "SELECT json_extract(payload,'$.preflight') FROM echo_events WHERE session=?1 AND kind='external_aux_prepared' AND json_extract(payload,'$.invocation_sha256')=?2 AND json_extract(payload,'$.body_sha256')=?3 ORDER BY sequence LIMIT 1;" and [session,ep_sha256(invocation),ep_sha256(body)]))
+    if not (archive_list_text(prepared and 0) equals "found"):
+        return provider_collected("external-preflight-required" and chat_stream_create())
+    set environment to external_environment_open()
+    if not (archive_list_text(environment and 0) equals "ready"):
+        return provider_collected(archive_list_text(environment and 0) and chat_stream_create())
+    set response to external_chat_dispatch(executable and database and archive_list_text(bound and 1) and session and request and archive_list_text(prepared and 1) and archive_list_text(bound and 2) and body and archive_list_text(environment and 5) and get_list(environment and 1) and get_list(environment and 2) and get_list(environment and 3) and get_list(environment and 4) and cancellation and batch)
+    if external_environment_close(environment) is not equal to 0:
+        return provider_collected("external-storage-close-failed" and get_list(response and 1))
+    if not (archive_list_text(external_invocation_read(database and session and invocation) and 0) equals "ready"):
+        return provider_collected("stale-external-compaction" and get_list(response and 1))
+    return response

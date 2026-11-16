@@ -1,0 +1,141 @@
+import "external_vault"
+import "../security/external_scope"
+import "../security/run_authority"
+
+# Records contain only an opaque vault reference. They are outside transcripts
+# and provider profiles; no API key is written to this SQLite database.
+define external_account_schema with database as Int returning Int:
+    return sql_execute(database and "CREATE TABLE IF NOT EXISTS echo_external_accounts(identity TEXT PRIMARY KEY,principal TEXT NOT NULL REFERENCES echo_principals(identity),family TEXT NOT NULL CHECK(family IN ('openai-chat','anthropic-messages')),label TEXT NOT NULL,credential_reference TEXT NOT NULL UNIQUE,created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TABLE IF NOT EXISTS echo_external_account_revocations(identity TEXT PRIMARY KEY REFERENCES echo_external_accounts(identity),principal TEXT NOT NULL REFERENCES echo_principals(identity),created TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now'))); CREATE TRIGGER IF NOT EXISTS echo_external_account_no_update BEFORE UPDATE ON echo_external_accounts BEGIN SELECT RAISE(ABORT,'Account versions are immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_external_account_no_delete BEFORE DELETE ON echo_external_accounts BEGIN SELECT RAISE(ABORT,'Account origin is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_external_account_revocation_no_update BEFORE UPDATE ON echo_external_account_revocations BEGIN SELECT RAISE(ABORT,'Account revocation is immutable'); END; CREATE TRIGGER IF NOT EXISTS echo_external_account_revocation_no_delete BEFORE DELETE ON echo_external_account_revocations BEGIN SELECT RAISE(ABORT,'Account revocation cannot be erased'); END;")
+
+define external_account_reference with principal as Str and identity as Str returning Str:
+    return ep_sha256(concat("[" and concat(provider_quote(principal) and concat("," and concat(provider_quote(identity) and "]")))))
+
+# Authenticated settings action only, never a model tool. Directory comes from
+# trusted host configuration. Exact retries survive interrupted registration;
+# key rotation creates a new immutable account identity instead of replacing it.
+define external_account_connect with database as Int and device as Str and identity as Str and family as Str and label as Str and system as Int and directory as Int and secret as Str returning Str:
+    if string_length(identity) equals 0 or else string_length(string_trim(label)) equals 0 or else string_length(external_transport_headers(family and secret)) equals 0:
+        return "invalid-account"
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        set ignored to archive_rollback(database)
+        return "not-authorized"
+    set prior to history_collect_one(checkpoint_prepare(database and "SELECT principal,family,label,EXISTS(SELECT 1 FROM echo_external_account_revocations r WHERE r.identity=a.identity) FROM echo_external_accounts a WHERE identity=?1;" and [identity]))
+    set status to archive_list_text(prior and 0)
+    if status equals "found":
+        if not (archive_list_text(prior and 1) equals principal) or else not (archive_list_text(prior and 2) equals family) or else not (archive_list_text(prior and 3) equals label) or else not (archive_list_text(prior and 4) equals "0"):
+            set ignored to archive_rollback(database)
+            return "account-conflict-or-revoked"
+    else if not (status equals "end"):
+        set ignored to archive_rollback(database)
+        return "database-error"
+    set reference to external_account_reference(principal and identity)
+    set stored to external_vault_store(system and directory and reference and family and secret)
+    if not (stored equals "stored"):
+        set ignored to archive_rollback(database)
+        return stored
+    if status equals "end":
+        if archive_finish(checkpoint_prepare(database and "INSERT INTO echo_external_accounts(identity,principal,family,label,credential_reference) VALUES(?1,?2,?3,?4,?5);" and [identity,principal,family,label,reference]) and 101) is not equal to 0:
+            set ignored to archive_rollback(database)
+            return "database-error"
+    if sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return "connected"
+
+# Owner-visible metadata only. Admin role never changes the ownership query.
+# No reference/path/key is included in this result or its JSON representation.
+define external_account_read with database as Int and device as Str and identity as Str returning List:
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return history_status("not-authorized")
+    return history_collect_one(checkpoint_prepare(database and "SELECT identity,family,label,CASE WHEN EXISTS(SELECT 1 FROM echo_external_account_revocations r WHERE r.identity=a.identity) THEN 'revoked' ELSE 'connected' END FROM echo_external_accounts a WHERE identity=?1 AND principal=?2;" and [identity,principal]))
+
+define external_account_revoke with database as Int and device as Str and identity as Str returning Str:
+    if sql_execute(database and "BEGIN IMMEDIATE;") is not equal to 0:
+        return "database-busy"
+    set principal to principal_for_device(database and device)
+    set owned to history_collect_one(checkpoint_prepare(database and "SELECT identity FROM echo_external_accounts WHERE identity=?1 AND principal=?2;" and [identity,principal]))
+    if string_length(principal) equals 0 or else not (archive_list_text(owned and 0) equals "found"):
+        set ignored to archive_rollback(database)
+        return "not-authorized"
+    if archive_finish(checkpoint_prepare(database and "INSERT OR IGNORE INTO echo_external_account_revocations(identity,principal) VALUES(?1,?2);" and [identity,principal]) and 101) is not equal to 0 or else sql_execute(database and "COMMIT;") is not equal to 0:
+        set ignored to archive_rollback(database)
+        return "database-error"
+    return "revoked"
+
+# Private host dispatch capability. Caller must never serialize this result to
+# the model, UI, event log or tool ledger. Bind the account and protocol to the
+# exact consented credential-free profile and frozen initiating authority.
+define external_account_resolve with database as Int and run as Str and profile as Str and system as Int and directory as Int returning List:
+    set denied to ["not-authorized",""]
+    set config to provider_json_tokens(profile)
+    if config equals 0 or else provider_unique_objects(config) equals 0 or else run_authority_allows(database and run and "user") equals 0 or else external_scope_run_allows(database and run and ep_sha256(profile)) equals 0:
+        return denied
+    set identity to provider_value(config and provider_member(config and 0 and "account"))
+    set family to provider_value(config and provider_member(config and 0 and "adapter"))
+    # Both OpenAI wire protocols use the same owner-bound OpenAI account.
+    if family equals "openai-responses":
+        set family to "openai-chat"
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT c.credential_reference FROM echo_external_accounts c JOIN echo_run_authority a ON a.principal=c.principal WHERE a.run=?1 AND c.identity=?2 AND c.family=?3 AND NOT EXISTS(SELECT 1 FROM echo_external_account_revocations v WHERE v.identity=c.identity);" and [run,identity,family]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return denied
+    set credential to external_vault_read(system and directory and archive_list_text(row and 1) and family)
+    if not (archive_list_text(credential and 0) equals "ready"):
+        return credential
+    set current to history_collect_one(checkpoint_prepare(database and "SELECT identity FROM echo_external_accounts WHERE identity=?1 AND NOT EXISTS(SELECT 1 FROM echo_external_account_revocations WHERE identity=?1);" and [identity]))
+    if not (archive_list_text(current and 0) equals "found") or else run_authority_allows(database and run and "user") equals 0 or else external_scope_run_allows(database and run and ep_sha256(profile)) equals 0:
+        return denied
+    return credential
+
+# Owner-only settings listing, including disconnected versions for provenance.
+# Never return the vault reference or key.
+define external_account_list with database as Int and device as Str returning Str:
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return "{\"status\":\"not-authorized\"}"
+    set statement to checkpoint_prepare(database and "SELECT a.identity,a.family,a.label,CASE WHEN EXISTS(SELECT 1 FROM echo_external_account_revocations r WHERE r.identity=a.identity) THEN 'revoked' ELSE 'connected' END FROM echo_external_accounts a WHERE a.principal=?1 ORDER BY a.created,a.identity;" and [principal])
+    if statement equals 0:
+        return "{\"status\":\"database-error\"}"
+    set output to create_builder()
+    set added to builder_append(output and "{\"status\":\"found\",\"accounts\":[")
+    set separator to ""
+    set step to ep_sqlite3_step(statement)
+    repeat while step equals 100:
+        set identity to concat(ptr_to_str(ep_sqlite3_column_text(statement and 0)) and "")
+        set family to concat(ptr_to_str(ep_sqlite3_column_text(statement and 1)) and "")
+        set label to concat(ptr_to_str(ep_sqlite3_column_text(statement and 2)) and "")
+        set status to concat(ptr_to_str(ep_sqlite3_column_text(statement and 3)) and "")
+        set added to builder_append(output and concat(separator and "{\"identity\":"))
+        set added to builder_append(output and provider_quote(identity))
+        set added to builder_append(output and concat(",\"family\":" and provider_quote(family)))
+        set added to builder_append(output and concat(",\"label\":" and provider_quote(label)))
+        set added to builder_append(output and concat(",\"status\":" and concat(provider_quote(status) and "}")))
+        set separator to ","
+        set step to ep_sqlite3_step(statement)
+    set closed to ep_sqlite3_finalize(statement)
+    if step is not equal to 101 or else closed is not equal to 0:
+        return "{\"status\":\"database-error\"}"
+    set added to builder_append(output and "]}")
+    return ptr_to_str(builder_to_string(output))
+
+# Private settings capability for metadata discovery only. Never serialize this
+# secret-bearing result or expose this function through model tools.
+define external_account_settings_credential with database as Int and device as Str and identity as Str and system as Int and directory as Int returning List:
+    set denied to ["not-authorized","",""]
+    set principal to principal_for_device(database and device)
+    if string_length(principal) equals 0:
+        return denied
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT family,credential_reference FROM echo_external_accounts a WHERE identity=?1 AND principal=?2 AND NOT EXISTS(SELECT 1 FROM echo_external_account_revocations r WHERE r.identity=a.identity);" and [identity,principal]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return denied
+    set family to archive_list_text(row and 1)
+    set secret to external_vault_read(system and directory and archive_list_text(row and 2) and family)
+    if not (archive_list_text(secret and 0) equals "ready"):
+        return [archive_list_text(secret and 0),"",""]
+    set current to external_account_read(database and device and identity)
+    if not (archive_list_text(current and 0) equals "found") or else not (archive_list_text(current and 4) equals "connected") or else not (principal_for_device(database and device) equals principal):
+        return denied
+    return ["ready",family,archive_list_text(secret and 1)]

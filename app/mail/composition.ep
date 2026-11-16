@@ -1,0 +1,125 @@
+import "reply"
+import "forward"
+import "../providers/anthropic_json"
+
+# Specification values are content, not filesystem paths or authorization.
+# Attachment IDs are resolved by the admitted host adapter before this function.
+define gmail_composition_options with specification as Str returning List:
+    set tokens to provider_json_tokens(specification)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "{"):
+        return ["invalid-composition"]
+    set index to 1
+    repeat while not (provider_kind(tokens and index) equals "}"):
+        set name to provider_value(tokens and index)
+        set kind to provider_kind(tokens and index + 2)
+        set valid to (name equals "mode" or else name equals "source_id" or else name equals "subject" or else name equals "body") and also kind equals "string"
+        if name equals "html":
+            set valid to kind equals "true" or else kind equals "false"
+        if name equals "to" or else name equals "cc" or else name equals "bcc" or else name equals "attachments":
+            set valid to kind equals "["
+            if valid:
+                for each entry in provider_items(tokens and index + 2):
+                    if not (provider_kind(tokens and entry) equals "string"):
+                        set valid to 0
+        if valid equals 0:
+            return ["invalid-composition-field",name]
+        set index to provider_after(tokens and index + 2)
+        if provider_kind(tokens and index) equals ",":
+            set index to index + 1
+    set mode to provider_value(tokens and provider_member(tokens and 0 and "mode"))
+    if string_length(mode) equals 0:
+        set mode to "compose"
+    if not (mode equals "compose" or else mode equals "reply" or else mode equals "reply_all" or else mode equals "forward"):
+        return ["invalid-composition-mode"]
+    set source to provider_value(tokens and provider_member(tokens and 0 and "source_id"))
+    if (not (mode equals "compose") and also string_length(source) equals 0) or else (mode equals "compose" and also string_length(source) > 0):
+        return ["invalid-composition-source"]
+    if not (provider_kind(tokens and provider_member(tokens and 0 and "body")) equals "string"):
+        return ["composition-body-required"]
+    return ["valid",mode,source]
+
+define gmail_composition_strings with tokens as List and field as Str returning List:
+    set result to create_list()
+    set entries to provider_items(tokens and provider_member(tokens and 0 and field))
+    for each entry in entries:
+        set added to append_list(result and provider_value(tokens and entry))
+    return result
+
+define gmail_composition_array with values as List returning Str:
+    set result to "["
+    set count to 0
+    for each value in values:
+        if count > 0:
+            set result to concat(result and ",")
+        set result to concat(result and provider_quote(ptr_to_str(value)))
+        set count to count + 1
+    return concat(result and "]")
+
+# Source is an authenticated messages.get response selected by the adapter.
+# Reply subjects retain the exact unfolded original header, including any RFC
+# encoded words, so they are not double-encoded or assigned to another thread.
+define gmail_composition_build with identity as Str and date as Str and specification as Str and source as Str and attachments as List returning List:
+    set options to gmail_composition_options(specification)
+    if not (archive_list_text(options and 0) equals "valid"):
+        return options
+    set files to create_list()
+    for each attachment in attachments:
+        set added to append_list(files and attachment)
+    set mode to archive_list_text(options and 1)
+    set tokens to provider_json_tokens(specification)
+    set recipients_to to gmail_composition_strings(tokens and "to")
+    set cc to gmail_composition_strings(tokens and "cc")
+    set bcc to gmail_composition_strings(tokens and "bcc")
+    set subject to provider_value(tokens and provider_member(tokens and 0 and "subject"))
+    set body to provider_value(tokens and provider_member(tokens and 0 and "body"))
+    set html to provider_value(tokens and provider_member(tokens and 0 and "html")) equals "true"
+    set references to create_list()
+    set thread to ""
+    set subject_header to ""
+    if not (mode equals "compose"):
+        set original to provider_json_tokens(source)
+        if original equals 0 or else provider_unique_objects(original) equals 0 or else not (provider_value(original and provider_member(original and 0 and "id")) equals archive_list_text(options and 2)):
+            return ["composition-source-mismatch"]
+        if mode equals "forward":
+            set file to gmail_forward_attachment(provider_value(original and provider_member(original and 0 and "raw")))
+            if not (archive_list_text(file and 0) equals "ready"):
+                return file
+            set added to append_list(files and [archive_list_text(file and 1),archive_list_text(file and 2),archive_list_text(file and 3)])
+        else:
+            if length_list(recipients_to) > 0 or else length_list(cc) > 0 or else string_length(subject) > 0:
+                return ["reply-envelope-derived-from-source"]
+            set plan to provider_json_tokens(gmail_reply_plan(source and mode equals "reply_all"))
+            if not (provider_value(plan and provider_member(plan and 0 and "status")) equals "planned"):
+                return [provider_value(plan and provider_member(plan and 0 and "status"))]
+            set recipients_to to gmail_composition_strings(plan and "to")
+            set cc to gmail_composition_strings(plan and "cc")
+            set references to gmail_composition_strings(plan and "references")
+            set thread to provider_value(plan and provider_member(plan and 0 and "thread_id"))
+            set unfolded to gmail_header_unfold(provider_value(plan and provider_member(plan and 0 and "source_subject_header")))
+            if not (archive_list_text(unfolded and 0) equals "unfolded") or else gmail_header_text_valid(archive_list_text(unfolded and 1)) equals 0:
+                return ["invalid-source-subject"]
+            set subject_header to archive_list_text(unfolded and 1)
+            set subject to "Echo reply subject placeholder"
+    set composed to gmail_mime_compose(identity and date and recipients_to and cc and bcc and subject and body and html and references and files)
+    if not (archive_list_text(composed and 0) equals "composed"):
+        return composed
+    set mime to archive_list_text(composed and 1)
+    if mode equals "reply" or else mode equals "reply_all":
+        set old to concat("Subject: " and concat(gmail_subject_header(subject) and "\r\n"))
+        set at to string_index_of(mime and old)
+        if at < 0:
+            return ["composition-subject-unavailable"]
+        set replaced to concat(substring(mime and 0 and at) and concat("Subject: " and concat(subject_header and "\r\n")))
+        set mime to concat(replaced and substring(mime and at + string_length(old) and string_length(mime) - at - string_length(old)))
+    set payload to concat("{\"raw\":" and provider_quote(gmail_base64url(mime)))
+    if string_length(thread) > 0:
+        set payload to concat(payload and concat(",\"threadId\":" and provider_quote(thread)))
+    set payload to concat(payload and "}")
+    set preview to concat("{\"mode\":" and concat(provider_quote(mode) and concat(",\"to\":" and gmail_composition_array(recipients_to))))
+    set preview to concat(preview and concat(",\"cc\":" and gmail_composition_array(cc)))
+    set preview to concat(preview and concat(",\"bcc\":" and gmail_composition_array(bcc)))
+    set preview to concat(preview and concat(",\"body\":" and provider_quote(body)))
+    set preview to concat(preview and concat(",\"subject\":" and provider_quote(provider_value(tokens and provider_member(tokens and 0 and "subject")))))
+    set preview to concat(preview and concat(",\"reply_subject_header\":" and provider_quote(subject_header)))
+    set preview to concat(preview and concat(",\"attachment_count\":" and concat(int_to_string(length_list(files)) and "}")))
+    return ["composed",payload,archive_list_text(composed and 2),thread,preview,mime]

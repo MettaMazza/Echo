@@ -1,0 +1,167 @@
+import "fs"
+import "../../app/mail/tool"
+import "../../app/mail/schema"
+import "../../app/web/run_store"
+import "../../app/jobs/delegation_schema"
+
+define gmail_test_call with database as Int and run as Str and call_id as Str and arguments as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_runs WHERE run=?1;" and [run]))
+    set session to archive_list_text(row and 1)
+    set event to concat(run and concat(":" and call_id))
+    set payload to concat("{\"run_id\":" and concat(provider_quote(run) and concat(",\"call_id\":" and provider_quote(call_id))))
+    set payload to concat(payload and concat(",\"name\":\"mailbox\",\"arguments\":" and concat(provider_quote(arguments) and "}")))
+    if archive_append(database and session and event and "tool_call" and payload and "fixture") is not equal to 0 or else tool_ledger_queue(database and run and call_id and session and event) is not equal to 0:
+        return 1
+    return agent_run_claim_tool(database and run and call_id)
+
+define gmail_test_status with response as Str returning Str:
+    set tokens to provider_json_tokens(response)
+    return provider_value(tokens and provider_member(tokens and 0 and "status"))
+
+define main returning Int:
+    set root to ptr_to_str(get_env("ECHO_MAIL_ROOT"))
+    if string_length(root) equals 0:
+        return 1
+    if ptr_to_str(get_env("ECHO_MAIL_TEST_DENY")) equals "1":
+        set environment to gmail_environment_open()
+        if archive_list_text(environment and 0) equals "ready":
+            set closed to gmail_environment_close(environment)
+            return 2
+        display "PASS: unexcluded mailbox root is not opened."
+        return 0
+    if provider_json_tokens(gmail_tool_schema()) equals 0:
+        return 3
+    for each arguments in ["{}","{\"action\":\"send\"}","{\"action\":\"read\"}","{\"action\":\"status\",\"principal\":\"admin\"}","{\"action\":\"status\",\"action\":\"read\"}"]:
+        if archive_list_text(gmail_tool_arguments(ptr_to_str(arguments)) and 0) equals "valid":
+            return 4
+    set reply to gmail_tool_arguments("{\"action\":\"reply_all\",\"account\":\"own-account\",\"parameters\":\"{\\\"id\\\":\\\"message\\\"}\"}")
+    if not (archive_list_text(reply and 0) equals "valid") or else not (archive_list_text(reply and 3) equals "messages.get") or else string_index_of(archive_list_text(reply and 4) and "metadataHeaders") < 0:
+        return 20
+    if archive_list_text(gmail_tool_arguments("{\"action\":\"reply\",\"account\":\"own-account\",\"parameters\":\"{\\\"id\\\":\\\"message\\\",\\\"userId\\\":\\\"other\\\"}\"}") and 0) equals "valid":
+        return 21
+    set contacts_description to provider_json_tokens(gmail_described_method("people.connections.list"))
+    if not (provider_value(contacts_description and provider_member(contacts_description and 0 and "status")) equals "ready"):
+        return 46
+    set mailbox to archive_open(concat(root and "/mailbox.sqlite"))
+    if mailbox equals 0 or else gmail_account_schema(mailbox) is not equal to 0 or else gmail_outbox_schema(mailbox) is not equal to 0:
+        return 5
+    set reference to ep_sha256("synthetic-unused-reference")
+    if not (gmail_account_connect(mailbox and "own-account" and "device:admin" and "echo.ernos.smith@gmail.com" and reference) equals "connected") or else not (gmail_account_connect(mailbox and "foreign-account" and "device:other" and "echo.ernos.smith@gmail.com" and reference) equals "connected"):
+        return 6
+    if gmail_action_schema(mailbox) is not equal to 0:
+        return 22
+    if not (archive_list_text(gmail_action_claim(mailbox and "own-account" and "saved-write" and "messages.modify" and "{\"id\":\"message\"}" and "{\"addLabelIds\":[\"STARRED\"]}") and 0) equals "claimed") or else not (gmail_action_observe(mailbox and "own-account" and "saved-write" and gmail_action_digest("messages.modify" and "{\"id\":\"message\"}" and "{\"addLabelIds\":[\"STARRED\"]}") and "ready" and 200 and "{}") equals "observed"):
+        return 23
+    if not (archive_list_text(gmail_action_claim(mailbox and "own-account" and "pending-write" and "messages.modify" and "{\"id\":\"message\"}" and "{\"addLabelIds\":[\"STARRED\"]}") and 0) equals "claimed"):
+        return 24
+    set closed to sql_close(mailbox)
+    set database to archive_open(ptr_to_str(get_env("ECHO_MAIL_TEST_DB")))
+    if web_run_schema(database) is not equal to 0 or else not (delegation_schema(database) equals "applied"):
+        return 7
+    for each device in ["admin","guest"]:
+        if web_pairing_invite(database and device) is not equal to 0 or else web_device_pair(database and device and device and device and concat(device and "-secret")) is not equal to 0:
+            return 8
+    if not (principal_host_role(database and "grant" and "device:admin" and "admin" and "Fixture") equals "recorded"):
+        return 9
+    set own to web_submit_owned(database and "admin" and "own" and "" and "Read Echo mailbox")
+    set guest to web_submit_owned(database and "guest" and "guest" and "" and "Read mailbox")
+    # Fixture advances the run phase; tool queue, immutable event, frozen
+    # authority, claim and handler are the real production paths.
+    if sql_execute(database and "UPDATE echo_runs SET state='tools' WHERE run IN ('own','guest');") is not equal to 0:
+        return 10
+    if gmail_test_call(database and "own" and "status" and "{\"action\":\"status\"}") is not equal to 0:
+        return 11
+    set response to gmail_tool_execute(database and "own" and "status" and -1)
+    if not (gmail_test_status(response) equals "ready") or else string_index_of(response and "own-account") < 0 or else string_index_of(response and "foreign-account") >= 0 or else string_index_of(response and reference) >= 0:
+        display response
+        return 12
+    if gmail_test_call(database and "own" and "describe" and "{\"action\":\"describe\",\"method\":\"messages.list\"}") is not equal to 0 or else not (gmail_test_status(gmail_tool_execute(database and "own" and "describe" and -1)) equals "ready"):
+        return 13
+    if gmail_test_call(database and "guest" and "status" and "{\"action\":\"status\"}") is not equal to 0 or else not (gmail_test_status(gmail_tool_execute(database and "guest" and "status" and -1)) equals "not-authorized"):
+        return 14
+    if gmail_test_call(database and "own" and "foreign" and "{\"action\":\"read\",\"account\":\"foreign-account\",\"method\":\"getProfile\",\"parameters\":\"{}\"}") is not equal to 0:
+        return 15
+    set response to gmail_tool_execute(database and "own" and "foreign" and -1)
+    if not (gmail_test_status(response) equals "mailbox-authority-changed"):
+        display response
+        return 16
+    if gmail_test_call(database and "own" and "write" and "{\"action\":\"read\",\"account\":\"own-account\",\"method\":\"messages.send\",\"parameters\":\"{}\"}") is not equal to 0:
+        return 17
+    set response to gmail_tool_execute(database and "own" and "write" and -1)
+    if not (gmail_test_status(response) equals "read-operation-required"):
+        display response
+        return 18
+    if gmail_test_call(database and "own" and "cached-write" and "{\"action\":\"write\",\"account\":\"own-account\",\"method\":\"messages.modify\",\"parameters\":\"{\\\"id\\\":\\\"message\\\"}\",\"body\":\"{\\\"addLabelIds\\\":[\\\"STARRED\\\"]}\",\"intent\":\"saved-write\"}") is not equal to 0:
+        return 25
+    set response to gmail_tool_execute(database and "own" and "cached-write" and -1)
+    if not (gmail_test_status(response) equals "ready"):
+        display response
+        return 28
+    if gmail_test_call(database and "own" and "pending-write" and "{\"action\":\"write\",\"account\":\"own-account\",\"method\":\"messages.modify\",\"parameters\":\"{\\\"id\\\":\\\"message\\\"}\",\"body\":\"{\\\"addLabelIds\\\":[\\\"STARRED\\\"]}\",\"intent\":\"pending-write\"}") is not equal to 0:
+        return 26
+    set response to gmail_tool_execute(database and "own" and "pending-write" and -1)
+    if not (gmail_test_status(response) equals "uncertain"):
+        display response
+        return 29
+    if gmail_test_call(database and "own" and "send-write" and "{\"action\":\"write\",\"account\":\"own-account\",\"method\":\"messages.send\",\"parameters\":\"{\\\"id\\\":\\\"message\\\"}\",\"body\":\"{\\\"addLabelIds\\\":[\\\"STARRED\\\"]}\",\"intent\":\"send-write\"}") is not equal to 0:
+        return 27
+    set response to gmail_tool_execute(database and "own" and "send-write" and -1)
+    if not (gmail_test_status(response) equals "prepared-send-required"):
+        display response
+        return 30
+    set source_path to concat(ptr_to_str(get_env("ECHO_MAIL_TEST_DB")) and ".attachment.txt")
+    set own_session to history_collect_one(checkpoint_prepare(database and "SELECT session FROM echo_runs WHERE run=?1;" and ["own"]))
+    if write_file(source_path and "Attached original 🌍") is not equal to 1 or else web_attachment_schema(database) is not equal to 0 or else web_attachment_register(database and "admin" and archive_list_text(own_session and 1) and "mail-source" and source_path and "source.txt" and "text/plain") is not equal to 0:
+        return 31
+    if gmail_test_call(database and "own" and "compose" and "{\"action\":\"compose\",\"account\":\"own-account\",\"intent\":\"composed-1\",\"parameters\":\"{\\\"to\\\":[\\\"recipient@example.com\\\"],\\\"subject\\\":\\\"Handler draft\\\",\\\"body\\\":\\\"Body with attachment\\\",\\\"attachments\\\":[\\\"mail-source\\\"]}\"}") is not equal to 0:
+        return 32
+    set response to gmail_tool_execute(database and "own" and "compose" and -1)
+    if not (gmail_test_status(response) equals "prepared"):
+        display response
+        return 33
+    set mailbox to archive_open(concat(root and "/mailbox.sqlite"))
+    set prepared to gmail_prepared_payload(mailbox and "own-account" and "composed-1")
+    if not (archive_list_text(prepared and 0) equals "ready"):
+        return 34
+    set draft_body to concat("{\"message\":" and concat(archive_list_text(prepared and 1) and "}"))
+    if not (archive_list_text(gmail_action_claim(mailbox and "own-account" and "draft:composed-1" and "drafts.create" and "{}" and draft_body) and 0) equals "claimed") or else not (gmail_action_observe(mailbox and "own-account" and "draft:composed-1" and gmail_action_digest("drafts.create" and "{}" and draft_body) and "ready" and 200 and "{\"id\":\"saved-draft\"}") equals "observed"):
+        return 35
+    set closed to sql_close(mailbox)
+    if gmail_test_call(database and "own" and "save-draft" and "{\"action\":\"save_draft\",\"account\":\"own-account\",\"intent\":\"composed-1\"}") is not equal to 0:
+        return 36
+    set response to gmail_tool_execute(database and "own" and "save-draft" and -1)
+    if not (gmail_test_status(response) equals "ready") or else string_index_of(response and "saved-draft") < 0:
+        display response
+        return 37
+    if gmail_test_call(database and "own" and "policy" and "{\"action\":\"policy\",\"account\":\"own-account\"}") is not equal to 0:
+        return 47
+    if not (gmail_test_status(gmail_tool_execute(database and "own" and "policy" and -1)) equals "reviewed-mailbox-policy-not-installed"):
+        return 48
+    if gmail_test_call(database and "own" and "send-prepared" and "{\"action\":\"send\",\"account\":\"own-account\",\"intent\":\"composed-1\"}") is not equal to 0:
+        return 41
+    set response to gmail_tool_execute(database and "own" and "send-prepared" and -1)
+    if not (gmail_test_status(response) equals "reviewed-mailbox-policy-not-installed"):
+        display response
+        return 42
+    set mailbox to archive_open(concat(root and "/mailbox.sqlite"))
+    set delivery to history_collect_one(checkpoint_prepare(mailbox and "SELECT state FROM echo_mail_delivery WHERE mailbox=?1 AND identity=?2;" and ["own-account","composed-1"]))
+    set closed to sql_close(mailbox)
+    if not (archive_list_text(delivery and 1) equals "ready"):
+        return 43
+    if not (archive_list_text(gmail_send_receipt("{\"id\":\"sent-message\",\"threadId\":\"thread\"}") and 0) equals "sent"):
+        return 44
+    for each receipt in ["{}","{\"id\":\"message\"}","{\"id\":\"message\",\"threadId\":3}","{\"id\":\"message\",\"id\":\"other\",\"threadId\":\"thread\"}"]:
+        if archive_list_text(gmail_send_receipt(ptr_to_str(receipt)) and 0) equals "sent":
+            return 45
+    if archive_append(database and archive_list_text(own_session and 1) and "exclude-mail-source" and "attachment_visibility" and "{\"attachment\":\"mail-source\",\"state\":\"excluded\"}" and "fixture") is not equal to 0:
+        return 38
+    if gmail_test_call(database and "own" and "withdrawn-draft" and "{\"action\":\"save_draft\",\"account\":\"own-account\",\"intent\":\"composed-1\"}") is not equal to 0:
+        return 39
+    set response to gmail_tool_execute(database and "own" and "withdrawn-draft" and -1)
+    if not (gmail_test_status(response) equals "composition-source-authority-changed"):
+        display response
+        return 40
+    if not (principal_host_revocation(database and "revoke" and "device:admin" and 1 and "Fixture") equals "recorded") or else not (gmail_test_status(gmail_tool_execute(database and "own" and "status" and -1)) equals "not-authorized"):
+        return 19
+    display "PASS: private mailbox handler uses immutable calls, owner-only account metadata, contract lookup, guest/revocation denial, cross-owner denial and read-only routing. No network performed."
+    return sql_close(database)

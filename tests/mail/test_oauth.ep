@@ -1,0 +1,73 @@
+import "../../app/mail/refresh"
+
+define main returning Int:
+    set prior to "{\"client_id\":\"fixture-client\",\"client_secret\":\"fixture&secret\",\"refresh_token\":\"fixture/refresh\",\"scope\":\"https://www.googleapis.com/auth/gmail.modify\"}"
+    set response to "{\"access_token\":\"fixture-access\",\"token_type\":\"Bearer\",\"expires_in\":3600}"
+    set merged to gmail_oauth_merge(prior and response and 1000)
+    if not (archive_list_text(merged and 0) equals "ready"):
+        return 1
+    set record to archive_list_text(merged and 1)
+    set tokens to provider_json_tokens(record)
+    if not (provider_value(tokens and provider_member(tokens and 0 and "refresh_token")) equals "fixture/refresh") or else not (provider_index(tokens and provider_member(tokens and 0 and "expires_at")) equals "4600"):
+        return 2
+    if not (gmail_oauth_refresh_form(record) equals "grant_type=refresh_token&client_id=fixture-client&refresh_token=fixture%2Frefresh&client_secret=fixture%26secret"):
+        return 3
+    set failed to gmail_oauth_merge(prior and "{\"error\":\"invalid_grant\",\"error_description\":\"private upstream detail\"}" and 1000)
+    if not (archive_list_text(failed and 0) equals "reconnect-required") or else string_length(archive_list_text(failed and 1)) is not equal to 0:
+        return 4
+    for each invalid in ["{\"access_token\":\"x\\nInjected\",\"token_type\":\"Bearer\",\"expires_in\":3600}","{\"access_token\":\"x\",\"token_type\":\"Bearer\",\"expires_in\":0}","{\"access_token\":\"x\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"refresh_token\":\"\"}","{\"access_token\":\"x\",\"access_token\":\"y\",\"token_type\":\"Bearer\",\"expires_in\":3600}"]:
+        set invalid_result to gmail_oauth_merge(prior and ptr_to_str(invalid) and 1000)
+        if archive_list_text(invalid_result and 0) equals "ready":
+            return 5
+    if gmail_transport_arguments("GET" and "https://gmail.googleapis.com.attacker.test/gmail/v1/users/me/messages" and "" and "application/json") is not equal to 0 or else gmail_transport_arguments("GET" and "https://oauth2.googleapis.com/token" and "" and "application/json") is not equal to 0 or else gmail_transport_arguments("GET" and "https://gmail.googleapis.com/gmail/v1/users/other/messages" and "" and "application/json") is not equal to 0:
+        return 6
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    set root to ptr_to_str(get_env("ECHO_MAIL_TEST_VAULT"))
+    set directory to workspace_root_open(system and root)
+    if directory < 0:
+        return 7
+    set stored to gmail_credential_store(system and directory and record)
+    if not (archive_list_text(stored and 0) equals "stored"):
+        display archive_list_text(stored and 0)
+        return 8
+    set reference to archive_list_text(stored and 1)
+    set loaded to gmail_credential_read(system and directory and reference)
+    if not (archive_list_text(loaded and 0) equals "ready") or else not (archive_list_text(loaded and 1) equals record):
+        return 9
+    set database to archive_open(ptr_to_str(get_env("ECHO_MAIL_TEST_DB")))
+    if gmail_account_schema(database) is not equal to 0 or else not (gmail_account_connect(database and "account" and "owner" and "Echo.Ernos.Smith@gmail.com" and reference) equals "connected"):
+        return 10
+    set cached to gmail_refresh_account(database and "fixture" and "cached-read" and "account" and "owner" and 0 and 1000 and system and directory and -1 and "" and -1 and -1)
+    if not (archive_list_text(cached and 0) equals "ready") or else not (archive_list_text(cached and 1) equals record):
+        return 14
+    set foreign to gmail_refresh_account(database and "fixture" and "foreign-read" and "account" and "foreign" and 0 and 1000 and system and directory and -1 and "" and -1 and -1)
+    if not (archive_list_text(foreign and 0) equals "mailbox-unavailable"):
+        return 15
+    set held to workspace_file_open(system and directory and concat("refresh-" and concat(ep_sha256("account") and ".lock")) and 0)
+    set flock to ep_dlsym(system and "flock")
+    if held < 0 or else ep_dlcall2(flock and held and 6) is not equal to 0:
+        return 16
+    set competing to gmail_refresh_account(database and "fixture" and "competing" and "account" and "owner" and 0 and 1000 and system and directory and -1 and "" and -1 and -1)
+    if not (archive_list_text(competing and 0) equals "credential-refresh-busy"):
+        return 17
+    set closed to net_close(held)
+    if not (gmail_account_connect(database and "local-revoke" and "owner" and "Echo.Ernos.Smith@gmail.com" and reference) equals "connected"):
+        return 18
+    set revoked to gmail_revoke_account(database and "fixture" and "offline-revoke" and "local-revoke" and "owner" and system and directory and -1 and "" and -1 and -1)
+    if not (archive_list_text(revoked and 0) equals "revoked-remote-pending"):
+        return 19
+    set denied to gmail_refresh_account(database and "fixture" and "denied-after-revoke" and "local-revoke" and "owner" and 0 and 1000 and system and directory and -1 and "" and -1 and -1)
+    if not (archive_list_text(denied and 0) equals "revoked"):
+        return 20
+    set rotated to ep_sha256("new credential version")
+    if not (gmail_account_change(database and "account" and "foreign" and reference and rotated and "connected") equals "stale-or-revoked"):
+        return 11
+    if not (gmail_account_change(database and "account" and "owner" and reference and rotated and "connected") equals "connected") or else not (gmail_account_change(database and "account" and "owner" and reference and reference and "connected") equals "stale-or-revoked"):
+        return 12
+    if not (gmail_account_change(database and "account" and "owner" and rotated and rotated and "revoked") equals "revoked") or else not (gmail_account_change(database and "account" and "owner" and rotated and reference and "connected") equals "stale-or-revoked"):
+        return 13
+    set closed to sql_close(database)
+    set closed to net_close(directory)
+    set closed to ep_dlclose(system)
+    display "PASS: OAuth merge, refresh form encoding, invalid-grant distinction, fixed-origin rejection, real private vault round trip, owner/CAS checks and irreversible account revocation. Fixture credentials only; no network."
+    return 0

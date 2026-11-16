@@ -1,0 +1,133 @@
+import "authority"
+import "read"
+import "composition_store"
+import "../web/attachments"
+import "../archive/attachment_lifecycle"
+
+# Attachment IDs resolve through the existing device/session ownership and
+# lifecycle gates. No model-supplied host paths are accepted by mail composition.
+define gmail_composition_attachments with authority as Int and run as Str and call_id as Str and specification as Str returning List:
+    set owner to gmail_tool_owner(authority and run and call_id)
+    set actor to history_collect_one(checkpoint_prepare(authority and "SELECT device FROM echo_tool_authority WHERE run=?1 AND call_id=?2;" and [run,call_id]))
+    if string_length(owner) equals 0 or else not (archive_list_text(actor and 0) equals "found"):
+        return ["mailbox-not-authorized"]
+    set tokens to provider_json_tokens(specification)
+    set ids to gmail_composition_strings(tokens and "attachments")
+    set files to create_list()
+    set provenance to "["
+    set count to 0
+    for each attachment in ids:
+        set id to ptr_to_str(attachment)
+        set file to web_attachment_owned(authority and archive_list_text(actor and 1) and id)
+        if not (archive_list_text(file and 0) equals "found") or else attachment_selectable(authority and id) equals 0 or else attachment_context_included(authority and id) equals 0:
+            return ["attachment-not-authorized"]
+        set encoded to file_base64_verified(archive_list_text(file and 1) and archive_list_text(file and 4) and string_to_int(archive_list_text(file and 5)) and 65536)
+        if not (archive_list_text(encoded and 0) equals "verified"):
+            return ["attachment-integrity-failed"]
+        if not (gmail_tool_owner(authority and run and call_id) equals owner) or else attachment_selectable(authority and id) equals 0 or else attachment_context_included(authority and id) equals 0 or else not (archive_list_text(web_attachment_owned(authority and archive_list_text(actor and 1) and id) and 0) equals "found"):
+            return ["attachment-authority-changed"]
+        set added to append_list(files and [archive_list_text(file and 2),archive_list_text(file and 3),archive_list_text(encoded and 1)])
+        if count > 0:
+            set provenance to concat(provenance and ",")
+        set provenance to concat(provenance and concat("{\"attachment\":" and provider_quote(id)))
+        set provenance to concat(provenance and concat(",\"sha256\":" and provider_quote(archive_list_text(file and 4))))
+        set provenance to concat(provenance and concat(",\"bytes\":" and archive_list_text(file and 5)))
+        set provenance to concat(provenance and concat(",\"name\":" and provider_quote(archive_list_text(file and 2))))
+        set provenance to concat(provenance and concat(",\"media_type\":" and concat(provider_quote(archive_list_text(file and 3)) and "}")))
+        set count to count + 1
+    set result to create_list()
+    set added to append_list(result and "ready")
+    set added to append_list(result and files)
+    set added to append_list(result and concat(provenance and "]"))
+    return result
+
+define gmail_composition_result with intent as Str and saved as List returning List:
+    if not (archive_list_text(saved and 0) equals "prepared"):
+        return gmail_read_denied(archive_list_text(saved and 0))
+    set body to concat("{\"intent\":" and provider_quote(intent))
+    set body to concat(body and concat(",\"message_id\":" and provider_quote(archive_list_text(saved and 2))))
+    set body to concat(body and concat(",\"payload_sha256\":" and provider_quote(ep_sha256(archive_list_text(saved and 1)))))
+    set body to concat(body and concat(",\"thread_id\":" and provider_quote(archive_list_text(saved and 3))))
+    set body to concat(body and concat(",\"preview\":" and concat(archive_list_text(saved and 4) and ",\"sent\":false}")))
+    set result to local_json_result("prepared" and 0 and body)
+    set added to append_list(result and 0)
+    return result
+
+define gmail_compose_account with authority as Int and database as Int and run as Str and call_id as Str and session as Str and request as Str and account as Str and intent as Str and specification as Str and now as Int and system as Int and vault as Int and spool as Int and root as Str and errors as Int and cancellation as Int returning List:
+    set owner to gmail_tool_owner(authority and run and call_id)
+    if string_length(owner) equals 0 or else gmail_owner_active(authority and database and account and owner) equals 0:
+        return gmail_read_denied("mailbox-not-authorized")
+    set options to gmail_composition_options(specification)
+    if not (archive_list_text(options and 0) equals "valid") or else string_length(intent) equals 0:
+        return gmail_read_denied("invalid-composition")
+    if gmail_composition_schema(database) is not equal to 0:
+        return gmail_read_denied("composition-storage-unavailable")
+    set saved to gmail_composition_load(database and account and intent and specification)
+    if not (archive_list_text(saved and 0) equals "new"):
+        if archive_list_text(saved and 0) equals "prepared" and also gmail_composition_sources_allowed(authority and database and run and call_id and account and intent) equals 0:
+            return gmail_read_denied("composition-source-authority-changed")
+        return gmail_composition_result(intent and saved)
+    set files to gmail_composition_attachments(authority and run and call_id and specification)
+    if not (archive_list_text(files and 0) equals "ready"):
+        return gmail_read_denied(archive_list_text(files and 0))
+    set source to ""
+    if not (archive_list_text(options and 1) equals "compose"):
+        set format to "metadata"
+        if archive_list_text(options and 1) equals "forward":
+            set format to "raw"
+        set parameters to concat("{\"id\":" and concat(provider_quote(archive_list_text(options and 2)) and concat(",\"format\":" and concat(provider_quote(format) and "}"))))
+        set response to gmail_read_account(authority and database and session and concat(request and ":source") and account and owner and "messages.get" and parameters and now and system and vault and spool and root and errors and cancellation)
+        if get_list(response and 3) is not equal to 0:
+            return response
+        if not (archive_list_text(response and 0) equals "ready"):
+            return gmail_read_denied("composition-source-unavailable")
+        set source to archive_list_text(response and 2)
+    set date to gmail_composition_date(database)
+    set stable_identity to concat(archive_hash_field(account) and archive_hash_field(intent))
+    set composed to gmail_composition_build(stable_identity and date and specification and source and get_list(files and 1))
+    if not (archive_list_text(composed and 0) equals "composed"):
+        return gmail_read_denied(archive_list_text(composed and 0))
+    if sql_execute(authority and "BEGIN IMMEDIATE;") is not equal to 0:
+        return gmail_read_denied("authority-writer-unavailable")
+    if not (gmail_tool_owner(authority and run and call_id) equals owner) or else gmail_owner_active(authority and database and account and owner) equals 0:
+        set rolled to archive_rollback(authority)
+        return gmail_read_denied("mailbox-authority-changed")
+    if gmail_composition_provenance_allowed(authority and run and call_id and archive_list_text(files and 2)) equals 0:
+        set rolled to archive_rollback(authority)
+        return gmail_read_denied("composition-source-authority-changed")
+    set saved to gmail_composition_save(database and account and intent and specification and source and date and archive_list_text(files and 2) and composed)
+    if sql_execute(authority and "COMMIT;") is not equal to 0:
+        set rolled to archive_rollback(authority)
+        return gmail_read_denied("authority-commit-failed")
+    return gmail_composition_result(intent and saved)
+
+# Internal read after current account/owner admission. It never changes send state.
+define gmail_prepared_payload with database as Int and account as Str and intent as Str returning List:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT i.payload,i.digest FROM echo_mail_intents i JOIN echo_mail_compositions c ON c.account=i.mailbox AND c.identity=i.identity WHERE i.mailbox=?1 AND i.identity=?2;" and [account,intent]))
+    if not (archive_list_text(row and 0) equals "found") or else not (archive_list_text(row and 2) equals ep_sha256(archive_list_text(row and 1))):
+        return ["composition-unavailable"]
+    return ["ready",archive_list_text(row and 1)]
+
+# Recheck source eligibility at preparation and later draft/send boundaries.
+# Retained MIME stays byte-exact; a revoked/excluded source is not silently
+# replaced with newer file content or sent after its selection was withdrawn.
+define gmail_composition_provenance_allowed with authority as Int and run as Str and call_id as Str and provenance as Str returning Int:
+    if string_length(gmail_tool_owner(authority and run and call_id)) equals 0:
+        return 0
+    set actor to history_collect_one(checkpoint_prepare(authority and "SELECT device FROM echo_tool_authority WHERE run=?1 AND call_id=?2;" and [run,call_id]))
+    set tokens to provider_json_tokens(provenance)
+    if not (archive_list_text(actor and 0) equals "found") or else tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else not (provider_kind(tokens and 0) equals "["):
+        return 0
+    for each entry in provider_items(tokens and 0):
+        set id to provider_value(tokens and provider_member(tokens and entry and "attachment"))
+        set digest to provider_value(tokens and provider_member(tokens and entry and "sha256"))
+        set file to web_attachment_owned(authority and archive_list_text(actor and 1) and id)
+        if not (archive_list_text(file and 0) equals "found") or else not (archive_list_text(file and 4) equals digest) or else attachment_selectable(authority and id) equals 0 or else attachment_context_included(authority and id) equals 0:
+            return 0
+    return 1
+
+define gmail_composition_sources_allowed with authority as Int and database as Int and run as Str and call_id as Str and account as Str and intent as Str returning Int:
+    set row to history_collect_one(checkpoint_prepare(database and "SELECT attachments FROM echo_mail_compositions WHERE account=?1 AND identity=?2;" and [account,intent]))
+    if not (archive_list_text(row and 0) equals "found"):
+        return 0
+    return gmail_composition_provenance_allowed(authority and run and call_id and archive_list_text(row and 1))

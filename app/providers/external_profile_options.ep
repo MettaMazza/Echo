@@ -1,0 +1,72 @@
+import "external_model_info"
+
+# Highest advertised effort; never derive capabilities from a model name.
+define external_profile_effort with capabilities as Str returning Str:
+    for each effort in ["max","xhigh","high","medium","low"]:
+        if external_model_capability(capabilities and ["effort",effort]) equals "supported":
+            return effort
+    return ""
+
+# Only provider-reported limits authorize these defaults. A manual-thinking
+# model needs an explicit budget; do not invent a fraction of its output room.
+define external_profile_options with info as List and supplied as Str returning List:
+    if not (archive_list_text(info and 0) equals "discovered"):
+        return ["accounting-unresolved",""]
+    set capabilities to archive_list_text(info and 4)
+    set effort to external_profile_effort(capabilities)
+    if string_length(effort) equals 0 and also not (external_model_capability(capabilities and ["effort"]) equals "unsupported"):
+        return ["effort-capabilities-unreported",""]
+    set options to supplied
+    if string_length(options) equals 0:
+        set options to concat("{\"max_tokens\":" and int_to_string(get_list(info and 3)))
+        if external_model_capability(capabilities and ["thinking","types","adaptive"]) equals "supported":
+            set options to concat(options and ",\"thinking\":{\"type\":\"adaptive\"}")
+        else if external_model_capability(capabilities and ["thinking"]) equals "unsupported":
+            set options to options
+        else if external_model_capability(capabilities and ["thinking","types","enabled"]) equals "supported":
+            return ["manual-thinking-budget-required",""]
+        else:
+            return ["thinking-capabilities-unreported",""]
+        if string_length(effort) > 0:
+            set options to concat(options and concat(",\"output_config\":{\"effort\":" and concat(provider_quote(effort) and "}")))
+        set options to concat(options and "}")
+    set tokens to provider_json_tokens(options)
+    if tokens equals 0 or else provider_unique_objects(tokens) equals 0 or else anthropic_fields(tokens and 0 and ["max_tokens","thinking","output_config"]) equals 0:
+        return ["invalid-external-options",""]
+    set output_field to provider_member(tokens and 0 and "max_tokens")
+    set output to http_decimal(provider_index(tokens and output_field))
+    if not (provider_kind(tokens and output_field) equals "number") or else output < 1 or else output > get_list(info and 3):
+        return ["invalid-output-limit",""]
+    set thinking to provider_member(tokens and 0 and "thinking")
+    if thinking < 0:
+        if not (external_model_capability(capabilities and ["thinking"]) equals "unsupported"):
+            return ["thinking-required",""]
+    else:
+        set kind to provider_value(tokens and provider_member(tokens and thinking and "type"))
+        if kind equals "adaptive":
+            if anthropic_fields(tokens and thinking and ["type"]) equals 0 or else not (external_model_capability(capabilities and ["thinking","types","adaptive"]) equals "supported"):
+                return ["unsupported-thinking-settings",""]
+        else if kind equals "enabled":
+            if anthropic_fields(tokens and thinking and ["type","budget_tokens"]) equals 0 or else not (external_model_capability(capabilities and ["thinking","types","enabled"]) equals "supported"):
+                return ["unsupported-thinking-settings",""]
+            set budget_field to provider_member(tokens and thinking and "budget_tokens")
+            set budget to http_decimal(provider_index(tokens and budget_field))
+            if not (provider_kind(tokens and budget_field) equals "number") or else budget < 1024 or else budget >= output:
+                return ["invalid-thinking-budget",""]
+        else:
+            return ["thinking-required",""]
+    set config to provider_member(tokens and 0 and "output_config")
+    if config >= 0:
+        if anthropic_fields(tokens and config and ["effort","format"]) equals 0:
+            return ["invalid-output-config",""]
+        set format to provider_member(tokens and config and "format")
+        if format >= 0:
+            if not (external_model_capability(capabilities and ["structured_outputs"]) equals "supported") or else anthropic_fields(tokens and format and ["type","schema"]) equals 0 or else not (provider_value(tokens and provider_member(tokens and format and "type")) equals "json_schema") or else not (provider_kind(tokens and provider_member(tokens and format and "schema")) equals "{"):
+                return ["unsupported-structured-output",""]
+    set chosen to provider_member(tokens and config and "effort")
+    if string_length(effort) > 0:
+        if not (provider_kind(tokens and chosen) equals "string") or else not (provider_value(tokens and chosen) equals effort):
+            return ["highest-reasoning-required",""]
+    else if chosen >= 0:
+        return ["effort-capabilities-unreported",""]
+    return ["ready",options]

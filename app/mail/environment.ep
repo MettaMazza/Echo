@@ -1,0 +1,60 @@
+import "../providers/external_environment"
+
+# The entire mailbox tree is private, including SQLite journals and mail bodies.
+# Reuse the host secret-root exclusion gate; a configured path alone is not enough.
+# Success extends external_environment's layout with mailbox DB and root fd.
+define gmail_environment_open returning List:
+    set root to external_environment_path("ECHO_MAIL_ROOT")
+    if string_length(root) equals 0:
+        return history_status("mailbox-not-configured")
+    set system to ep_dlopen("/usr/lib/libSystem.B.dylib")
+    if system equals 0:
+        return history_status("mailbox-platform-unavailable")
+    set directory to workspace_root_open(system and root)
+    set vault to workspace_root_open(system and concat(root and "/credentials"))
+    set spool_root to concat(root and "/spool")
+    set spool to workspace_root_open(system and spool_root)
+    set errors to native_open_mode(system and "/dev/null" and 1 and 0)
+    set file to -1
+    if directory >= 0:
+        set file to workspace_file_open(system and directory and "mailbox.sqlite" and 0)
+    set valid to directory >= 0 and also vault >= 0 and also spool >= 0 and also errors >= 0 and also file >= 0
+    if valid:
+        set valid to external_vault_inode(system and directory and 1) and also external_vault_inode(system and vault and 1) and also external_vault_inode(system and file and 0) and also external_request_root_matches(system and spool and spool_root)
+    if file >= 0:
+        set closed to net_close(file)
+    set database to 0
+    if valid:
+        set database to archive_open(concat(root and "/mailbox.sqlite"))
+        set valid to database is not equal to 0
+    if valid:
+        set schema to history_collect_one(archive_prepare(database and "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('echo_mail_accounts','echo_mail_intents','echo_mail_delivery');"))
+        set valid to archive_list_text(schema and 0) equals "found" and also archive_list_text(schema and 1) equals "3"
+    if not valid:
+        if database is not equal to 0:
+            set closed to sql_close(database)
+        for each descriptor in [directory,vault,spool,errors]:
+            if descriptor >= 0:
+                set closed to net_close(descriptor)
+        set closed to ep_dlclose(system)
+        return history_status("mailbox-storage-unavailable")
+    set result to create_list()
+    set added to append_list(result and "ready")
+    set added to append_list(result and system)
+    set added to append_list(result and spool)
+    set added to append_list(result and vault)
+    set added to append_list(result and errors)
+    set added to append_list(result and spool_root)
+    set added to append_list(result and database)
+    set added to append_list(result and directory)
+    return result
+
+define gmail_environment_close with environment as List returning Int:
+    if not (archive_list_text(environment and 0) equals "ready"):
+        return 0
+    set failed to sql_close(get_list(environment and 6)) is not equal to 0
+    if net_close(get_list(environment and 7)) is not equal to 0:
+        set failed to 1
+    if external_environment_close(environment) is not equal to 0:
+        set failed to 1
+    return failed
